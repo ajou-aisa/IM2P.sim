@@ -1,3 +1,5 @@
 .omo
+.DS_Store
 /build/
 *.ba
+generated/
