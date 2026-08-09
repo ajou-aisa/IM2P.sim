@@ -1,0 +1,127 @@
+package TbVectorUnit;
+
+import Vector::*;
+
+import TestVectorUtils::*;
+
+import Types::*;
+import VectorUnit::*;
+
+
+function VectorOp operationFor(UInt#(2) index);
+    case (index)
+        0: return VectorBypass;
+        1: return VectorMultiply;
+        default: return VectorShift;
+    endcase
+endfunction
+
+function Vector#(4, Bool) validsFor(UInt#(2) index);
+    case (index)
+        // Bypass는 네 column을 모두 처리한다.
+        0: return replicate(True);
+
+        // Multiply는 두 vector group에 각각 하나의 Valid column만 둔다.
+        1: return vector4(True, False, True, False);
+
+        // Shift는 첫 group 전체를 Invalid로 두어 empty-group 처리도 검증한다.
+        default: return vector4(False, False, True, False);
+    endcase
+endfunction
+
+function Vector#(4, Int#(8)) scaleFor(UInt#(2) index);
+    case (index)
+        // Bypass에서도 non-zero scale을 넣어 실제로 무시되는지 확인한다.
+        0: return vector4(7, 7, 7, 7);
+        1: return vector4(2, -3, 4, -5);
+        default: return vector4(1, -1, 2, -2);
+    endcase
+endfunction
+
+function Vector#(4, Int#(32)) expectedFor(UInt#(2) index);
+    case (index)
+        0: return vector4(3, -4, 5, -6);
+        1: return vector4(6, 12, 20, 30);
+        default: return vector4(6, -2, 20, -2);
+    endcase
+endfunction
+
+// 같은 INT VectorUnit에서 Bypass -> Multiply -> Shift를 실행한다.
+// arrayDim=4, vectorLanes=2이므로 각 request는 두 physical-lane group으로
+// 처리된다. Sparse Valid mask와 Valid column이 하나도 없는 group도 포함한다.
+module mkTbVectorUnit(Empty);
+    VectorUnitIfc#(
+        Int#(8),
+        4,
+        2,
+        Int#(32),
+        Int#(8)
+    ) dut <- mkVectorUnit;
+
+    Reg#(UInt#(2)) executionIndex <- mkReg(0);
+    Reg#(UInt#(2)) groupIndex <- mkReg(0);
+    Reg#(Bool) inFlight <- mkReg(False);
+
+    rule issue (!inFlight && executionIndex < 3 && dut.ready);
+        dut.put(
+            validsFor(executionIndex),
+            vector4(3, -4, 5, -6),
+            scaleFor(executionIndex),
+            operationFor(executionIndex)
+        );
+        groupIndex <= 0;
+        inFlight <= True;
+    endrule
+
+    rule checkGroup (inFlight && dut.resultValid);
+        VectorResult#(4, Int#(32)) transformed = dut.result;
+        Vector#(4, Bool) inputValids = validsFor(executionIndex);
+        Vector#(4, Int#(32)) expected = expectedFor(executionIndex);
+        Bool passed = True;
+
+        for (Integer column = 0; column < 4; column = column + 1) begin
+            Bool belongsToCurrentGroup =
+                groupIndex == fromInteger(column / 2);
+            Bool shouldBeValid =
+                belongsToCurrentGroup && inputValids[column];
+
+            passed = passed
+                && transformed.valids[column] == shouldBeValid;
+
+            if (shouldBeValid) begin
+                passed = passed
+                    && transformed.contributions[column] == expected[column];
+            end
+            else begin
+                // 현재 group 밖의 column과 Invalid input column은 deterministic zero다.
+                passed = passed
+                    && transformed.contributions[column] == 0;
+            end
+        end
+
+        if (!passed) begin
+            $display(
+                "VECTOR UNIT: FAIL execution=%0d group=%0d",
+                executionIndex,
+                groupIndex
+            );
+            $finish(1);
+        end
+
+        dut.consume;
+        if (groupIndex == 1) begin
+            inFlight <= False;
+            executionIndex <= executionIndex + 1;
+        end
+        else begin
+            groupIndex <= groupIndex + 1;
+        end
+    endrule
+
+    rule finish (!inFlight && executionIndex == 3 && dut.ready);
+        $display("VECTOR UNIT: PASS");
+        $finish(0);
+    endrule
+endmodule
+
+endpackage
