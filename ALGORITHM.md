@@ -79,7 +79,7 @@ After extracting (d_p), the remaining higher-order value is
 
 [
 q_{p+1}
-=======
+=
 
 \frac{q_p-d_p}{256}.
 ]
@@ -279,7 +279,7 @@ Define the (K) indices active in at least one digit plane:
 
 [
 \mathcal U
-==========
+=
 
 \left{
 k
@@ -301,7 +301,7 @@ The digit planes are therefore compacted along their (K) columns,
 
 [
 \widetilde D_p
-==============
+=
 
 D_p[:,\mathcal U]
 \in\mathbb Z_8^{M\times H},
@@ -311,7 +311,7 @@ while the corresponding (K) rows are selected from the weight matrix,
 
 [
 \widetilde Q_W
-==============
+=
 
 Q_W[\mathcal U,:]
 \in\mathbb Z_8^{H\times J}.
@@ -390,7 +390,7 @@ Define the set of active **digit rows**
 
 [
 \mathcal A
-==========
+=
 
 \left{
 (p,i)
@@ -455,7 +455,7 @@ such that
 
 [
 A_{\mathrm{pack}}[n,:]
-======================
+=
 
 \widetilde D_{p_n}[i_n,:].
 ]
@@ -464,7 +464,7 @@ For the running example,
 
 [
 A_{\mathrm{pack}}
-=================
+=
 
 \begin{bmatrix}
 -128&0&0\
@@ -504,7 +504,7 @@ signed INT8 GEMM:
 
 [
 C_{\mathrm{pack}}
-=================
+=
 
 A_{\mathrm{pack}}\widetilde Q_W,
 ]
@@ -521,7 +521,7 @@ Each packed output row preserves the mapping stored in (\Gamma):
 
 [
 C_{\mathrm{pack}}[n,:]
-======================
+=
 
 \widetilde D_{p_n}[i_n,:]\widetilde Q_W.
 ]
@@ -569,7 +569,7 @@ The reconstruction is therefore
 
 [
 O_{\mathrm{RC}}[i,:]
-====================
+=
 
 \sum_{{n,|,i_n=i}}
 256^{p_n}
@@ -624,7 +624,7 @@ For a DIM(=16) systolic array, the number of physical GEMM tiles is
 
 [
 N_{\mathrm{tiles}}
-==================
+=
 
 \left\lceil\frac{N}{16}\right\rceil
 \left\lceil\frac{H}{16}\right\rceil
