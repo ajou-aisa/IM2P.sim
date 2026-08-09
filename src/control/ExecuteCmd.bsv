@@ -1,0 +1,28 @@
+package ExecuteCmd;
+
+import Types::*;
+
+// -----------------------------------------------------------------------------
+// DMA 없는 하나의 systolic execution command
+// -----------------------------------------------------------------------------
+//
+// execution은 quantization block을 의미하지 않는다. 현재 array에 preload된
+// stationary weight와 전달된 activation row들을 이용해 현재 array-width K tile의
+// column 결과를 만들고, runtime VectorOp으로 선택한 후단 연산을 적용한 뒤
+// accumulator에 반영하는 일반 실행 단위다. 전체 K가 arrayDim보다 크면 상위
+// software/controller가 여러 execution을 수행하고 accumulate=True로 결합한다.
+//
+// Scale이 필요한 workload는 VectorMultiply/VectorShift와 함께 각 activation row의
+// scale vector를 공급한다. Scale이 필요 없는 실행은 VectorBypass를 사용한다.
+
+typedef struct {
+    RowAddress#(accRows) accumulatorBaseRow;
+    BoundedCount#(arrayDim) rowCount;
+    Bool accumulate;
+    VectorOp vectorOp;
+} ExecuteCmd#(
+    numeric type arrayDim,
+    numeric type accRows
+) deriving (Bits, Eq, FShow);
+
+endpackage
