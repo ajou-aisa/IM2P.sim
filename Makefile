@@ -1,135 +1,166 @@
-SHELL := /usr/bin/env bash
-.DEFAULT_GOAL := test
+# -----------------------------------------------------------------------------
+# IM2P.sim build / verification entry points
+# -----------------------------------------------------------------------------
 
-BSC ?= bsc
-CXX ?= g++
-CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wpedantic
+SHELL := /bin/bash
 
-CASE ?= mixed
-CASES := int8 carry lane-gap lane4 multi-k mixed
+BSC       ?= bsc
+CXX       ?= g++
+PYTHON    ?= python3
+VERILATOR ?= verilator
+YOSYS     ?= yosys
 
-BUILD_ROOT := build
-GEN_ROOT := generated
-NPU_DIR := src/NPU
-TEST_DIR := tests
-TOOL_DIR := tools
-BUILD_DIR := $(BUILD_ROOT)/$(CASE)
-GEN_DIR := $(GEN_ROOT)/$(CASE)
-CPP := $(BUILD_ROOT)/tools/decomposed_spmm
-CPP_SOURCE := $(TOOL_DIR)/decomposed_spmm.cpp
-TOP := mkTbDecomposedSpMM
-DECOMPOSED_TB := $(TEST_DIR)/TbDecomposedSpMM.bsv
-SCALE_TB := $(TEST_DIR)/TbAccumulatorScale.bsv
-SYSTOLIC_TB := $(TEST_DIR)/TbSystolicArray.bsv
-NUMERIC_TB := $(TEST_DIR)/TbNumericFormat.bsv
-GEN_BSV := $(GEN_DIR)/GeneratedDecomposedData.bsv
-SCALE_BUILD_DIR := $(BUILD_ROOT)/scale
-SCALE_TOP := mkTbAccumulatorScale
-SYSTOLIC_BUILD_DIR := $(BUILD_ROOT)/systolic
-SYSTOLIC_TOP := mkTb
+BUILD_DIR := build
+BSC_PATH  := +:src/common:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
+BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
+             -info-dir $(BUILD_DIR)/info
+BSC_EXTRA_FLAGS ?=
+BSC_COMMON := -p $(BSC_PATH) $(BSC_DIRS) -keep-fires -show-schedule \
+              $(BSC_EXTRA_FLAGS)
 
-BSC_FLAGS := -p +:$(NPU_DIR):$(GEN_DIR) -sim -check-assert \
-	-bdir $(BUILD_DIR) \
-	-simdir $(BUILD_DIR) \
-	-info-dir $(BUILD_DIR)
+CPP_TOOL := $(BUILD_DIR)/bin/im2p_reference
+CPP_SRC  := tools/im2p_reference.cpp
 
-BSV_SOURCES := \
-	$(NPU_DIR)/NumericFormat.bsv \
-	$(NPU_DIR)/PE.bsv \
-	$(NPU_DIR)/SystolicArray.bsv \
-	$(NPU_DIR)/Accumulator.bsv \
-	$(GEN_BSV) \
-	$(DECOMPOSED_TB)
+BSV_TEST_TOPS := \
+	mkTbArithmetic \
+	mkTbPE \
+	mkTbInputSkew \
+	mkTbSystolicArray \
+	mkTbVectorUnit \
+	mkTbAccumulator \
+	mkTbExecuteController \
+	mkTbIM2PCore \
+	mkTbIM2PCoreGrouped \
+	mkTbFloatCore
 
-.PHONY: all test test-all scale-test systolic-test numeric-test run run-case run-verbose \
-	self-test case-self-test list-cases generate clean
+define run_bluesim
+	log="$(BUILD_DIR)/info/$$package.bluesim.log"; \
+	status=0; \
+	$(BUILD_DIR)/bin/$$package 2>&1 | tee "$$log" || status=$$?; \
+	test $$status -eq 0 || exit $$status; \
+	grep -q 'FAIL' "$$log" && { echo "[Bluesim] $$top reported FAIL" >&2; exit 1; }; \
+	grep -q 'PASS' "$$log" || { echo "[Bluesim] $$top missing PASS" >&2; exit 1; }
+endef
 
-all: $(BUILD_DIR)/sim
+SYNTH_TOPS := \
+	mkSynthInt8 \
+	mkSynthFp16 \
+	mkSynthFp32
 
-test: self-test scale-test systolic-test numeric-test run-case
+.PHONY: all check verify static-check cpp-test bsv-test bsv-test-one rtl rtl-one \
+        verilator-lint yosys-stat clean help check-tools
 
-test-all: self-test scale-test systolic-test numeric-test
-	@set -e; \
-	for tc in $(CASES); do \
-		$(MAKE) --no-print-directory run-case CASE=$$tc; \
+all: check
+
+check: static-check cpp-test
+
+# BSC가 설치된 개발 환경에서 source test와 대표 RTL elaboration까지 한 번에 수행한다.
+verify: check bsv-test rtl
+
+help:
+	@printf '%s\n' \
+	  'make check           - architecture 정적 검사 + C++ reference self-test' \
+	  'make verify          - check + 전체 Bluesim test + 대표 RTL 생성' \
+	  'make bsv-test        - 모든 Bluesim testbench 컴파일 및 실행' \
+	  'make bsv-test-one TOP=mkTbPE - 지정한 testbench만 컴파일 및 실행' \
+	  'make rtl             - INT8/FP16/FP32 top의 Verilog 생성' \
+	  'make rtl-one TOP=mkSynthInt8 - 지정한 top의 Verilog만 생성' \
+	  'make verilator-lint  - 생성 Verilog에 Verilator lint 적용' \
+	  'make yosys-stat      - 생성 Verilog에 Yosys generic synthesis/stat 적용' \
+	  'make check-tools     - 외부 도구 설치 여부 확인' \
+	  'make clean           - build/ 삭제'
+
+$(BUILD_DIR)/bin $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info:
+	@mkdir -p $@
+
+static-check:
+	$(PYTHON) scripts/static_check.py
+
+$(CPP_TOOL): $(CPP_SRC) Makefile | $(BUILD_DIR)/bin
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+		$(CPP_SRC) -o $(CPP_TOOL)
+
+cpp-test: $(CPP_TOOL)
+	$(CPP_TOOL)
+
+bsv-test: | $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
+	@set -euo pipefail; \
+	for top in $(BSV_TEST_TOPS); do \
+	  package="$${top#mk}"; \
+	  echo "[BSC] compile $$top"; \
+	  $(BSC) -u -sim $(BSC_COMMON) -g $$top tests/$$package.bsv; \
+	  $(BSC) -sim $(BSC_COMMON) -e $$top \
+	    -o $(BUILD_DIR)/bin/$$package; \
+	  echo "[Bluesim] run $$top"; \
+	  $(run_bluesim); \
 	done
 
-$(CPP): $(CPP_SOURCE)
-	mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $< -o $@
+bsv-test-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
+	@set -euo pipefail; \
+	top='$(TOP)'; \
+	test -n "$$top" || { echo 'TOP is required, e.g. TOP=mkTbPE' >&2; exit 2; }; \
+	package="$${top#mk}"; \
+	echo "[BSC] compile $$top"; \
+	$(BSC) -u -sim $(BSC_COMMON) -g $$top tests/$$package.bsv; \
+	$(BSC) -sim $(BSC_COMMON) -e $$top -o $(BUILD_DIR)/bin/$$package; \
+	echo "[Bluesim] run $$top"; \
+	$(run_bluesim)
 
-list-cases: $(CPP)
-	$(CPP) list-cases
+rtl: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
+	@set -euo pipefail; \
+	for top in $(SYNTH_TOPS); do \
+	  package="$${top#mk}"; \
+	  out="$(BUILD_DIR)/rtl/$$package"; \
+	  rm -rf "$$out"; \
+	  mkdir -p "$$out"; \
+	  echo "[BSC] Verilog $$top"; \
+	  $(BSC) -u -verilog -p $(BSC_PATH) $(BSC_EXTRA_FLAGS) \
+	    -bdir $(BUILD_DIR)/bsc -info-dir $(BUILD_DIR)/info \
+	    -vdir "$$out" -g $$top synth/$$package.bsv; \
+	done
 
-self-test: $(CPP)
-	$(CPP) self-test all
+rtl-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
+	@set -euo pipefail; \
+	top='$(TOP)'; \
+	test -n "$$top" || { echo 'TOP is required, e.g. TOP=mkSynthInt8' >&2; exit 2; }; \
+	package="$${top#mk}"; \
+	out="$(BUILD_DIR)/rtl/$$package"; \
+	rm -rf "$$out"; \
+	mkdir -p "$$out"; \
+	echo "[BSC] Verilog $$top"; \
+	$(BSC) -u -verilog -p $(BSC_PATH) $(BSC_EXTRA_FLAGS) \
+	  -bdir $(BUILD_DIR)/bsc -info-dir $(BUILD_DIR)/info \
+	  -vdir "$$out" -g $$top synth/$$package.bsv
 
-case-self-test: $(CPP)
-	$(CPP) self-test $(CASE)
+verilator-lint: rtl
+	@set -euo pipefail; \
+	for top in $(SYNTH_TOPS); do \
+	  package="$${top#mk}"; \
+	  echo "[Verilator] lint $$top"; \
+	  $(VERILATOR) --lint-only -Wall -Wno-fatal \
+	    --top-module $$top $(BUILD_DIR)/rtl/$$package/*.v; \
+	done
 
-$(GEN_BSV): $(CPP)
-	mkdir -p $(GEN_DIR)
-	$(CPP) generate $(GEN_DIR) $(CASE)
+yosys-stat: rtl
+	@set -euo pipefail; \
+	mkdir -p $(BUILD_DIR)/reports; \
+	for top in $(SYNTH_TOPS); do \
+	  package="$${top#mk}"; \
+	  report="$(BUILD_DIR)/reports/$$package-yosys-stat.txt"; \
+	  files="$$(find $(BUILD_DIR)/rtl/$$package -maxdepth 1 -name '*.v' -print | sort | tr '\n' ' ')"; \
+	  test -n "$$files" || { echo "no Verilog files for $$package" >&2; exit 1; }; \
+	  $(YOSYS) -p "read_verilog $$files; hierarchy -check -top $$top; \
+	    proc; opt; memory; opt; stat" | tee "$$report"; \
+	done
 
-generate: $(GEN_BSV)
-
-$(BUILD_DIR):
-	mkdir -p $@
-
-$(BUILD_DIR)/sim: $(BSV_SOURCES) | $(BUILD_DIR)
-	$(BSC) $(BSC_FLAGS) -u -g $(TOP) $(DECOMPOSED_TB)
-	$(BSC) $(BSC_FLAGS) -e $(TOP) -o $@
-
-$(SCALE_BUILD_DIR)/sim: $(NPU_DIR)/NumericFormat.bsv $(NPU_DIR)/Accumulator.bsv $(SCALE_TB)
-	mkdir -p $(SCALE_BUILD_DIR)
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(SCALE_BUILD_DIR) \
-		-simdir $(SCALE_BUILD_DIR) -info-dir $(SCALE_BUILD_DIR) \
-		-u -g $(SCALE_TOP) $(SCALE_TB)
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(SCALE_BUILD_DIR) \
-		-simdir $(SCALE_BUILD_DIR) -info-dir $(SCALE_BUILD_DIR) \
-		-e $(SCALE_TOP) -o $@
-
-scale-test: $(SCALE_BUILD_DIR)/sim
-	@$(SCALE_BUILD_DIR)/sim
-
-$(SYSTOLIC_BUILD_DIR)/sim: $(NPU_DIR)/NumericFormat.bsv $(NPU_DIR)/PE.bsv $(NPU_DIR)/SystolicArray.bsv $(SYSTOLIC_TB)
-	mkdir -p $(SYSTOLIC_BUILD_DIR)
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(SYSTOLIC_BUILD_DIR) \
-		-simdir $(SYSTOLIC_BUILD_DIR) -info-dir $(SYSTOLIC_BUILD_DIR) \
-		-u -g $(SYSTOLIC_TOP) $(SYSTOLIC_TB)
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(SYSTOLIC_BUILD_DIR) \
-		-simdir $(SYSTOLIC_BUILD_DIR) -info-dir $(SYSTOLIC_BUILD_DIR) \
-		-e $(SYSTOLIC_TOP) -o $@
-
-systolic-test: $(SYSTOLIC_BUILD_DIR)/sim
-	@$(SYSTOLIC_BUILD_DIR)/sim
-
-numeric-test: $(NPU_DIR)/NumericFormat.bsv $(NPU_DIR)/PE.bsv $(NUMERIC_TB)
-	mkdir -p $(BUILD_ROOT)/numeric
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(BUILD_ROOT)/numeric \
-		-simdir $(BUILD_ROOT)/numeric -info-dir $(BUILD_ROOT)/numeric \
-		-u -g mkTbNumericFormat $(NUMERIC_TB)
-	$(BSC) -p +:$(NPU_DIR) -sim -check-assert -bdir $(BUILD_ROOT)/numeric \
-		-simdir $(BUILD_ROOT)/numeric -info-dir $(BUILD_ROOT)/numeric \
-		-e mkTbNumericFormat -o $(BUILD_ROOT)/numeric/sim
-	@$(BUILD_ROOT)/numeric/sim
-
-run: run-case
-
-run-case: $(BUILD_DIR)/sim $(CPP)
-	@echo
-	@echo "=== BSV CASE: $(CASE) ==="
-	@$(BUILD_DIR)/sim > $(BUILD_DIR)/bsv.log
-	@grep -E '^(TEST_BEGIN|JOB_FAIL|TEST_END|DECOMPOSED SPMM: FAIL)' \
-		$(BUILD_DIR)/bsv.log || true
-	@$(CPP) compare $(BUILD_DIR)/bsv.log $(CASE)
-	@echo "raw RTL rows: $(BUILD_DIR)/bsv.log"
-
-run-verbose: $(BUILD_DIR)/sim $(CPP)
-	@echo
-	@echo "=== BSV CASE: $(CASE) (verbose) ==="
-	@set -o pipefail; $(BUILD_DIR)/sim | tee $(BUILD_DIR)/bsv.log
-	@$(CPP) compare $(BUILD_DIR)/bsv.log $(CASE)
+check-tools:
+	@for tool in $(PYTHON) $(CXX) $(BSC) $(VERILATOR) $(YOSYS); do \
+	  if command -v $$tool >/dev/null 2>&1; then \
+	    printf '[FOUND] %-12s %s\n' $$tool "$$(command -v $$tool)"; \
+	  else \
+	    printf '[MISSING] %s\n' $$tool; \
+	  fi; \
+	done
 
 clean:
-	rm -rf $(BUILD_ROOT) $(GEN_ROOT)
+	rm -rf $(BUILD_DIR)

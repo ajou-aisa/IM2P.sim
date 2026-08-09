@@ -1,5 +1,7 @@
-.omo
-.DS_Store
-/build/
+build/
+.omo/
+*.bo
 *.ba
-generated/
+*.vcd
+__pycache__/
+*.pyc
