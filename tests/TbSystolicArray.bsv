@@ -1,175 +1,135 @@
 package TbSystolicArray;
 
 import Vector::*;
+
+import TestVectorUtils::*;
+
+import Types::*;
+import InputSkew::*;
 import SystolicArray::*;
-import NumericFormat::*;
 
-typedef NumericElement#(INT, 4) Element;
-typedef Vector#(4, Vector#(4, Element)) ElementMatrix;
 
-function Element intElement(Integer value);
-    Int#(4) signedValue = fromInteger(value);
-    return numericElement(pack(signedValue));
-endfunction
+// A=[[5,6],[7,8]], B=[[1,2],[3,4]]이면 C=[[23,34],[31,46]]이다.
+// Column마다 result arrival가 다르므로 column별 수신 순서로 output row를 복원한다.
+typedef enum {
+    TbBeginWeightLoad,
+    TbLoadWeight0,
+    TbLoadWeight1,
+    TbClearPipeline,
+    TbRun,
+    TbCheck
+} TbState deriving (Bits, Eq, FShow);
 
-function ElementMatrix activationMatrix();
-    ElementMatrix x = replicate(replicate(intElement(0)));
+module mkTbSystolicArray(Empty);
+    InputSkewIfc#(2, 1, Int#(8), Int#(32)) skew <- mkInputSkew;
+    SystolicArrayIfc#(
+        2,
+        1,
+        Int#(8),
+        Int#(8),
+        Int#(16),
+        Int#(32)
+    ) array <- mkSystolicArray;
 
-    x[0][0] = intElement(1);
-    x[0][1] = intElement(2);
-    x[0][2] = intElement(3);
-    x[0][3] = intElement(4);
-    x[1][0] = intElement(-1);
-    x[1][2] = intElement(2);
-    x[1][3] = intElement(-3);
-    x[2][0] = intElement(7);
-    x[2][1] = intElement(-8);
-    x[2][2] = intElement(1);
-    x[3][0] = intElement(5);
-    x[3][1] = intElement(-6);
-    x[3][2] = intElement(7);
-    x[3][3] = intElement(-8);
+    Reg#(TbState) state <- mkReg(TbBeginWeightLoad);
+    Reg#(BoundedCount#(2)) fedRows <- mkReg(0);
+    Vector#(2, Reg#(BoundedCount#(2))) receivedRows <-
+        replicateM(mkReg(0));
+    Vector#(2, Reg#(Int#(32))) firstRow <- replicateM(mkReg(0));
+    Vector#(2, Reg#(Int#(32))) secondRow <- replicateM(mkReg(0));
+    Reg#(UInt#(8)) watchdog <- mkReg(0);
 
-    return x;
-endfunction
-
-function ElementMatrix weightMatrix();
-    ElementMatrix weights = replicate(replicate(intElement(0)));
-
-    weights[0][0] = intElement(1);
-    weights[0][1] = intElement(-2);
-    weights[0][2] = intElement(3);
-    weights[0][3] = intElement(4);
-    weights[1][0] = intElement(5);
-    weights[1][1] = intElement(6);
-    weights[1][2] = intElement(-7);
-    weights[1][3] = intElement(-8);
-    weights[2][0] = intElement(-8);
-    weights[2][1] = intElement(7);
-    weights[2][2] = intElement(6);
-    weights[2][3] = intElement(-5);
-    weights[3][0] = intElement(5);
-    weights[3][1] = intElement(-6);
-    weights[3][2] = intElement(7);
-    weights[3][3] = intElement(-8);
-
-    return weights;
-endfunction
-
-function ElementMatrix goldenMatrix(ElementMatrix x, ElementMatrix weights);
-    ElementMatrix golden = replicate(replicate(intElement(0)));
-
-    for (Integer i = 0; i < 4; i = i + 1) begin
-        for (Integer j = 0; j < 4; j = j + 1) begin
-            Int#(4) sum = 0;
-
-            for (Integer k = 0; k < 4; k = k + 1) begin
-                Int#(4) xValue = unpack(numericBits(x[i][k]));
-                Int#(4) weight = unpack(numericBits(weights[k][j]));
-                sum = sum + xValue * weight;
-            end
-
-            golden[i][j] = numericElement(pack(sum));
-        end
-    end
-
-    return golden;
-endfunction
-
-module mkTb(Empty);
-    SystolicArray#(4, INT, 4) dut <- mkSystolicArray;
-
-    ElementMatrix activations = activationMatrix();
-    ElementMatrix weights = weightMatrix();
-    ElementMatrix golden = goldenMatrix(activations, weights);
-
-    Reg#(Bool) weightsLoaded <- mkReg(False);
-    Reg#(UInt#(4)) streamCycle <- mkReg(0);
-    Vector#(4, Reg#(UInt#(3))) outputRows <- replicateM(mkReg(0));
-
-    rule preloadWeights (!weightsLoaded);
-        dut.preloadWeights(weights);
-        weightsLoaded <= True;
-    endrule
-
-    rule runArray (weightsLoaded);
-        Vector#(4, Maybe#(Element)) xLeft = replicate(tagged Invalid);
-        Vector#(4, Bool) psumTopValid = replicate(False);
-
-        // x[i][k]는 i+k cycle에 PE row k로 들어간다.
-        // C[i][j]의 초기 psum은 i+j cycle에 column j로 들어간다.
-        for (Integer k = 0; k < 4; k = k + 1) begin
-            if (streamCycle >= fromInteger(k)
-                    && streamCycle < fromInteger(k + 4)) begin
-                UInt#(2) inputRow = truncate(streamCycle - fromInteger(k));
-                xLeft[k] = tagged Valid activations[inputRow][k];
-            end
-        end
-
-        for (Integer j = 0; j < 4; j = j + 1) begin
-            psumTopValid[j] = streamCycle >= fromInteger(j)
-                && streamCycle < fromInteger(j + 4);
-        end
-
-        dut.step(xLeft, psumTopValid);
-        streamCycle <= streamCycle + 1;
-
-        Vector#(4, Bool) valids = dut.outValid;
-        Vector#(4, Element) results = dut.result;
-        Bool allDone = True;
-        Bool mismatch = False;
-
-        // 각 column은 row 순서대로 출력하지만 column 간 cycle skew는 유지된다.
-        for (Integer col = 0; col < 4; col = col + 1) begin
-            UInt#(3) nextRow = outputRows[col];
-
-            if (valids[col]) begin
-                if (outputRows[col] >= 4) begin
-                    $display("FAIL: extra output col=%0d value=%0d", col, results[col]);
-                    mismatch = True;
-                end
-                else begin
-                    UInt#(2) row = truncate(outputRows[col]);
-                    Element expected = golden[row][col];
-                    Int#(4) expectedValue = unpack(numericBits(expected));
-                    Int#(4) actualValue = unpack(numericBits(results[col]));
-
-                    if (results[col] != expected) begin
-                        $display(
-                            "FAIL: row=%0d col=%0d expected=%0d actual=%0d",
-                            row, col, expectedValue, actualValue
-                        );
-                        mismatch = True;
-                    end
-                    else begin
-                        $display(
-                            "PASS: row=%0d col=%0d value=%0d",
-                            row, col, actualValue
-                        );
-                    end
-
-                    outputRows[col] <= outputRows[col] + 1;
-                    nextRow = outputRows[col] + 1;
-                end
-            end
-
-            allDone = allDone && nextRow == 4;
-        end
-
-        if (mismatch) begin
-            $display("WS INT4 MATMUL: FAIL");
+    rule watch;
+        watchdog <= watchdog + 1;
+        if (watchdog == 200) begin
+            $display("SYSTOLIC ARRAY: FAIL (timeout)");
             $finish(1);
         end
-        else if (allDone) begin
-            $display("WS INT4 MATMUL: PASS");
+    endrule
+
+    rule beginWeightLoad (state == TbBeginWeightLoad);
+        array.beginWeightLoad;
+        state <= TbLoadWeight0;
+    endrule
+
+    rule loadWeight0 (state == TbLoadWeight0);
+        array.loadWeightRow(0, vector2(1, 2));
+        state <= TbLoadWeight1;
+    endrule
+
+    rule loadWeight1 (state == TbLoadWeight1);
+        array.loadWeightRow(1, vector2(3, 4));
+        state <= TbClearPipeline;
+    endrule
+
+    rule clearPipeline (state == TbClearPipeline && array.weightsReady);
+        skew.clear;
+        array.clearPipeline;
+        fedRows <= 0;
+        state <= TbRun;
+    endrule
+
+    rule runArray (state == TbRun);
+        Vector#(2, Maybe#(Int#(32))) outputs = array.partialSums;
+        Bool completeAfterThisCycle = True;
+
+        for (Integer column = 0; column < 2; column = column + 1) begin
+            BoundedCount#(2) nextCount = receivedRows[column];
+
+            if (isValid(outputs[column])) begin
+                Int#(32) value = fromMaybe(0, outputs[column]);
+
+                if (receivedRows[column] == 0) begin
+                    firstRow[column] <= value;
+                end
+                else if (receivedRows[column] == 1) begin
+                    secondRow[column] <= value;
+                end
+
+                nextCount = receivedRows[column] + 1;
+                receivedRows[column] <= nextCount;
+            end
+
+            completeAfterThisCycle =
+                completeAfterThisCycle && nextCount == 2;
+        end
+
+        Maybe#(Vector#(2, Int#(8))) logicalRow = tagged Invalid;
+        if (fedRows == 0) begin
+            logicalRow = tagged Valid vector2(5, 6);
+            fedRows <= 1;
+        end
+        else if (fedRows == 1) begin
+            logicalRow = tagged Valid vector2(7, 8);
+            fedRows <= 2;
+        end
+
+        let skewed <- skew.step(logicalRow);
+        array.step(skewed.activations, skewed.partials);
+
+        if (completeAfterThisCycle) begin
+            state <= TbCheck;
+        end
+    endrule
+
+    rule checkResult (state == TbCheck);
+        Bool passed = firstRow[0] == 23
+            && firstRow[1] == 34
+            && secondRow[0] == 31
+            && secondRow[1] == 46;
+
+        if (!passed) begin
+            $display(
+                "SYSTOLIC ARRAY: FAIL row0=(%0d,%0d) row1=(%0d,%0d)",
+                firstRow[0], firstRow[1], secondRow[0], secondRow[1]
+            );
+            $finish(1);
+        end
+        else begin
+            $display("SYSTOLIC ARRAY: PASS");
             $finish(0);
         end
-        else if (streamCycle == 15) begin
-            $display("WS INT4 MATMUL: FAIL (timeout)");
-            $finish(1);
-        end
     endrule
-
 endmodule
 
 endpackage
