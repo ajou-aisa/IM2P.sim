@@ -14,7 +14,9 @@ BUILD_DIR := build
 BSC_PATH  := +:src/common:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
 BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
              -info-dir $(BUILD_DIR)/info
-BSC_EXTRA_FLAGS ?=
+# FP16 elaboration needs more unfolding steps and stack than BSC defaults.
+BSC_EXTRA_FLAGS ?= -steps 4000000 -steps-warn-interval 1000000 \
+                   -steps-max-intervals 20 +RTS -K256M -RTS
 BSC_COMMON := -p $(BSC_PATH) $(BSC_DIRS) -keep-fires -show-schedule \
               $(BSC_EXTRA_FLAGS)
 
@@ -31,7 +33,9 @@ BSV_TEST_TOPS := \
 	mkTbExecuteController \
 	mkTbIM2PCore \
 	mkTbIM2PCoreGrouped \
-	mkTbFloatCore
+	mkTbFloatCore \
+	mkTbSynthInt8x16 \
+	mkTbSynthInt8x32
 
 define run_bluesim
 	log="$(BUILD_DIR)/info/$$package.bluesim.log"; \
