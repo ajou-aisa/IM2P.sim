@@ -132,7 +132,7 @@ impl Im2pSimulator {
         self.wait_weights_ready()?;
 
         let scale_start = self.cycles();
-        self.configure_k_quant(request.block_size, request.total_k, block_count)?;
+        self.configure_scaling(request.block_size, request.total_k, block_count)?;
         if let Some(scales) = request.scales {
             for block in 0..block_count {
                 let mut padded = vec![0_i8; self.dim];

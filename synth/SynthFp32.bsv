@@ -13,6 +13,7 @@ module mkSynthFp32(IM2PCoreIfc#(
     DefaultPeLatency,
     DefaultVectorLanes,
     DefaultAccumulatorRows,
+    DefaultScaleBlocks,
     Single,
     Single,
     Single,

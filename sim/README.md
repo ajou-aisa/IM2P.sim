@@ -25,7 +25,7 @@ host frequency is assumed.
 activation and weight data outside `valid_m`, `valid_n`, and `valid_k`, and
 reads only valid output columns. It does not implement whole-tensor tiling.
 
-## K-quant weight scales
+## Block-wise weight scales
 
 For a quantized weight matrix `W: K x J`, scales belong to a K-group and a
 weight column:
@@ -53,8 +53,8 @@ block_size: 32,
 ```
 
 Scale length is `ceil(total_k / block_size) * valid_n`. Rust pads every table
-row from `valid_n` to `DIM` and preloads all rows into the RTL wrapper. Rust
-does not select the current block's scale vector.
+row from `valid_n` to `DIM` and preloads all rows into the single RTL
+`IM2PCore`. Rust does not select the current block's scale vector.
 
 At execution start, RTL computes `b = floor(k_start / block_size)`, rejects a
 hardware partial that crosses a block boundary, and latches `scale[b,:]`.
@@ -66,10 +66,13 @@ Accumulator then overwrites or adds the transformed contribution.
 Executions cannot overlap: the previous wavefront, VectorUnit work, and
 Accumulator commits must drain before the next start. Therefore the latched
 scale stays aligned with all staggered column outputs from that execution.
-Every hardware fragment in the same K-quant block reselects the same table
-row. Selection changes to `scale[b+1,:]` exactly at the next block boundary.
+Every hardware fragment in the same block reselects the same table row. Selection changes to `scale[b+1,:]` exactly at the next block boundary.
 
 `VectorBypass` accepts `scales: None`; `VectorMultiply` and `VectorShift`
 require the complete scale table. The synthesized table supports at most
-eight K-quant blocks per request. Any hardware partial spanning two blocks is
+eight scale blocks per request. Any hardware partial spanning two blocks is
 rejected.
+
+Bypass, multiply, and shift all run on the same `IM2PCore` instance; only
+`TileRequest.vector_op` changes. A stale scale table has no numerical effect on
+a later `VectorBypass` execution.

@@ -154,10 +154,10 @@ accumulate=True
 
 현재 storage backend는 column별 `mkRegFileFull`이다.
 
-## 7. K-quant scale selection and alignment
+## 7. Block scale selection and alignment
 
-INT synthesis boundary는 block-major `scale[b,j]` table과 `block_size`,
-`total_k`를 먼저 받는다. 각 hardware execution의 `k_start`에서:
+`IM2PCore`는 block-major `scale[b,j]` table과 `block_size`, `total_k`를
+runtime control state로 먼저 받는다. 각 hardware execution의 `k_start`에서:
 
 ```text
 b = floor(k_start / block_size)
@@ -200,6 +200,6 @@ accRows >= arrayDim
 ```
 
 작은 K/N은 0-padding하며, 큰 M/K/N은 상위 model이 여러 execution으로
-타일링한다. INT wrapper는 K progress와 block boundary에 따른 scale table
-selection만 담당한다. Core는 DMA, scratchpad, global scheduler를 모델링하지
-않는다.
+타일링한다. K progress와 block boundary에 따른 scale table selection은
+`IM2PCore`의 runtime control이며 별도 core나 wrapper가 아니다. Core는 DMA,
+scratchpad, global scheduler를 모델링하지 않는다.

@@ -70,7 +70,7 @@ impl Im2pSimulator {
         })
     }
 
-    pub(super) fn configure_k_quant(
+    pub(super) fn configure_scaling(
         &mut self,
         block_size: usize,
         total_k: usize,
@@ -78,14 +78,14 @@ impl Im2pSimulator {
     ) -> Result<(), Error> {
         // SAFETY: validated metadata fits C ABI widths.
         let ok = unsafe {
-            ffi::im2p_configure_k_quant(
+            ffi::im2p_configure_scaling(
                 self.handle.as_ptr(),
                 block_size as u32,
                 total_k as u32,
                 block_count as u32,
             )
         };
-        self.require_ready("configure_k_quant", ok)
+        self.require_ready("configure_scaling", ok)
     }
 
     pub(super) fn load_scale_block(&mut self, scales: &[i8]) -> Result<(), Error> {

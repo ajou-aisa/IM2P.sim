@@ -13,7 +13,7 @@ unsafe extern "C" {
     pub fn im2p_idle(handle: *mut c_void) -> i32;
     pub fn im2p_begin_weight_load(handle: *mut c_void) -> i32;
     pub fn im2p_load_weight_row(handle: *mut c_void, row: u32, values: *const i8) -> i32;
-    pub fn im2p_configure_k_quant(
+    pub fn im2p_configure_scaling(
         handle: *mut c_void,
         block_size: u32,
         total_k: u32,

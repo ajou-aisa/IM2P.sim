@@ -17,19 +17,12 @@ function VectorOp operationFor(UInt#(2) executionIndex);
     endcase
 endfunction
 
-function Maybe#(Vector#(2, Int#(8))) scaleFor(
-    UInt#(2) executionIndex,
-    UInt#(1) row
-);
-    if (executionIndex == 0) begin
-        return tagged Invalid;
-    end
-    else if (row == 0) begin
-        return tagged Valid vector2(2, 3);
-    end
-    else begin
-        return tagged Valid vector2(1, -1);
-    end
+// Scale은 execution 단위 column vector이며 같은 execution의 모든 output row가
+// 공유한다.
+function Vector#(2, Int#(8)) scaleFor(UInt#(2) executionIndex);
+    return executionIndex == 1
+        ? vector2(2, 3)
+        : vector2(1, -1);
 endfunction
 
 function Vector#(2, Int#(32)) expectedRow(
@@ -42,20 +35,22 @@ function Vector#(2, Int#(32)) expectedRow(
             : vector2(7, 8);
         1: return row == 0
             ? vector2(15, 24)
-            : vector2(14, 0);
+            : vector2(21, 32);
         default: return row == 0
-            ? vector2(35, 72)
-            : vector2(28, 4);
+            ? vector2(25, 27)
+            : vector2(35, 36);
     endcase
 endfunction
 
-// 하나의 INT Core에서 Bypass/Multiply/Shift를 연속 실행한다.
+// 하나의 IM2PCore instance에서 Bypass/Multiply/Shift를 연속 실행한다.
 // vectorLanes=1로 두어 하나의 2-column array result가 두 group으로 처리될 때
 // destination row metadata가 유지되는지도 함께 검증한다.
 typedef enum {
     TbBeginWeights,
     TbLoadWeight0,
     TbLoadWeight1,
+    TbConfigure,
+    TbLoadScale,
     TbStart,
     TbFeedRow0,
     TbFeedRow1,
@@ -69,6 +64,7 @@ module mkTbIM2PCore(Empty);
         1,
         1,
         8,
+        2,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -101,6 +97,25 @@ module mkTbIM2PCore(Empty);
 
     rule loadWeight1 (state == TbLoadWeight1);
         core.loadWeightRow(1, vector2(0, 1));
+        state <= TbConfigure;
+    endrule
+
+    // Bypass execution은 scaling configuration 없이 시작한다.
+    rule skipConfigure (state == TbConfigure && executionIndex == 0);
+        state <= TbStart;
+    endrule
+
+    rule configureScaling (
+        state == TbConfigure
+        && executionIndex != 0
+        && core.idle
+    );
+        core.configureScaling(2, 2, 1);
+        state <= TbLoadScale;
+    endrule
+
+    rule loadScale (state == TbLoadScale && !core.scaleLoadReady);
+        core.loadScaleBlock(scaleFor(executionIndex));
         state <= TbStart;
     endrule
 
@@ -110,23 +125,17 @@ module mkTbIM2PCore(Empty);
             rowCount: 2,
             accumulate: executionIndex != 0,
             vectorOp: operationFor(executionIndex)
-        });
+        }, 0, 2);
         state <= TbFeedRow0;
     endrule
 
     rule feedRow0 (state == TbFeedRow0 && core.activationReady);
-        core.putActivationRow(
-            vector2(5, 6),
-            scaleFor(executionIndex, 0)
-        );
+        core.putActivationRow(vector2(5, 6));
         state <= TbFeedRow1;
     endrule
 
     rule feedRow1 (state == TbFeedRow1 && core.activationReady);
-        core.putActivationRow(
-            vector2(7, 8),
-            scaleFor(executionIndex, 1)
-        );
+        core.putActivationRow(vector2(7, 8));
         state <= TbWait;
     endrule
 
@@ -157,7 +166,7 @@ module mkTbIM2PCore(Empty);
         else begin
             core.acknowledgeExecution;
             executionIndex <= executionIndex + 1;
-            state <= TbStart;
+            state <= TbConfigure;
         end
     endrule
 endmodule

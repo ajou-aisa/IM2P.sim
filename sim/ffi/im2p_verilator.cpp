@@ -204,7 +204,7 @@ extern "C" int im2p_load_weight_row(
     return 1;
 }
 
-extern "C" int im2p_configure_k_quant(
+extern "C" int im2p_configure_scaling(
     im2p_handle_t handle,
     uint32_t block_size,
     uint32_t total_k,
@@ -212,17 +212,17 @@ extern "C" int im2p_configure_k_quant(
 ) {
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    if (!simulator->top->RDY_configureKQuant
+    if (!simulator->top->RDY_configureScaling
         || block_size == 0
         || total_k == 0
         || block_count == 0
         || block_count > 8) {
         return 0;
     }
-    simulator->top->configureKQuant_blockSize = block_size;
-    simulator->top->configureKQuant_totalK = total_k;
-    simulator->top->configureKQuant_blockCount = block_count;
-    pulse(simulator, simulator->top->EN_configureKQuant);
+    simulator->top->configureScaling_blockSize = block_size;
+    simulator->top->configureScaling_totalK = total_k;
+    simulator->top->configureScaling_blockCount = block_count;
+    pulse(simulator, simulator->top->EN_configureScaling);
     return 1;
 }
 

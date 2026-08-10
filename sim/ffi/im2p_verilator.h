@@ -23,7 +23,7 @@ int im2p_idle(im2p_handle_t handle);
 
 int im2p_begin_weight_load(im2p_handle_t handle);
 int im2p_load_weight_row(im2p_handle_t handle, uint32_t row, const int8_t *values);
-int im2p_configure_k_quant(
+int im2p_configure_scaling(
     im2p_handle_t handle,
     uint32_t block_size,
     uint32_t total_k,

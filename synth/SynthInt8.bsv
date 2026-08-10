@@ -1,11 +1,11 @@
 package SynthInt8;
 
 import Config::*;
-import KQuantIM2PCore::*;
+import IM2PCore::*;
 
 // INT8/INT32 representative synthesis top. Bypass/Multiply/Shift는 재합성 없이
 // startExecution의 runtime VectorOp으로 선택한다.
-module mkSynthInt8(KQuantIM2PCoreIfc#(
+module mkSynthInt8(IM2PCoreIfc#(
     DefaultArrayDim,
     DefaultPeLatency,
     DefaultVectorLanes,
@@ -17,7 +17,7 @@ module mkSynthInt8(KQuantIM2PCoreIfc#(
     Int#(DefaultAccumulatorWidth),
     Int#(DefaultScaleWidth)
 ));
-    let core <- mkKQuantIM2PCore;
+    let core <- mkIM2PCore;
     return core;
 endmodule
 

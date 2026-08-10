@@ -29,7 +29,7 @@ typedef 32 DefaultAccumulatorWidth;
 typedef 8  DefaultScaleWidth;
 
 typedef 256 DefaultAccumulatorRows;
-// INT wrapper가 한 logical K range에서 preload할 수 있는 최대 scale block 수다.
+// Core가 한 logical K range에서 preload할 수 있는 최대 scale block 수다.
 typedef 8 DefaultScaleBlocks;
 
 endpackage

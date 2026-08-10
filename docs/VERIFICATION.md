@@ -99,7 +99,7 @@ BSC, Verilator, Yosys는 이 환경에 설치되어 있지 않아 직접 실행�
 
 - FLOAT specialization 후 scale multiplier/shifter 제거 여부
 - FP `multFP`/`addFP` 조합 critical path
-- K-quant scale table RegFile과 runtime block division cost
+- Core 내부 scale table RegFile과 runtime block division cost
 - `mkRegFileFull`의 실제 inference 결과
 - `vectorLanes < arrayDim` group mux와 throughput
 - dynamic assertions가 synthesis flow에서 처리되는 방식

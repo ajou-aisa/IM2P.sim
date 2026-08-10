@@ -122,15 +122,15 @@ accumulate=True
 
 Column별 `RegFile`은 `Accumulator` 내부 backend다. 별도 범용 `BankedVectorMem` package는 두지 않는다. `accumulate=True`를 사용하기 전에 대상 accumulator row는 유효한 값으로 초기화되어 있어야 한다.
 
-### Block은 하드웨어 primitive가 아님
+### Block은 별도 core가 아니라 runtime control
 
-Core와 array에는 `blockK`, block index, block scheduler가 없다.
+Array와 VectorUnit, Accumulator에는 block index나 block scheduler가 없다. Block metadata는 `IM2PCore`의 execution control state다.
 
 - 일반 GEMM execution: `VectorBypass`
 - coefficient scaling execution: `VectorMultiply`
 - power-of-two scaling execution: `VectorShift`
 
-Block-scale workload는 scale이 필요한 execution에만 operation과 scale vector를 공급한다. 여러 array execution에 걸친 partial을 VectorUnit 앞에서 재결합하는 구조는 없다. 따라서 하나의 scale을 전체 K 범위에 한 번만 적용해야 하는 경우에는 상위 scheduling이 해당 K 범위와 execution 경계를 맞춰야 한다.
+Block-scale workload는 scale이 필요한 execution에만 operation과 scale table을 공급한다. 여러 array execution에 걸친 partial을 VectorUnit 앞에서 재결합하는 구조는 없다. 따라서 하나의 scale을 전체 K 범위에 한 번만 적용해야 하는 경우에는 상위 scheduling이 해당 K 범위와 execution 경계를 맞춰야 한다.
 
 ### Partial sum은 도착 즉시 처리
 
@@ -144,21 +144,24 @@ partialSums[column]
 
 작은 result FIFO는 backpressure를 흡수할 뿐이며 partial 재결합 storage가 아니다. FIFO가 가득 차면 InputSkew와 모든 PE의 `step`을 함께 정지해 wavefront의 상대 timing을 보존한다.
 
-### Scale sideband
+### Scale 선택은 Core runtime control
 
-Multiply/Shift execution에서는 activation logical row와 대응하는 scale vector를 함께 공급한다.
-
-```bsv
-putActivationRow(activations, tagged Valid scales)
-```
-
-Bypass에서는 scale이 필요 없다.
+Multiply/Shift execution에서는 block-major scale table과 block metadata를 먼저 설정한다.
 
 ```bsv
-putActivationRow(activations, tagged Invalid)
+configureScaling(blockSize, totalK, blockCount)
+loadScaleBlock(columnScales)
+startExecution(command, kStart, kCount)
 ```
 
-Core의 `scaleSidebandRows`는 staggered column output에 올바른 logical row의 scale을 붙이는 execution-local alignment state다. Architectural scale SRAM이나 block metadata cache를 모델링한 것이 아니다.
+Core는 `b = kStart / blockSize`로 scale row를 선택하고 execution drain이 끝날 때까지 고정한다. Bypass에서는 이 configuration이 필요 없고, 남아 있는 table 값도 결과에 영향을 주지 않는다.
+
+```bsv
+startExecution(bypassCommand, kStart, kCount)
+putActivationRow(activations)
+```
+
+`scaleTable`과 `executionScalesReg`는 architectural scale SRAM이 아니라 현재 execution을 위한 control state다.
 
 ## Source tree
 

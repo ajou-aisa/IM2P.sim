@@ -5,7 +5,7 @@ import Vector::*;
 import Types::*;
 import ExecuteCmd::*;
 import Config::*;
-import KQuantIM2PCore::*;
+import IM2PCore::*;
 import SynthInt8x16::*;
 
 // Identity weights make each output column reproduce the corresponding
@@ -65,9 +65,9 @@ typedef enum {
 } TbState deriving (Bits, Eq, FShow);
 
 // Exercise the synthesized 16x16 INT8 configuration through the public
-// block-aware INT interface: load weights, run two rows, then read results.
+// block-aware core interface: load weights, run two rows, then read results.
 module mkTbSynthInt8x16(Empty);
-    KQuantIM2PCoreIfc#(
+    IM2PCoreIfc#(
         16,
         1,
         16,
@@ -112,7 +112,7 @@ module mkTbSynthInt8x16(Empty);
     endrule
 
     rule configure (state == Configure && dut.weightsReady && dut.idle);
-        dut.configureKQuant(16, 16, 1);
+        dut.configureScaling(16, 16, 1);
         state <= Start;
     endrule
 

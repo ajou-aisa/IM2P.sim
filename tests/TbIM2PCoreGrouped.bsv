@@ -22,13 +22,16 @@ function Vector#(4, Int#(8)) identityWeightRow(UInt#(2) row);
 endfunction
 
 // arrayDim=4, vectorLanes=2에서 한 array result가 두 vector group으로 처리될 때
-// row routing, base address, scale alignment, completion tracking을 함께 검증한다.
+// row routing, base address, execution scale 공유, completion tracking을 함께
+// 검증한다.
 typedef enum {
     TbBeginWeights,
     TbLoadWeight0,
     TbLoadWeight1,
     TbLoadWeight2,
     TbLoadWeight3,
+    TbConfigure,
+    TbLoadScale,
     TbStart,
     TbFeed0,
     TbFeed1,
@@ -42,6 +45,7 @@ module mkTbIM2PCoreGrouped(Empty);
         1,
         2,
         8,
+        2,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -84,6 +88,16 @@ module mkTbIM2PCoreGrouped(Empty);
 
     rule loadWeight3 (state == TbLoadWeight3);
         core.loadWeightRow(3, identityWeightRow(3));
+        state <= TbConfigure;
+    endrule
+
+    rule configureScaling (state == TbConfigure && core.idle);
+        core.configureScaling(4, 4, 1);
+        state <= TbLoadScale;
+    endrule
+
+    rule loadScale (state == TbLoadScale && !core.scaleLoadReady);
+        core.loadScaleBlock(vector4(2, 3, 4, 5));
         state <= TbStart;
     endrule
 
@@ -93,23 +107,17 @@ module mkTbIM2PCoreGrouped(Empty);
             rowCount: 2,
             accumulate: False,
             vectorOp: VectorMultiply
-        });
+        }, 0, 4);
         state <= TbFeed0;
     endrule
 
     rule feed0 (state == TbFeed0 && core.activationReady);
-        core.putActivationRow(
-            vector4(1, 2, 3, 4),
-            tagged Valid vector4(2, 3, 4, 5)
-        );
+        core.putActivationRow(vector4(1, 2, 3, 4));
         state <= TbFeed1;
     endrule
 
     rule feed1 (state == TbFeed1 && core.activationReady);
-        core.putActivationRow(
-            vector4(5, 6, 7, 8),
-            tagged Valid vector4(-1, 1, 2, -2)
-        );
+        core.putActivationRow(vector4(5, 6, 7, 8));
         state <= TbWait;
     endrule
 
@@ -122,7 +130,7 @@ module mkTbIM2PCoreGrouped(Empty);
         Vector#(4, Int#(32)) row3 = core.readAccumulatorRow(3);
 
         Bool passed = observedRow2 == vector4(2, 6, 12, 20)
-            && row3 == vector4(-5, 6, 14, -16);
+            && row3 == vector4(10, 18, 28, 40);
 
         if (!passed) begin
             $display(

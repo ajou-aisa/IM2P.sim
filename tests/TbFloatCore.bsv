@@ -23,6 +23,7 @@ module mkTbFloatCore(Empty);
         1,
         1,
         2,
+        2,
         Half,
         Half,
         Half,
@@ -62,12 +63,12 @@ module mkTbFloatCore(Empty);
             rowCount: 1,
             accumulate: True,
             vectorOp: VectorBypass
-        });
+        }, 0, 1);
         state <= TbFeed;
     endrule
 
     rule feedActivation (state == TbFeed && core.activationReady);
-        core.putActivationRow(replicate(fromInteger(2)), tagged Invalid);
+        core.putActivationRow(replicate(fromInteger(2)));
         state <= TbCheck;
     endrule
 

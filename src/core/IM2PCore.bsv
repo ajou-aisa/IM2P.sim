@@ -1,6 +1,7 @@
 package IM2PCore;
 
 import Assert::*;
+import RegFile::*;
 import Vector::*;
 
 import Types::*;
@@ -11,18 +12,36 @@ import VectorUnit::*;
 import Accumulator::*;
 import Scale::*;
 
-// SystolicEngine -> VectorUnit -> Accumulator를 연결하는 단일 top-level Core다.
+// InputSkew -> SystolicArray -> VectorUnit -> Accumulator를 연결하는 단일
+// architectural Core다. Bypass/Multiply/Shift는 별도 core가 아니라 runtime
+// VectorOp으로 선택하며, block metadata와 scale table도 이 Core의 execution
+// control state다.
 interface IM2PCoreIfc#(
     numeric type arrayDim,
     numeric type peLatency,
     numeric type vectorLanes,
     numeric type accRows,
+    numeric type scaleBlocks,
     type input_t,
     type weight_t,
     type product_t,
     type acc_t,
     type scale_t
 );
+    // Scaled execution이 사용할 block size와 global K extent를 설정한다.
+    // VectorBypass만 실행하는 경우에는 호출하지 않아도 된다.
+    method Action configureScaling(
+        UInt#(32) blockSize,
+        UInt#(32) totalK,
+        BoundedCount#(scaleBlocks) blockCount
+    );
+
+    // scale[b,:] 한 row를 block 순서대로 적재한다.
+    method Action loadScaleBlock(
+        Vector#(arrayDim, scale_t) columnScales
+    );
+    method Bool scaleLoadReady;
+
     method Action beginWeightLoad;
     method Action loadWeightRow(
         BoundedIndex#(arrayDim) row,
@@ -30,16 +49,16 @@ interface IM2PCoreIfc#(
     );
     method Bool weightsReady;
 
-    method Action startExecution(ExecuteCmd#(arrayDim, accRows) command);
+    // kStart/kCount는 이번 hardware partial의 global K 위치다. Core가 이 값에서
+    // scale block을 선택하며, Bypass에서는 scale 선택이 일어나지 않는다.
+    method Action startExecution(
+        ExecuteCmd#(arrayDim, accRows) command,
+        UInt#(32) kStart,
+        BoundedCount#(arrayDim) kCount
+    );
     method Bool activationReady;
-
-    // Multiply/Shift execution은 현재 K-group의 column-wise weight scale
-    // vector를 각 activation row의 sideband로 Valid하게 공급한다. 동일
-    // K-group의 모든 output row가 같은 column scale을 공유할 수 있으며,
-    // Bypass에서는 Invalid가 가능하다.
     method Action putActivationRow(
-        Vector#(arrayDim, input_t) activations,
-        Maybe#(Vector#(arrayDim, scale_t)) scales
+        Vector#(arrayDim, input_t) activations
     );
 
     method Bool idle;
@@ -62,6 +81,7 @@ module mkIM2PCore(IM2PCoreIfc#(
     peLatency,
     vectorLanes,
     accRows,
+    scaleBlocks,
     input_t,
     weight_t,
     product_t,
@@ -75,6 +95,7 @@ module mkIM2PCore(IM2PCoreIfc#(
     Add#(1, arrayDimMinusOne, arrayDim),
     Add#(1, peLatencyMinusOne, peLatency),
     Add#(1, accRowsMinusOne, accRows),
+    Add#(1, scaleBlocksMinusOne, scaleBlocks),
 
     // 한 execution의 최대 arrayDim개 output row가 accumulator에 들어갈 수 있다.
     Add#(arrayDim, freeAccumulatorRows, accRows),
@@ -92,6 +113,30 @@ module mkIM2PCore(IM2PCoreIfc#(
         boundedCountPadding,
         TLog#(arrayDim),
         TLog#(TAdd#(arrayDim, 1))
+    ),
+
+    // 적재된 block 수를 scale table index로 truncate하기 위한 폭 관계다.
+    Add#(
+        scaleCountPadding,
+        TLog#(scaleBlocks),
+        TLog#(TAdd#(scaleBlocks, 1))
+    ),
+
+    // K/block 계산은 32-bit global position 위에서 수행한다.
+    Add#(
+        TLog#(TAdd#(arrayDim, 1)),
+        kCountToPositionPadding,
+        32
+    ),
+    Add#(
+        TLog#(TAdd#(scaleBlocks, 1)),
+        scaleCountToPositionPadding,
+        32
+    ),
+    Add#(
+        TLog#(scaleBlocks),
+        scaleIndexToPositionPadding,
+        32
     ),
 
     Bits#(input_t, inputBits),
@@ -132,18 +177,29 @@ module mkIM2PCore(IM2PCoreIfc#(
         Vector#(arrayDim, RowAddress#(accRows))
     ) destinationRowAddressesReg <- mkRegU;
 
-    // Scale은 architectural memory가 아니라 execution 동안 output row와 현재
-    // K-group의 column-wise weight scale을 정렬하기 위한 sideband state다.
-    Vector#(
-        arrayDim,
-        Reg#(Vector#(arrayDim, scale_t))
-    ) scaleSidebandRows <- replicateM(mkRegU);
+    // scale[b,j] table이다. Architectural memory가 아니라 현재 scaled
+    // execution을 위한 control state다.
+    RegFile#(
+        BoundedIndex#(scaleBlocks),
+        Vector#(arrayDim, scale_t)
+    ) scaleTable <- mkRegFileFull;
 
-    // 지금까지 Core가 받은 activation/optional-scale row 수다.
+    Reg#(UInt#(32)) blockSizeReg <- mkReg(0);
+    Reg#(UInt#(32)) totalKReg <- mkReg(0);
+    Reg#(BoundedCount#(scaleBlocks)) blockCountReg <- mkReg(0);
+    Reg#(BoundedCount#(scaleBlocks)) loadedBlockCountReg <- mkReg(0);
+    Reg#(Bool) configurationValidReg <- mkReg(False);
+    Reg#(Bool) configurationConsumedReg <- mkReg(False);
+
+    // 이번 execution이 사용할 scale vector를 drain이 끝날 때까지 고정한다.
+    Reg#(Vector#(arrayDim, scale_t)) executionScalesReg <- mkRegU;
+    Reg#(Bool) executionUsesScaleReg <- mkReg(False);
+
+    // 지금까지 Core가 받은 activation row 수다.
     Reg#(BoundedCount#(arrayDim)) acceptedInputRowsReg <- mkReg(0);
 
-    // Complete column partial을 해당 row의 scale과 destination address에 붙여
-    // VectorUnit으로 보낸다.
+    // Complete column partial을 이번 execution의 scale과 destination address에
+    // 붙여 VectorUnit으로 보낸다.
     rule issueVectorRequest (engine.resultValid && vectorUnit.ready);
         SystolicResult#(arrayDim, acc_t) arrayResult = engine.result;
 
@@ -152,7 +208,11 @@ module mkIM2PCore(IM2PCoreIfc#(
             RowAddress#(accRows)
         ) destinationRowAddresses = newVector;
 
-        Vector#(arrayDim, scale_t) selectedScales = replicate(unpack(0));
+        // 같은 execution의 모든 output row는 선택된 K-block의 column scale을
+        // 공유한다.
+        Vector#(arrayDim, scale_t) selectedScales = executionUsesScaleReg
+            ? executionScalesReg
+            : replicate(unpack(0));
 
         for (Integer column = 0;
                 column < valueOf(arrayDim);
@@ -167,21 +227,6 @@ module mkIM2PCore(IM2PCoreIfc#(
             destinationRowAddresses[column] = arrayResult.valids[column]
                 ? commandReg.accumulatorBaseRow + extendedOffset
                 : commandReg.accumulatorBaseRow;
-
-            if (arrayResult.valids[column]
-                    && vectorUnit.scalingSupported
-                    && vectorOpUsesScale(commandReg.vectorOp)) begin
-                // scaleSidebandRows는 Vector of Reg interfaces다. Dynamic interface
-                // selection에 의존하지 않고 static decode로 해당 row를 선택한다.
-                for (Integer sidebandRow = 0;
-                        sidebandRow < valueOf(arrayDim);
-                        sidebandRow = sidebandRow + 1) begin
-                    if (rowOffset == fromInteger(sidebandRow)) begin
-                        selectedScales[column] =
-                            scaleSidebandRows[sidebandRow][column];
-                    end
-                end
-            end
         end
 
         destinationRowAddressesReg <= destinationRowAddresses;
@@ -213,6 +258,61 @@ module mkIM2PCore(IM2PCoreIfc#(
         vectorUnit.consume;
     endrule
 
+    // 새 scale table을 적재하기 전 또는 이전 configuration이 소비된 뒤에만
+    // metadata를 갱신한다.
+    method Action configureScaling(
+        UInt#(32) blockSize,
+        UInt#(32) totalK,
+        BoundedCount#(scaleBlocks) blockCount
+    ) if (
+        engine.idle
+        && vectorUnit.ready
+        && (
+            !configurationValidReg
+            || loadedBlockCountReg == blockCountReg
+            || configurationConsumedReg
+        )
+    );
+        UInt#(32) safeBlockSize = blockSize == 0 ? 1 : blockSize;
+        UInt#(32) safeTotalK = totalK == 0 ? 1 : totalK;
+        UInt#(32) expectedBlockCount =
+            ((safeTotalK - 1) / safeBlockSize) + 1;
+
+        dynamicAssert(blockSize > 0, "scaling block size must be positive");
+        dynamicAssert(totalK > 0, "scaling total K must be positive");
+        dynamicAssert(blockCount > 0, "scale table must not be empty");
+        dynamicAssert(
+            zeroExtend(blockCount) == expectedBlockCount,
+            "scale block count does not match total K / block size"
+        );
+
+        blockSizeReg <= blockSize;
+        totalKReg <= totalK;
+        blockCountReg <= blockCount;
+        loadedBlockCountReg <= 0;
+        configurationValidReg <= True;
+        configurationConsumedReg <= False;
+    endmethod
+
+    method Action loadScaleBlock(
+        Vector#(arrayDim, scale_t) columnScales
+    ) if (
+        engine.idle
+        && vectorUnit.ready
+        && configurationValidReg
+        && !configurationConsumedReg
+        && loadedBlockCountReg < blockCountReg
+    );
+        BoundedIndex#(scaleBlocks) blockIndex =
+            truncate(loadedBlockCountReg);
+        scaleTable.upd(blockIndex, columnScales);
+        loadedBlockCountReg <= loadedBlockCountReg + 1;
+    endmethod
+
+    method Bool scaleLoadReady =
+        configurationValidReg
+        && loadedBlockCountReg == blockCountReg;
+
     method Action beginWeightLoad if (engine.idle && vectorUnit.ready);
         engine.beginWeightLoad;
     endmethod
@@ -226,10 +326,11 @@ module mkIM2PCore(IM2PCoreIfc#(
 
     method Bool weightsReady = engine.weightsReady;
 
-    method Action startExecution(ExecuteCmd#(
-        arrayDim,
-        accRows
-    ) command) if (
+    method Action startExecution(
+        ExecuteCmd#(arrayDim, accRows) command,
+        UInt#(32) kStart,
+        BoundedCount#(arrayDim) kCount
+    ) if (
         engine.idle
         && vectorUnit.ready
         && engine.weightsReady
@@ -246,7 +347,57 @@ module mkIM2PCore(IM2PCoreIfc#(
                 || vectorUnit.scalingSupported,
             "selected numeric format supports only VectorBypass"
         );
+        dynamicAssert(kCount > 0, "execution K count must be positive");
 
+        Bool operationNeedsScale =
+            vectorUnit.scalingSupported
+            && vectorOpUsesScale(command.vectorOp);
+
+        UInt#(32) safeBlockSize =
+            blockSizeReg == 0 ? 1 : blockSizeReg;
+        UInt#(32) kCountWide = zeroExtend(kCount);
+        UInt#(32) remainingK =
+            kStart < totalKReg ? totalKReg - kStart : 0;
+        UInt#(32) blockOffset = kStart % safeBlockSize;
+        UInt#(32) blockRemaining = safeBlockSize - blockOffset;
+
+        // 현재 hardware partial이 속한 K-block을 선택한다. VectorUnit은 block
+        // metadata를 모르며 여기서 선택된 scale만 받는다.
+        UInt#(32) selectedBlockWide = kStart / safeBlockSize;
+
+        if (operationNeedsScale) begin
+            dynamicAssert(
+                configurationValidReg,
+                "scaled execution requires scaling metadata"
+            );
+            dynamicAssert(
+                loadedBlockCountReg == blockCountReg,
+                "scaled execution requires the complete scale table"
+            );
+            dynamicAssert(
+                kCountWide <= remainingK,
+                "execution K range exceeds total K"
+            );
+            dynamicAssert(
+                kCountWide <= blockRemaining,
+                "hardware K partial crosses a scale block boundary"
+            );
+            dynamicAssert(
+                selectedBlockWide < zeroExtend(blockCountReg),
+                "selected scale block is out of range"
+            );
+
+            BoundedIndex#(scaleBlocks) selectedBlock =
+                truncate(selectedBlockWide);
+            executionScalesReg <= scaleTable.sub(selectedBlock);
+        end
+        else begin
+            // Bypass는 남아 있는 scale table 값이 결과에 영향을 주지 않도록
+            // sideband를 중립값으로 되돌린다.
+            executionScalesReg <= replicate(unpack(0));
+        end
+
+        executionUsesScaleReg <= operationNeedsScale;
         commandReg <= command;
         acceptedInputRowsReg <= 0;
         engine.start(command.rowCount);
@@ -255,43 +406,12 @@ module mkIM2PCore(IM2PCoreIfc#(
     method Bool activationReady = engine.activationReady;
 
     method Action putActivationRow(
-        Vector#(arrayDim, input_t) activations,
-        Maybe#(Vector#(arrayDim, scale_t)) scales
+        Vector#(arrayDim, input_t) activations
     ) if (engine.activationReady);
         dynamicAssert(
             acceptedInputRowsReg < commandReg.rowCount,
             "more activation rows supplied than rowCount"
         );
-
-        Bool operationNeedsScale =
-            vectorUnit.scalingSupported
-            && vectorOpUsesScale(commandReg.vectorOp);
-
-        dynamicAssert(
-            !operationNeedsScale || isValid(scales),
-            "Multiply/Shift requires a column-wise K-group scale sideband"
-        );
-
-        // acceptedInputRowsReg는 증가 전에는 항상 실제 row index 범위에 있다.
-        BoundedIndex#(arrayDim) inputRowIndex =
-            truncate(acceptedInputRowsReg);
-
-        if (operationNeedsScale) begin
-            Vector#(arrayDim, scale_t) scaleRow = fromMaybe(
-                replicate(unpack(0)),
-                scales
-            );
-
-            // Vector of Reg interfaces는 static index로 write한다. inputRowIndex를
-            // one-hot decode해 해당 logical row register만 갱신한다.
-            for (Integer sidebandRow = 0;
-                    sidebandRow < valueOf(arrayDim);
-                    sidebandRow = sidebandRow + 1) begin
-                if (inputRowIndex == fromInteger(sidebandRow)) begin
-                    scaleSidebandRows[sidebandRow] <= scaleRow;
-                end
-            end
-        end
 
         acceptedInputRowsReg <= acceptedInputRowsReg + 1;
         engine.putActivationRow(activations);
@@ -303,6 +423,7 @@ module mkIM2PCore(IM2PCoreIfc#(
     method Action acknowledgeExecution if (
         engine.done && vectorUnit.ready
     );
+        configurationConsumedReg <= True;
         engine.acknowledge;
     endmethod
 

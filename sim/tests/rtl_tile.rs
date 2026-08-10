@@ -10,6 +10,8 @@ mod block_support;
 mod block_validation;
 #[path = "rtl_tile/k_groups.rs"]
 mod k_groups;
+#[path = "rtl_tile/runtime_modes.rs"]
+mod runtime_modes;
 #[path = "rtl_tile/scaling.rs"]
 mod scaling;
 #[path = "rtl_tile/support.rs"]
