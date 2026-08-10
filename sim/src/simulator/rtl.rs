@@ -14,7 +14,8 @@ pub(super) struct StartExecution {
 }
 
 impl Im2pSimulator {
-    pub(super) fn reset(&mut self) {
+    pub fn reset(&mut self) {
+        self.loaded_scaling = None;
         // SAFETY: handle is valid and owned by this simulator.
         unsafe { ffi::im2p_reset(self.handle.as_ptr()) };
     }

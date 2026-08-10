@@ -163,6 +163,16 @@ putActivationRow(activations)
 
 `scaleTable`과 `executionScalesReg`는 architectural scale SRAM이 아니라 현재 execution을 위한 control state다.
 
+완전히 적재된 scale table은 `acknowledgeExecution` 뒤에도 유효한 persistent
+execution configuration이다. 동일 table을 사용하는 여러 K fragment는
+configure/load를 반복하지 않는다. 각 `startExecution`만
+`kStart / blockSize`로 필요한 `scale[b,:]`를 다시 선택한다.
+
+새 `blockSize`, `totalK`, column layout, 또는 scale 값이 들어오면
+`configureScaling`이 replacement를 시작한다. 모든 block 적재가 끝나기
+전에는 scaled execution을 시작할 수 없다. Bypass는 기존 table을
+invalidate하거나 reload하지 않는다.
+
 ## Source tree
 
 ```text

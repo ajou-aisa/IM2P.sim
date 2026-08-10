@@ -189,7 +189,6 @@ module mkIM2PCore(IM2PCoreIfc#(
     Reg#(BoundedCount#(scaleBlocks)) blockCountReg <- mkReg(0);
     Reg#(BoundedCount#(scaleBlocks)) loadedBlockCountReg <- mkReg(0);
     Reg#(Bool) configurationValidReg <- mkReg(False);
-    Reg#(Bool) configurationConsumedReg <- mkReg(False);
 
     // 이번 execution이 사용할 scale vector를 drain이 끝날 때까지 고정한다.
     Reg#(Vector#(arrayDim, scale_t)) executionScalesReg <- mkRegU;
@@ -258,8 +257,8 @@ module mkIM2PCore(IM2PCoreIfc#(
         vectorUnit.consume;
     endrule
 
-    // 새 scale table을 적재하기 전 또는 이전 configuration이 소비된 뒤에만
-    // metadata를 갱신한다.
+    // 완성된 기존 table만 새 configuration으로 교체할 수 있다. configure 후
+    // 모든 block이 적재되기 전에는 scaled execution과 재configure를 막는다.
     method Action configureScaling(
         UInt#(32) blockSize,
         UInt#(32) totalK,
@@ -270,7 +269,6 @@ module mkIM2PCore(IM2PCoreIfc#(
         && (
             !configurationValidReg
             || loadedBlockCountReg == blockCountReg
-            || configurationConsumedReg
         )
     );
         UInt#(32) safeBlockSize = blockSize == 0 ? 1 : blockSize;
@@ -291,7 +289,6 @@ module mkIM2PCore(IM2PCoreIfc#(
         blockCountReg <= blockCount;
         loadedBlockCountReg <= 0;
         configurationValidReg <= True;
-        configurationConsumedReg <= False;
     endmethod
 
     method Action loadScaleBlock(
@@ -300,7 +297,6 @@ module mkIM2PCore(IM2PCoreIfc#(
         engine.idle
         && vectorUnit.ready
         && configurationValidReg
-        && !configurationConsumedReg
         && loadedBlockCountReg < blockCountReg
     );
         BoundedIndex#(scaleBlocks) blockIndex =
@@ -423,7 +419,6 @@ module mkIM2PCore(IM2PCoreIfc#(
     method Action acknowledgeExecution if (
         engine.done && vectorUnit.ready
     );
-        configurationConsumedReg <= True;
         engine.acknowledge;
     endmethod
 

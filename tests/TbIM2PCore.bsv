@@ -20,9 +20,7 @@ endfunction
 // Scale은 execution 단위 column vector이며 같은 execution의 모든 output row가
 // 공유한다.
 function Vector#(2, Int#(8)) scaleFor(UInt#(2) executionIndex);
-    return executionIndex == 1
-        ? vector2(2, 3)
-        : vector2(1, -1);
+    return vector2(2, 3);
 endfunction
 
 function Vector#(2, Int#(32)) expectedRow(
@@ -37,8 +35,8 @@ function Vector#(2, Int#(32)) expectedRow(
             ? vector2(15, 24)
             : vector2(21, 32);
         default: return row == 0
-            ? vector2(25, 27)
-            : vector2(35, 36);
+            ? vector2(35, 72)
+            : vector2(49, 96);
     endcase
 endfunction
 
@@ -105,9 +103,10 @@ module mkTbIM2PCore(Empty);
         state <= TbStart;
     endrule
 
+    // 하나의 table을 적재한 뒤 Multiply와 Shift execution에서 재사용한다.
     rule configureScaling (
         state == TbConfigure
-        && executionIndex != 0
+        && executionIndex == 1
         && core.idle
     );
         core.configureScaling(2, 2, 1);
@@ -116,6 +115,14 @@ module mkTbIM2PCore(Empty);
 
     rule loadScale (state == TbLoadScale && !core.scaleLoadReady);
         core.loadScaleBlock(scaleFor(executionIndex));
+        state <= TbStart;
+    endrule
+
+    rule reuseScaling (
+        state == TbConfigure
+        && executionIndex == 2
+        && core.idle
+    );
         state <= TbStart;
     endrule
 

@@ -172,6 +172,11 @@ Execution은 이전 column wavefront, VectorUnit, Accumulator commit이 모두 �
 scale을 사용한다. 동일 K-block의 여러 hardware fragment는 같은 table row를
 재선택하고, 정확한 block boundary에서 다음 row로 전환한다.
 
+완전히 적재된 table은 execution acknowledge 후에도 유효하다. 새
+configuration을 시작하면 loaded count를 0으로 되돌리고, 모든 block이
+적재될 때까지 scaled execution을 막는다. execution 완료와 configuration
+lifetime은 독립적이므로 single-use consumed state는 두지 않는다.
+
 SystolicArray partial은 VectorUnit으로 직접 전달된다. K-block partial을 먼저
 재결합하는 stage는 없다.
 

@@ -19,7 +19,9 @@ make sim-test-int8x32
 counts one rising RTL clock edge as one cycle. `TileStats` reports weight-load
 cycles, scale-load cycles, compute cycles, total cycles, useful MACs, useful
 operations, MACs per cycle, operations per cycle, and array utilization. No
-host frequency is assumed.
+host frequency is assumed. `total_cycles` is local to one `execute_tile`
+invocation. `scale_load_cycles` counts only cycles spent configuring and
+loading a new RTL scale table; it is zero when the loaded table is reused.
 
 `execute_tile` accepts one already-selected hardware tile. It zero-pads
 activation and weight data outside `valid_m`, `valid_n`, and `valid_k`, and
@@ -54,7 +56,11 @@ block_size: 32,
 
 Scale length is `ceil(total_k / block_size) * valid_n`. Rust pads every table
 row from `valid_n` to `DIM` and preloads all rows into the single RTL
-`IM2PCore`. Rust does not select the current block's scale vector.
+`IM2PCore` when the configuration changes. The table remains loaded across
+K-fragment executions. Rust reuses it only when `block_size`, `total_k`,
+`valid_n`, and every scale value match; `k_start`, `valid_k`, `accumulate`,
+and `vector_op` are not part of the table identity. Rust does not select the
+current block's scale vector.
 
 At execution start, RTL computes `b = floor(k_start / block_size)`, rejects a
 hardware partial that crosses a block boundary, and latches `scale[b,:]`.
@@ -66,7 +72,10 @@ Accumulator then overwrites or adds the transformed contribution.
 Executions cannot overlap: the previous wavefront, VectorUnit work, and
 Accumulator commits must drain before the next start. Therefore the latched
 scale stays aligned with all staggered column outputs from that execution.
-Every hardware fragment in the same block reselects the same table row. Selection changes to `scale[b+1,:]` exactly at the next block boundary.
+Every hardware fragment in the same block reselects the same table row from
+the persistent table. Selection changes to `scale[b+1,:]` exactly at the next
+block boundary. Reset invalidates both RTL table state and Rust's private
+loaded-table cache, so the next scaled execution reloads the table.
 
 `VectorBypass` accepts `scales: None`; `VectorMultiply` and `VectorShift`
 require the complete scale table. The synthesized table supports at most
@@ -75,4 +84,5 @@ rejected.
 
 Bypass, multiply, and shift all run on the same `IM2PCore` instance; only
 `TileRequest.vector_op` changes. A stale scale table has no numerical effect on
-a later `VectorBypass` execution.
+a later `VectorBypass` execution. Bypass neither configures scaling nor
+invalidates a table that a later Multiply or Shift can reuse.

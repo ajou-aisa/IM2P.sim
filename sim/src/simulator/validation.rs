@@ -6,7 +6,7 @@ pub(super) fn validate_tile(
     request: &TileRequest<'_>,
     output: &[i32],
     dim: usize,
-) -> Result<usize, Error> {
+) -> Result<Option<usize>, Error> {
     if request.valid_m == 0
         || request.valid_n == 0
         || request.valid_k == 0
@@ -16,7 +16,7 @@ pub(super) fn validate_tile(
     {
         return Err(Error::InvalidTileShape);
     }
-    validate_k_range(request)?;
+    validate_execution_range(request)?;
     require_len(
         "activations",
         request.valid_m * request.valid_k,
@@ -29,6 +29,11 @@ pub(super) fn validate_tile(
     )?;
     require_len("output", request.valid_m * request.valid_n, output.len())?;
 
+    if request.vector_op == VectorOp::Bypass {
+        return Ok(None);
+    }
+
+    validate_scaling_range(request)?;
     let block_count = request.total_k.div_ceil(request.block_size);
     if block_count > MAX_SCALE_BLOCKS {
         return Err(Error::TooManyScaleBlocks {
@@ -36,33 +41,37 @@ pub(super) fn validate_tile(
             actual: block_count,
         });
     }
-    if let Some(scales) = request.scales {
-        let expected = block_count
-            .checked_mul(request.valid_n)
-            .ok_or(Error::InvalidKRange)?;
-        require_len("scales", expected, scales.len())?;
-    } else if request.vector_op != VectorOp::Bypass {
-        return Err(Error::MissingScales {
-            operation: request.vector_op,
-        });
-    }
-    Ok(block_count)
+    let scales = request.scales.ok_or(Error::MissingScales {
+        operation: request.vector_op,
+    })?;
+    let expected = block_count
+        .checked_mul(request.valid_n)
+        .ok_or(Error::InvalidKRange)?;
+    require_len("scales", expected, scales.len())?;
+    Ok(Some(block_count))
 }
 
-fn validate_k_range(request: &TileRequest<'_>) -> Result<(), Error> {
+fn validate_execution_range(request: &TileRequest<'_>) -> Result<(), Error> {
+    if request.k_start > u32::MAX as usize {
+        return Err(Error::InvalidKRange);
+    }
+    request
+        .k_start
+        .checked_add(request.valid_k)
+        .ok_or(Error::InvalidKRange)?;
+    Ok(())
+}
+
+fn validate_scaling_range(request: &TileRequest<'_>) -> Result<(), Error> {
     if request.block_size == 0
         || request.total_k == 0
         || request.k_start >= request.total_k
         || request.block_size > u32::MAX as usize
         || request.total_k > u32::MAX as usize
-        || request.k_start > u32::MAX as usize
     {
         return Err(Error::InvalidKRange);
     }
-    let k_end = request
-        .k_start
-        .checked_add(request.valid_k)
-        .ok_or(Error::InvalidKRange)?;
+    let k_end = request.k_start + request.valid_k;
     if k_end > request.total_k {
         return Err(Error::InvalidKRange);
     }

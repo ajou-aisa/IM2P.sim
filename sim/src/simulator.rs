@@ -82,9 +82,27 @@ pub struct TileRequest<'a> {
     pub vector_op: VectorOp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedScaling {
+    block_size: usize,
+    total_k: usize,
+    valid_n: usize,
+    scales: Vec<i8>,
+}
+
+impl LoadedScaling {
+    fn matches(&self, request: &TileRequest<'_>, scales: &[i8]) -> bool {
+        self.block_size == request.block_size
+            && self.total_k == request.total_k
+            && self.valid_n == request.valid_n
+            && self.scales == scales
+    }
+}
+
 pub struct Im2pSimulator {
     handle: NonNull<c_void>,
     dim: usize,
+    loaded_scaling: Option<LoadedScaling>,
 }
 
 impl Im2pSimulator {
@@ -95,7 +113,11 @@ impl Im2pSimulator {
             .unwrap_or("16")
             .parse::<usize>()
             .map_err(|_| Error::InvalidDimension)?;
-        let mut simulator = Self { handle, dim };
+        let mut simulator = Self {
+            handle,
+            dim,
+            loaded_scaling: None,
+        };
         simulator.reset();
         Ok(simulator)
     }
@@ -114,7 +136,7 @@ impl Im2pSimulator {
         request: &TileRequest<'_>,
         output: &mut [i32],
     ) -> Result<TileStats, Error> {
-        let block_count = validation::validate_tile(request, output, self.dim)?;
+        let scale_block_count = validation::validate_tile(request, output, self.dim)?;
         let tile_start = self.cycles();
 
         let weight_start = self.cycles();
@@ -132,15 +154,8 @@ impl Im2pSimulator {
         self.wait_weights_ready()?;
 
         let scale_start = self.cycles();
-        self.configure_scaling(request.block_size, request.total_k, block_count)?;
-        if let Some(scales) = request.scales {
-            for block in 0..block_count {
-                let mut padded = vec![0_i8; self.dim];
-                let begin = block * request.valid_n;
-                padded[..request.valid_n].copy_from_slice(&scales[begin..begin + request.valid_n]);
-                self.load_scale_block(&padded)?;
-            }
-            self.wait_scale_load_ready()?;
+        if let Some(block_count) = scale_block_count {
+            self.ensure_scaling_loaded(request, block_count)?;
         }
         let scale_load_cycles = self.cycles() - scale_start;
 
@@ -181,6 +196,42 @@ impl Im2pSimulator {
             request.valid_k,
             self.dim,
         ))
+    }
+
+    fn ensure_scaling_loaded(
+        &mut self,
+        request: &TileRequest<'_>,
+        block_count: usize,
+    ) -> Result<(), Error> {
+        let scales = request.scales.ok_or(Error::MissingScales {
+            operation: request.vector_op,
+        })?;
+        if self
+            .loaded_scaling
+            .as_ref()
+            .is_some_and(|loaded| loaded.matches(request, scales))
+        {
+            return Ok(());
+        }
+
+        // configureScaling logically replaces the old RTL table. Keep cache
+        // invalid until every block is loaded and RTL reports completeness.
+        self.loaded_scaling = None;
+        self.configure_scaling(request.block_size, request.total_k, block_count)?;
+        for block in 0..block_count {
+            let mut padded = vec![0_i8; self.dim];
+            let begin = block * request.valid_n;
+            padded[..request.valid_n].copy_from_slice(&scales[begin..begin + request.valid_n]);
+            self.load_scale_block(&padded)?;
+        }
+        self.wait_scale_load_ready()?;
+        self.loaded_scaling = Some(LoadedScaling {
+            block_size: request.block_size,
+            total_k: request.total_k,
+            valid_n: request.valid_n,
+            scales: scales.to_vec(),
+        });
+        Ok(())
     }
 }
 

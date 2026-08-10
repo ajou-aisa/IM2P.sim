@@ -70,9 +70,10 @@ fn hardware_partial_crossing_block_boundary_is_rejected() -> Result<(), SimError
 }
 
 #[test]
-fn invalid_global_k_ranges_are_rejected() -> Result<(), SimError> {
+fn scaled_invalid_global_k_ranges_are_rejected() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
     let mut output = [0_i32; 1];
+    let scales = [1_i8];
     for (block_size, total_k, k_start, valid_k) in
         [(0, 1, 0, 1), (1, 0, 0, 1), (1, 1, 1, 1), (4, 4, 3, 2)]
     {
@@ -82,7 +83,7 @@ fn invalid_global_k_ranges_are_rejected() -> Result<(), SimError> {
             &TileRequest {
                 activations: &activations,
                 weights: &weights,
-                scales: None,
+                scales: Some(&scales),
                 valid_m: 1,
                 valid_n: 1,
                 valid_k,
@@ -90,7 +91,7 @@ fn invalid_global_k_ranges_are_rejected() -> Result<(), SimError> {
                 total_k,
                 block_size,
                 accumulate: false,
-                vector_op: VectorOp::Bypass,
+                vector_op: VectorOp::Multiply,
             },
             &mut output,
         );
@@ -103,11 +104,12 @@ fn invalid_global_k_ranges_are_rejected() -> Result<(), SimError> {
 fn scale_table_capacity_is_enforced() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
     let mut output = [0_i32; 1];
+    let scales = [1_i8; 9];
     let result = simulator.execute_tile(
         &TileRequest {
             activations: &[1],
             weights: &[1],
-            scales: None,
+            scales: Some(&scales),
             valid_m: 1,
             valid_n: 1,
             valid_k: 1,
@@ -115,7 +117,7 @@ fn scale_table_capacity_is_enforced() -> Result<(), SimError> {
             total_k: 288,
             block_size: 32,
             accumulate: false,
-            vector_op: VectorOp::Bypass,
+            vector_op: VectorOp::Multiply,
         },
         &mut output,
     );

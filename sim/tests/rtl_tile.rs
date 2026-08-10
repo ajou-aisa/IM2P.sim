@@ -12,6 +12,10 @@ mod block_validation;
 mod k_groups;
 #[path = "rtl_tile/runtime_modes.rs"]
 mod runtime_modes;
+#[path = "rtl_tile/scale_cache_identity.rs"]
+mod scale_cache_identity;
+#[path = "rtl_tile/scale_reuse.rs"]
+mod scale_reuse;
 #[path = "rtl_tile/scaling.rs"]
 mod scaling;
 #[path = "rtl_tile/support.rs"]
