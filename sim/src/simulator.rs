@@ -26,16 +26,35 @@ impl VectorOp {
 pub enum Error {
     VerilatorUnavailable,
     InvalidDimension,
-    InvalidBufferLength { name: &'static str, expected: usize, actual: usize },
+    InvalidBufferLength {
+        name: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    MissingScales {
+        operation: VectorOp,
+    },
     InvalidTileShape,
-    RtlTimeout { operation: &'static str, cycle: u64, dim: usize },
-    RtlNotReady { operation: &'static str },
-    FfiFailure { operation: &'static str },
+    RtlTimeout {
+        operation: &'static str,
+        cycle: u64,
+        dim: usize,
+    },
+    RtlNotReady {
+        operation: &'static str,
+    },
+    FfiFailure {
+        operation: &'static str,
+    },
 }
 
 pub struct TileRequest<'a> {
     pub activations: &'a [i8],
     pub weights: &'a [i8],
+    /// Signed K-group weight scale for each valid output column.
+    ///
+    /// Length must equal `valid_n`. Every output row shares this same
+    /// column-wise scale vector.
     pub scales: Option<&'a [i8]>,
     pub valid_m: usize,
     pub valid_n: usize,
@@ -82,11 +101,12 @@ impl Im2pSimulator {
         if row >= self.dim {
             return Err(Error::InvalidTileShape);
         }
-        let ok = unsafe {
-            ffi::im2p_load_weight_row(self.handle.as_ptr(), row as u32, values.as_ptr())
-        };
+        let ok =
+            unsafe { ffi::im2p_load_weight_row(self.handle.as_ptr(), row as u32, values.as_ptr()) };
         if ok == 0 {
-            Err(Error::RtlNotReady { operation: "load_weight_row" })
+            Err(Error::RtlNotReady {
+                operation: "load_weight_row",
+            })
         } else {
             Ok(())
         }
@@ -109,7 +129,9 @@ impl Im2pSimulator {
             )
         };
         if ok == 0 {
-            Err(Error::RtlNotReady { operation: "start_execution" })
+            Err(Error::RtlNotReady {
+                operation: "start_execution",
+            })
         } else {
             Ok(())
         }
@@ -124,18 +146,15 @@ impl Im2pSimulator {
         if let Some(scale_values) = scales {
             self.require_len("scales", scale_values)?;
         }
-        let (scale_ptr, valid) = scales
-            .map_or((std::ptr::null(), 0), |values| (values.as_ptr(), 1));
+        let (scale_ptr, valid) =
+            scales.map_or((std::ptr::null(), 0), |values| (values.as_ptr(), 1));
         let ok = unsafe {
-            ffi::im2p_put_activation_row(
-                self.handle.as_ptr(),
-                values.as_ptr(),
-                scale_ptr,
-                valid,
-            )
+            ffi::im2p_put_activation_row(self.handle.as_ptr(), values.as_ptr(), scale_ptr, valid)
         };
         if ok == 0 {
-            Err(Error::RtlNotReady { operation: "put_activation_row" })
+            Err(Error::RtlNotReady {
+                operation: "put_activation_row",
+            })
         } else {
             Ok(())
         }
@@ -157,7 +176,9 @@ impl Im2pSimulator {
             ffi::im2p_write_accumulator_row(self.handle.as_ptr(), row as u32, values.as_ptr())
         };
         if ok == 0 {
-            Err(Error::RtlNotReady { operation: "write_accumulator_row" })
+            Err(Error::RtlNotReady {
+                operation: "write_accumulator_row",
+            })
         } else {
             Ok(())
         }
@@ -169,13 +190,19 @@ impl Im2pSimulator {
             ffi::im2p_read_accumulator_row(self.handle.as_ptr(), row as u32, values.as_mut_ptr())
         };
         if ok == 0 {
-            Err(Error::RtlNotReady { operation: "read_accumulator_row" })
+            Err(Error::RtlNotReady {
+                operation: "read_accumulator_row",
+            })
         } else {
             Ok(())
         }
     }
 
-    pub fn execute_tile(&mut self, request: &TileRequest<'_>, output: &mut [i32]) -> Result<TileStats, Error> {
+    pub fn execute_tile(
+        &mut self,
+        request: &TileRequest<'_>,
+        output: &mut [i32],
+    ) -> Result<TileStats, Error> {
         self.validate_tile(request, output)?;
         let start = self.cycles();
         self.wait_until("idle", |handle| unsafe { ffi::im2p_idle(handle) != 0 })?;
@@ -198,18 +225,19 @@ impl Im2pSimulator {
         })?;
         self.start_execution(0, request.valid_m, request.accumulate, request.vector_op)?;
         let compute_start = self.cycles();
+        let padded_scales = request.scales.map(|source| {
+            let mut scales = vec![0_i8; self.dim];
+            scales[..request.valid_n].copy_from_slice(source);
+            scales
+        });
         for row in 0..request.valid_m {
             let mut values = vec![0_i8; self.dim];
             let source = &request.activations[row * request.valid_k..(row + 1) * request.valid_k];
             values[..request.valid_k].copy_from_slice(source);
-            let mut scales = vec![0_i8; self.dim];
-            if let Some(source) = request.scales {
-                scales[..request.valid_n].copy_from_slice(&source[row * request.valid_n..(row + 1) * request.valid_n]);
-            }
             self.wait_until("activation_ready", |handle| unsafe {
                 ffi::im2p_activation_ready(handle) != 0
             })?;
-            self.push_activation_row(&values, request.scales.map(|_| scales.as_slice()))?;
+            self.push_activation_row(&values, padded_scales.as_deref())?;
         }
         self.wait_execution_done()?;
         let compute_cycles = self.cycles() - compute_start;
@@ -238,7 +266,11 @@ impl Im2pSimulator {
         let start = self.cycles();
         while !ready(self.handle.as_ptr()) {
             if self.cycles() - start >= TIMEOUT_CYCLES {
-                return Err(Error::RtlTimeout { operation, cycle: self.cycles(), dim: self.dim });
+                return Err(Error::RtlTimeout {
+                    operation,
+                    cycle: self.cycles(),
+                    dim: self.dim,
+                });
             }
             self.tick();
         }
@@ -261,31 +293,60 @@ impl Im2pSimulator {
         if values.len() == self.dim {
             Ok(())
         } else {
-            Err(Error::InvalidBufferLength { name, expected: self.dim, actual: values.len() })
+            Err(Error::InvalidBufferLength {
+                name,
+                expected: self.dim,
+                actual: values.len(),
+            })
         }
     }
 
     fn validate_tile(&self, request: &TileRequest<'_>, output: &[i32]) -> Result<(), Error> {
-        if request.valid_m == 0 || request.valid_n == 0 || request.valid_k == 0
-            || request.valid_m > self.dim || request.valid_n > self.dim || request.valid_k > self.dim {
+        if request.valid_m == 0
+            || request.valid_n == 0
+            || request.valid_k == 0
+            || request.valid_m > self.dim
+            || request.valid_n > self.dim
+            || request.valid_k > self.dim
+        {
             return Err(Error::InvalidTileShape);
         }
         let expected_activations = request.valid_m * request.valid_k;
         let expected_weights = request.valid_k * request.valid_n;
         let expected_output = request.valid_m * request.valid_n;
         if request.activations.len() != expected_activations {
-            return Err(Error::InvalidBufferLength { name: "activations", expected: expected_activations, actual: request.activations.len() });
+            return Err(Error::InvalidBufferLength {
+                name: "activations",
+                expected: expected_activations,
+                actual: request.activations.len(),
+            });
         }
         if request.weights.len() != expected_weights {
-            return Err(Error::InvalidBufferLength { name: "weights", expected: expected_weights, actual: request.weights.len() });
+            return Err(Error::InvalidBufferLength {
+                name: "weights",
+                expected: expected_weights,
+                actual: request.weights.len(),
+            });
         }
         if output.len() != expected_output {
-            return Err(Error::InvalidBufferLength { name: "output", expected: expected_output, actual: output.len() });
+            return Err(Error::InvalidBufferLength {
+                name: "output",
+                expected: expected_output,
+                actual: output.len(),
+            });
         }
         if let Some(scales) = request.scales {
-            if scales.len() != request.valid_m * request.valid_n {
-                return Err(Error::InvalidBufferLength { name: "scales", expected: request.valid_m * request.valid_n, actual: scales.len() });
+            if scales.len() != request.valid_n {
+                return Err(Error::InvalidBufferLength {
+                    name: "scales",
+                    expected: request.valid_n,
+                    actual: scales.len(),
+                });
             }
+        } else if request.vector_op != VectorOp::Bypass {
+            return Err(Error::MissingScales {
+                operation: request.vector_op,
+            });
         }
         Ok(())
     }

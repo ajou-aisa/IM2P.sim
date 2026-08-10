@@ -27,14 +27,6 @@ unsafe extern "C" {
         scales_valid: i32,
     ) -> i32;
     pub fn im2p_acknowledge_execution(handle: *mut c_void) -> i32;
-    pub fn im2p_write_accumulator_row(
-        handle: *mut c_void,
-        row: u32,
-        values: *const i32,
-    ) -> i32;
-    pub fn im2p_read_accumulator_row(
-        handle: *mut c_void,
-        row: u32,
-        values: *mut i32,
-    ) -> i32;
+    pub fn im2p_write_accumulator_row(handle: *mut c_void, row: u32, values: *const i32) -> i32;
+    pub fn im2p_read_accumulator_row(handle: *mut c_void, row: u32, values: *mut i32) -> i32;
 }

@@ -23,9 +23,15 @@ fn main() {
     assert!(dim == "16" || dim == "32", "IM2P_DIM must be 16 or 32");
     let root = env::var_os("IM2P_REPO_ROOT")
         .map(PathBuf::from)
-        .or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf))
+        .or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(Path::to_path_buf)
+        })
         .expect("repository root must be discoverable");
-    let obj_dir = root.join("build/verilator").join(format!("int8x{dim}/obj_dir"));
+    let obj_dir = root
+        .join("build/verilator")
+        .join(format!("int8x{dim}/obj_dir"));
     let verilator = verilator_root();
 
     println!("cargo:rerun-if-env-changed=IM2P_DIM");

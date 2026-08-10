@@ -33,8 +33,10 @@ interface IM2PCoreIfc#(
     method Action startExecution(ExecuteCmd#(arrayDim, accRows) command);
     method Bool activationReady;
 
-    // Multiply/Shift execution은 activation row와 같은 logical output row에
-    // 대응하는 scale vector를 Valid로 공급한다. Bypass에서는 Invalid가 가능하다.
+    // Multiply/Shift execution은 현재 K-group의 column-wise weight scale
+    // vector를 각 activation row의 sideband로 Valid하게 공급한다. 동일
+    // K-group의 모든 output row가 같은 column scale을 공유할 수 있으며,
+    // Bypass에서는 Invalid가 가능하다.
     method Action putActivationRow(
         Vector#(arrayDim, input_t) activations,
         Maybe#(Vector#(arrayDim, scale_t)) scales
@@ -130,8 +132,8 @@ module mkIM2PCore(IM2PCoreIfc#(
         Vector#(arrayDim, RowAddress#(accRows))
     ) destinationRowAddressesReg <- mkRegU;
 
-    // Scale은 architectural memory가 아니라 execution 동안 output row와 scale을
-    // 정렬하기 위한 sideband state다.
+    // Scale은 architectural memory가 아니라 execution 동안 output row와 현재
+    // K-group의 column-wise weight scale을 정렬하기 위한 sideband state다.
     Vector#(
         arrayDim,
         Reg#(Vector#(arrayDim, scale_t))
@@ -267,7 +269,7 @@ module mkIM2PCore(IM2PCoreIfc#(
 
         dynamicAssert(
             !operationNeedsScale || isValid(scales),
-            "Multiply/Shift execution requires a scale vector per activation row"
+            "Multiply/Shift requires a column-wise K-group scale sideband"
         );
 
         // acceptedInputRowsReg는 증가 전에는 항상 실제 row index 범위에 있다.
