@@ -45,10 +45,14 @@ EXPECTED_TESTS = {
     "TbIM2PCore.bsv",
     "TbIM2PCoreGrouped.bsv",
     "TbFloatCore.bsv",
+    "TbSynthInt8x16.bsv",
+    "TbSynthInt8x32.bsv",
 }
 
 EXPECTED_SYNTH = {
     "SynthInt8.bsv",
+    "SynthInt8x16.bsv",
+    "SynthInt8x32.bsv",
     "SynthFp16.bsv",
     "SynthFp32.bsv",
 }

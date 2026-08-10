@@ -5,3 +5,6 @@ build/
 *.vcd
 __pycache__/
 *.pyc
+build/verilator/
+sim/target/
+sim/Cargo.lock

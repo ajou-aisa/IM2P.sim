@@ -11,14 +11,19 @@ VERILATOR ?= verilator
 YOSYS     ?= yosys
 
 BUILD_DIR := build
+ROOT_DIR  := $(CURDIR)
 BSC_PATH  := +:src/common:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
 BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
              -info-dir $(BUILD_DIR)/info
+BSC_SIM_DIRS := -bdir $(BUILD_DIR)/bsc/sim -simdir $(BUILD_DIR)/sim \
+                -info-dir $(BUILD_DIR)/info
 # FP16 elaboration needs more unfolding steps and stack than BSC defaults.
 BSC_EXTRA_FLAGS ?= -steps 4000000 -steps-warn-interval 1000000 \
                    -steps-max-intervals 20 +RTS -K256M -RTS
 BSC_COMMON := -p $(BSC_PATH) $(BSC_DIRS) -keep-fires -show-schedule \
               $(BSC_EXTRA_FLAGS)
+BSC_SIM_COMMON := -p $(BSC_PATH) $(BSC_SIM_DIRS) -keep-fires -show-schedule \
+                  $(BSC_EXTRA_FLAGS) -Xc++ -O0
 
 CPP_TOOL := $(BUILD_DIR)/bin/im2p_reference
 CPP_SRC  := tools/im2p_reference.cpp
@@ -51,8 +56,14 @@ SYNTH_TOPS := \
 	mkSynthFp16 \
 	mkSynthFp32
 
+BSC_PREFIX := $(shell dirname $$(dirname $$(realpath $$(command -v $(BSC)))))
+BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
+                                      $(BSC_PREFIX)/lib/Verilog))
+VERILATOR_COMMON := --cc --Wno-fatal
+
 .PHONY: all check verify static-check cpp-test bsv-test bsv-test-one rtl rtl-one \
-        verilator-lint yosys-stat clean help check-tools
+        verilator-int8x16 verilator-int8x32 verilator sim-test-int8x16 \
+        sim-test-int8x32 sim-test verilator-lint yosys-stat clean help check-tools
 
 all: check
 
@@ -69,12 +80,18 @@ help:
 	  'make bsv-test-one TOP=mkTbPE - 지정한 testbench만 컴파일 및 실행' \
 	  'make rtl             - INT8/FP16/FP32 top의 Verilog 생성' \
 	  'make rtl-one TOP=mkSynthInt8 - 지정한 top의 Verilog만 생성' \
+	  'make verilator-int8x16 - 16x16 INT8 RTL의 Verilator model 생성' \
+	  'make verilator-int8x32 - 32x32 INT8 RTL의 Verilator model 생성' \
+	  'make verilator        - 두 INT8 Verilator model 생성' \
+	  'make sim-test-int8x16 - 16x16 Rust RTL simulation test 실행' \
+	  'make sim-test-int8x32 - 32x32 Rust RTL simulation test 실행' \
+	  'make sim-test         - 두 Rust RTL simulation test 실행' \
 	  'make verilator-lint  - 생성 Verilog에 Verilator lint 적용' \
 	  'make yosys-stat      - 생성 Verilog에 Yosys generic synthesis/stat 적용' \
 	  'make check-tools     - 외부 도구 설치 여부 확인' \
 	  'make clean           - build/ 삭제'
 
-$(BUILD_DIR)/bin $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info:
+$(BUILD_DIR)/bin $(BUILD_DIR)/bsc $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info:
 	@mkdir -p $@
 
 static-check:
@@ -87,26 +104,26 @@ $(CPP_TOOL): $(CPP_SRC) Makefile | $(BUILD_DIR)/bin
 cpp-test: $(CPP_TOOL)
 	$(CPP_TOOL)
 
-bsv-test: | $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
+bsv-test: | $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
 	@set -euo pipefail; \
 	for top in $(BSV_TEST_TOPS); do \
 	  package="$${top#mk}"; \
 	  echo "[BSC] compile $$top"; \
-	  $(BSC) -u -sim $(BSC_COMMON) -g $$top tests/$$package.bsv; \
-	  $(BSC) -sim $(BSC_COMMON) -e $$top \
+	  $(BSC) -u -sim $(BSC_SIM_COMMON) -g $$top tests/$$package.bsv; \
+	  $(BSC) -sim $(BSC_SIM_COMMON) -e $$top \
 	    -o $(BUILD_DIR)/bin/$$package; \
 	  echo "[Bluesim] run $$top"; \
 	  $(run_bluesim); \
 	done
 
-bsv-test-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
+bsv-test-one: | $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
 	@set -euo pipefail; \
 	top='$(TOP)'; \
 	test -n "$$top" || { echo 'TOP is required, e.g. TOP=mkTbPE' >&2; exit 2; }; \
 	package="$${top#mk}"; \
 	echo "[BSC] compile $$top"; \
-	$(BSC) -u -sim $(BSC_COMMON) -g $$top tests/$$package.bsv; \
-	$(BSC) -sim $(BSC_COMMON) -e $$top -o $(BUILD_DIR)/bin/$$package; \
+	$(BSC) -u -sim $(BSC_SIM_COMMON) -g $$top tests/$$package.bsv; \
+	$(BSC) -sim $(BSC_SIM_COMMON) -e $$top -o $(BUILD_DIR)/bin/$$package; \
 	echo "[Bluesim] run $$top"; \
 	$(run_bluesim)
 
@@ -135,6 +152,38 @@ rtl-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
 	$(BSC) -u -verilog -p $(BSC_PATH) $(BSC_EXTRA_FLAGS) \
 	  -bdir $(BUILD_DIR)/bsc -info-dir $(BUILD_DIR)/info \
 	  -vdir "$$out" -g $$top synth/$$package.bsv
+
+verilator-int8x16:
+	@set -euo pipefail; \
+	$(MAKE) rtl-one TOP=mkSynthInt8x16; \
+	out="$(BUILD_DIR)/verilator/int8x16/obj_dir"; \
+	mkdir -p "$$out"; \
+	$(VERILATOR) $(VERILATOR_COMMON) --Mdir "$$out" \
+	  --top-module mkSynthInt8x16 --prefix VmkSynthInt8x16 \
+	  "$(BUILD_DIR)/rtl/SynthInt8x16/mkSynthInt8x16.v" \
+	  "$(BSC_VERILOG)/RegFile.v" "$(BSC_VERILOG)/FIFO2.v"
+
+verilator-int8x32:
+	@set -euo pipefail; \
+	$(MAKE) rtl-one TOP=mkSynthInt8x32; \
+	out="$(BUILD_DIR)/verilator/int8x32/obj_dir"; \
+	mkdir -p "$$out"; \
+	$(VERILATOR) $(VERILATOR_COMMON) --Mdir "$$out" \
+	  --top-module mkSynthInt8x32 --prefix VmkSynthInt8x32 \
+	  "$(BUILD_DIR)/rtl/SynthInt8x32/mkSynthInt8x32.v" \
+	  "$(BSC_VERILOG)/RegFile.v" "$(BSC_VERILOG)/FIFO2.v"
+
+verilator: verilator-int8x16 verilator-int8x32
+
+sim-test-int8x16: verilator-int8x16
+	IM2P_REPO_ROOT="$(ROOT_DIR)" IM2P_DIM=16 \
+	  cargo test --manifest-path sim/Cargo.toml --test rtl_tile -- --nocapture
+
+sim-test-int8x32: verilator-int8x32
+	IM2P_REPO_ROOT="$(ROOT_DIR)" IM2P_DIM=32 \
+	  cargo test --manifest-path sim/Cargo.toml --test rtl_tile -- --nocapture
+
+sim-test: sim-test-int8x16 sim-test-int8x32
 
 verilator-lint: rtl
 	@set -euo pipefail; \
