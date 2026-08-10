@@ -5,7 +5,7 @@ import Vector::*;
 import Types::*;
 import ExecuteCmd::*;
 import Config::*;
-import IM2PCore::*;
+import KQuantIM2PCore::*;
 import SynthInt8x16::*;
 
 // Identity weights make each output column reproduce the corresponding
@@ -56,6 +56,7 @@ endfunction
 typedef enum {
     BeginWeights,
     LoadWeights,
+    Configure,
     Start,
     FeedRow0,
     FeedRow1,
@@ -64,13 +65,14 @@ typedef enum {
 } TbState deriving (Bits, Eq, FShow);
 
 // Exercise the synthesized 16x16 INT8 configuration through the public
-// IM2PCore interface: load weights, run two rows, then read both results.
+// block-aware INT interface: load weights, run two rows, then read results.
 module mkTbSynthInt8x16(Empty);
-    IM2PCoreIfc#(
+    KQuantIM2PCoreIfc#(
         16,
         1,
         16,
         DefaultAccumulatorRows,
+        DefaultScaleBlocks,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -102,11 +104,16 @@ module mkTbSynthInt8x16(Empty);
     rule loadWeights (state == LoadWeights);
         dut.loadWeightRow(weightRow, identityWeight(weightRow));
         if (weightRow == 15) begin
-            state <= Start;
+            state <= Configure;
         end
         else begin
             weightRow <= weightRow + 1;
         end
+    endrule
+
+    rule configure (state == Configure && dut.weightsReady && dut.idle);
+        dut.configureKQuant(16, 16, 1);
+        state <= Start;
     endrule
 
     // Start one non-accumulating, bypass execution after all weights are ready.
@@ -116,18 +123,18 @@ module mkTbSynthInt8x16(Empty);
             rowCount: 2,
             accumulate: False,
             vectorOp: VectorBypass
-        });
+        }, 0, 16);
         state <= FeedRow0;
     endrule
 
     // Feed activation rows only when the core advertises backpressure relief.
     rule feedRow0 (state == FeedRow0 && dut.activationReady);
-        dut.putActivationRow(activationRow(0), tagged Invalid);
+        dut.putActivationRow(activationRow(0));
         state <= FeedRow1;
     endrule
 
     rule feedRow1 (state == FeedRow1 && dut.activationReady);
-        dut.putActivationRow(activationRow(1), tagged Invalid);
+        dut.putActivationRow(activationRow(1));
         state <= Wait;
     endrule
 

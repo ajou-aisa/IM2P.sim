@@ -23,18 +23,26 @@ int im2p_idle(im2p_handle_t handle);
 
 int im2p_begin_weight_load(im2p_handle_t handle);
 int im2p_load_weight_row(im2p_handle_t handle, uint32_t row, const int8_t *values);
+int im2p_configure_k_quant(
+    im2p_handle_t handle,
+    uint32_t block_size,
+    uint32_t total_k,
+    uint32_t block_count
+);
+int im2p_scale_load_ready(im2p_handle_t handle);
+int im2p_load_scale_block(im2p_handle_t handle, const int8_t *scales);
 int im2p_start_execution(
     im2p_handle_t handle,
     uint32_t accumulator_base_row,
     uint32_t row_count,
     int accumulate,
-    uint8_t vector_op
+    uint8_t vector_op,
+    uint32_t k_start,
+    uint32_t k_count
 );
 int im2p_put_activation_row(
     im2p_handle_t handle,
-    const int8_t *values,
-    const int8_t *scales,
-    int scales_valid
+    const int8_t *values
 );
 int im2p_acknowledge_execution(im2p_handle_t handle);
 int im2p_write_accumulator_row(

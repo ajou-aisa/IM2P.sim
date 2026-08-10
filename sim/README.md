@@ -17,9 +17,9 @@ make sim-test-int8x32
 
 `IM2P_DIM` selects one generated configuration per Cargo build. The simulator
 counts one rising RTL clock edge as one cycle. `TileStats` reports weight-load
-cycles, compute cycles, total cycles, useful MACs, useful operations, MACs per
-cycle, operations per cycle, and array utilization. No host frequency is
-assumed.
+cycles, scale-load cycles, compute cycles, total cycles, useful MACs, useful
+operations, MACs per cycle, operations per cycle, and array utilization. No
+host frequency is assumed.
 
 `execute_tile` accepts one already-selected hardware tile. It zero-pads
 activation and weight data outside `valid_m`, `valid_n`, and `valid_k`, and
@@ -42,20 +42,34 @@ W[32:63, 1] -> scale[1, 1]
 W[32:63, 2] -> scale[1, 2]
 ```
 
-One `execute_tile` call receives the current K-group's column-wise scale
-vector:
+Each `execute_tile` call receives the complete block-major scale table for the
+logical K range:
 
 ```rust
-scales: Some(&column_scales) // &[i8], length = valid_n
+scales: Some(&scale_table), // scale[b * valid_n + j]
+k_start: 16,               // global K origin of this hardware partial
+total_k: 64,
+block_size: 32,
 ```
 
-For `VectorMultiply`, each output uses
-`C[i, j] = P[i, j] * column_scales[j]`. Every output row shares the same
-scale for column `j`; callers do not provide an `M x N` scale matrix.
-`VectorShift` uses the same column mapping and interprets each signed scale as
-a shift exponent. `VectorBypass` accepts `scales: None`; `VectorMultiply` and
-`VectorShift` require scales.
+Scale length is `ceil(total_k / block_size) * valid_n`. Rust pads every table
+row from `valid_n` to `DIM` and preloads all rows into the RTL wrapper. Rust
+does not select the current block's scale vector.
 
-The Rust simulator pads the `valid_n` values to `DIM` and repeats that same
-RTL sideband vector with every activation row. This repeated physical
-delivery does not change the software-level K-group/weight-column semantics.
+At execution start, RTL computes `b = floor(k_start / block_size)`, rejects a
+hardware partial that crosses a block boundary, and latches `scale[b,:]`.
+Every SystolicArray column output is sent directly to VectorUnit. For
+`VectorMultiply`, `P^(b)[i,j]` becomes `P^(b)[i,j] * scale[b,j]`.
+`VectorShift` applies the signed shift to each hardware partial independently.
+Accumulator then overwrites or adds the transformed contribution.
+
+Executions cannot overlap: the previous wavefront, VectorUnit work, and
+Accumulator commits must drain before the next start. Therefore the latched
+scale stays aligned with all staggered column outputs from that execution.
+Every hardware fragment in the same K-quant block reselects the same table
+row. Selection changes to `scale[b+1,:]` exactly at the next block boundary.
+
+`VectorBypass` accepts `scales: None`; `VectorMultiply` and `VectorShift`
+require the complete scale table. The synthesized table supports at most
+eight K-quant blocks per request. Any hardware partial spanning two blocks is
+rejected.

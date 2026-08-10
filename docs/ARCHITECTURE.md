@@ -154,16 +154,26 @@ accumulate=True
 
 현재 storage backend는 column별 `mkRegFileFull`이다.
 
-## 7. Scale sideband alignment
+## 7. K-quant scale selection and alignment
 
-Multiply/Shift execution에서는 activation logical row마다 scale vector를 함께 받는다. Column result가 stagger되어 도착하므로 Core는 execution 동안 scale row를 보존한다.
+INT synthesis boundary는 block-major `scale[b,j]` table과 `block_size`,
+`total_k`를 먼저 받는다. 각 hardware execution의 `k_start`에서:
 
 ```text
-selectedScale[column]
-    = scaleSidebandRows[rowOffset[column]][column]
+b = floor(k_start / block_size)
+selectedScale[column] = scaleTable[b][column]
 ```
 
-이 state는 block size/index, scale cache, partial 재결합을 구현하지 않는다.
+를 계산하고 해당 vector를 execution 동안 고정한다. 한 hardware partial이 두
+K-block을 가로지르면 실행을 거부한다.
+
+Execution은 이전 column wavefront, VectorUnit, Accumulator commit이 모두 끝난
+뒤에만 교체된다. 따라서 stagger된 column output 모두 같은 execution-latched
+scale을 사용한다. 동일 K-block의 여러 hardware fragment는 같은 table row를
+재선택하고, 정확한 block boundary에서 다음 row로 전환한다.
+
+SystolicArray partial은 VectorUnit으로 직접 전달된다. K-block partial을 먼저
+재결합하는 stage는 없다.
 
 ## 8. Backpressure
 
@@ -189,4 +199,7 @@ vectorLanes divides arrayDim
 accRows >= arrayDim
 ```
 
-작은 K/N은 0-padding하며, 큰 M/K/N은 상위 model이 여러 execution으로 타일링한다. Core는 DMA, scratchpad, global scheduler를 모델링하지 않는다.
+작은 K/N은 0-padding하며, 큰 M/K/N은 상위 model이 여러 execution으로
+타일링한다. INT wrapper는 K progress와 block boundary에 따른 scale table
+selection만 담당한다. Core는 DMA, scratchpad, global scheduler를 모델링하지
+않는다.

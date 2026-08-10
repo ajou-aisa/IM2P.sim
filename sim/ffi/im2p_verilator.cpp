@@ -12,14 +12,12 @@
 using Top = VmkSynthInt8x16;
 constexpr uint32_t kDim = 16;
 constexpr uint32_t kCommandWidth = 16;
-constexpr uint32_t kVectorWords = 4;
 constexpr uint32_t kAccumulatorWords = 16;
 #elif IM2P_DIM == 32
 #include "VmkSynthInt8x32.h"
 using Top = VmkSynthInt8x32;
 constexpr uint32_t kDim = 32;
 constexpr uint32_t kCommandWidth = 17;
-constexpr uint32_t kVectorWords = 8;
 constexpr uint32_t kAccumulatorWords = 32;
 #else
 #error "IM2P_DIM must be 16 or 32"
@@ -90,10 +88,22 @@ uint32_t command_bits(uint32_t base_row, uint32_t row_count, int accumulate, uin
 }
 
 extern "C" im2p_handle_t im2p_create(void) {
-    auto *simulator = new Simulator{new VerilatedContext, nullptr, 0};
-    simulator->top = new Top(simulator->context);
-    im2p_reset(simulator);
-    return simulator;
+    VerilatedContext *context = nullptr;
+    Top *top = nullptr;
+    Simulator *simulator = nullptr;
+    try {
+        context = new VerilatedContext;
+        top = new Top(context);
+        simulator = new Simulator{context, top, 0};
+        im2p_reset(simulator);
+        return simulator;
+    }
+    catch (...) {
+        delete simulator;
+        delete top;
+        delete context;
+        return nullptr;
+    }
 }
 
 extern "C" void im2p_destroy(im2p_handle_t handle) {
@@ -194,12 +204,61 @@ extern "C" int im2p_load_weight_row(
     return 1;
 }
 
+extern "C" int im2p_configure_k_quant(
+    im2p_handle_t handle,
+    uint32_t block_size,
+    uint32_t total_k,
+    uint32_t block_count
+) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_configureKQuant
+        || block_size == 0
+        || total_k == 0
+        || block_count == 0
+        || block_count > 8) {
+        return 0;
+    }
+    simulator->top->configureKQuant_blockSize = block_size;
+    simulator->top->configureKQuant_totalK = total_k;
+    simulator->top->configureKQuant_blockCount = block_count;
+    pulse(simulator, simulator->top->EN_configureKQuant);
+    return 1;
+}
+
+extern "C" int im2p_scale_load_ready(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->scaleLoadReady
+        && simulator->top->RDY_scaleLoadReady;
+}
+
+extern "C" int im2p_load_scale_block(
+    im2p_handle_t handle,
+    const int8_t *scales
+) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_loadScaleBlock) {
+        return 0;
+    }
+    set_bytes(
+        simulator->top->loadScaleBlock_columnScales,
+        scales,
+        kDim
+    );
+    pulse(simulator, simulator->top->EN_loadScaleBlock);
+    return 1;
+}
+
 extern "C" int im2p_start_execution(
     im2p_handle_t handle,
     uint32_t accumulator_base_row,
     uint32_t row_count,
     int accumulate,
-    uint8_t vector_op
+    uint8_t vector_op,
+    uint32_t k_start,
+    uint32_t k_count
 ) {
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
@@ -207,20 +266,22 @@ extern "C" int im2p_start_execution(
         || accumulator_base_row >= 256
         || row_count > kDim
         || row_count == 0
+        || k_count > kDim
+        || k_count == 0
         || vector_op > 2) {
         return 0;
     }
     simulator->top->startExecution_command =
         command_bits(accumulator_base_row, row_count, accumulate, vector_op);
+    simulator->top->startExecution_kStart = k_start;
+    simulator->top->startExecution_kCount = k_count;
     pulse(simulator, simulator->top->EN_startExecution);
     return 1;
 }
 
 extern "C" int im2p_put_activation_row(
     im2p_handle_t handle,
-    const int8_t *values,
-    const int8_t *scales,
-    int scales_valid
+    const int8_t *values
 ) {
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
@@ -228,13 +289,6 @@ extern "C" int im2p_put_activation_row(
         return 0;
     }
     set_bytes(simulator->top->putActivationRow_activations, values, kDim);
-    for (uint32_t index = 0; index < kVectorWords + 1; ++index) {
-        simulator->top->putActivationRow_scales[index] = 0U;
-    }
-    if (scales_valid) {
-        set_bytes(simulator->top->putActivationRow_scales, scales, kDim);
-        simulator->top->putActivationRow_scales[kVectorWords] = 1U;
-    }
     pulse(simulator, simulator->top->EN_putActivationRow);
     return 1;
 }

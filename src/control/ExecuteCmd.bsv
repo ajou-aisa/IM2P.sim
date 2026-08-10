@@ -12,8 +12,10 @@ import Types::*;
 // accumulator에 반영하는 일반 실행 단위다. 전체 K가 arrayDim보다 크면 상위
 // software/controller가 여러 execution을 수행하고 accumulate=True로 결합한다.
 //
-// Scale이 필요한 workload는 VectorMultiply/VectorShift와 함께 각 activation row의
-// scale vector를 공급한다. Scale이 필요 없는 실행은 VectorBypass를 사용한다.
+// Generic Core는 선택된 scale vector를 activation sideband로 받는다. INT
+// synthesis wrapper는 block_size와 k_start에서 scale[b,:]를 RTL에서 선택해
+// 동일 execution의 모든 activation row에 공급한다. Scale이 필요 없는 실행은
+// VectorBypass를 사용한다.
 
 typedef struct {
     RowAddress#(accRows) accumulatorBaseRow;

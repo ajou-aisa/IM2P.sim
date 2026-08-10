@@ -13,6 +13,9 @@ fn valid_request<'a>(
         valid_m: 2,
         valid_n: 3,
         valid_k: 1,
+        k_start: 0,
+        total_k: 1,
+        block_size: 1,
         accumulate: false,
         vector_op,
     }
@@ -28,6 +31,27 @@ fn bypass_accepts_missing_scales() -> Result<(), SimError> {
     )?;
     assert_eq!(output, [1, 2, 3, 2, 4, 6]);
     Ok(())
+}
+
+#[test]
+fn tile_request_carries_k_block_metadata() {
+    let request = TileRequest {
+        activations: &[1],
+        weights: &[1],
+        scales: Some(&[2, -1]),
+        valid_m: 1,
+        valid_n: 1,
+        valid_k: 1,
+        k_start: 32,
+        total_k: 64,
+        block_size: 32,
+        accumulate: true,
+        vector_op: VectorOp::Multiply,
+    };
+
+    assert_eq!(request.k_start, 32);
+    assert_eq!(request.total_k, 64);
+    assert_eq!(request.block_size, 32);
 }
 
 #[test]
@@ -79,6 +103,9 @@ fn dimensions_above_hardware_tile_return_error() -> Result<(), SimError> {
                 valid_m,
                 valid_n,
                 valid_k,
+                k_start: 0,
+                total_k: 1,
+                block_size: 1,
                 accumulate: false,
                 vector_op: VectorOp::Bypass,
             },
@@ -102,6 +129,9 @@ fn zero_tile_dimension_returns_error() -> Result<(), SimError> {
                 valid_m,
                 valid_n,
                 valid_k,
+                k_start: 0,
+                total_k: 1,
+                block_size: 1,
                 accumulate: false,
                 vector_op: VectorOp::Bypass,
             },

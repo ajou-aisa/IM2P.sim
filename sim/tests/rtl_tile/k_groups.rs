@@ -2,7 +2,7 @@ use im2p_sim::{Im2pSimulator, SimError, VectorOp};
 
 use crate::support::{
     activation_fragment, assert_matrix_eq, execute, golden_column_multiply, golden_column_shift,
-    golden_matmul, weight_fragment, Execution, Shape,
+    golden_matmul, weight_fragment, Execution, KRange, Shape,
 };
 
 const K_GROUP: usize = 32;
@@ -42,6 +42,11 @@ fn k_group_32_multiply_matches_across_hardware_fragments() -> Result<(), SimErro
                 weights: &fragment_b,
                 scales: Some(&scales),
                 shape: fragment_shape,
+                k_range: KRange {
+                    start,
+                    total: K_GROUP,
+                    block_size: K_GROUP,
+                },
                 accumulate: start != 0,
                 vector_op: VectorOp::Multiply,
             },
@@ -52,7 +57,7 @@ fn k_group_32_multiply_matches_across_hardware_fragments() -> Result<(), SimErro
 }
 
 #[test]
-fn dim16_fragmented_shift_matches_fragment_not_full_group_semantics() -> Result<(), SimError> {
+fn dim16_block32_shift_transforms_each_fragment_before_accumulation() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
     if simulator.dim() != 16 {
         return Ok(());
@@ -85,6 +90,11 @@ fn dim16_fragmented_shift_matches_fragment_not_full_group_semantics() -> Result<
                 weights: &fragment_b,
                 scales: Some(&scales),
                 shape: fragment_shape,
+                k_range: KRange {
+                    start,
+                    total: K_GROUP,
+                    block_size: K_GROUP,
+                },
                 accumulate: start != 0,
                 vector_op: VectorOp::Shift,
             },
@@ -114,6 +124,7 @@ fn multiple_k_quant_groups_use_distinct_column_scales() -> Result<(), SimError> 
         .map(|index| (index % 7) as i8 - 3)
         .collect();
     let group_scales = [[2_i8, -1, 3, 1], [-2_i8, 4, 1, -3]];
+    let scale_table: Vec<i8> = group_scales.iter().flatten().copied().collect();
     let mut expected = vec![0_i32; shape.m * shape.n];
     let mut actual = Vec::new();
     let mut execution_index = 0;
@@ -143,10 +154,15 @@ fn multiple_k_quant_groups_use_distinct_column_scales() -> Result<(), SimError> 
                 Execution {
                     activations: &fragment_a,
                     weights: &fragment_b,
-                    scales: Some(scales),
+                    scales: Some(&scale_table),
                     shape: Shape {
                         k: fragment_k,
                         ..shape
+                    },
+                    k_range: KRange {
+                        start: fragment_start,
+                        total: shape.k,
+                        block_size: K_GROUP,
                     },
                     accumulate: execution_index != 0,
                     vector_op: VectorOp::Multiply,

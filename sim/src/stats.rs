@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileStats {
     pub weight_load_cycles: u64,
+    pub scale_load_cycles: u64,
     pub compute_cycles: u64,
     pub total_cycles: u64,
     pub useful_macs: u64,
@@ -13,6 +14,7 @@ pub struct TileStats {
 impl TileStats {
     pub fn from_counts(
         weight_load_cycles: u64,
+        scale_load_cycles: u64,
         compute_cycles: u64,
         total_cycles: u64,
         valid_m: usize,
@@ -29,6 +31,7 @@ impl TileStats {
         let utilization = ratio_float(macs_per_cycle, (dim * dim) as f64);
         Self {
             weight_load_cycles,
+            scale_load_cycles,
             compute_cycles,
             total_cycles,
             useful_macs,

@@ -1,6 +1,6 @@
 use im2p_sim::{Im2pSimulator, SimError, VectorOp};
 
-use crate::support::{assert_matrix_eq, execute, golden_matmul, Execution, Shape};
+use crate::support::{assert_matrix_eq, execute, golden_matmul, single_block, Execution, Shape};
 
 #[test]
 fn small_deterministic_bypass_matches_cpu_golden() -> Result<(), SimError> {
@@ -16,6 +16,7 @@ fn small_deterministic_bypass_matches_cpu_golden() -> Result<(), SimError> {
             weights: &weights,
             scales: None,
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Bypass,
         },
@@ -43,14 +44,16 @@ fn full_hardware_tile_bypass_matches_cpu_golden() -> Result<(), SimError> {
             weights: &weights,
             scales: None,
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Bypass,
         },
     )?;
     assert_matrix_eq(&actual, &expected, dim, dim);
     println!(
-        "dim={dim} weight_load={} compute={} total={} macs_per_cycle={:.3} ops_per_cycle={:.3} utilization={:.6}",
+        "dim={dim} weight_load={} scale_load={} compute={} total={} macs_per_cycle={:.3} ops_per_cycle={:.3} utilization={:.6}",
         stats.weight_load_cycles,
+        stats.scale_load_cycles,
         stats.compute_cycles,
         stats.total_cycles,
         stats.macs_per_cycle,
@@ -85,6 +88,7 @@ fn zero_inputs_match_cpu_golden() -> Result<(), SimError> {
                 weights,
                 scales: None,
                 shape,
+                k_range: single_block(shape),
                 accumulate: false,
                 vector_op: VectorOp::Bypass,
             },
@@ -111,10 +115,30 @@ fn signed_bypass_includes_cancellation() -> Result<(), SimError> {
             weights: &weights,
             scales: None,
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Bypass,
         },
     )?;
     assert_matrix_eq(&actual, &expected, shape.m, shape.n);
+    Ok(())
+}
+
+#[test]
+fn tile_total_cycles_are_not_cumulative() -> Result<(), SimError> {
+    let shape = Shape { m: 1, n: 1, k: 1 };
+    let mut simulator = Im2pSimulator::new()?;
+    let execution = || Execution {
+        activations: &[2],
+        weights: &[3],
+        scales: None,
+        shape,
+        k_range: single_block(shape),
+        accumulate: false,
+        vector_op: VectorOp::Bypass,
+    };
+    let (_, first) = execute(&mut simulator, execution())?;
+    let (_, second) = execute(&mut simulator, execution())?;
+    assert_eq!(first.total_cycles, second.total_cycles);
     Ok(())
 }

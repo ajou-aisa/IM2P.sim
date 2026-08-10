@@ -38,6 +38,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=IM2P_REPO_ROOT");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.cpp");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.h");
+    println!(
+        "cargo:rerun-if-changed={}",
+        obj_dir.join(format!("VmkSynthInt8x{dim}.h")).display()
+    );
 
     let mut build = cc::Build::new();
     build
@@ -54,6 +58,7 @@ fn main() {
     for entry in entries {
         let path = entry.expect("read Verilator object directory").path();
         if path.extension().and_then(|value| value.to_str()) == Some("cpp") {
+            println!("cargo:rerun-if-changed={}", path.display());
             build.file(path);
         }
     }

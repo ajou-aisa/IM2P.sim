@@ -2,7 +2,7 @@ use im2p_sim::{Im2pSimulator, SimError, VectorOp};
 
 use crate::support::{
     assert_matrix_eq, execute, golden_column_multiply, golden_column_shift, golden_matmul,
-    Execution, Lcg, Shape,
+    single_block, Execution, Lcg, Shape,
 };
 
 #[test]
@@ -23,6 +23,7 @@ fn column_wise_k_quant_multiply_matches_cpu_golden() -> Result<(), SimError> {
             weights: &weights,
             scales: Some(&scales),
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Multiply,
         },
@@ -49,6 +50,7 @@ fn k_group_scale_is_shared_across_output_rows() -> Result<(), SimError> {
             weights: &weights,
             scales: Some(&scales),
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Multiply,
         },
@@ -76,6 +78,7 @@ fn column_wise_shift_matches_signed_bsv_semantics() -> Result<(), SimError> {
             weights: &weights,
             scales: Some(&scales),
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Shift,
         },
@@ -104,6 +107,7 @@ fn tail_tile_uses_unpadded_column_scales() -> Result<(), SimError> {
             weights: &weights,
             scales: Some(&scales),
             shape,
+            k_range: single_block(shape),
             accumulate: false,
             vector_op: VectorOp::Multiply,
         },
@@ -142,6 +146,7 @@ fn deterministic_pseudo_random_bypass_and_multiply_match() -> Result<(), SimErro
                 weights: &weights,
                 scales: column_scales,
                 shape,
+                k_range: single_block(shape),
                 accumulate: false,
                 vector_op,
             },

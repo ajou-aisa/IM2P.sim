@@ -31,6 +31,7 @@ EXPECTED_SRC = {
     "control/ExecuteCmd.bsv",
     "control/ExecuteController.bsv",
     "core/IM2PCore.bsv",
+    "core/KQuantIM2PCore.bsv",
 }
 
 EXPECTED_TESTS = {
@@ -387,13 +388,22 @@ def main() -> None:
     )
 
     core_files = sorted((SRC / "core").glob("*.bsv"))
-    if [path.name for path in core_files] != ["IM2PCore.bsv"]:
-        fail("core/ must contain only IM2PCore.bsv")
+    if [path.name for path in core_files] != [
+        "IM2PCore.bsv",
+        "KQuantIM2PCore.bsv",
+    ]:
+        fail("core/ must contain IM2PCore and its K-quant wrapper")
 
     for synth in SYNTH.glob("*.bsv"):
         text = synth.read_text(encoding="utf-8")
-        if "mkIM2PCore" not in text or "IM2PCoreIfc" not in text:
-            fail(f"synth top does not use single IM2PCore: {synth.name}")
+        if synth.name.startswith("SynthInt"):
+            if (
+                "mkKQuantIM2PCore" not in text
+                or "KQuantIM2PCoreIfc" not in text
+            ):
+                fail(f"INT synth top does not use K-quant wrapper: {synth.name}")
+        elif "mkIM2PCore" not in text or "IM2PCoreIfc" not in text:
+            fail(f"FP synth top does not use IM2PCore: {synth.name}")
 
     makefile_path = ROOT / "Makefile"
     makefile_text = makefile_path.read_text(encoding="utf-8")
@@ -437,7 +447,7 @@ def main() -> None:
         f"  testbenches  : {len(EXPECTED_TESTS) - 1}\n"
         f"  synth tops   : {len(EXPECTED_SYNTH)}\n"
         "  architecture : SystolicEngine -> VectorUnit -> Accumulator\n"
-        "  core         : single IM2PCore"
+        "  core         : IM2PCore with K-quant scale-selection wrapper"
     )
 
 

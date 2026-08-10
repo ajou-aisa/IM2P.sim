@@ -12,8 +12,24 @@ pub struct Execution<'a> {
     pub weights: &'a [i8],
     pub scales: Option<&'a [i8]>,
     pub shape: Shape,
+    pub k_range: KRange,
     pub accumulate: bool,
     pub vector_op: VectorOp,
+}
+
+#[derive(Clone, Copy)]
+pub struct KRange {
+    pub start: usize,
+    pub total: usize,
+    pub block_size: usize,
+}
+
+pub const fn single_block(shape: Shape) -> KRange {
+    KRange {
+        start: 0,
+        total: shape.k,
+        block_size: shape.k,
+    }
 }
 
 pub fn execute(
@@ -29,6 +45,9 @@ pub fn execute(
             valid_m: execution.shape.m,
             valid_n: execution.shape.n,
             valid_k: execution.shape.k,
+            k_start: execution.k_range.start,
+            total_k: execution.k_range.total,
+            block_size: execution.k_range.block_size,
             accumulate: execution.accumulate,
             vector_op: execution.vector_op,
         },
@@ -113,7 +132,10 @@ pub fn assert_matrix_eq(actual: &[i32], expected: &[i32], m: usize, n: usize) {
 pub fn assert_stats(stats: &TileStats, shape: Shape) {
     let useful_macs = (shape.m * shape.n * shape.k) as u64;
     assert!(stats.compute_cycles > 0);
-    assert!(stats.total_cycles >= stats.compute_cycles);
+    assert!(
+        stats.total_cycles
+            >= stats.weight_load_cycles + stats.scale_load_cycles + stats.compute_cycles
+    );
     assert_eq!(stats.useful_macs, useful_macs);
     assert_eq!(stats.useful_ops, 2 * useful_macs);
     assert!(stats.macs_per_cycle.is_finite());
