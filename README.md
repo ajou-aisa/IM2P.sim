@@ -130,7 +130,10 @@ Array와 VectorUnit, Accumulator에는 block index나 block scheduler가 없다.
 - coefficient scaling execution: `VectorMultiply`
 - power-of-two scaling execution: `VectorShift`
 
-Block-scale workload는 scale이 필요한 execution에만 operation과 scale table을 공급한다. 여러 array execution에 걸친 partial을 VectorUnit 앞에서 재결합하는 구조는 없다. 따라서 하나의 scale을 전체 K 범위에 한 번만 적용해야 하는 경우에는 상위 scheduling이 해당 K 범위와 execution 경계를 맞춰야 한다.
+Block-scale workload는 scale이 필요한 execution에만 operation과 host-owned
+scale matrix view를 공급한다. 여러 array execution에 걸친 partial을
+VectorUnit 앞에서 재결합하는 구조는 없다. 각 partial은 자신이 속한
+K-block과 J-column의 `S[b,j]`로 변환된 뒤 Accumulator에 반영된다.
 
 ### Partial sum은 도착 즉시 처리
 
@@ -146,32 +149,39 @@ partialSums[column]
 
 ### Scale 선택은 Core runtime control
 
-Multiply/Shift execution에서는 block-major scale table과 block metadata를 먼저 설정한다.
+Scale matrix 형상은 `ceil(K / B) × J`다. 전체 matrix는 host memory에 있고,
+RTL에는 current/next row만 존재한다. Multiply/Shift execution에서는
+metadata와 context를 설정한 뒤 RTL이 필요한 row를 요청한다.
 
 ```bsv
-configureScaling(blockSize, totalK, blockCount)
-loadScaleBlock(columnScales)
+configureScaling(blockSize, totalK, context)
 startExecution(command, kStart, kCount)
+scaleRequestContext
+scaleRequestBlock
+scaleRequestKind
+putScaleRow(context, block, columnScales)
 ```
 
-Core는 `b = kStart / blockSize`로 scale row를 선택하고 execution drain이 끝날 때까지 고정한다. Bypass에서는 이 configuration이 필요 없고, 남아 있는 table 값도 결과에 영향을 주지 않는다.
+Core는 `b = kStart / blockSize`를 계산한다. current hit이면 transfer 없이
+reuse하고, next hit이면 promote한다. miss이면 demand request를 발생시키고
+response 전까지 execution을 보류한다. current row가 준비되면 마지막 block이
+아닌 경우 `b+1`을 prefetch한다.
 
 ```bsv
 startExecution(bypassCommand, kStart, kCount)
 putActivationRow(activations)
 ```
 
-`scaleTable`과 `executionScalesReg`는 architectural scale SRAM이 아니라 현재 execution을 위한 control state다.
+Execution 시작 시 selected row를 `executionScaleRow`로 고정한다. 현재
+architecture는 이전 execution의 모든 column commit이 끝나기 전 다음
+execution을 시작하지 않으므로 mixed-block column output이 없다. staggered
+wavefront의 column `j`는 고정된 row의 `S[b,j]`를 사용한다. Prefetch response는
+현재 execution snapshot을 덮어쓰지 않는다.
 
-완전히 적재된 scale table은 `acknowledgeExecution` 뒤에도 유효한 persistent
-execution configuration이다. 동일 table을 사용하는 여러 K fragment는
-configure/load를 반복하지 않는다. 각 `startExecution`만
-`kStart / blockSize`로 필요한 `scale[b,:]`를 다시 선택한다.
-
-새 `blockSize`, `totalK`, column layout, 또는 scale 값이 들어오면
-`configureScaling`이 replacement를 시작한다. 모든 block 적재가 끝나기
-전에는 scaled execution을 시작할 수 없다. Bypass는 기존 table을
-invalidate하거나 reload하지 않는다.
+Scale row 수에는 synthesis-time 제한이 없다. Row는 host view의
+`block * row_stride + column_offset`에서 on demand로 읽고 DIM까지 zero
+padding한다. Context가 바뀌면 current/next cache를 무효화한다. Bypass는
+request나 matrix 없이 실행하며 cache를 변경하지 않는다.
 
 ## Source tree
 

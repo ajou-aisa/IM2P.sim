@@ -12,7 +12,6 @@ module mkSynthFp16(IM2PCoreIfc#(
     DefaultPeLatency,
     DefaultVectorLanes,
     DefaultAccumulatorRows,
-    DefaultScaleBlocks,
     Half,
     Half,
     Half,

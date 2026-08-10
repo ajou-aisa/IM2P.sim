@@ -19,6 +19,22 @@ typedef UInt#(TLog#(limit)) BoundedIndex#(numeric type limit);
 // 대응하므로 주소에는 bank 번호를 포함하지 않고 row만 표현한다.
 typedef UInt#(TLog#(rows)) RowAddress#(numeric type rows);
 
+// Scale row streaming은 configuration identity와 global K block을 32-bit
+// tags로 운반한다. DMA/address interpretation은 Core 밖에 남긴다.
+typedef UInt#(64) ScaleContext;
+typedef UInt#(32) ScaleBlockIndex;
+
+typedef enum {
+    ScaleDemand,
+    ScalePrefetch
+} ScaleRequestKind deriving (Bits, Eq, FShow);
+
+typedef struct {
+    ScaleContext contextId;
+    ScaleBlockIndex block;
+    ScaleRequestKind kind;
+} ScaleRowRequest deriving (Bits, Eq, FShow);
+
 // 하나의 합성된 INT VectorUnit이 execution마다 선택하는 runtime 연산이다.
 //
 // VectorBypass

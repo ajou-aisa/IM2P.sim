@@ -1,5 +1,30 @@
 use std::ffi::c_void;
 
+#[repr(C)]
+pub struct ScaleMatrixView {
+    pub values: *const i8,
+    pub values_len: usize,
+    pub block_size: usize,
+    pub total_k: usize,
+    pub columns: usize,
+    pub row_stride: usize,
+    pub column_offset: usize,
+    pub valid_columns: usize,
+    pub context: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScaleCounters {
+    pub demand_requests: u64,
+    pub prefetch_requests: u64,
+    pub current_hits: u64,
+    pub next_hits: u64,
+    pub demand_misses: u64,
+    pub rows_received: u64,
+    pub wait_cycles: u64,
+}
+
 unsafe extern "C" {
     pub fn im2p_create() -> *mut c_void;
     pub fn im2p_destroy(handle: *mut c_void);
@@ -17,10 +42,10 @@ unsafe extern "C" {
         handle: *mut c_void,
         block_size: u32,
         total_k: u32,
-        block_count: u32,
+        context: u64,
     ) -> i32;
-    pub fn im2p_scale_load_ready(handle: *mut c_void) -> i32;
-    pub fn im2p_load_scale_block(handle: *mut c_void, scales: *const i8) -> i32;
+    pub fn im2p_service_scale_request(handle: *mut c_void, view: *const ScaleMatrixView) -> i32;
+    pub fn im2p_scale_counters(handle: *mut c_void, counters: *mut ScaleCounters);
     pub fn im2p_start_execution(
         handle: *mut c_void,
         base_row: u32,

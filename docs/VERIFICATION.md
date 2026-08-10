@@ -63,43 +63,28 @@ make bsv-test-one TOP=mkTbIM2PCore
 make rtl-one TOP=mkSynthInt8
 ```
 
-## 4. 확인된 외부 BSC 로그
+## 4. Verilated RTL integration tests
 
-사용자가 제공한 BSC/Bluesim 로그에서는 다음 단계가 실제 PASS했다.
+`sim/tests/*.rs`는 Cargo가 자동 발견한다. 공통 CPU golden, scale matrix,
+fragment generator는 `sim/tests/common/`에 있다.
 
-```text
-TbArithmetic
-TbPE
-TbInputSkew
-TbSystolicArray
-TbVectorUnit
+```bash
+make sim-test-int8x16
+make sim-test-int8x32
 ```
 
-그 뒤 보고된 오류를 기준으로 다음을 수정했다.
+각 target은 해당 DIM의 Verilog와 Verilated model을 다시 생성한 뒤 전체 test
+binary를 실행한다. Coverage는 다음을 포함한다.
 
-- `TbAccumulator`의 Vector 초기화
-- `ControllerState` package-scope 이동
-- `VectorScaleCapability` 분리
-- Core의 `accRows`, count/index, scale capability proviso
-- weight-row index 타입과 범위 비교
+- Bypass signed/zero/full/tail
+- column-wise Multiply/Shift
+- B8/B16/B32/B64
+- 9/17/128 K-scale blocks
+- K4096/B32
+- current reuse, next prefetch, demand miss
+- context/reset, J stride/offset
+- runtime mode switching
+- deterministic random arithmetic
+- validation and tile-local statistics
 
-현재 정리된 전체 revision은 BSC가 설치된 개발 머신에서 `make clean && make bsv-test && make rtl`로 다시 확인해야 한다.
-
-## 5. 이번 환경에서 실행한 검사
-
-- architecture static checker
-- C++20 reference build with `-Wall -Wextra -Wpedantic -Werror`
-- reference self-test
-- AddressSanitizer/UndefinedBehaviorSanitizer
-- Python checker syntax
-
-BSC, Verilator, Yosys는 이 환경에 설치되어 있지 않아 직접 실행하지 않았다.
-
-## 6. Synthesis에서 확인할 항목
-
-- FLOAT specialization 후 scale multiplier/shifter 제거 여부
-- FP `multFP`/`addFP` 조합 critical path
-- Core 내부 scale table RegFile과 runtime block division cost
-- `mkRegFileFull`의 실제 inference 결과
-- `vectorLanes < arrayDim` group mux와 throughput
-- dynamic assertions가 synthesis flow에서 처리되는 방식
+파일별 책임과 신규 test 작성 예는 `sim/tests/README.md`에 있다.

@@ -9,51 +9,48 @@ import ExecuteCmd::*;
 import IM2PCore::*;
 
 
-function VectorOp operationFor(UInt#(2) executionIndex);
-    case (executionIndex)
-        0: return VectorBypass;
-        1: return VectorMultiply;
-        default: return VectorShift;
-    endcase
-endfunction
-
-// Scale은 execution 단위 column vector이며 같은 execution의 모든 output row가
-// 공유한다.
-function Vector#(2, Int#(8)) scaleFor(UInt#(2) executionIndex);
-    return vector2(2, 3);
-endfunction
-
-function Vector#(2, Int#(32)) expectedRow(
-    UInt#(2) executionIndex,
-    UInt#(1) row
+function Vector#(2, Int#(8)) scaleRowFor(
+    ScaleContext contextId,
+    ScaleBlockIndex block
 );
+    Vector#(2, Int#(8)) row = case (block)
+        0: vector2(2, 3);
+        1: vector2(4, 5);
+        default: vector2(6, 7);
+    endcase;
+
+    return contextId == 12 ? vector2(8, 9) : row;
+endfunction
+
+function Vector#(2, Int#(32)) expectedFor(UInt#(3) executionIndex);
     case (executionIndex)
-        0: return row == 0
-            ? vector2(5, 6)
-            : vector2(7, 8);
-        1: return row == 0
-            ? vector2(15, 24)
-            : vector2(21, 32);
-        default: return row == 0
-            ? vector2(35, 72)
-            : vector2(49, 96);
+        0: return vector2(5, 6);
+        1: return vector2(10, 18);
+        2: return vector2(10, 18);
+        3: return vector2(20, 30);
+        4: return vector2(30, 42);
+        default: return vector2(40, 54);
     endcase
 endfunction
 
-// 하나의 IM2PCore instance에서 Bypass/Multiply/Shift를 연속 실행한다.
-// vectorLanes=1로 두어 하나의 2-column array result가 두 group으로 처리될 때
-// destination row metadata가 유지되는지도 함께 검증한다.
+function UInt#(32) kStartFor(UInt#(3) executionIndex);
+    case (executionIndex)
+        3: return 2;
+        4: return 4;
+        5: return 4;
+        default: return 0;
+    endcase
+endfunction
+
 typedef enum {
     TbBeginWeights,
     TbLoadWeight0,
     TbLoadWeight1,
     TbConfigure,
-    TbLoadScale,
     TbStart,
-    TbFeedRow0,
-    TbFeedRow1,
+    TbFeed,
     TbWait,
-    TbReadRow0
+    TbCheck
 } TbState deriving (Bits, Eq, FShow);
 
 module mkTbIM2PCore(Empty);
@@ -62,7 +59,6 @@ module mkTbIM2PCore(Empty);
         1,
         1,
         8,
-        2,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -71,16 +67,60 @@ module mkTbIM2PCore(Empty);
     ) core <- mkIM2PCore;
 
     Reg#(TbState) state <- mkReg(TbBeginWeights);
-    Reg#(UInt#(2)) executionIndex <- mkReg(0);
-    Reg#(Vector#(2, Int#(32))) observedRow0 <- mkRegU;
+    Reg#(UInt#(3)) executionIndex <- mkReg(0);
+    Reg#(Bool) responsePending <- mkReg(False);
+    Reg#(UInt#(2)) responseDelay <- mkReg(0);
+    Reg#(ScaleRowRequest) capturedRequest <- mkRegU;
     Reg#(UInt#(10)) watchdog <- mkReg(0);
 
     rule watch;
         watchdog <= watchdog + 1;
-        if (watchdog == 700) begin
+        if (watchdog == 900) begin
             $display("IM2P CORE: FAIL (timeout)");
             $finish(1);
         end
+    endrule
+
+    rule captureScaleRequest (core.scaleRequestValid && !responsePending);
+        ScaleRowRequest request = core.scaleRequest;
+        Bool expected =
+            (request.contextId == 11
+                && request.block == 0
+                && request.kind == ScaleDemand)
+            || (request.contextId == 11
+                && request.block == 1
+                && request.kind == ScalePrefetch)
+            || (request.contextId == 11
+                && request.block == 2
+                && request.kind == ScalePrefetch)
+            || (request.contextId == 12
+                && request.block == 2
+                && request.kind == ScaleDemand);
+
+        if (!expected) begin
+            $display(
+                "IM2P CORE: FAIL unexpected scale request context=%0d block=%0d kind=%0d",
+                request.contextId, request.block, request.kind
+            );
+            $finish(1);
+        end
+
+        capturedRequest <= request;
+        responsePending <= True;
+        responseDelay <= 2;
+    endrule
+
+    rule delayScaleResponse (responsePending && responseDelay != 0);
+        responseDelay <= responseDelay - 1;
+    endrule
+
+    rule returnScaleResponse (responsePending && responseDelay == 0);
+        core.putScaleRow(
+            capturedRequest.contextId,
+            capturedRequest.block,
+            scaleRowFor(capturedRequest.contextId, capturedRequest.block)
+        );
+        responsePending <= False;
     endrule
 
     rule beginWeights (state == TbBeginWeights);
@@ -98,77 +138,73 @@ module mkTbIM2PCore(Empty);
         state <= TbConfigure;
     endrule
 
-    // Bypass execution은 scaling configuration 없이 시작한다.
-    rule skipConfigure (state == TbConfigure && executionIndex == 0);
-        state <= TbStart;
-    endrule
-
-    // 하나의 table을 적재한 뒤 Multiply와 Shift execution에서 재사용한다.
-    rule configureScaling (
-        state == TbConfigure
-        && executionIndex == 1
-        && core.idle
-    );
-        core.configureScaling(2, 2, 1);
-        state <= TbLoadScale;
-    endrule
-
-    rule loadScale (state == TbLoadScale && !core.scaleLoadReady);
-        core.loadScaleBlock(scaleFor(executionIndex));
-        state <= TbStart;
-    endrule
-
-    rule reuseScaling (
-        state == TbConfigure
-        && executionIndex == 2
-        && core.idle
-    );
+    rule configureOrAdvance (state == TbConfigure && core.idle);
+        if (executionIndex == 1 || executionIndex == 4) begin
+            core.configureScaling(2, 6, 11);
+        end
+        else if (executionIndex == 5) begin
+            core.configureScaling(2, 6, 12);
+        end
         state <= TbStart;
     endrule
 
     rule startExecution (state == TbStart && core.weightsReady && core.idle);
         core.startExecution(ExecuteCmd {
             accumulatorBaseRow: 3,
-            rowCount: 2,
-            accumulate: executionIndex != 0,
-            vectorOp: operationFor(executionIndex)
-        }, 0, 2);
-        state <= TbFeedRow0;
+            rowCount: 1,
+            accumulate: False,
+            vectorOp: executionIndex == 0
+                ? VectorBypass
+                : VectorMultiply
+        }, kStartFor(executionIndex), 2);
+        state <= TbFeed;
     endrule
 
-    rule feedRow0 (state == TbFeedRow0 && core.activationReady);
+    rule feedRow (state == TbFeed && core.activationReady);
         core.putActivationRow(vector2(5, 6));
-        state <= TbFeedRow1;
-    endrule
-
-    rule feedRow1 (state == TbFeedRow1 && core.activationReady);
-        core.putActivationRow(vector2(7, 8));
         state <= TbWait;
     endrule
 
     rule waitExecution (state == TbWait && core.executionDone);
-        // Accumulator는 한 cycle에 한 logical row를 읽는 host/debug port를 제공한다.
-        // 서로 다른 두 row를 같은 rule에서 읽지 않고 cycle을 나누어 확인한다.
-        observedRow0 <= core.readAccumulatorRow(3);
-        state <= TbReadRow0;
+        state <= TbCheck;
     endrule
 
-    rule checkExecution (state == TbReadRow0);
-        Vector#(2, Int#(32)) row1 = core.readAccumulatorRow(4);
-        Bool passed = observedRow0 == expectedRow(executionIndex, 0)
-            && row1 == expectedRow(executionIndex, 1);
+    rule checkExecution (state == TbCheck);
+        Vector#(2, Int#(32)) observed = core.readAccumulatorRow(3);
 
-        if (!passed) begin
+        if (observed != expectedFor(executionIndex)) begin
             $display(
-                "IM2P CORE: FAIL execution=%0d row0=(%0d,%0d) row1=(%0d,%0d)",
-                executionIndex,
-                observedRow0[0], observedRow0[1], row1[0], row1[1]
+                "IM2P CORE: FAIL execution=%0d row=(%0d,%0d)",
+                executionIndex, observed[0], observed[1]
             );
             $finish(1);
         end
-        else if (executionIndex == 2) begin
-            $display("IM2P CORE: PASS");
-            $finish(0);
+        else if (executionIndex == 5) begin
+            Bool countersPassed = core.scaleDemandRequests == 2
+                && core.scalePrefetchRequests == 2
+                && core.scaleCurrentHits == 1
+                && core.scaleNextHits == 2
+                && core.scaleDemandMisses == 2
+                && core.scaleRowsReceived == 4
+                && core.scaleWaitCycles > 0;
+
+            if (!countersPassed || core.scaleRequestValid) begin
+                $display(
+                    "IM2P CORE: FAIL counters demand=%0d prefetch=%0d current=%0d next=%0d misses=%0d rows=%0d waits=%0d",
+                    core.scaleDemandRequests,
+                    core.scalePrefetchRequests,
+                    core.scaleCurrentHits,
+                    core.scaleNextHits,
+                    core.scaleDemandMisses,
+                    core.scaleRowsReceived,
+                    core.scaleWaitCycles
+                );
+                $finish(1);
+            end
+            else begin
+                $display("IM2P CORE: PASS");
+                $finish(0);
+            end
         end
         else begin
             core.acknowledgeExecution;

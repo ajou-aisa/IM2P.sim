@@ -10,7 +10,6 @@ module mkSynthInt8(IM2PCoreIfc#(
     DefaultPeLatency,
     DefaultVectorLanes,
     DefaultAccumulatorRows,
-    DefaultScaleBlocks,
     Int#(DefaultInputWidth),
     Int#(DefaultWeightWidth),
     Int#(DefaultProductWidth),

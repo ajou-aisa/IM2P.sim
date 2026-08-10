@@ -1,7 +1,19 @@
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScaleFetchStats {
+    pub demand_requests: u64,
+    pub prefetch_requests: u64,
+    pub current_hits: u64,
+    pub next_hits: u64,
+    pub demand_misses: u64,
+    pub rows_received: u64,
+    pub scale_transfer_cycles: u64,
+    pub scale_wait_cycles: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileStats {
     pub weight_load_cycles: u64,
-    pub scale_load_cycles: u64,
+    pub scale_fetch: ScaleFetchStats,
     pub compute_cycles: u64,
     pub total_cycles: u64,
     pub useful_macs: u64,
@@ -14,7 +26,7 @@ pub struct TileStats {
 impl TileStats {
     pub fn from_counts(
         weight_load_cycles: u64,
-        scale_load_cycles: u64,
+        scale_fetch: ScaleFetchStats,
         compute_cycles: u64,
         total_cycles: u64,
         valid_m: usize,
@@ -31,7 +43,7 @@ impl TileStats {
         let utilization = ratio_float(macs_per_cycle, (dim * dim) as f64);
         Self {
             weight_load_cycles,
-            scale_load_cycles,
+            scale_fetch,
             compute_cycles,
             total_cycles,
             useful_macs,

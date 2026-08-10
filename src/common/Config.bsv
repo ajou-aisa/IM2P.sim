@@ -16,7 +16,7 @@ package Config;
 // runtime
 //   - VectorBypass / VectorMultiply / VectorShift
 //   - 기존 accumulator와 누산할지 여부
-//   - block_size, global K progress, block-major scale table
+//   - block_size, global K progress, context-tagged scale row stream
 
 typedef 16 DefaultArrayDim;
 typedef 1  DefaultPeLatency;
@@ -29,7 +29,5 @@ typedef 32 DefaultAccumulatorWidth;
 typedef 8  DefaultScaleWidth;
 
 typedef 256 DefaultAccumulatorRows;
-// Core가 한 logical K range에서 preload할 수 있는 최대 scale block 수다.
-typedef 8 DefaultScaleBlocks;
 
 endpackage

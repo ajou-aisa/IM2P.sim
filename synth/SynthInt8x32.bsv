@@ -9,7 +9,6 @@ module mkSynthInt8x32(IM2PCoreIfc#(
     1, // PE latency
     32, // Vector Lane
     DefaultAccumulatorRows, // Accumulator Rows
-    DefaultScaleBlocks, // Scale blocks
     Int#(8), // input width
     Int#(8), // weight width
     Int#(16), // product width

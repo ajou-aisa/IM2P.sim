@@ -177,11 +177,11 @@ verilator: verilator-int8x16 verilator-int8x32
 
 sim-test-int8x16: verilator-int8x16
 	IM2P_REPO_ROOT="$(ROOT_DIR)" IM2P_DIM=16 \
-	  cargo test --manifest-path sim/Cargo.toml --test rtl_tile -- --nocapture
+	  cargo test --manifest-path sim/Cargo.toml --tests -- --nocapture
 
 sim-test-int8x32: verilator-int8x32
 	IM2P_REPO_ROOT="$(ROOT_DIR)" IM2P_DIM=32 \
-	  cargo test --manifest-path sim/Cargo.toml --test rtl_tile -- --nocapture
+	  cargo test --manifest-path sim/Cargo.toml --tests -- --nocapture
 
 sim-test: sim-test-int8x16 sim-test-int8x32
 

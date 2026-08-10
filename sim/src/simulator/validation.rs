@@ -1,12 +1,10 @@
-use super::{Error, TileRequest, VectorOp};
+use super::{Error, KBlockScaleMatrixView, TileRequest, VectorOp};
 
-const MAX_SCALE_BLOCKS: usize = 8;
-
-pub(super) fn validate_tile(
-    request: &TileRequest<'_>,
+pub(super) fn validate_tile<'a>(
+    request: &TileRequest<'a>,
     output: &[i32],
     dim: usize,
-) -> Result<Option<usize>, Error> {
+) -> Result<Option<KBlockScaleMatrixView<'a>>, Error> {
     if request.valid_m == 0
         || request.valid_n == 0
         || request.valid_k == 0
@@ -33,22 +31,11 @@ pub(super) fn validate_tile(
         return Ok(None);
     }
 
-    validate_scaling_range(request)?;
-    let block_count = request.total_k.div_ceil(request.block_size);
-    if block_count > MAX_SCALE_BLOCKS {
-        return Err(Error::TooManyScaleBlocks {
-            maximum: MAX_SCALE_BLOCKS,
-            actual: block_count,
-        });
-    }
-    let scales = request.scales.ok_or(Error::MissingScales {
+    let matrix = request.scale_matrix.ok_or(Error::MissingScales {
         operation: request.vector_op,
     })?;
-    let expected = block_count
-        .checked_mul(request.valid_n)
-        .ok_or(Error::InvalidKRange)?;
-    require_len("scales", expected, scales.len())?;
-    Ok(Some(block_count))
+    validate_scaling_range(request, matrix)?;
+    Ok(Some(matrix))
 }
 
 fn validate_execution_range(request: &TileRequest<'_>) -> Result<(), Error> {
@@ -62,25 +49,60 @@ fn validate_execution_range(request: &TileRequest<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_scaling_range(request: &TileRequest<'_>) -> Result<(), Error> {
-    if request.block_size == 0
-        || request.total_k == 0
-        || request.k_start >= request.total_k
-        || request.block_size > u32::MAX as usize
-        || request.total_k > u32::MAX as usize
+fn validate_scaling_range(
+    request: &TileRequest<'_>,
+    matrix: KBlockScaleMatrixView<'_>,
+) -> Result<(), Error> {
+    if matrix.block_size == 0
+        || matrix.total_k == 0
+        || request.k_start >= matrix.total_k
+        || matrix.block_size > u32::MAX as usize
+        || matrix.total_k > u32::MAX as usize
     {
         return Err(Error::InvalidKRange);
     }
     let k_end = request.k_start + request.valid_k;
-    if k_end > request.total_k {
+    if k_end > matrix.total_k {
         return Err(Error::InvalidKRange);
     }
-    if request.k_start / request.block_size != (k_end - 1) / request.block_size {
+    if request.k_start / matrix.block_size != (k_end - 1) / matrix.block_size {
         return Err(Error::UnsupportedBlockConfiguration {
             k_start: request.k_start,
             valid_k: request.valid_k,
-            block_size: request.block_size,
+            block_size: matrix.block_size,
         });
+    }
+    let block = request.k_start / matrix.block_size;
+    if block > u32::MAX as usize {
+        return Err(Error::InvalidKRange);
+    }
+    if matrix.columns == 0
+        || matrix.valid_columns == 0
+        || matrix.valid_columns != request.valid_n
+        || matrix.row_stride < matrix.columns
+    {
+        return Err(Error::InvalidScaleMatrixLayout);
+    }
+    let columns_end = matrix
+        .column_offset
+        .checked_add(matrix.valid_columns)
+        .ok_or(Error::InvalidScaleMatrixLayout)?;
+    if columns_end > matrix.columns {
+        return Err(Error::InvalidScaleMatrixLayout);
+    }
+    let block_count = matrix.total_k.div_ceil(matrix.block_size);
+    if block_count > u32::MAX as usize {
+        return Err(Error::InvalidKRange);
+    }
+    let final_row = (block_count - 1)
+        .checked_mul(matrix.row_stride)
+        .and_then(|value| value.checked_add(matrix.column_offset))
+        .ok_or(Error::InvalidScaleMatrixLayout)?;
+    let required_len = final_row
+        .checked_add(matrix.valid_columns)
+        .ok_or(Error::InvalidScaleMatrixLayout)?;
+    if required_len > matrix.values.len() {
+        return Err(Error::InvalidScaleMatrixLayout);
     }
     Ok(())
 }

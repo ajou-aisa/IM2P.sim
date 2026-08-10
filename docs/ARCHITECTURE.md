@@ -156,26 +156,30 @@ accumulate=True
 
 ## 7. Block scale selection and alignment
 
-`IM2PCore`는 block-major `scale[b,j]` table과 `block_size`, `total_k`를
-runtime control state로 먼저 받는다. 각 hardware execution의 `k_start`에서:
+Host는 block-major `S[b,j]` matrix view를 소유하고 `block_size`, `total_k`,
+`context` metadata를 제공한다. 각 hardware execution의 `k_start`에서 Core가:
 
 ```text
 b = floor(k_start / block_size)
-selectedScale[column] = scaleTable[b][column]
+request tag = (context, b)
 ```
 
-를 계산하고 해당 vector를 execution 동안 고정한다. 한 hardware partial이 두
-K-block을 가로지르면 실행을 거부한다.
+를 계산한다. Cache miss이면 host가 요청 row의 J tile slice를 응답한다. Core는
+응답한 `S[b,column]` vector를 execution 동안 고정한다. 한 hardware partial이
+두 K-block을 가로지르면 실행을 거부한다.
 
 Execution은 이전 column wavefront, VectorUnit, Accumulator commit이 모두 끝난
-뒤에만 교체된다. 따라서 stagger된 column output 모두 같은 execution-latched
-scale을 사용한다. 동일 K-block의 여러 hardware fragment는 같은 table row를
-재선택하고, 정확한 block boundary에서 다음 row로 전환한다.
+뒤에만 교체된다. 따라서 mixed K-block column output은 발생하지 않는다.
+Staggered column output 모두 execution 시작 시 latch한
+`executionScaleRow[j] = S[b,j]`를 사용한다.
 
-완전히 적재된 table은 execution acknowledge 후에도 유효하다. 새
-configuration을 시작하면 loaded count를 0으로 되돌리고, 모든 block이
-적재될 때까지 scaled execution을 막는다. execution 완료와 configuration
-lifetime은 독립적이므로 single-use consumed state는 두지 않는다.
+전체 `ceil(K/B) × J` matrix는 host memory가 소유한다. Core는
+`kStart / blockSize`로 block을 선택하고 `(context, block)` tag의 row를
+요청한다. RTL storage는 current/next row뿐이다. Current hit은 transfer 없이
+reuse하고, next hit은 promote하며, miss는 demand response까지 execution을
+보류한다. Current row가 준비되면 가능한 `b+1` row를 prefetch한다. Context
+변경과 reset은 두 row를 무효화한다. Scale block 수에는 synthesis-time
+capacity 제한이 없다.
 
 SystolicArray partial은 VectorUnit으로 직접 전달된다. K-block partial을 먼저
 재결합하는 stage는 없다.
@@ -205,6 +209,6 @@ accRows >= arrayDim
 ```
 
 작은 K/N은 0-padding하며, 큰 M/K/N은 상위 model이 여러 execution으로
-타일링한다. K progress와 block boundary에 따른 scale table selection은
+타일링한다. K progress와 block boundary에 따른 scale row selection은
 `IM2PCore`의 runtime control이며 별도 core나 wrapper가 아니다. Core는 DMA,
 scratchpad, global scheduler를 모델링하지 않는다.

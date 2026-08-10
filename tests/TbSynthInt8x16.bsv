@@ -72,7 +72,6 @@ module mkTbSynthInt8x16(Empty);
         1,
         16,
         DefaultAccumulatorRows,
-        DefaultScaleBlocks,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -111,8 +110,8 @@ module mkTbSynthInt8x16(Empty);
         end
     endrule
 
-    rule configure (state == Configure && dut.weightsReady && dut.idle);
-        dut.configureScaling(16, 16, 1);
+    // Bypass does not require scaling configuration or issue scale requests.
+    rule advanceToStart (state == Configure && dut.weightsReady && dut.idle);
         state <= Start;
     endrule
 

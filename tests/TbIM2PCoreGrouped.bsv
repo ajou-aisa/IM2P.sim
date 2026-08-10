@@ -31,7 +31,6 @@ typedef enum {
     TbLoadWeight2,
     TbLoadWeight3,
     TbConfigure,
-    TbLoadScale,
     TbStart,
     TbFeed0,
     TbFeed1,
@@ -45,7 +44,6 @@ module mkTbIM2PCoreGrouped(Empty);
         1,
         2,
         8,
-        2,
         Int#(8),
         Int#(8),
         Int#(16),
@@ -93,12 +91,18 @@ module mkTbIM2PCoreGrouped(Empty);
 
     rule configureScaling (state == TbConfigure && core.idle);
         core.configureScaling(4, 4, 1);
-        state <= TbLoadScale;
+        state <= TbStart;
     endrule
 
-    rule loadScale (state == TbLoadScale && !core.scaleLoadReady);
-        core.loadScaleBlock(vector4(2, 3, 4, 5));
-        state <= TbStart;
+    rule returnScaleRow (core.scaleRequestValid);
+        ScaleRowRequest request = core.scaleRequest;
+        if (request.contextId != 1
+                || request.block != 0
+                || request.kind != ScaleDemand) begin
+            $display("IM2P GROUPED CORE: FAIL unexpected scale request");
+            $finish(1);
+        end
+        core.putScaleRow(1, 0, vector4(2, 3, 4, 5));
     endrule
 
     rule startExecution (state == TbStart && core.weightsReady && core.idle);

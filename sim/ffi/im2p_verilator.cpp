@@ -193,6 +193,9 @@ extern "C" int im2p_load_weight_row(
     uint32_t row,
     const int8_t *values
 ) {
+    if (handle == nullptr || values == nullptr) {
+        return 0;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
     if (!simulator->top->RDY_loadWeightRow || row >= kDim) {
@@ -208,47 +211,95 @@ extern "C" int im2p_configure_scaling(
     im2p_handle_t handle,
     uint32_t block_size,
     uint32_t total_k,
-    uint32_t block_count
+    uint64_t context
 ) {
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
     if (!simulator->top->RDY_configureScaling
         || block_size == 0
-        || total_k == 0
-        || block_count == 0
-        || block_count > 8) {
+        || total_k == 0) {
         return 0;
     }
     simulator->top->configureScaling_blockSize = block_size;
     simulator->top->configureScaling_totalK = total_k;
-    simulator->top->configureScaling_blockCount = block_count;
+    simulator->top->configureScaling_contextId = context;
     pulse(simulator, simulator->top->EN_configureScaling);
     return 1;
 }
 
-extern "C" int im2p_scale_load_ready(im2p_handle_t handle) {
+extern "C" int im2p_service_scale_request(
+    im2p_handle_t handle,
+    const im2p_scale_matrix_view_t *view
+) {
+    if (handle == nullptr) {
+        return IM2P_SCALE_INVALID_VIEW;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    return simulator->top->scaleLoadReady
-        && simulator->top->RDY_scaleLoadReady;
+    auto *top = simulator->top;
+    if (!top->scaleRequestValid) {
+        return IM2P_SCALE_NO_REQUEST;
+    }
+    if (view == nullptr || view->values == nullptr) {
+        return IM2P_SCALE_INVALID_VIEW;
+    }
+    if (!top->RDY_scaleRequestContext || !top->RDY_scaleRequestBlock
+        || !top->RDY_scaleRequestKind || top->scaleRequestKind > 1) {
+        return IM2P_SCALE_REQUEST_NOT_READY;
+    }
+    if (top->scaleRequestContext != view->context) {
+        return IM2P_SCALE_CONTEXT_MISMATCH;
+    }
+    if (view->block_size == 0 || view->total_k == 0 || view->columns == 0
+        || view->valid_columns == 0 || view->valid_columns > kDim
+        || view->row_stride < view->columns
+        || view->column_offset > view->columns
+        || view->valid_columns > view->columns - view->column_offset) {
+        return IM2P_SCALE_INVALID_LAYOUT;
+    }
+    const size_t block_count = 1 + (view->total_k - 1) / view->block_size;
+    const size_t block = top->scaleRequestBlock;
+    if (block >= block_count || block > (SIZE_MAX - view->column_offset) / view->row_stride) {
+        return IM2P_SCALE_BLOCK_OUT_OF_RANGE;
+    }
+    const size_t row_start = block * view->row_stride + view->column_offset;
+    if (row_start > view->values_len
+        || view->valid_columns > view->values_len - row_start) {
+        return IM2P_SCALE_BLOCK_OUT_OF_RANGE;
+    }
+
+    int8_t row[kDim] = {};
+    std::copy_n(view->values + row_start, view->valid_columns, row);
+
+    // This call consumes the borrowed pointer into a stack row. Neither the
+    // bridge nor the Verilated model retains any Rust-owned address.
+    if (!top->RDY_putScaleRow) {
+        return IM2P_SCALE_RESPONSE_NOT_READY;
+    }
+    top->putScaleRow_contextId = view->context;
+    top->putScaleRow_block = static_cast<uint32_t>(block);
+    set_bytes(top->putScaleRow_columnScales, row, kDim);
+    pulse(simulator, top->EN_putScaleRow);
+    return IM2P_SCALE_ROW_ACCEPTED;
 }
 
-extern "C" int im2p_load_scale_block(
+extern "C" void im2p_scale_counters(
     im2p_handle_t handle,
-    const int8_t *scales
+    im2p_scale_counters_t *counters
 ) {
+    if (handle == nullptr || counters == nullptr) {
+        return;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    if (!simulator->top->RDY_loadScaleBlock) {
-        return 0;
-    }
-    set_bytes(
-        simulator->top->loadScaleBlock_columnScales,
-        scales,
-        kDim
-    );
-    pulse(simulator, simulator->top->EN_loadScaleBlock);
-    return 1;
+    auto *top = simulator->top;
+    counters->demand_requests = top->scaleDemandRequests;
+    counters->prefetch_requests = top->scalePrefetchRequests;
+    counters->current_hits = top->scaleCurrentHits;
+    counters->next_hits = top->scaleNextHits;
+    counters->demand_misses = top->scaleDemandMisses;
+    counters->rows_received = top->scaleRowsReceived;
+    counters->wait_cycles = top->scaleWaitCycles;
 }
 
 extern "C" int im2p_start_execution(
@@ -283,6 +334,9 @@ extern "C" int im2p_put_activation_row(
     im2p_handle_t handle,
     const int8_t *values
 ) {
+    if (handle == nullptr || values == nullptr) {
+        return 0;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
     if (!simulator->top->RDY_putActivationRow) {
@@ -308,6 +362,9 @@ extern "C" int im2p_write_accumulator_row(
     uint32_t row,
     const int32_t *values
 ) {
+    if (handle == nullptr || values == nullptr) {
+        return 0;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
     if (!simulator->top->RDY_writeAccumulatorRow || row >= 256) {
@@ -324,6 +381,9 @@ extern "C" int im2p_read_accumulator_row(
     uint32_t row,
     int32_t *values
 ) {
+    if (handle == nullptr || values == nullptr) {
+        return 0;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
     if (!simulator->top->RDY_readAccumulatorRow || row >= 256) {

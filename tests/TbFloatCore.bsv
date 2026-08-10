@@ -23,7 +23,6 @@ module mkTbFloatCore(Empty);
         1,
         1,
         2,
-        2,
         Half,
         Half,
         Half,

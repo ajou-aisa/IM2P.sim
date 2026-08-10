@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -77,6 +78,10 @@ LEGACY_SYMBOLS = {
     "KBlockScheduler",
     "MeshWithDelays",
     "blockK",
+    "DefaultScaleBlocks",
+    "MAX_SCALE_BLOCKS",
+    "TooManyScaleBlocks",
+    "scaleBlocks",
     "startBlock",
     "blockDone",
     "ScaleControl",
@@ -96,7 +101,7 @@ def relative_files(directory: Path) -> set[str]:
     }
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"STATIC CHECK: FAIL: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -357,10 +362,17 @@ def main() -> None:
             "destinationRowAddressesReg",
             "BoundedIndex#(arrayDim) row",
             "configureScaling",
-            "loadScaleBlock",
-            "scaleTable",
-            "executionScalesReg",
-            "selectedBlockWide",
+            "ScaleRowRequest",
+            "scaleRequestValid",
+            "scaleRequestContext",
+            "scaleRequestBlock",
+            "scaleRequestKind",
+            "putScaleRow",
+            "currentScaleRowReg",
+            "nextScaleRowReg",
+            "executionScaleRowReg",
+            "startPendingExecution",
+            "issueDeferredScaleDemand",
         ),
     )
 
