@@ -6,6 +6,7 @@ build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
+crate-type = ["rlib", "staticlib"]
 
 [build-dependencies]
 cc = "1"

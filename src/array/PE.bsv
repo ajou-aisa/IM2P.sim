@@ -27,7 +27,10 @@ interface PEIfc#(
     type acc_t
 );
     method Action loadWeight(weight_t weight);
+    method Action loadWeightBank(Bool bank, weight_t weight);
+    method Action activateWeightBank(Bool bank);
     method Action invalidateWeight;
+    method Action invalidateWeightBank(Bool bank);
 
     // activation/partial pipeline만 비우고 stationary weight는 유지한다.
     method Action clearPipeline;
@@ -40,6 +43,8 @@ interface PEIfc#(
     method Maybe#(input_t) activationOut;
     method Maybe#(acc_t) partialOut;
     method Bool weightLoaded;
+    method Bool weightBankLoaded(Bool bank);
+    method Bool activeWeightBank;
 endinterface
 
 module mkPE(PEIfc#(
@@ -56,8 +61,9 @@ module mkPE(PEIfc#(
     Multiplier#(input_t, weight_t, product_t),
     ProductAccumulator#(product_t, acc_t)
 );
-    Reg#(weight_t) weightReg <- mkRegU;
-    Reg#(Bool) weightValidReg <- mkReg(False);
+    Vector#(2, Reg#(weight_t)) weightRegs <- replicateM(mkRegU);
+    Vector#(2, Reg#(Bool)) weightValidRegs <- replicateM(mkReg(False));
+    Reg#(Bool) activeWeightBankReg <- mkReg(False);
 
     Vector#(peLatency, Reg#(Maybe#(input_t))) activationPipe <-
         replicateM(mkReg(tagged Invalid));
@@ -65,12 +71,43 @@ module mkPE(PEIfc#(
         replicateM(mkReg(tagged Invalid));
 
     method Action loadWeight(weight_t weight);
-        weightReg <= weight;
-        weightValidReg <= True;
+        if (activeWeightBankReg) begin
+            weightRegs[1] <= weight;
+            weightValidRegs[1] <= True;
+        end
+        else begin
+            weightRegs[0] <= weight;
+            weightValidRegs[0] <= True;
+        end
+    endmethod
+
+    method Action loadWeightBank(Bool bank, weight_t weight);
+        if (bank) begin
+            weightRegs[1] <= weight;
+            weightValidRegs[1] <= True;
+        end
+        else begin
+            weightRegs[0] <= weight;
+            weightValidRegs[0] <= True;
+        end
+    endmethod
+
+    method Action activateWeightBank(Bool bank);
+        activeWeightBankReg <= bank;
     endmethod
 
     method Action invalidateWeight;
-        weightValidReg <= False;
+        weightValidRegs[0] <= False;
+        weightValidRegs[1] <= False;
+    endmethod
+
+    method Action invalidateWeightBank(Bool bank);
+        if (bank) begin
+            weightValidRegs[1] <= False;
+        end
+        else begin
+            weightValidRegs[0] <= False;
+        end
     endmethod
 
     method Action clearPipeline;
@@ -88,10 +125,17 @@ module mkPE(PEIfc#(
     );
         Maybe#(acc_t) nextPartial = tagged Invalid;
 
-        if (isValid(activationIn) && isValid(partialIn) && weightValidReg) begin
+        Bool activeWeightValid = activeWeightBankReg
+            ? weightValidRegs[1]
+            : weightValidRegs[0];
+        weight_t activeWeight = activeWeightBankReg
+            ? weightRegs[1]
+            : weightRegs[0];
+
+        if (isValid(activationIn) && isValid(partialIn) && activeWeightValid) begin
             input_t activation = fromMaybe(?, activationIn);
             acc_t partial = fromMaybe(?, partialIn);
-            product_t product = arithmeticMultiply(activation, weightReg);
+            product_t product = arithmeticMultiply(activation, activeWeight);
             nextPartial = tagged Valid arithmeticAccumulate(partial, product);
         end
 
@@ -112,7 +156,15 @@ module mkPE(PEIfc#(
     method Maybe#(acc_t) partialOut =
         partialPipe[valueOf(peLatency) - 1];
 
-    method Bool weightLoaded = weightValidReg;
+    method Bool weightLoaded = activeWeightBankReg
+        ? weightValidRegs[1]
+        : weightValidRegs[0];
+
+    method Bool weightBankLoaded(Bool bank) = bank
+        ? weightValidRegs[1]
+        : weightValidRegs[0];
+
+    method Bool activeWeightBank = activeWeightBankReg;
 endmodule
 
 endpackage

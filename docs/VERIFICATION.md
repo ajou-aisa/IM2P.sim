@@ -88,3 +88,28 @@ binary를 실행한다. Coverage는 다음을 포함한다.
 - validation and tile-local statistics
 
 파일별 책임과 신규 test 작성 예는 `sim/tests/README.md`에 있다.
+
+## Scheduler와 host provider coverage
+
+Bluesim:
+
+- `TbMatmulScheduler`: full/stripe extent, queue backpressure, ordering
+- `TbWorkScheduler`: K fragments, block boundaries, accumulation
+- `TbIM2PCoreMatrix`: delayed tagged A/W response, output acknowledgement
+- `TbIM2PCoreMatrixScale`: delayed S response, reuse/prefetch/snapshot
+- activation/weight bank testbenches: current/next slot safety
+
+Cargo auto-discovered integration tests:
+
+- `rtl_full_matmul`: oversized/tail/stride/golden/low-level equivalence
+- `rtl_memory_provider`: address-backed non-contiguous A/W/C views
+- `rtl_work_scheduler`: multi-I/J/K scheduling through the real RTL model
+- `rtl_async_stripes`, `rtl_stripe_completion`: publication gating,
+  finite backpressure, deterministic logical cycles, completion ordering
+- `rtl_weight_preload`, `rtl_work_stats`: dual-bank overlap and RTL counters
+- `rtl_writeback`: prefix/tail/row-gutter guard preservation
+- `c_api_smoke.c`: blocking and cooperative C ABI happy paths
+
+`make sim-test-int8x16`과 `make sim-test-int8x32`가 각 DIM의 모든 Cargo
+integration binary를 실행한다. `make c-api-test`는 strict C11 header compile,
+static library link, 실제 C driver 실행까지 수행한다.

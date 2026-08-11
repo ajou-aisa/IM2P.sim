@@ -63,17 +63,58 @@ void copy_wide(const VlWide<Words> &signal, int32_t *values, size_t count) {
     }
 }
 
+template <size_t Words>
+void set_i8_lanes(VlWide<Words> &signal, const int8_t *values, size_t count) {
+    for (size_t index = 0; index < Words; ++index) {
+        signal[index] = 0U;
+    }
+    for (size_t index = 0; index < count; ++index) {
+        const auto value = static_cast<uint8_t>(values[index]);
+        const size_t word = index / 4;
+        const size_t shift = (index % 4) * 8;
+        signal[word] |= static_cast<uint32_t>(value) << shift;
+    }
+}
+
 void evaluate(Simulator *simulator) {
     simulator->top->eval();
 }
 
+/*
+ * Every EN_* input of the generated model. A freshly constructed Top does not
+ * value-initialize its port members, so an indeterminate scheduler enable can
+ * fire the instant RST_N is released and drag the core out of MatrixIdle.
+ * Clearing all enables is also the correct post-condition after any staged
+ * pulse, so both reset and pulse funnel through this helper.
+ */
+void clear_enables(Simulator *simulator) {
+    auto *top = simulator->top;
+    top->EN_beginWeightLoad = 0;
+    top->EN_loadWeightRow = 0;
+    top->EN_configureScaling = 0;
+    top->EN_putScaleRow = 0;
+    top->EN_startExecution = 0;
+    top->EN_putActivationRow = 0;
+    top->EN_acknowledgeExecution = 0;
+    top->EN_writeAccumulatorRow = 0;
+    top->EN_startMatmul = 0;
+    top->EN_publishActivationStripe = 0;
+    top->EN_putActivationReadResponse = 0;
+    top->EN_putWeightReadResponse = 0;
+    top->EN_putScaleReadResponse = 0;
+    top->EN_putOutputWriteResponse = 0;
+    top->EN_acknowledgeStripeCompletion = 0;
+    top->EN_acknowledgeMatmul = 0;
+}
+
 void pulse(Simulator *simulator, CData &enable) {
+    clear_enables(simulator);
     enable = 1;
     simulator->top->CLK = 0;
     evaluate(simulator);
     simulator->top->CLK = 1;
     evaluate(simulator);
-    enable = 0;
+    clear_enables(simulator);
     simulator->top->CLK = 0;
     evaluate(simulator);
     ++simulator->cycles;
@@ -120,6 +161,7 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
     auto *simulator = static_cast<Simulator *>(handle);
     simulator->top->CLK = 0;
     simulator->top->RST_N = 0;
+    clear_enables(simulator);
     evaluate(simulator);
     for (int cycle = 0; cycle < 2; ++cycle) {
         simulator->top->CLK = 1;
@@ -128,6 +170,7 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
         evaluate(simulator);
         ++simulator->cycles;
     }
+    clear_enables(simulator);
     simulator->top->RST_N = 1;
     evaluate(simulator);
     simulator->cycles = 0;
@@ -135,6 +178,7 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
 
 extern "C" void im2p_tick(im2p_handle_t handle) {
     auto *simulator = static_cast<Simulator *>(handle);
+    clear_enables(simulator);
     simulator->top->CLK = 0;
     evaluate(simulator);
     simulator->top->CLK = 1;
@@ -393,4 +437,371 @@ extern "C" int im2p_read_accumulator_row(
     evaluate(simulator);
     copy_wide(simulator->top->readAccumulatorRow, values, kDim);
     return 1;
+}
+
+extern "C" int im2p_start_matmul(
+    im2p_handle_t handle,
+    const im2p_matmul_descriptor_t *descriptor
+) {
+    if (handle == nullptr || descriptor == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    if (descriptor->mode > 1 || descriptor->vector_op > 2
+        || descriptor->reduction_count == 0) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_startMatmul) {
+        return 0;
+    }
+
+    // Copied field by field; the descriptor is not retained past this call.
+    top->startMatmul_jobId = descriptor->job_id;
+    top->startMatmul_mode = descriptor->mode;
+    top->startMatmul_activationBase = descriptor->activation_base;
+    top->startMatmul_weightBase = descriptor->weight_base;
+    top->startMatmul_scaleBase = descriptor->scale_base;
+    top->startMatmul_outputBase = descriptor->output_base;
+    top->startMatmul_activationRowStride = descriptor->activation_row_stride;
+    top->startMatmul_weightRowStride = descriptor->weight_row_stride;
+    top->startMatmul_scaleRowStride = descriptor->scale_row_stride;
+    top->startMatmul_outputRowStride = descriptor->output_row_stride;
+    top->startMatmul_rowCount = descriptor->row_count;
+    top->startMatmul_columnCount = descriptor->column_count;
+    top->startMatmul_reductionCount = descriptor->reduction_count;
+    top->startMatmul_kOrigin = descriptor->k_origin;
+    top->startMatmul_scaleTotalK = descriptor->scale_total_k;
+    top->startMatmul_scaleBlockSize = descriptor->scale_block_size;
+    top->startMatmul_scaleContext = descriptor->scale_context;
+    top->startMatmul_accumulateFirstFragment =
+        descriptor->accumulate_first_fragment ? 1 : 0;
+    top->startMatmul_vectorOp = descriptor->vector_op;
+    pulse(simulator, top->EN_startMatmul);
+    return 1;
+}
+
+extern "C" int im2p_publish_activation_stripe(
+    im2p_handle_t handle,
+    uint32_t row_begin,
+    uint32_t row_count
+) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_publishActivationStripe) {
+        return 0;
+    }
+    top->publishActivationStripe_rowBegin = row_begin;
+    top->publishActivationStripe_rowCount = row_count;
+    pulse(simulator, top->EN_publishActivationStripe);
+    return 1;
+}
+
+extern "C" int im2p_activation_stripe_ready(im2p_handle_t handle) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->RDY_publishActivationStripe;
+}
+
+extern "C" int im2p_matmul_done(im2p_handle_t handle) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->matmulDone && simulator->top->RDY_matmulDone;
+}
+
+extern "C" int im2p_acknowledge_matmul(im2p_handle_t handle) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_acknowledgeMatmul) {
+        return 0;
+    }
+    pulse(simulator, simulator->top->EN_acknowledgeMatmul);
+    return 1;
+}
+
+extern "C" int im2p_activation_read_request(
+    im2p_handle_t handle,
+    im2p_read_request_t *request
+) {
+    if (handle == nullptr || request == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    // Tag/address/count carry meaning only while the request is valid; the
+    // generated RDY signals mirror that guard.
+    if (!top->activationReadRequestValid
+        || !top->RDY_activationReadRequestTag
+        || !top->RDY_activationReadRequestAddress
+        || !top->RDY_activationReadRequestElementCount) {
+        return IM2P_REQUEST_ABSENT;
+    }
+    request->tag = top->activationReadRequestTag;
+    request->address = top->activationReadRequestAddress;
+    request->element_count = top->activationReadRequestElementCount;
+    return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_weight_read_request(
+    im2p_handle_t handle,
+    im2p_read_request_t *request
+) {
+    if (handle == nullptr || request == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->weightReadRequestValid
+        || !top->RDY_weightReadRequestTag
+        || !top->RDY_weightReadRequestAddress
+        || !top->RDY_weightReadRequestElementCount) {
+        return IM2P_REQUEST_ABSENT;
+    }
+    request->tag = top->weightReadRequestTag;
+    request->address = top->weightReadRequestAddress;
+    request->element_count = top->weightReadRequestElementCount;
+    return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_scale_read_request(
+    im2p_handle_t handle,
+    im2p_read_request_t *request
+) {
+    if (handle == nullptr || request == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->scaleReadRequestValid
+        || !top->RDY_scaleReadRequestTag
+        || !top->RDY_scaleReadRequestAddress
+        || !top->RDY_scaleReadRequestElementCount) {
+        return IM2P_REQUEST_ABSENT;
+    }
+    request->tag = top->scaleReadRequestTag;
+    request->address = top->scaleReadRequestAddress;
+    request->element_count = top->scaleReadRequestElementCount;
+    return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_put_activation_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putActivationReadResponse) {
+        return 0;
+    }
+    top->putActivationReadResponse_tag = tag;
+    set_i8_lanes(top->putActivationReadResponse_values, values, count);
+    pulse(simulator, top->EN_putActivationReadResponse);
+    return 1;
+}
+
+extern "C" int im2p_put_weight_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putWeightReadResponse) {
+        return 0;
+    }
+    top->putWeightReadResponse_tag = tag;
+    set_i8_lanes(top->putWeightReadResponse_values, values, count);
+    pulse(simulator, top->EN_putWeightReadResponse);
+    return 1;
+}
+
+extern "C" int im2p_put_scale_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putScaleReadResponse) {
+        return 0;
+    }
+    top->putScaleReadResponse_tag = tag;
+    set_i8_lanes(top->putScaleReadResponse_values, values, count);
+    pulse(simulator, top->EN_putScaleReadResponse);
+    return 1;
+}
+
+extern "C" int im2p_output_write_request(
+    im2p_handle_t handle,
+    im2p_write_request_t *request,
+    int32_t *values
+) {
+    if (handle == nullptr || request == nullptr || values == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->outputWriteRequestValid
+        || !top->RDY_outputWriteRequestTag
+        || !top->RDY_outputWriteRequestAddress
+        || !top->RDY_outputWriteRequestElementCount
+        || !top->RDY_outputWriteRequestValues) {
+        return IM2P_REQUEST_ABSENT;
+    }
+    request->tag = top->outputWriteRequestTag;
+    request->address = top->outputWriteRequestAddress;
+    request->element_count = top->outputWriteRequestElementCount;
+    copy_wide(top->outputWriteRequestValues, values, kDim);
+    return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_put_output_write_response(
+    im2p_handle_t handle,
+    uint64_t tag
+) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putOutputWriteResponse) {
+        return 0;
+    }
+    top->putOutputWriteResponse_tag = tag;
+    pulse(simulator, top->EN_putOutputWriteResponse);
+    return 1;
+}
+
+extern "C" int im2p_stripe_completion(
+    im2p_handle_t handle,
+    im2p_stripe_completion_t *completion
+) {
+    if (handle == nullptr || completion == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->stripeCompletionValid
+        || !top->RDY_stripeCompletionId
+        || !top->RDY_stripeCompletionRowBegin
+        || !top->RDY_stripeCompletionRowCount
+        || !top->RDY_stripeCompletionContext) {
+        return IM2P_REQUEST_ABSENT;
+    }
+    completion->stripe_id = top->stripeCompletionId;
+    completion->row_begin = top->stripeCompletionRowBegin;
+    completion->row_count = top->stripeCompletionRowCount;
+    completion->stripe_context = top->stripeCompletionContext;
+    return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_acknowledge_stripe_completion(im2p_handle_t handle) {
+    if (handle == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_acknowledgeStripeCompletion) {
+        return 0;
+    }
+    pulse(simulator, simulator->top->EN_acknowledgeStripeCompletion);
+    return 1;
+}
+
+extern "C" void im2p_matrix_counters(
+    im2p_handle_t handle,
+    im2p_matrix_counters_t *counters
+) {
+    if (handle == nullptr || counters == nullptr) {
+        return;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    counters->fragments_completed = top->matmulFragmentsCompleted;
+    counters->works_completed = top->matmulWorksCompleted;
+    counters->stripes_published = top->stripesPublished;
+    counters->stripe_rows_published = top->stripeRowsPublished;
+    counters->activation_read_requests = top->activationReadRequests;
+    counters->weight_read_requests = top->weightReadRequests;
+    counters->scale_read_requests = top->scaleReadRequests;
+    counters->output_write_requests = top->outputWriteRequests;
+    counters->output_write_responses = top->outputWriteResponses;
+    counters->weight_bank_activations = top->weightBankActivations;
+    counters->activation_wait_cycles = top->activationWaitCycles;
+    counters->weight_wait_cycles = top->weightWaitCycles;
+    counters->output_wait_cycles = top->outputWaitCycles;
+    counters->stripe_host_wait_cycles = top->stripeHostWaitCycles;
+    counters->compute_cycles = top->computeCycles;
+    counters->drain_cycles = top->drainCycles;
+    counters->weight_preload_cycles = top->weightPreloadCycles;
+    counters->activation_overlap_cycles = top->activationOverlapCycles;
+    counters->weight_overlap_cycles = top->weightOverlapCycles;
+    counters->scale_overlap_cycles = top->scaleOverlapCycles;
+    counters->overlap_cycles = top->overlapCycles;
+}
+
+extern "C" void im2p_matrix_debug(
+    im2p_handle_t handle,
+    im2p_matrix_debug_t *debug
+) {
+    if (handle == nullptr || debug == nullptr) {
+        return;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    debug->matmul_scheduler_state = top->matmulSchedulerState;
+    debug->work_scheduler_state = top->workSchedulerState;
+    debug->matrix_core_state = top->matrixCoreState;
+    debug->active_weight_bank = top->activeWeightBank ? 1 : 0;
+    debug->inactive_weight_bank_loading = top->inactiveWeightBankLoading ? 1 : 0;
+    debug->execution_active = top->executionActive ? 1 : 0;
+    debug->accepted_rows = top->debugAcceptedRows;
+    debug->configured_rows = top->debugConfiguredRows;
+    debug->first_column_issued = top->debugFirstColumnIssued;
+    debug->first_column_committed = top->debugFirstColumnCommitted;
+    debug->engine_result_valid = top->debugEngineResultValid ? 1 : 0;
+    debug->vector_busy = top->debugVectorBusy ? 1 : 0;
+    debug->activation_request_valid = top->activationReadRequestValid ? 1 : 0;
+    debug->weight_request_valid = top->weightReadRequestValid ? 1 : 0;
+    debug->scale_request_valid = top->scaleReadRequestValid ? 1 : 0;
+    debug->output_request_valid = top->outputWriteRequestValid ? 1 : 0;
+    debug->stripe_host_waiting = top->matmulSchedulerState == 1 ? 1 : 0;
 }

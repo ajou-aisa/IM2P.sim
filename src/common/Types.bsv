@@ -23,6 +23,7 @@ typedef UInt#(TLog#(rows)) RowAddress#(numeric type rows);
 // tags로 운반한다. DMA/address interpretation은 Core 밖에 남긴다.
 typedef UInt#(64) ScaleContext;
 typedef UInt#(32) ScaleBlockIndex;
+typedef UInt#(32) MatrixExtent;
 
 typedef enum {
     ScaleDemand,

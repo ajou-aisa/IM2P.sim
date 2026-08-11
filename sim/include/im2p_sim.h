@@ -1,0 +1,153 @@
+#ifndef IM2P_SIM_H
+#define IM2P_SIM_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct im2p_sim im2p_sim_t;
+typedef struct im2p_stream im2p_stream_t;
+
+enum {
+    IM2P_OK = 0,
+    IM2P_ERROR = -1,
+    IM2P_BACKPRESSURE = -2,
+    IM2P_VECTOR_BYPASS = 0,
+    IM2P_VECTOR_MULTIPLY = 1,
+    IM2P_VECTOR_SHIFT = 2,
+};
+
+/*
+ * Full-matrix pointers are borrowed for im2p_execute_matmul only. Input and
+ * scale regions must remain readable and output region writable for that call.
+ */
+typedef struct {
+    const int8_t *activations;
+    const int8_t *weights;
+    const int8_t *scales;
+    int32_t *output;
+    size_t m;
+    size_t n;
+    size_t k;
+    size_t activation_row_stride;
+    size_t weight_row_stride;
+    size_t output_row_stride;
+    size_t tile_i_rows;
+    size_t tile_j_columns;
+    size_t block_size;
+    size_t scale_total_k;
+    size_t scale_row_stride;
+    size_t scale_column_offset;
+    size_t scale_valid_columns;
+    size_t scale_values_len;
+    uint8_t vector_op;
+    uint64_t work_context;
+} im2p_matmul_desc_t;
+
+/*
+ * Striped weights/scales/output remain borrowed until im2p_finish_stream or
+ * im2p_destroy_stream. The current ABI requires packed KxN weights.
+ */
+typedef struct {
+    const int8_t *weights;
+    const int8_t *scales;
+    int32_t *output;
+    size_t m;
+    size_t n;
+    size_t k;
+    size_t weight_row_stride;
+    size_t output_row_stride;
+    size_t tile_i_rows;
+    size_t tile_j_columns;
+    size_t block_size;
+    size_t scale_total_k;
+    size_t scale_row_stride;
+    size_t scale_column_offset;
+    size_t scale_valid_columns;
+    size_t scale_values_len;
+    size_t stripe_count;
+    uint8_t vector_op;
+    uint64_t work_context;
+} im2p_stripe_work_desc_t;
+
+/*
+ * `activations` remains caller-owned and must remain readable until matching
+ * completion is returned. Published stripes must be contiguous and ordered.
+ */
+typedef struct {
+    uint32_t stripe_id;
+    size_t i_start;
+    size_t rows;
+    const int8_t *activations;
+    size_t activation_row_stride;
+    uint64_t context;
+} im2p_activation_stripe_t;
+
+typedef struct {
+    uint32_t stripe_id;
+    size_t i_start;
+    size_t rows;
+    uint64_t context;
+} im2p_stripe_completion_t;
+
+typedef struct {
+    uint64_t work_total_cycles;
+    uint64_t activation_read_requests;
+    uint64_t weight_read_requests;
+    uint64_t scale_read_requests;
+    uint64_t output_write_requests;
+    uint64_t output_write_responses;
+    uint64_t activation_wait_cycles;
+    uint64_t weight_wait_cycles;
+    uint64_t scale_wait_cycles;
+    uint64_t output_wait_cycles;
+    uint64_t stripe_host_wait_cycles;
+    uint64_t drain_cycles;
+    uint64_t weight_preload_cycles;
+    uint64_t same_block_scale_hits;
+    uint64_t next_scale_hits;
+    uint64_t scale_demand_misses;
+    uint64_t compute_cycles;
+    uint64_t overlap_cycles;
+    uint64_t activation_overlap_cycles;
+    uint64_t weight_overlap_cycles;
+    uint64_t scale_overlap_cycles;
+    uint64_t completed_fragments;
+    uint64_t completed_output_tiles;
+    uint64_t completed_stripes;
+    uint64_t stripes_published;
+    uint64_t stripe_rows_published;
+    uint64_t weight_bank_activations;
+} im2p_work_stats_t;
+
+im2p_sim_t *im2p_sim_create(void);
+void im2p_sim_destroy(im2p_sim_t *sim);
+int im2p_execute_matmul(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_t *descriptor,
+    im2p_work_stats_t *stats
+);
+im2p_stream_t *im2p_begin_striped_matmul(
+    im2p_sim_t *sim,
+    const im2p_stripe_work_desc_t *descriptor
+);
+int im2p_publish_stripe(
+    im2p_stream_t *stream,
+    const im2p_activation_stripe_t *stripe
+);
+int im2p_progress_stream(im2p_stream_t *stream, uint64_t cycle_budget);
+int im2p_poll_completed(
+    im2p_stream_t *stream,
+    im2p_stripe_completion_t *completion
+);
+int im2p_finish_stream(im2p_stream_t *stream, im2p_work_stats_t *stats);
+void im2p_destroy_stream(im2p_stream_t *stream);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

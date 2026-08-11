@@ -253,3 +253,22 @@ make rtl-one TOP=mkSynthInt8
 - `docs/ARCHITECTURE.md`: 데이터·주소·제어·backpressure 흐름
 - `docs/VERIFICATION.md`: testbench 범위와 검증 상태
 - `VALIDATION_REPORT.txt`: 이번 산출물에서 실제 실행한 검사
+
+## Address-driven full matrix와 stripe scheduling
+
+`IM2PCore` 하나가 `MatmulScheduler`와 `WorkScheduler`를 각각 하나씩
+소유한다. 두 scheduler가 M/N tile, K fragment, scale block을 결정하고 A/W/S/C
+주소와 tag를 발행한다. Rust는 해당 주소를 host-owned view에 resolve하고
+response를 돌려주며, I/J/K scheduling을 수행하지 않는다.
+
+- `execute_matmul`: 전체 matrix descriptor를 한 번 제출하고 RTL 완료까지 진행
+- `begin_striped_matmul`: 정적 W/S/C metadata 제출 후 activation stripe를
+  cooperative하게 publish
+- `npu_ready`: RTL publication FIFO가 새 stripe를 받을 수 있는 상태
+- `host_available`: publish된 host stripe가 아직 완료되지 않은 상태
+- stripe completion: 마지막 C row response가 acknowledge된 뒤에만 발생
+
+두 API 모두 같은 core/datapath/scheduler stack을 사용한다. `execute_tile` loop,
+OS thread, async runtime, sleep, wall-clock timing은 high-level scheduling에
+사용하지 않는다. DMA, scratchpad, TLB, ROB, RoCC, 두 번째 core/datapath 또는
+별도 Rust scheduler도 이 모델 범위가 아니다.

@@ -5,6 +5,7 @@
 SHELL := /bin/bash
 
 BSC       ?= bsc
+CC        ?= cc
 CXX       ?= g++
 PYTHON    ?= python3
 VERILATOR ?= verilator
@@ -12,7 +13,7 @@ YOSYS     ?= yosys
 
 BUILD_DIR := build
 ROOT_DIR  := $(CURDIR)
-BSC_PATH  := +:src/common:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
+BSC_PATH  := +:src/common:src/io:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
 BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
              -info-dir $(BUILD_DIR)/info
 BSC_SIM_DIRS := -bdir $(BUILD_DIR)/bsc/sim -simdir $(BUILD_DIR)/sim \
@@ -31,12 +32,19 @@ CPP_SRC  := tools/im2p_reference.cpp
 BSV_TEST_TOPS := \
 	mkTbArithmetic \
 	mkTbPE \
+	mkTbWorkScheduler \
+	mkTbMatmulScheduler \
+	mkTbSystolicArrayWeightBanks \
+	mkTbSystolicEngineWeightBanks \
 	mkTbInputSkew \
 	mkTbSystolicArray \
 	mkTbVectorUnit \
 	mkTbAccumulator \
 	mkTbExecuteController \
 	mkTbIM2PCore \
+	mkTbIM2PCoreActivationBuffer \
+	mkTbIM2PCoreMatrix \
+	mkTbIM2PCoreMatrixScale \
 	mkTbIM2PCoreGrouped \
 	mkTbFloatCore \
 	mkTbSynthInt8x16 \
@@ -61,7 +69,7 @@ BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
                                       $(BSC_PREFIX)/lib/Verilog))
 VERILATOR_COMMON := --cc --Wno-fatal
 
-.PHONY: all check verify static-check cpp-test bsv-test bsv-test-one rtl rtl-one \
+.PHONY: all check verify static-check cpp-test c-api-test bsv-test bsv-test-one rtl rtl-one \
         verilator-int8x16 verilator-int8x32 verilator sim-test-int8x16 \
         sim-test-int8x32 sim-test verilator-lint yosys-stat clean help check-tools
 
@@ -103,6 +111,18 @@ $(CPP_TOOL): $(CPP_SRC) Makefile | $(BUILD_DIR)/bin
 
 cpp-test: $(CPP_TOOL)
 	$(CPP_TOOL)
+
+c-api-test: | $(BUILD_DIR)/bin
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
+		-Isim/include -c sim/tests/c_api_smoke.c \
+		-o $(BUILD_DIR)/bin/c_api_smoke.o
+	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_DIM=16 cargo build \
+		--manifest-path sim/Cargo.toml --lib --release
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+		$(BUILD_DIR)/bin/c_api_smoke.o \
+		sim/target/release/libim2p_sim.a \
+		-o $(BUILD_DIR)/bin/im2p_c_api_smoke
+	$(BUILD_DIR)/bin/im2p_c_api_smoke
 
 bsv-test: | $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
 	@set -euo pipefail; \

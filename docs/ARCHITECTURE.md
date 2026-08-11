@@ -212,3 +212,29 @@ accRows >= arrayDim
 타일링한다. K progress와 block boundary에 따른 scale row selection은
 `IM2PCore`의 runtime control이며 별도 core나 wrapper가 아니다. Core는 DMA,
 scratchpad, global scheduler를 모델링하지 않는다.
+
+## 10. Address-driven scheduler stack
+
+`IM2PCore` 내부에는 다음 RTL control module이 한 번씩만 존재한다.
+
+```text
+MatmulScheduler: M/N tile, async stripe publication, completion ordering
+WorkScheduler:   K fragment, scale block, accumulate-first selection
+IM2PCore:        tagged A/W/S/C channels, buffer/bank readiness, execution
+```
+
+Full-matrix mode는 descriptor의 전체 M/N 범위를 즉시 scheduling한다. Async
+mode는 published stripe만 scheduling하며, 미공개 stripe 주소를 prefetch하지
+않는다. Host publication 가능 여부와 RTL FIFO readiness는 별도 상태다.
+
+각 host request는 address, element count, tag를 가진다. Provider는 address를
+borrowed A/W/S/C view로 resolve하고 동일 tag로 응답한다. 최종 output row
+acknowledgement가 scheduler의 work/stripe completion보다 먼저 완료되어야 한다.
+
+External `start`, work completion, job acknowledgement는 pending register를 거쳐
+내부 rule에서 state transition한다. 이 one-cycle barrier는 Verilator의
+post-edge combinational reevaluation에서도 state register writer가 one-hot임을
+보장한다.
+
+Rust layer는 provider, clock advance, watchdog, counter snapshot만 담당한다.
+Matrix/fragment/scale-block 선택은 RTL 외부에 복제하지 않는다.

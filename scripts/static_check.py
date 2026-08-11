@@ -31,6 +31,10 @@ EXPECTED_SRC = {
     "accumulator/Accumulator.bsv",
     "control/ExecuteCmd.bsv",
     "control/ExecuteController.bsv",
+    "control/WorkTypes.bsv",
+    "control/WorkScheduler.bsv",
+    "control/MatmulScheduler.bsv",
+    "io/HostMemoryTypes.bsv",
     "core/IM2PCore.bsv",
 }
 
@@ -45,6 +49,13 @@ EXPECTED_TESTS = {
     "TbExecuteController.bsv",
     "TbIM2PCore.bsv",
     "TbIM2PCoreGrouped.bsv",
+    "TbIM2PCoreActivationBuffer.bsv",
+    "TbIM2PCoreMatrix.bsv",
+    "TbIM2PCoreMatrixScale.bsv",
+    "TbMatmulScheduler.bsv",
+    "TbWorkScheduler.bsv",
+    "TbSystolicArrayWeightBanks.bsv",
+    "TbSystolicEngineWeightBanks.bsv",
     "TbFloatCore.bsv",
     "TbSynthInt8x16.bsv",
     "TbSynthInt8x32.bsv",
@@ -408,10 +419,39 @@ def main() -> None:
     if [path.name for path in core_files] != ["IM2PCore.bsv"]:
         fail("core/ must contain exactly one architectural core: IM2PCore")
 
+    core_text = strip_comments(core_files[0].read_text(encoding="utf-8"))
+    for constructor in ("mkMatmulScheduler", "mkWorkScheduler"):
+        if core_text.count(f"<- {constructor}") != 1:
+            fail(f"IM2PCore must instantiate exactly one {constructor}")
+
+    high_level_rust = [
+        ROOT / "sim/src/simulator/matmul.rs",
+        ROOT / "sim/src/simulator/striped.rs",
+    ]
+    for path in high_level_rust:
+        text = path.read_text(encoding="utf-8")
+        if "execute_tile(" in text:
+            fail(f"high-level API wraps execute_tile: {path.relative_to(ROOT)}")
+        if re.search(r"\b(std::thread|thread::|sleep|Instant|SystemTime)\b", text):
+            fail(f"host timing dependency in {path.relative_to(ROOT)}")
+
+    source_text = "\n".join(
+        strip_comments(path.read_text(encoding="utf-8"))
+        for path in [*SRC.rglob("*.bsv"), *(ROOT / "sim/src").rglob("*.rs")]
+    )
+    forbidden_architecture = re.search(
+        r"\b(DMA|Dma|Scratchpad|TLB|Rob|ROB|RoCC)\b",
+        source_text,
+    )
+    if forbidden_architecture:
+        fail(f"forbidden architecture symbol: {forbidden_architecture.group(1)}")
+
     for synth in SYNTH.glob("*.bsv"):
         text = synth.read_text(encoding="utf-8")
         if "mkIM2PCore" not in text or "IM2PCoreIfc" not in text:
             fail(f"synth top does not use the single IM2PCore: {synth.name}")
+        if strip_comments(text).count("<- mkIM2PCore") != 1:
+            fail(f"synth top must instantiate exactly one IM2PCore: {synth.name}")
 
     makefile_path = ROOT / "Makefile"
     makefile_text = makefile_path.read_text(encoding="utf-8")

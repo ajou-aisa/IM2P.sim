@@ -29,6 +29,7 @@ interface SystolicArrayIfc#(
     // 새로운 B tile을 적재하기 전에 row-loaded 상태를 지운다. 같은 B tile을 여러
     // activation execution에서 재사용할 때는 다시 호출하지 않아도 된다.
     method Action beginWeightLoad;
+    method Action beginWeightLoadBank(Bool bank);
 
     // B matrix의 한 K row를 preload한다. 전체 weight matrix를 한 cycle의 넓은
     // method로 전달하지 않고 arrayDim cycle에 걸쳐 row 단위로 적재한다.
@@ -36,8 +37,16 @@ interface SystolicArrayIfc#(
         BoundedIndex#(arrayDim) row,
         Vector#(arrayDim, weight_t) weights
     );
+    method Action loadWeightRowBank(
+        Bool bank,
+        BoundedIndex#(arrayDim) row,
+        Vector#(arrayDim, weight_t) weights
+    );
 
     method Bool weightsReady;
+    method Bool weightsReadyBank(Bool bank);
+    method Action activateWeightBank(Bool bank);
+    method Bool activeWeightBank;
     method Action clearPipeline;
 
     method Action step(
@@ -76,15 +85,44 @@ module mkSystolicArray(SystolicArrayIfc#(
         )
     ) processingElements <- replicateM(replicateM(mkPE));
 
-    Vector#(arrayDim, Reg#(Bool)) loadedRows <- replicateM(mkReg(False));
+    Vector#(
+        2,
+        Vector#(arrayDim, Reg#(Bool))
+    ) loadedRows <- replicateM(replicateM(mkReg(False)));
+    Reg#(Bool) activeWeightBankReg <- mkReg(False);
 
     method Action beginWeightLoad;
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
-            loadedRows[row] <= False;
+            if (activeWeightBankReg) begin
+                loadedRows[1][row] <= False;
+            end
+            else begin
+                loadedRows[0][row] <= False;
+            end
+
             for (Integer column = 0;
                     column < valueOf(arrayDim);
                     column = column + 1) begin
-                processingElements[row][column].invalidateWeight;
+                processingElements[row][column].invalidateWeightBank(
+                    activeWeightBankReg
+                );
+            end
+        end
+    endmethod
+
+    method Action beginWeightLoadBank(Bool bank);
+        for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
+            if (bank) begin
+                loadedRows[1][row] <= False;
+            end
+            else begin
+                loadedRows[0][row] <= False;
+            end
+
+            for (Integer column = 0;
+                    column < valueOf(arrayDim);
+                    column = column + 1) begin
+                processingElements[row][column].invalidateWeightBank(bank);
             end
         end
     endmethod
@@ -104,7 +142,13 @@ module mkSystolicArray(SystolicArrayIfc#(
                 decodedRow < valueOf(arrayDim);
                 decodedRow = decodedRow + 1) begin
             if (row == fromInteger(decodedRow)) begin
-                loadedRows[decodedRow] <= True;
+                if (activeWeightBankReg) begin
+                    loadedRows[1][decodedRow] <= True;
+                end
+                else begin
+                    loadedRows[0][decodedRow] <= True;
+                end
+
                 for (Integer column = 0;
                         column < valueOf(arrayDim);
                         column = column + 1) begin
@@ -116,13 +160,69 @@ module mkSystolicArray(SystolicArrayIfc#(
         end
     endmethod
 
+    method Action loadWeightRowBank(
+        Bool bank,
+        BoundedIndex#(arrayDim) row,
+        Vector#(arrayDim, weight_t) weights
+    );
+        dynamicAssert(
+            row <= fromInteger(valueOf(arrayDim) - 1),
+            "weight row exceeds arrayDim"
+        );
+
+        for (Integer decodedRow = 0;
+                decodedRow < valueOf(arrayDim);
+                decodedRow = decodedRow + 1) begin
+            if (row == fromInteger(decodedRow)) begin
+                if (bank) begin
+                    loadedRows[1][decodedRow] <= True;
+                end
+                else begin
+                    loadedRows[0][decodedRow] <= True;
+                end
+
+                for (Integer column = 0;
+                        column < valueOf(arrayDim);
+                        column = column + 1) begin
+                    processingElements[decodedRow][column].loadWeightBank(
+                        bank,
+                        weights[column]
+                    );
+                end
+            end
+        end
+    endmethod
+
     method Bool weightsReady;
         Vector#(arrayDim, Bool) status = newVector;
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
-            status[row] = loadedRows[row];
+            status[row] = activeWeightBankReg
+                ? loadedRows[1][row]
+                : loadedRows[0][row];
         end
         return allTrue(status);
     endmethod
+
+    method Bool weightsReadyBank(Bool bank);
+        Vector#(arrayDim, Bool) status = newVector;
+        for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
+            status[row] = bank ? loadedRows[1][row] : loadedRows[0][row];
+        end
+        return allTrue(status);
+    endmethod
+
+    method Action activateWeightBank(Bool bank);
+        activeWeightBankReg <= bank;
+        for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
+            for (Integer column = 0;
+                    column < valueOf(arrayDim);
+                    column = column + 1) begin
+                processingElements[row][column].activateWeightBank(bank);
+            end
+        end
+    endmethod
+
+    method Bool activeWeightBank = activeWeightBankReg;
 
     method Action clearPipeline;
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin

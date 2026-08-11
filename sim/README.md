@@ -97,3 +97,47 @@ scale_wait_cycles
 `scale_transfer_cycles` counts accepted RTL row-response cycles.
 `scale_wait_cycles` counts RTL cycles with a pending scaled execution. Host
 pointer dereference time is not an RTL cycle.
+
+## Matrix and cooperative stripe APIs
+
+Blocking Rust:
+
+```rust
+simulator.execute_matmul(&work, &mut output)?;
+```
+
+`MatmulWork` borrows strided activation, weight, optional scale views.
+`MatrixViewMut` borrows strided output. RTL supplies every I/J/K fragment and
+A/W/S/C address; Rust only resolves current requests and advances the model.
+
+Cooperative Rust:
+
+```text
+begin_striped_matmul(static W/S/C metadata)
+publish_stripe(completed CPU activation rows)
+progress(logical cycle budget)
+pending_activation_row / supply_activation_row
+pending_output_row / take_output_row / acknowledge_output_row
+poll_completed
+finish
+```
+
+`npu_ready()` reports RTL publication FIFO readiness. `host_available()`
+reports published host data still owned by an incomplete stripe. Completion is
+observable only after all matching C writes are acknowledged. No thread,
+runtime, sleep, polling delay, or CPU wall clock participates in correctness.
+
+## C ABI and pointer ownership
+
+Public header: `sim/include/im2p_sim.h`.
+
+Full-matrix pointers are borrowed only during `im2p_execute_matmul`. Striped
+W/S/output pointers remain valid through `im2p_finish_stream` or
+`im2p_destroy_stream`; each activation stripe pointer remains valid until its
+completion event. The C bridge copies descriptors, never retains temporary
+descriptor pointers, and rejects null/invalid packed-weight layouts.
+
+`WorkStats` reports request counts, provider wait cycles, compute/drain cycles,
+weight preload, current-next overlap by resource, fragments/tiles/stripes, and
+bank activations. Values are RTL counter deltas; they do not include host
+wall-clock time.

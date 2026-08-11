@@ -37,6 +37,8 @@ interface ExecuteControllerIfc#(numeric type arrayDim);
     method Bool idle;
     method Bool active;
     method Bool done;
+    method BoundedCount#(arrayDim) firstColumnIssued;
+    method BoundedCount#(arrayDim) firstColumnCommitted;
 
     // 완료 상태를 외부가 확인한 뒤 다음 execution을 받을 수 있도록 Idle로
     // 복귀한다.
@@ -159,6 +161,8 @@ module mkExecuteController(ExecuteControllerIfc#(arrayDim)) provisos (
     method Bool idle = stateReg == ControllerIdle;
     method Bool active = stateReg == ControllerRunning;
     method Bool done = stateReg == ControllerDone;
+    method BoundedCount#(arrayDim) firstColumnIssued = issuedRows[0];
+    method BoundedCount#(arrayDim) firstColumnCommitted = committedRows[0];
 
     method Action acknowledge if (stateReg == ControllerDone);
         stateReg <= ControllerIdle;

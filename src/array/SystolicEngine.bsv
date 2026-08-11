@@ -1,5 +1,6 @@
 package SystolicEngine;
 
+import Assert::*;
 import FIFOF::*;
 import Vector::*;
 
@@ -33,11 +34,20 @@ interface SystolicEngineIfc#(
     type acc_t
 );
     method Action beginWeightLoad;
+    method Action beginWeightLoadBank(Bool bank);
     method Action loadWeightRow(
         BoundedIndex#(arrayDim) row,
         Vector#(arrayDim, weight_t) weights
     );
+    method Action loadWeightRowBank(
+        Bool bank,
+        BoundedIndex#(arrayDim) row,
+        Vector#(arrayDim, weight_t) weights
+    );
     method Bool weightsReady;
+    method Bool weightsReadyBank(Bool bank);
+    method Action activateWeightBank(Bool bank);
+    method Bool activeWeightBank;
 
     method Action start(BoundedCount#(arrayDim) rowCount);
     method Bool activationReady;
@@ -53,6 +63,10 @@ interface SystolicEngineIfc#(
     method Bool idle;
     method Bool active;
     method Bool done;
+    method BoundedCount#(arrayDim) acceptedRows;
+    method BoundedCount#(arrayDim) configuredRows;
+    method BoundedCount#(arrayDim) firstColumnIssued;
+    method BoundedCount#(arrayDim) firstColumnCommitted;
     method Action acknowledge;
 endinterface
 
@@ -138,6 +152,14 @@ module mkSystolicEngine(SystolicEngineIfc#(
         systolicArray.beginWeightLoad;
     endmethod
 
+    method Action beginWeightLoadBank(Bool bank);
+        dynamicAssert(
+            bank != systolicArray.activeWeightBank,
+            "weight preload must target inactive bank"
+        );
+        systolicArray.beginWeightLoadBank(bank);
+    endmethod
+
     method Action loadWeightRow(
         BoundedIndex#(arrayDim) row,
         Vector#(arrayDim, weight_t) weights
@@ -145,7 +167,27 @@ module mkSystolicEngine(SystolicEngineIfc#(
         systolicArray.loadWeightRow(row, weights);
     endmethod
 
+    method Action loadWeightRowBank(
+        Bool bank,
+        BoundedIndex#(arrayDim) row,
+        Vector#(arrayDim, weight_t) weights
+    );
+        dynamicAssert(
+            bank != systolicArray.activeWeightBank,
+            "weight preload must target inactive bank"
+        );
+        systolicArray.loadWeightRowBank(bank, row, weights);
+    endmethod
+
     method Bool weightsReady = systolicArray.weightsReady;
+
+    method Bool weightsReadyBank(Bool bank) = systolicArray.weightsReadyBank(bank);
+
+    method Action activateWeightBank(Bool bank) if (controller.idle);
+        systolicArray.activateWeightBank(bank);
+    endmethod
+
+    method Bool activeWeightBank = systolicArray.activeWeightBank;
 
     method Action start(BoundedCount#(arrayDim) rowCount) if (
         controller.idle
@@ -191,6 +233,12 @@ module mkSystolicEngine(SystolicEngineIfc#(
     method Bool idle = controller.idle;
     method Bool active = controller.active;
     method Bool done = controller.done;
+    method BoundedCount#(arrayDim) acceptedRows = acceptedRowsReg;
+    method BoundedCount#(arrayDim) configuredRows = rowCountReg;
+    method BoundedCount#(arrayDim) firstColumnIssued =
+        controller.firstColumnIssued;
+    method BoundedCount#(arrayDim) firstColumnCommitted =
+        controller.firstColumnCommitted;
 
     method Action acknowledge if (controller.done);
         controller.acknowledge;

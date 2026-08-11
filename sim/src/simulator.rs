@@ -1,4 +1,6 @@
+mod matmul;
 mod rtl;
+mod striped;
 mod validation;
 
 use std::ffi::c_void;
@@ -6,6 +8,7 @@ use std::ptr::NonNull;
 
 use crate::{ffi, ScaleFetchStats, TileStats};
 use rtl::StartExecution;
+pub use striped::StripedMatmul;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VectorOp {
@@ -54,9 +57,28 @@ pub enum Error {
     RtlNotReady {
         operation: &'static str,
     },
+    StripeQueueFull,
+    InvalidStripe,
+    NoPendingActivation,
+    NoPendingOutput,
     Timeout {
         operation: &'static str,
         cycles: u64,
+        matmul_scheduler_state: u8,
+        work_scheduler_state: u8,
+        matrix_core_state: u8,
+        execution_active: bool,
+        accepted_rows: u32,
+        configured_rows: u32,
+        first_column_issued: u32,
+        first_column_committed: u32,
+        engine_result_valid: bool,
+        vector_busy: bool,
+        activation_request_valid: bool,
+        weight_request_valid: bool,
+        scale_request_valid: bool,
+        output_request_valid: bool,
+        stripe_host_waiting: bool,
     },
 }
 

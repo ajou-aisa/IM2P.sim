@@ -10,6 +10,43 @@ pub struct ScaleFetchStats {
     pub scale_wait_cycles: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkStats {
+    pub work_total_cycles: u64,
+
+    pub activation_read_requests: u64,
+    pub weight_read_requests: u64,
+    pub scale_read_requests: u64,
+    pub output_write_requests: u64,
+    pub output_write_responses: u64,
+
+    pub activation_wait_cycles: u64,
+    pub weight_wait_cycles: u64,
+    pub scale_wait_cycles: u64,
+    pub output_wait_cycles: u64,
+    pub stripe_host_wait_cycles: u64,
+
+    pub compute_cycles: u64,
+    pub drain_cycles: u64,
+    pub weight_preload_cycles: u64,
+
+    pub same_block_scale_hits: u64,
+    pub next_scale_hits: u64,
+    pub scale_demand_misses: u64,
+
+    pub overlap_cycles: u64,
+    pub activation_overlap_cycles: u64,
+    pub weight_overlap_cycles: u64,
+    pub scale_overlap_cycles: u64,
+
+    pub completed_fragments: u64,
+    pub completed_output_tiles: u64,
+    pub completed_stripes: u64,
+    pub stripes_published: u64,
+    pub stripe_rows_published: u64,
+    pub weight_bank_activations: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileStats {
     pub weight_load_cycles: u64,
