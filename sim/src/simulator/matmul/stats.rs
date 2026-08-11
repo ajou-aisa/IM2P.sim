@@ -50,6 +50,10 @@ impl Im2pSimulator {
             next_scale_hits: delta(scale_after.next_hits, scale_before.next_hits),
             scale_demand_misses: delta(scale_after.demand_misses, scale_before.demand_misses),
             overlap_cycles: delta(after.overlap_cycles, before.overlap_cycles),
+            cross_stripe_overlap_cycles: delta(
+                after.cross_stripe_overlap_cycles,
+                before.cross_stripe_overlap_cycles,
+            ),
             activation_overlap_cycles: delta(
                 after.activation_overlap_cycles,
                 before.activation_overlap_cycles,
@@ -65,6 +69,33 @@ impl Im2pSimulator {
                 after.weight_bank_activations,
                 before.weight_bank_activations,
             ),
+            lookahead_prepared: after.lookahead_prepared != 0
+                || after.lookahead_first_activation_cycle != 0
+                || after.lookahead_first_weight_cycle != 0,
+            lookahead_publish_cycle: after.lookahead_publish_cycle,
+            lookahead_first_activation_cycle: after.lookahead_first_activation_cycle,
+            lookahead_first_weight_cycle: after.lookahead_first_weight_cycle,
+            lookahead_weight_preload_cycle: after.lookahead_weight_preload_cycle,
+            lookahead_weight_requests: delta(
+                after.lookahead_weight_requests,
+                before.lookahead_weight_requests,
+            ),
+            lookahead_weight_reuse_hits: delta(
+                after.lookahead_weight_reuse_hits,
+                before.lookahead_weight_reuse_hits,
+            ),
+            lookahead_scale_cycle: after.lookahead_scale_cycle,
+            lookahead_scale_requests: delta(
+                after.lookahead_scale_requests,
+                before.lookahead_scale_requests,
+            ),
+            lookahead_scale_reuses: delta(
+                after.lookahead_scale_reuses,
+                before.lookahead_scale_reuses,
+            ),
+            current_stripe_completion_cycle: after.current_stripe_completion_cycle,
+            lookahead_ready_cycle: after.lookahead_ready_cycle,
+            lookahead_start_cycle: after.lookahead_start_cycle,
         }
     }
 

@@ -20,6 +20,18 @@ interface WorkSchedulerIfc#(numeric type arrayDim);
         Bool accumulateFirstFragment
     );
 
+    method Action prepareLookahead(
+        MatrixExtent kOrigin,
+        MatrixExtent reductionCount,
+        MatrixExtent blockSize,
+        Bool usesScale,
+        Bool accumulateFirstFragment
+    );
+    method Bool lookaheadValid;
+    method MatrixExtent lookaheadKStart;
+    method BoundedCount#(arrayDim) lookaheadKCount;
+    method Action startPrepared;
+
     method Bool fragmentValid;
     method MatrixExtent fragmentKStart;
     method BoundedCount#(arrayDim) fragmentKCount;
@@ -80,6 +92,12 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
     Reg#(Bool) firstFragmentReg <- mkReg(True);
     Reg#(Bool) accumulateFirstReg <- mkReg(False);
     Reg#(MatrixExtent) kStartReg <- mkReg(0);
+    Reg#(Bool) lookaheadValidReg <- mkReg(False);
+    Reg#(MatrixExtent) lookaheadKOriginReg <- mkReg(0);
+    Reg#(MatrixExtent) lookaheadReductionReg <- mkReg(0);
+    Reg#(MatrixExtent) lookaheadBlockSizeReg <- mkReg(0);
+    Reg#(Bool) lookaheadUsesScaleReg <- mkReg(False);
+    Reg#(Bool) lookaheadAccumulateReg <- mkReg(False);
 
     function MatrixExtent countAt(MatrixExtent kStart);
         return nextKFragmentCount(
@@ -90,6 +108,47 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
             usesScaleReg
         );
     endfunction
+
+    method Action prepareLookahead(
+        MatrixExtent kOrigin,
+        MatrixExtent reductionCount,
+        MatrixExtent blockSize,
+        Bool usesScale,
+        Bool accumulateFirstFragment
+    ) if (!lookaheadValidReg);
+        dynamicAssert(reductionCount > 0, "lookahead K must be positive");
+        dynamicAssert(!usesScale || blockSize > 0,
+                      "scaled lookahead block size must be positive");
+        lookaheadKOriginReg <= kOrigin;
+        lookaheadReductionReg <= reductionCount;
+        lookaheadBlockSizeReg <= blockSize;
+        lookaheadUsesScaleReg <= usesScale;
+        lookaheadAccumulateReg <= accumulateFirstFragment;
+        lookaheadValidReg <= True;
+    endmethod
+
+    method Bool lookaheadValid = lookaheadValidReg;
+    method MatrixExtent lookaheadKStart if (lookaheadValidReg);
+        return lookaheadKOriginReg;
+    endmethod
+    method BoundedCount#(arrayDim) lookaheadKCount if (lookaheadValidReg);
+        return truncate(nextKFragmentCount(
+            fromInteger(valueOf(arrayDim)), lookaheadKOriginReg,
+            lookaheadKOriginReg + lookaheadReductionReg,
+            lookaheadBlockSizeReg, lookaheadUsesScaleReg));
+    endmethod
+    method Action startPrepared if (stateReg == WorkIdle);
+        dynamicAssert(lookaheadValidReg, "no prepared lookahead fragment");
+        kOriginReg <= lookaheadKOriginReg;
+        totalKReg <= lookaheadKOriginReg + lookaheadReductionReg;
+        blockSizeReg <= lookaheadBlockSizeReg;
+        usesScaleReg <= lookaheadUsesScaleReg;
+        firstFragmentReg <= True;
+        accumulateFirstReg <= lookaheadAccumulateReg;
+        kStartReg <= lookaheadKOriginReg;
+        lookaheadValidReg <= False;
+        stateReg <= WorkOfferFragment;
+    endmethod
 
     method Action start(
         MatrixExtent kOrigin,

@@ -51,7 +51,7 @@ module mkTbIM2PCoreActivationBuffer(Empty);
     rule watch;
         watchdog <= watchdog + 1;
         if (watchdog == 4000) begin
-            $display("IM2P ACTIVATION BUFFER: FAIL timeout state=", fshow(state));
+            $display("IM2P ACTIVATION BUFFER: FAIL timeout state=", fshow(state), " core=%0d ms=%0d ws=%0d a=%0d w=%0d", core.matrixCoreState, core.matmulSchedulerState, core.workSchedulerState, core.activationReadRequests, core.weightReadRequests);
             $finish(1);
         end
     endrule
@@ -67,13 +67,14 @@ module mkTbIM2PCoreActivationBuffer(Empty);
             64'h1000, 64'h2000, 64'h3000, 64'h4000,
             8, 2, 2, 8,
             2, 2, 4,
+            2, 2,
             0, 4, 2, 0, False, VectorBypass
         );
         state <= TbPublish;
     endrule
 
     rule publish (state == TbPublish);
-        core.publishActivationStripe(0, 2);
+        core.publishActivationStripe(0, 2, 8);
         published <= True;
         state <= TbRun;
     endrule

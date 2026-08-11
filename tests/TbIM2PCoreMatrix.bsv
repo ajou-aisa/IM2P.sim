@@ -506,6 +506,8 @@ module mkTbIM2PCoreMatrix(Empty);
             3,                  // rowCount M
             3,                  // columnCount N
             3,                  // reductionCount K
+            2,                  // tileIRows
+            2,                  // tileJColumns
             0,                  // kOrigin
             3,                  // scaleTotalK
             1,                  // scaleBlockSize
@@ -535,6 +537,34 @@ module mkTbIM2PCoreMatrix(Empty);
             );
             $finish(1);
         end
+
+        // Full mode must prepare the next I tile/J0 while the current I
+        // tile traverses J, then promote it without changing numerical output.
+        if (core.lookaheadFirstActivationCycle == 0
+                || core.lookaheadFirstWeightCycle == 0
+                || core.lookaheadWeightPreloadCycle == 0
+                || core.currentStripeCompletionCycle == 0
+                || core.lookaheadStartCycle
+                    <= core.currentStripeCompletionCycle) begin
+            $display(
+                "IM2P CORE MATRIX: FAIL full lookahead a=%0d w=%0d preload=%0d complete=%0d start=%0d",
+                core.lookaheadFirstActivationCycle,
+                core.lookaheadFirstWeightCycle,
+                core.lookaheadWeightPreloadCycle,
+                core.currentStripeCompletionCycle,
+                core.lookaheadStartCycle
+            );
+            $finish(1);
+        end
+
+        $display(
+            "FULL LOOKAHEAD a=%0d w=%0d preload=%0d complete=%0d start=%0d",
+            core.lookaheadFirstActivationCycle,
+            core.lookaheadFirstWeightCycle,
+            core.lookaheadWeightPreloadCycle,
+            core.currentStripeCompletionCycle,
+            core.lookaheadStartCycle
+        );
 
         // 여러 K fragment와 여러 I/J tile을 실제로 순회했는지 확인한다.
         if (core.matmulFragmentsCompleted <= 1
@@ -579,6 +609,8 @@ module mkTbIM2PCoreMatrix(Empty);
             3,
             3,
             3,
+            2,
+            2,
             0,
             3,
             1,
@@ -609,7 +641,7 @@ module mkTbIM2PCoreMatrix(Empty);
     endrule
 
     rule publishStripes (phase == TbAsyncPublish && !publishDone);
-        core.publishActivationStripe(0, 3);
+        core.publishActivationStripe(0, 3, activationStride);
         publishDone <= True;
         phase <= TbAsyncRun;
     endrule
@@ -677,6 +709,8 @@ module mkTbIM2PCoreMatrix(Empty);
             3,
             3,
             3,
+            2,
+            2,
             0,
             3,
             1,

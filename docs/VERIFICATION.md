@@ -11,9 +11,21 @@
 | `TbVectorUnit` | 동일 INT unit의 Bypass/Multiply/Shift, sparse Valid, empty group, grouped physical-lane 처리 |
 | `TbAccumulator` | per-column row address, valid mask, replace/add semantics |
 | `TbExecuteController` | staggered issue/commit tracking과 Done 조건 |
+| `TbWorkScheduler` | K fragment/block 경계, accumulation, prepared lookahead promotion |
+| `TbMatmulScheduler` | full/async extent, bounded publication queue, ordering |
+| `TbMatmulLookahead` | current + immediate lookahead visibility와 deeper FIFO progression |
+| `TbSystolicArrayWeightBanks` | dual stationary-weight bank load/switch |
+| `TbSystolicEngineWeightBanks` | active execution 중 inactive-bank preload |
 | `TbIM2PCore` | non-zero base row, `vectorLanes < arrayDim`, 세 runtime operation |
+| `TbIM2PCoreActivationBuffer` | current/next K-fragment activation slot 격리 |
+| `TbIM2PCoreMatrix` | tagged A/W/C host traffic와 output acknowledgement |
+| `TbIM2PCoreMatrixScale` | tagged S demand/reuse/prefetch와 immutable snapshot |
+| `TbIM2PLookahead` | publish-triggered cross-stripe A/W preparation과 reuse |
+| `TbIM2PLookaheadScale` | nonresident lookahead W/S miss timing |
 | `TbIM2PCoreGrouped` | 4-column/2-lane routing과 scale alignment |
 | `TbFloatCore` | 동일 Core source의 FLOAT Bypass execution |
+| `TbSynthInt8x16` | DIM16 synthesis wrapper smoke |
+| `TbSynthInt8x32` | DIM32 synthesis wrapper smoke |
 
 `tests/TestVectorUtils.bsv`는 testbench가 공유하는 고정 길이 Vector 생성 helper이며 synthesis top이 아니다.
 

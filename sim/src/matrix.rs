@@ -50,6 +50,12 @@ impl<'a, T> MatrixViewMut<'a, T> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatmulLayout {
+    pub tile_i_rows: usize,
+    pub tile_j_columns: usize,
+}
+
 #[derive(Debug)]
 pub struct MatmulWork<'a> {
     pub activations: MatrixView<'a, i8>,

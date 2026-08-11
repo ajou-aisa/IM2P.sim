@@ -85,6 +85,8 @@ typedef struct {
     uint32_t row_count;
     uint32_t column_count;
     uint32_t reduction_count;
+    uint32_t tile_i_rows;
+    uint32_t tile_j_columns;
     uint32_t k_origin;
     uint32_t scale_total_k;
     uint32_t scale_block_size;
@@ -115,6 +117,20 @@ typedef struct {
     uint64_t weight_overlap_cycles;
     uint64_t scale_overlap_cycles;
     uint64_t overlap_cycles;
+    uint64_t cross_stripe_overlap_cycles;
+    uint64_t lookahead_prepared;
+    uint64_t lookahead_publish_cycle;
+    uint64_t lookahead_first_activation_cycle;
+    uint64_t lookahead_first_weight_cycle;
+    uint64_t lookahead_weight_preload_cycle;
+    uint64_t lookahead_weight_requests;
+    uint64_t lookahead_weight_reuse_hits;
+    uint64_t lookahead_scale_cycle;
+    uint64_t lookahead_scale_requests;
+    uint64_t lookahead_scale_reuses;
+    uint64_t current_stripe_completion_cycle;
+    uint64_t lookahead_ready_cycle;
+    uint64_t lookahead_start_cycle;
 } im2p_matrix_counters_t;
 
 typedef struct {
@@ -135,12 +151,23 @@ typedef struct {
     int scale_request_valid;
     int output_request_valid;
     int stripe_host_waiting;
+    int lookahead_prepared;
+    uint32_t lookahead_stripe_id;
 } im2p_matrix_debug_t;
+
+enum {
+    IM2P_PUBLISH_BACKPRESSURE = 0,
+    IM2P_PUBLISH_ACCEPTED = 1,
+    IM2P_PUBLISH_INVALID = -1,
+    IM2P_PUBLISH_DUPLICATE = -2,
+    IM2P_PUBLISH_LATE = -3,
+};
 
 enum {
     IM2P_REQUEST_ABSENT = 0,
     IM2P_REQUEST_PRESENT = 1,
     IM2P_REQUEST_INVALID_ARGUMENT = -1,
+    IM2P_REQUEST_IDENTITY_MISMATCH = -2,
 };
 
 enum {
@@ -205,7 +232,8 @@ int im2p_start_matmul(
 int im2p_publish_activation_stripe(
     im2p_handle_t handle,
     uint32_t row_begin,
-    uint32_t row_count
+    uint32_t row_count,
+    uint64_t row_stride
 );
 int im2p_activation_stripe_ready(im2p_handle_t handle);
 int im2p_matmul_done(im2p_handle_t handle);
@@ -215,6 +243,8 @@ int im2p_acknowledge_matmul(im2p_handle_t handle);
  * Request getters return IM2P_REQUEST_PRESENT and fill `request` when the
  * RTL is presenting a valid request, IM2P_REQUEST_ABSENT when it is not, and
  * IM2P_REQUEST_INVALID_ARGUMENT for null arguments.
+ * Response writers return IM2P_REQUEST_IDENTITY_MISMATCH without pulsing RTL
+ * when a supplied tag does not match the currently presented request.
  */
 int im2p_activation_read_request(
     im2p_handle_t handle,

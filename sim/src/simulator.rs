@@ -1,7 +1,7 @@
 mod matmul;
 mod rtl;
 mod striped;
-mod validation;
+pub(crate) mod validation;
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -58,7 +58,14 @@ pub enum Error {
         operation: &'static str,
     },
     StripeQueueFull,
+    DuplicateStripe,
+    LateStripe,
     InvalidStripe,
+    InvalidActivationStride,
+    InvalidWeightStride,
+    InvalidOutputStride,
+    InvalidLayout,
+    UnfinishedStream,
     NoPendingActivation,
     NoPendingOutput,
     Timeout {

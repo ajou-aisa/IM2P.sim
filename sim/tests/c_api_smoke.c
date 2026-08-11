@@ -4,9 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 
-static int expect_output(const int32_t *output) {
+_Static_assert(
+    sizeof(im2p_work_stats_t) == 27 * sizeof(uint64_t),
+    "legacy stats ABI size changed"
+);
+
+static int expect_output(const int32_t *output, size_t stride) {
     static const int32_t expected[4] = {4, 5, 10, 11};
-    return memcmp(output, expected, sizeof(expected)) == 0 ? 0 : -1;
+    return output[0] == expected[0] && output[1] == expected[1]
+        && output[stride] == expected[2] && output[stride + 1] == expected[3]
+        ? 0 : -1;
 }
 
 static im2p_matmul_desc_t full_desc(
@@ -24,8 +31,8 @@ static im2p_matmul_desc_t full_desc(
     desc.activation_row_stride = 3;
     desc.weight_row_stride = 2;
     desc.output_row_stride = 2;
-    desc.tile_i_rows = 2;
-    desc.tile_j_columns = 2;
+    desc.tile_i_rows = 1;
+    desc.tile_j_columns = 1;
     desc.block_size = 3;
     desc.vector_op = IM2P_VECTOR_BYPASS;
     desc.work_context = 17;
@@ -44,8 +51,8 @@ static im2p_stripe_work_desc_t stripe_desc(
     desc.k = 3;
     desc.weight_row_stride = 2;
     desc.output_row_stride = 2;
-    desc.tile_i_rows = 2;
-    desc.tile_j_columns = 2;
+    desc.tile_i_rows = 1;
+    desc.tile_j_columns = 1;
     desc.block_size = 3;
     desc.vector_op = IM2P_VECTOR_BYPASS;
     desc.stripe_count = 1;
@@ -56,7 +63,10 @@ static im2p_stripe_work_desc_t stripe_desc(
 int main(void) {
     static const int8_t activations[6] = {1, 2, 3, 4, 5, 6};
     static const int8_t weights[6] = {1, 0, 0, 1, 1, 1};
-    int32_t output[4] = {0};
+    static const int8_t padded_weights[15] = {
+        1, 0, 99, 99, 99, 0, 1, 99, 99, 99, 1, 1, 99, 99, 99
+    };
+    int32_t output[8] = {0};
     im2p_work_stats_t stats = {0};
 
     if (im2p_execute_matmul(NULL, NULL, NULL) != IM2P_ERROR
@@ -69,15 +79,59 @@ int main(void) {
         return 1;
     }
 
+    static const int8_t scales[2] = {1, 1};
+    im2p_matmul_desc_t invalid_matmul =
+        full_desc(activations, weights, output);
+    invalid_matmul.scales = scales;
+    invalid_matmul.scale_values_len = 2;
+    invalid_matmul.scale_total_k = 3;
+    invalid_matmul.scale_valid_columns = 2;
+    invalid_matmul.scale_row_stride = 0;
+    invalid_matmul.vector_op = IM2P_VECTOR_MULTIPLY;
+    if (im2p_execute_matmul(sim, &invalid_matmul, NULL)
+            != IM2P_INVALID_LAYOUT) {
+        im2p_sim_destroy(sim);
+        return 11;
+    }
+    im2p_stripe_work_desc_t invalid_stream =
+        stripe_desc(weights, output);
+    invalid_stream.scales = scales;
+    invalid_stream.scale_values_len = 2;
+    invalid_stream.scale_total_k = 3;
+    invalid_stream.scale_valid_columns = 2;
+    invalid_stream.scale_row_stride = 0;
+    invalid_stream.vector_op = IM2P_VECTOR_MULTIPLY;
+    im2p_stream_t *rejected = im2p_begin_striped_matmul(
+        sim,
+        &invalid_stream
+    );
+    if (rejected != NULL) {
+        im2p_destroy_stream(rejected);
+        im2p_sim_destroy(sim);
+        return 12;
+    }
+
     im2p_matmul_desc_t matmul = full_desc(activations, weights, output);
     if (im2p_execute_matmul(sim, &matmul, &stats) != IM2P_OK
-            || expect_output(output) != 0) {
+            || stats.completed_output_tiles != 4
+            || expect_output(output, 2) != 0) {
         im2p_sim_destroy(sim);
         return 2;
     }
+    im2p_work_stats_extended_t extended = {0};
+    memset(output, 0, sizeof(output));
+    if (im2p_execute_matmul_extended(sim, &matmul, &extended) != IM2P_OK
+            || extended.base.completed_output_tiles != 4
+            || expect_output(output, 2) != 0) {
+        im2p_sim_destroy(sim);
+        return 10;
+    }
 
     memset(output, 0, sizeof(output));
-    im2p_stripe_work_desc_t work = stripe_desc(weights, output);
+    for (size_t i = 0; i < 8; ++i) output[i] = 0x5a5a5a5a;
+    im2p_stripe_work_desc_t work = stripe_desc(padded_weights, output);
+    work.weight_row_stride = 5;
+    work.output_row_stride = 4;
     im2p_stream_t *stream = im2p_begin_striped_matmul(sim, &work);
     if (stream == NULL) {
         im2p_sim_destroy(sim);
@@ -92,11 +146,22 @@ int main(void) {
         .activation_row_stride = 3,
         .context = 23,
     };
-    if (im2p_publish_stripe(stream, &stripe) != IM2P_OK) {
+    im2p_activation_stripe_t invalid = stripe;
+    invalid.stripe_id = 1;
+    if (im2p_publish_stripe(stream, &invalid) != IM2P_ERROR
+            || im2p_publish_stripe(stream, &stripe) != IM2P_OK
+            || im2p_publish_stripe(stream, &stripe) != IM2P_LATE_STRIPE) {
         im2p_destroy_stream(stream);
         im2p_sim_destroy(sim);
         return 4;
     }
+    im2p_stream_t *duplicate = NULL;
+    if (im2p_begin_striped_matmul_ex(sim, &work, &duplicate)
+            != IM2P_UNFINISHED_STREAM || duplicate != NULL) {
+        return 9;
+    }
+    im2p_sim_destroy(sim);
+    sim = NULL;
 
     im2p_stripe_completion_t completion = {0};
     int completion_seen = 0;
@@ -113,12 +178,14 @@ int main(void) {
 
     int status = im2p_finish_stream(stream, &stats);
     im2p_destroy_stream(stream);
-    im2p_sim_destroy(sim);
 
     if (status != IM2P_OK
             || !completion_seen
             || completion.stripe_id != 0
-            || expect_output(output) != 0) {
+            || stats.completed_output_tiles != 4
+            || expect_output(output, 4) != 0
+            || output[2] != 0x5a5a5a5a || output[3] != 0x5a5a5a5a
+            || output[6] != 0x5a5a5a5a || output[7] != 0x5a5a5a5a) {
         return 7;
     }
 

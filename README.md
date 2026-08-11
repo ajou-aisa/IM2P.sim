@@ -261,12 +261,72 @@ make rtl-one TOP=mkSynthInt8
 주소와 tag를 발행한다. Rust는 해당 주소를 host-owned view에 resolve하고
 response를 돌려주며, I/J/K scheduling을 수행하지 않는다.
 
-- `execute_matmul`: 전체 matrix descriptor를 한 번 제출하고 RTL 완료까지 진행
-- `begin_striped_matmul`: 정적 W/S/C metadata 제출 후 activation stripe를
-  cooperative하게 publish
-- `npu_ready`: RTL publication FIFO가 새 stripe를 받을 수 있는 상태
-- `host_available`: publish된 host stripe가 아직 완료되지 않은 상태
-- stripe completion: 마지막 C row response가 acknowledge된 뒤에만 발생
+- `execute_matmul`: 전체 matrix descriptor를 한 번 제출한다. A/W/S/C의 모든
+  region이 처음부터 이용 가능할 뿐, striped mode와 다른 실행 경로를 만들지
+  않는다.
+- `begin_striped_matmul`: 정적 W/S/C metadata를 제출하고 activation stripe를
+  cooperative하게 publish한다.
+- `publish_stripe`: 단순 queue 삽입이 아니라 activation availability event다.
+  승인된 publish는 current WS/RC work가 실행 중이어도 바로 다음 stripe의 A,
+  W, 필요한 S request/staging과 weight-bank preload 또는 resident reuse 준비를
+  시작할 수 있게 한다.
+- `npu_ready`: RTL publication FIFO가 새 stripe를 받을 수 있는 상태다.
+- `host_available`: publish된 host activation이 아직 stripe completion으로
+  반환되지 않은 상태다.
+- stripe completion: 마지막 C write response가 acknowledge된 뒤에만 발생한다.
+
+```text
+CPU: publish s0 ------------------------ publish s1 ------------------- own s1 A until completion
+NPU: [current s0: WS engine + RC] ======>| prepare s1: A/W/S stage, reuse or inactive-bank preload |
+                                         |<-- current engine remains the only executor ----------->|
+                                         completion s0 -> promote s1 -> [WS engine + RC for s1]
+FIFO: current --------------------------- lookahead -------------------- deeper published stripes (FIFO)
+```
+
+실행 순서는 하나의 engine으로 유지된다. 현재 stripe와 즉시 다음 stripe만
+prepare state를 가질 수 있고, 더 깊은 published stripe는 FIFO 순서를 유지하며
+prepare되지 않는다. Lookahead는 A/W/S와 inactive PE bank만 준비한다. output
+write와 Accumulator state 갱신은 lookahead가 current로 promotion된 뒤에만
+발생한다.
+
+Weight stationary PE bank는 기존 두 개다. 현재 engine은 active bank를 읽고,
+lookahead의 host W fetch는 PE 밖 external staging row에 저장된다. capture 시점에
+final-current-work safety가 성립하고 정확히 resident로 일치하는 bank가 있으면
+host fetch와 preload 없이 reuse한다. safety가 아직 아니거나 일치하지 않으면
+scheduler의 final-current-work safety point에서만 staging row를 inactive bank에
+preload한다. 일치 조건은 weight base, row stride, J start/count, K start/count
+전체이며, 따라서 잘못된 bank reuse가 없다.
+completion까지 일부 W row만 도착한 경우 promotion 뒤 받은 row를 inactive-bank
+load에 직접 주입하고 아직 없는 row만 host에 요청하므로 중복 fetch가 없다.
+Scaled lookahead는 current/next
+scale cache의 matching `(context + J offset, block)` row를 reuse하고, 없으면
+current scale traffic이 비어 있고 engine이 실행 중일 때 host S request를 낸다.
+Promoted execution은 선택한 scale row를 immutable snapshot으로 latch하므로
+뒤의 prefetch/response가 staggered column 결과를 바꾸지 못한다.
+
+`WorkStats::cross_stripe_overlap_cycles`는 **current
+engine execution이 active인 cycle에 next-stripe A/W/S fetch 또는 PE preload 중
+하나라도 active인 cycle** 수다. 기존 `activation_`, `weight_`, `scale_overlap_cycles`
+는 current work 내부 fragment 준비와 compute의 overlap이며 이 aggregate의 부분
+counter가 아니다. 이 값과 모든 wait/timestamp는 RTL logical cycle이며 host wall-clock
+시간은 포함하지 않는다. `stripe_host_wait_cycles`는 current stripe의 transition이
+끝났지만 다음 published work가 없어 scheduler가 기다린 cycle이다. `activation_`,
+`weight_`, `scale_`, `output_wait_cycles`는 해당 host channel response wait을,
+`weight_preload_cycles`는 active execution 중 weight load를 나타낸다.
+`lookahead_ready_cycle`은 first-fragment A/W/S staging과 필요한 PE bank
+preload/reuse가 모두 완료된 cycle이다.
+
+Lookahead timestamp는 matmul start 기준 RTL cycle number다.
+`lookahead_publish_cycle`은 두 번째 stripe publication이 RTL에 accept된 cycle이다.
+그 값에서
+`lookahead_first_activation_cycle`, `lookahead_first_weight_cycle`,
+`lookahead_weight_preload_cycle`, 또는 `lookahead_scale_cycle` 중 0이 아닌 가장
+이른 값을 빼면 publish-to-first-prepare cycles를 얻는다.
+`lookahead_start_cycle - current_stripe_completion_cycle`은
+completion-to-next-start transition cycles다. `lookahead_weight_requests`는 host
+W fetch 수이고 `lookahead_weight_reuse_hits`는 exact resident-bank reuse 수다;
+scale의 host request/reuse는 `lookahead_scale_requests`와
+`lookahead_scale_reuses`로 따로 보고한다.
 
 두 API 모두 같은 core/datapath/scheduler stack을 사용한다. `execute_tile` loop,
 OS thread, async runtime, sleep, wall-clock timing은 high-level scheduling에

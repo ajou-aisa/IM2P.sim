@@ -11,6 +11,7 @@ const CYCLE_BUDGET: u64 = 1;
 const MAX_ITERATIONS: usize = 100_000;
 const STRIPE_ROWS: usize = 2;
 const STRIPE_COUNT: usize = 4;
+const BACKPRESSURE_STRIPE_COUNT: usize = 5;
 fn cpu_golden(shape: Shape, activations: &[i8], weights: &[i8], dim: usize) -> Vec<i32> {
     golden_output(
         activations,
@@ -82,22 +83,60 @@ fn tick(job: &mut im2p_sim::StripedMatmul, mem: &mut HostMemory) -> Result<(), S
 }
 #[test]
 fn stripe_queue_applies_finite_backpressure() -> Result<(), SimError> {
-    let sh = Shape { m: 8, n: 3, k: 4 };
+    let sh = Shape { m: 10, n: 3, k: 4 };
     let weights = structured_weights(sh);
     let mut job = Im2pSimulator::new()?.begin_striped_matmul(&work_desc(sh, &weights))?;
     let mut n = 0;
-    for i in 0..STRIPE_COUNT {
+    for i in 0..BACKPRESSURE_STRIPE_COUNT {
         if job.publish_stripe(stripe(i)).is_ok() {
             n += 1;
         } else {
             break;
         }
     }
-    assert!(n >= 1 && n < 4);
+    assert!(n >= 1 && n < BACKPRESSURE_STRIPE_COUNT);
     assert_eq!(
         job.publish_stripe(stripe(n)),
         Err(SimError::StripeQueueFull)
     );
+    Ok(())
+}
+
+#[test]
+fn duplicate_invalid_and_late_publications_are_explicit() -> Result<(), SimError> {
+    let sh = Shape { m: 8, n: 3, k: 4 };
+    let act = structured_activations(sh);
+    let wt = structured_weights(sh);
+    let mut job = Im2pSimulator::new()?.begin_striped_matmul(&work_desc(sh, &wt))?;
+
+    assert_eq!(job.publish_stripe(stripe(1)), Err(SimError::InvalidStripe));
+    job.publish_stripe(stripe(0))?;
+    assert_eq!(
+        job.publish_stripe(stripe(0)),
+        Err(SimError::DuplicateStripe)
+    );
+    assert_eq!(job.publish_stripe(stripe(2)), Err(SimError::InvalidStripe));
+    for index in 1..STRIPE_COUNT {
+        job.publish_stripe(stripe(index))?;
+    }
+    assert_eq!(
+        job.publish_stripe(ActivationStripe {
+            stripe_id: STRIPE_COUNT as u32,
+            row_begin: sh.m,
+            row_count: STRIPE_ROWS,
+            stripe_context: 99,
+        }),
+        Err(SimError::LateStripe)
+    );
+
+    let mut mem = HostMemory::new(sh, act);
+    for _ in 0..MAX_ITERATIONS {
+        tick(&mut job, &mut mem)?;
+        if mem.output_writes.len() == sh.m {
+            break;
+        }
+    }
+    job.finish()?;
     Ok(())
 }
 #[test]
@@ -123,7 +162,7 @@ fn no_activation_read_before_publish() -> Result<(), SimError> {
 }
 #[test]
 fn host_available_and_npu_ready_are_separate_states() -> Result<(), SimError> {
-    let sh = Shape { m: 8, n: 3, k: 4 };
+    let sh = Shape { m: 10, n: 3, k: 4 };
     let weights = structured_weights(sh);
     let mut mem = HostMemory::new(sh, structured_activations(sh));
     let mut job = Im2pSimulator::new()?.begin_striped_matmul(&work_desc(sh, &weights))?;
@@ -131,7 +170,7 @@ fn host_available_and_npu_ready_are_separate_states() -> Result<(), SimError> {
     job.publish_stripe(stripe(0))?;
     assert!(job.host_available());
     let mut sat = false;
-    for i in 1..STRIPE_COUNT {
+    for i in 1..BACKPRESSURE_STRIPE_COUNT {
         if job.publish_stripe(stripe(i)) == Err(SimError::StripeQueueFull) {
             sat = true;
             break;
@@ -178,8 +217,9 @@ fn immediate_publish_matches_execute_matmul() -> Result<(), SimError> {
             break;
         }
     }
-    job.finish()?;
+    let stats = job.finish()?;
     assert_matrix_eq(&mem.outputs, &sync, 8, 3);
+    assert!(stats.cross_stripe_overlap_cycles > 0);
     Ok(())
 }
 #[test]

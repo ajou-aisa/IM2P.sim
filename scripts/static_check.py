@@ -52,6 +52,9 @@ EXPECTED_TESTS = {
     "TbIM2PCoreActivationBuffer.bsv",
     "TbIM2PCoreMatrix.bsv",
     "TbIM2PCoreMatrixScale.bsv",
+    "TbIM2PLookahead.bsv",
+    "TbIM2PLookaheadScale.bsv",
+    "TbMatmulLookahead.bsv",
     "TbMatmulScheduler.bsv",
     "TbWorkScheduler.bsv",
     "TbSystolicArrayWeightBanks.bsv",
@@ -199,6 +202,15 @@ def require_substrings(path: Path, required: tuple[str, ...]) -> None:
 
 
 def main() -> None:
+    stray_bsc_artifacts = sorted(
+        path.relative_to(ROOT)
+        for root in (SRC, TESTS, SYNTH)
+        for suffix in ("*.bo", "*.ba")
+        for path in root.rglob(suffix)
+    )
+    if stray_bsc_artifacts:
+        fail(f"BSC artifacts outside build/: {stray_bsc_artifacts}")
+
     actual_src = relative_files(SRC)
     actual_tests = relative_files(TESTS)
     actual_synth = relative_files(SYNTH)
@@ -309,6 +321,8 @@ def main() -> None:
     for top in sorted(expected_test_tops | expected_synth_tops):
         if not re.search(rf"\b{re.escape(top)}\b", makefile_text):
             fail(f"Makefile top list missing: {top}")
+    if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):
+        fail("Bluesim tests must compile dynamicAssert checks")
 
     source_text = "\n".join(
         strip_comments(path.read_text(encoding="utf-8"))

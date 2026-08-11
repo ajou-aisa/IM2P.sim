@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::{ffi, ActivationStripe, StripeCompletion, StripeWorkDesc, WorkStats};
+use crate::{ffi, ActivationStripe, StripeCompletion, StripeLayout, StripeWorkDesc, WorkStats};
 
 use super::{
     matmul::{ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE},
@@ -8,12 +8,14 @@ use super::{
 };
 
 mod provider;
+mod start;
 const STRIPED_TIMEOUT_CYCLES: u64 = 10_000_000;
 
 pub struct StripedMatmul<'a> {
     simulator: Im2pSimulator,
     descriptor: StripeWorkDesc<'a>,
-    published: VecDeque<ActivationStripe>,
+    layout: StripeLayout,
+    published: VecDeque<PublishedActivationStripe>,
     completed: VecDeque<StripeCompletion>,
     outstanding_stripes: usize,
     next_stripe_id: u32,
@@ -23,71 +25,39 @@ pub struct StripedMatmul<'a> {
     start_cycle: u64,
 }
 
-impl Im2pSimulator {
-    pub fn begin_striped_matmul<'a>(
-        mut self,
-        descriptor: &StripeWorkDesc<'a>,
-    ) -> Result<StripedMatmul<'a>, Error> {
-        validate_descriptor(descriptor)?;
-        let counters_before = self.matrix_counters();
-        let scales_before = self.scale_counters();
-        let start_cycle = self.cycles();
-        let scale = descriptor.scale_matrix;
-        let rtl_descriptor = ffi::MatmulDescriptor {
-            job_id: descriptor.work_context as u32,
-            mode: 1,
-            activation_base: ACTIVATION_BASE,
-            weight_base: WEIGHT_BASE,
-            scale_base: SCALE_BASE,
-            output_base: OUTPUT_BASE,
-            activation_row_stride: descriptor.reduction as u64,
-            weight_row_stride: descriptor.columns as u64,
-            scale_row_stride: scale.map_or(1, |view| view.row_stride) as u64,
-            output_row_stride: (descriptor.columns * size_of::<i32>()) as u64,
-            row_count: descriptor.rows as u32,
-            column_count: descriptor.columns as u32,
-            reduction_count: descriptor.reduction as u32,
-            k_origin: 0,
-            scale_total_k: scale.map_or(descriptor.reduction, |view| view.total_k) as u32,
-            scale_block_size: scale.map_or(descriptor.reduction, |view| view.block_size) as u32,
-            scale_context: descriptor.work_context,
-            accumulate_first_fragment: 0,
-            vector_op: descriptor.vector_op.encoding(),
-        };
-        // SAFETY: descriptor is copied by the bridge during this call.
-        let accepted = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &rtl_descriptor) };
-        self.require_ready("start_striped_matmul", accepted)?;
-        Ok(StripedMatmul {
-            simulator: self,
-            descriptor: StripeWorkDesc {
-                weights: descriptor.weights,
-                scale_matrix: descriptor.scale_matrix,
-                rows: descriptor.rows,
-                columns: descriptor.columns,
-                reduction: descriptor.reduction,
-                vector_op: descriptor.vector_op,
-                work_context: descriptor.work_context,
-            },
-            published: VecDeque::new(),
-            completed: VecDeque::new(),
-            outstanding_stripes: 0,
-            next_stripe_id: 0,
-            next_row: 0,
-            counters_before,
-            scales_before,
-            start_cycle,
-        })
-    }
+#[derive(Debug, Clone, Copy)]
+struct PublishedActivationStripe {
+    stripe: ActivationStripe,
+    row_stride: usize,
 }
-
 impl StripedMatmul<'_> {
     pub fn publish_stripe(&mut self, stripe: ActivationStripe) -> Result<(), Error> {
+        self.publish_stripe_layout(stripe, self.descriptor.reduction)
+    }
+
+    pub fn publish_stripe_layout(
+        &mut self,
+        stripe: ActivationStripe,
+        activation_row_stride: usize,
+    ) -> Result<(), Error> {
+        if self.next_row == self.descriptor.rows {
+            return Err(Error::LateStripe);
+        }
+        if stripe.stripe_id < self.next_stripe_id || stripe.row_begin < self.next_row {
+            return Err(Error::DuplicateStripe);
+        }
         if stripe.stripe_id != self.next_stripe_id
             || stripe.row_begin != self.next_row
             || stripe.row_count == 0
-            || stripe.row_begin + stripe.row_count > self.descriptor.rows
+            || stripe
+                .row_begin
+                .checked_add(stripe.row_count)
+                .is_none_or(|end| end > self.descriptor.rows)
         {
             return Err(Error::InvalidStripe);
+        }
+        if activation_row_stride < self.descriptor.reduction {
+            return Err(Error::InvalidActivationStride);
         }
         // SAFETY: scalar metadata is copied synchronously.
         let accepted = unsafe {
@@ -95,6 +65,7 @@ impl StripedMatmul<'_> {
                 self.simulator.handle.as_ptr(),
                 stripe.row_begin as u32,
                 stripe.row_count as u32,
+                activation_row_stride as u64,
             )
         };
         if accepted == 0 {
@@ -105,8 +76,29 @@ impl StripedMatmul<'_> {
         self.next_stripe_id += 1;
         self.next_row += stripe.row_count;
         self.outstanding_stripes += 1;
-        self.published.push_back(stripe);
+        self.published.push_back(PublishedActivationStripe {
+            stripe,
+            row_stride: activation_row_stride,
+        });
         Ok(())
+    }
+
+    pub fn publish_stripe_layout_at_cycle(
+        &mut self,
+        stripe: ActivationStripe,
+        activation_row_stride: usize,
+        target_cycle: u64,
+    ) -> Result<(), Error> {
+        let elapsed = self.simulator.cycles().saturating_sub(self.start_cycle);
+        if elapsed > target_cycle {
+            return Err(Error::RtlNotReady {
+                operation: "publish_stripe_at_cycle",
+            });
+        }
+        for _ in elapsed..target_cycle {
+            self.simulator.tick_raw();
+        }
+        self.publish_stripe_layout(stripe, activation_row_stride)
     }
     pub fn npu_ready(&self) -> bool {
         // SAFETY: simulator handle remains valid while the job owns it.
@@ -114,6 +106,11 @@ impl StripedMatmul<'_> {
     }
     pub fn host_available(&self) -> bool {
         self.outstanding_stripes != 0
+    }
+
+    pub fn prepared_lookahead_stripe_id(&self) -> Option<u32> {
+        let debug = self.simulator.matrix_debug();
+        (debug.lookahead_prepared != 0).then_some(debug.lookahead_stripe_id)
     }
 
     pub fn progress(&mut self, cycle_budget: u64) -> Result<(), Error> {
@@ -198,7 +195,16 @@ impl StripedMatmul<'_> {
         self.completed.pop_front()
     }
 
-    pub fn finish(mut self) -> Result<WorkStats, Error> {
+    pub fn finish(self) -> Result<WorkStats, Error> {
+        self.finish_recover().map(|(stats, _)| stats)
+    }
+
+    pub(crate) fn recover_unfinished(mut self) -> Im2pSimulator {
+        self.simulator.reset();
+        self.simulator
+    }
+
+    pub(crate) fn finish_recover(mut self) -> Result<(WorkStats, Im2pSimulator), Error> {
         for _ in 0..STRIPED_TIMEOUT_CYCLES {
             self.service_static_reads()?;
             self.drain_completion()?;
@@ -211,12 +217,13 @@ impl StripedMatmul<'_> {
                 self.simulator
                     .require_ready("acknowledge_matmul", accepted)?;
                 self.simulator.wait_idle()?;
-                return Ok(self.simulator.work_stats(
+                let stats = self.simulator.work_stats(
                     self.counters_before,
                     self.scales_before,
                     self.start_cycle,
                     completed,
-                ));
+                );
+                return Ok((stats, self.simulator));
             }
             self.simulator.tick_raw();
         }
@@ -224,27 +231,4 @@ impl StripedMatmul<'_> {
             .simulator
             .matrix_timeout("finish_striped_matmul", STRIPED_TIMEOUT_CYCLES))
     }
-}
-
-fn validate_descriptor(descriptor: &StripeWorkDesc<'_>) -> Result<(), Error> {
-    if descriptor.rows == 0 || descriptor.columns == 0 || descriptor.reduction == 0 {
-        return Err(Error::InvalidDimension);
-    }
-    let expected = descriptor
-        .reduction
-        .checked_mul(descriptor.columns)
-        .ok_or(Error::InvalidDimension)?;
-    if descriptor.weights.len() < expected {
-        return Err(Error::InvalidBufferLength {
-            name: "weights",
-            expected,
-            actual: descriptor.weights.len(),
-        });
-    }
-    if descriptor.vector_op != super::VectorOp::Bypass && descriptor.scale_matrix.is_none() {
-        return Err(Error::MissingScales {
-            operation: descriptor.vector_op,
-        });
-    }
-    Ok(())
 }

@@ -11,7 +11,41 @@ impl StripedMatmul<'_> {
         let status = unsafe {
             ffi::im2p_activation_read_request(self.simulator.handle.as_ptr(), &mut request)
         };
-        decode_request(status, request, ACTIVATION_BASE, self.descriptor.reduction)
+        if status == ffi::IM2P_REQUEST_ABSENT {
+            return Ok(None);
+        }
+        if status != ffi::IM2P_REQUEST_PRESENT {
+            return Err(Error::RtlNotReady {
+                operation: "activation_read_request",
+            });
+        }
+        let lookahead = (request.tag as u32) >= 0x8000_0000;
+        let published = self
+            .published
+            .get(usize::from(lookahead))
+            .or_else(|| self.published.front())
+            .ok_or(Error::NoPendingActivation)?;
+        let stripe_offset = published
+            .stripe
+            .row_begin
+            .checked_mul(self.descriptor.reduction)
+            .ok_or(Error::InvalidKRange)? as u64;
+        let offset = request
+            .address
+            .checked_sub(ACTIVATION_BASE + stripe_offset)
+            .ok_or(Error::InvalidKRange)? as usize;
+        let local_row = offset / published.row_stride;
+        let column = offset % published.row_stride;
+        if local_row >= published.stripe.row_count
+            || column + request.element_count as usize > self.descriptor.reduction
+        {
+            return Err(Error::InvalidKRange);
+        }
+        Ok(Some((
+            published.stripe.row_begin + local_row,
+            column,
+            request,
+        )))
     }
 
     pub(super) fn output_request(
@@ -44,8 +78,8 @@ impl StripedMatmul<'_> {
         }
         let element = offset / size_of::<i32>();
         Ok(Some((
-            element / self.descriptor.columns,
-            element % self.descriptor.columns,
+            element / self.layout.output_row_stride,
+            element % self.layout.output_row_stride,
             request,
             values,
         )))
@@ -62,7 +96,7 @@ impl StripedMatmul<'_> {
         let status =
             unsafe { ffi::im2p_weight_read_request(self.simulator.handle.as_ptr(), &mut request) };
         let Some((row, column, request)) =
-            decode_request(status, request, WEIGHT_BASE, self.descriptor.columns)?
+            decode_request(status, request, WEIGHT_BASE, self.layout.weight_row_stride)?
         else {
             return Ok(());
         };
@@ -70,7 +104,7 @@ impl StripedMatmul<'_> {
         if row >= self.descriptor.reduction || column + count > self.descriptor.columns {
             return Err(Error::InvalidKRange);
         }
-        let start = row * self.descriptor.columns + column;
+        let start = row * self.layout.weight_row_stride + column;
         // SAFETY: descriptor validation and request bounds prove readable lanes.
         let accepted = unsafe {
             ffi::im2p_put_weight_read_response(
@@ -107,8 +141,18 @@ impl StripedMatmul<'_> {
         let block = offset / view.row_stride;
         let column = offset % view.row_stride;
         let count = request.element_count as usize;
-        let start = block * view.row_stride + view.column_offset + column;
-        if column + count > view.valid_columns || start + count > view.values.len() {
+        let column_end = column
+            .checked_add(count)
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        let start = block
+            .checked_mul(view.row_stride)
+            .and_then(|value| value.checked_add(view.column_offset))
+            .and_then(|value| value.checked_add(column))
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        let end = start
+            .checked_add(count)
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        if column_end > view.valid_columns || end > view.values.len() {
             return Err(Error::InvalidScaleMatrixLayout);
         }
         // SAFETY: validated view contains all requested lanes.
@@ -116,7 +160,7 @@ impl StripedMatmul<'_> {
             ffi::im2p_put_scale_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
-                view.values[start..].as_ptr(),
+                view.values[start..end].as_ptr(),
                 request.element_count,
             )
         };
@@ -138,9 +182,9 @@ impl StripedMatmul<'_> {
             });
         }
         let published = self.published.pop_front().ok_or(Error::InvalidStripe)?;
-        if published.stripe_id != completion.stripe_id
-            || published.row_begin != completion.row_begin as usize
-            || published.row_count != completion.row_count as usize
+        if published.stripe.stripe_id != completion.stripe_id
+            || published.stripe.row_begin != completion.row_begin as usize
+            || published.stripe.row_count != completion.row_count as usize
         {
             return Err(Error::InvalidStripe);
         }
@@ -148,7 +192,7 @@ impl StripedMatmul<'_> {
             stripe_id: completion.stripe_id,
             row_begin: completion.row_begin as usize,
             row_count: completion.row_count as usize,
-            stripe_context: published.stripe_context,
+            stripe_context: published.stripe.stripe_context,
         });
         self.outstanding_stripes -= 1;
         // SAFETY: completion getter established acknowledgement readiness.

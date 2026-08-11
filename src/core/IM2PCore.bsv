@@ -82,6 +82,8 @@ interface IM2PCoreIfc#(
         MatrixExtent rowCount,
         MatrixExtent columnCount,
         MatrixExtent reductionCount,
+        MatrixExtent tileIRows,
+        MatrixExtent tileJColumns,
         MatrixExtent kOrigin,
         MatrixExtent scaleTotalK,
         MatrixExtent scaleBlockSize,
@@ -91,7 +93,8 @@ interface IM2PCoreIfc#(
     );
     method Action publishActivationStripe(
         MatrixExtent rowBegin,
-        MatrixExtent rowCount
+        MatrixExtent rowCount,
+        HostStride rowStride
     );
 
     method Bool activationReadRequestValid;
@@ -169,6 +172,21 @@ interface IM2PCoreIfc#(
     method UInt#(64) weightOverlapCycles;
     method UInt#(64) scaleOverlapCycles;
     method UInt#(64) overlapCycles;
+    method UInt#(64) crossStripeOverlapCycles;
+    method Bool lookaheadPrepared;
+    method UInt#(32) lookaheadStripeId;
+    method UInt#(64) lookaheadPublishCycle;
+    method UInt#(64) lookaheadFirstActivationCycle;
+    method UInt#(64) lookaheadFirstWeightCycle;
+    method UInt#(64) lookaheadWeightPreloadCycle;
+    method UInt#(64) lookaheadWeightRequests;
+    method UInt#(64) lookaheadWeightReuseHits;
+    method UInt#(64) lookaheadScaleCycle;
+    method UInt#(64) lookaheadScaleRequests;
+    method UInt#(64) lookaheadScaleReuses;
+    method UInt#(64) currentStripeCompletionCycle;
+    method UInt#(64) lookaheadReadyCycle;
+    method UInt#(64) lookaheadStartCycle;
 
     method Action beginWeightLoad;
     method Action loadWeightRow(
@@ -339,6 +357,7 @@ module mkIM2PCore(IM2PCoreIfc#(
     Reg#(MatrixExtent) weightLoadKStartReg <- mkReg(0);
     Reg#(BoundedCount#(arrayDim)) weightLoadKCountReg <- mkReg(0);
     Reg#(BoundedCount#(arrayDim)) weightLoadRowReg <- mkReg(0);
+    Reg#(BoundedCount#(arrayDim)) promotedLookaheadWeightRowsReg <- mkReg(0);
     Reg#(Bool) preloadedFragmentValidReg <- mkReg(False);
     Reg#(Bool) preloadedFragmentBankReg <- mkReg(False);
     Reg#(MatrixExtent) preloadedFragmentKStartReg <- mkReg(0);
@@ -409,6 +428,57 @@ module mkIM2PCore(IM2PCoreIfc#(
     Reg#(UInt#(64)) weightOverlapCyclesReg <- mkReg(0);
     Reg#(UInt#(64)) scaleOverlapCyclesReg <- mkReg(0);
     Reg#(UInt#(64)) overlapCyclesReg <- mkReg(0);
+    Reg#(UInt#(64)) crossStripeOverlapCyclesReg <- mkReg(0);
+    Reg#(UInt#(64)) cycleReg <- mkReg(0);
+    Reg#(UInt#(64)) matrixStartCycleReg <- mkReg(0);
+    Reg#(Bool) lookaheadPreparedReg <- mkReg(False);
+    Reg#(MatmulWork#(arrayDim)) lookaheadWorkReg <- mkRegU;
+    Reg#(MatrixExtent) lookaheadKStartReg <- mkReg(0);
+    Reg#(BoundedCount#(arrayDim)) lookaheadKCountReg <- mkReg(0);
+    Reg#(BoundedCount#(arrayDim)) lookaheadActivationRowReg <- mkReg(0);
+    Reg#(Bool) lookaheadActivationRequestValidReg <- mkReg(False);
+    Reg#(HostRequestTag) lookaheadActivationTagReg <- mkRegU;
+    Reg#(BoundedIndex#(arrayDim)) lookaheadActivationResponseRowReg <- mkRegU;
+    Vector#(arrayDim, Reg#(Vector#(arrayDim, input_t))) lookaheadActivationRows <- replicateM(mkRegU);
+    Vector#(arrayDim, Reg#(Bool)) lookaheadActivationValid <- replicateM(mkReg(False));
+    Reg#(BoundedCount#(arrayDim)) lookaheadWeightRowReg <- mkReg(0);
+    Reg#(Bool) lookaheadWeightRequestValidReg <- mkReg(False);
+    Reg#(HostRequestTag) lookaheadWeightTagReg <- mkRegU;
+    Reg#(BoundedIndex#(arrayDim)) lookaheadWeightResponseRowReg <- mkRegU;
+    Vector#(arrayDim, Reg#(Vector#(arrayDim, weight_t))) lookaheadWeightRows <- replicateM(mkRegU);
+    Reg#(Bool) lookaheadWeightsFetchedReg <- mkReg(False);
+    Reg#(Bool) lookaheadWeightReuseCheckedReg <- mkReg(False);
+    Reg#(Bool) lookaheadWeightReusableReg <- mkReg(False);
+    Reg#(Bool) lookaheadWeightReusableBankReg <- mkReg(False);
+    Reg#(UInt#(64)) lookaheadWeightRequestsReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadWeightReuseHitsReg <- mkReg(0);
+    Vector#(2, Reg#(Bool)) residentWeightValid <- replicateM(mkReg(False));
+    Vector#(2, Reg#(HostAddress)) residentWeightBase <- replicateM(mkReg(0));
+    Vector#(2, Reg#(HostStride)) residentWeightRowStride <- replicateM(mkReg(0));
+    Vector#(2, Reg#(MatrixExtent)) residentWeightJStart <- replicateM(mkReg(0));
+    Vector#(2, Reg#(MatrixExtent)) residentWeightJCount <- replicateM(mkReg(0));
+    Vector#(2, Reg#(MatrixExtent)) residentWeightKStart <- replicateM(mkReg(0));
+    Vector#(2, Reg#(BoundedCount#(arrayDim))) residentWeightKCount <-
+        replicateM(mkReg(0));
+    Reg#(Bool) lookaheadPreloadingReg <- mkReg(False);
+    Reg#(BoundedCount#(arrayDim)) lookaheadPreloadRowReg <- mkReg(0);
+    Reg#(Bool) lookaheadPreloadBankReg <- mkReg(False);
+    Reg#(Bool) lookaheadScaleValidReg <- mkReg(False);
+    Reg#(Vector#(arrayDim, scale_t)) lookaheadScaleRowReg <- mkRegU;
+    Reg#(ScaleContext) lookaheadScaleContextReg <- mkRegU;
+    Reg#(ScaleBlockIndex) lookaheadScaleBlockReg <- mkRegU;
+    Reg#(Bool) lookaheadScaleRequestValidReg <- mkReg(False);
+    Reg#(HostRequestTag) lookaheadScaleTagReg <- mkRegU;
+    Reg#(UInt#(64)) lookaheadScaleRequestsReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadScaleReusesReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadPublishCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadFirstActivationCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadFirstWeightCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadWeightPreloadCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadScaleCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) currentStripeCompletionCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadReadyCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) lookaheadStartCycleReg <- mkReg(0);
 
     rule countMatrixWorkCycles (
         matrixStateReg != MatrixIdle && matrixStateReg != MatrixDone
@@ -416,6 +486,12 @@ module mkIM2PCore(IM2PCoreIfc#(
         Bool activationOverlap = engine.active && activationRequestValidReg;
         Bool weightOverlap = engine.active && weightRequestValidReg;
         Bool scaleOverlap = engine.active && scaleRequestValidReg;
+        Bool crossStripeOverlap = engine.active && (
+            lookaheadActivationRequestValidReg
+            || lookaheadWeightRequestValidReg
+            || lookaheadScaleRequestValidReg
+            || lookaheadPreloadingReg
+        );
         if (activationRequestValidReg) begin
             activationWaitCyclesReg <= activationWaitCyclesReg + 1;
         end
@@ -451,6 +527,42 @@ module mkIM2PCore(IM2PCoreIfc#(
         if (activationOverlap || weightOverlap || scaleOverlap) begin
             overlapCyclesReg <= overlapCyclesReg + 1;
         end
+        if (crossStripeOverlap) begin
+            crossStripeOverlapCyclesReg <= crossStripeOverlapCyclesReg + 1;
+        end
+    endrule
+
+    function Bool lookaheadActivationsReady();
+        Bool ready = True;
+        for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
+            if (fromInteger(row) < lookaheadWorkReg.iCount) begin
+                ready = ready && lookaheadActivationValid[row];
+            end
+        end
+        return ready;
+    endfunction
+
+    function Bool lookaheadResourcesReady();
+        return lookaheadActivationsReady
+            && preloadedFragmentValidReg
+            && preloadedFragmentKStartReg == lookaheadKStartReg
+            && preloadedFragmentKCountReg == lookaheadKCountReg
+            && (
+                !vectorOpUsesScale(lookaheadWorkReg.vectorOp)
+                || lookaheadScaleValidReg
+            );
+    endfunction
+
+    function UInt#(64) matrixCycle();
+        return cycleReg - matrixStartCycleReg;
+    endfunction
+
+    rule recordLookaheadReady (
+        lookaheadPreparedReg
+        && lookaheadReadyCycleReg == 0
+        && lookaheadResourcesReady
+    );
+        lookaheadReadyCycleReg <= matrixCycle;
     endrule
 
     function Bit#(1) activationSlotIndex(Bool slot);
@@ -478,6 +590,237 @@ module mkIM2PCore(IM2PCoreIfc#(
         UInt#(72) offset = zeroExtend(element) * zeroExtend(bytes);
         return base + truncate(offset);
     endfunction
+
+    rule countCycles;
+        cycleReg <= cycleReg + 1;
+    endrule
+
+    rule captureLookaheadWork (
+        !lookaheadPreparedReg && matmulScheduler.lookaheadValid
+        && matrixStateReg != MatrixIdle && matrixStateReg != MatrixWaitWork
+        && matrixStateReg != MatrixDone
+    );
+        MatmulWork#(arrayDim) work = matmulScheduler.lookaheadWork;
+        MatrixExtent count = nextKFragmentCount(
+            fromInteger(valueOf(arrayDim)), matrixKOriginReg,
+            matrixKOriginReg + work.reductionCount,
+            matrixScaleBlockSizeReg, vectorOpUsesScale(work.vectorOp));
+        lookaheadPreparedReg <= True;
+        lookaheadWorkReg <= work;
+        lookaheadKStartReg <= matrixKOriginReg;
+        lookaheadKCountReg <= truncate(count);
+        lookaheadActivationRowReg <= 0;
+        lookaheadWeightRowReg <= 0;
+        lookaheadWeightsFetchedReg <= False;
+        lookaheadWeightReuseCheckedReg <= False;
+        lookaheadWeightReusableReg <= False;
+        dynamicAssert(!lookaheadScaleRequestValidReg,
+                      "captured lookahead with stale scale request");
+        lookaheadScaleValidReg <= False;
+        workScheduler.prepareLookahead(matrixKOriginReg, work.reductionCount,
+            matrixScaleBlockSizeReg, vectorOpUsesScale(work.vectorOp),
+            matrixAccumulateFirstReg);
+        for (Integer row = 0; row < valueOf(arrayDim); row = row + 1)
+            lookaheadActivationValid[row] <= False;
+    endrule
+
+    rule issueLookaheadActivation (
+        lookaheadPreparedReg && !lookaheadActivationRequestValidReg
+        && lookaheadActivationRowReg < truncate(lookaheadWorkReg.iCount)
+    );
+        MatrixExtent row = zeroExtend(lookaheadActivationRowReg);
+        HostAddress rowBase = matrixRowAddress(lookaheadWorkReg.activationBase,
+            row, lookaheadWorkReg.activationRowStride);
+        HostAddress address = matrixElementAddress(rowBase,
+            lookaheadKStartReg - matrixKOriginReg,
+            fromInteger(valueOf(inputBits) / 8));
+        lookaheadActivationTagReg <= matrixTag('h80000000
+            + zeroExtend(lookaheadActivationRowReg));
+        lookaheadActivationResponseRowReg <= truncate(lookaheadActivationRowReg);
+        lookaheadActivationRequestValidReg <= True;
+        lookaheadActivationRowReg <= lookaheadActivationRowReg + 1;
+        activationReadRequestsReg <= activationReadRequestsReg + 1;
+        if (lookaheadFirstActivationCycleReg == 0)
+            lookaheadFirstActivationCycleReg <= matrixCycle;
+    endrule
+
+    function Bool residentMatchesLookahead(Bit#(1) bank);
+        return residentWeightValid[bank]
+            && residentWeightBase[bank] == lookaheadWorkReg.weightBase
+            && residentWeightRowStride[bank]
+                == lookaheadWorkReg.weightRowStride
+            && residentWeightJStart[bank] == lookaheadWorkReg.jStart
+            && residentWeightJCount[bank] == lookaheadWorkReg.jCount
+            && residentWeightKStart[bank] == lookaheadKStartReg
+            && residentWeightKCount[bank] == lookaheadKCountReg;
+    endfunction
+
+    // Reuse is admitted only at the scheduler's final-current-work safety
+    // point.  No later current preparation can then invalidate or overwrite
+    // the selected bank before lookahead promotion.
+    rule decideLookaheadWeightReuse (
+        lookaheadPreparedReg && !lookaheadWeightReuseCheckedReg
+    );
+        Bool match0 = residentMatchesLookahead(0);
+        Bool match1 = residentMatchesLookahead(1);
+        Bool safe = matmulScheduler.lookaheadPreloadSafe;
+        lookaheadWeightReuseCheckedReg <= True;
+        if (safe && (match0 || match1)) begin
+            Bool bank = !match0;
+            lookaheadWeightReusableReg <= True;
+            lookaheadWeightReusableBankReg <= bank;
+            lookaheadWeightsFetchedReg <= True;
+            preloadedFragmentValidReg <= True;
+            preloadedFragmentBankReg <= bank;
+            preloadedFragmentKStartReg <= lookaheadKStartReg;
+            preloadedFragmentKCountReg <= lookaheadKCountReg;
+            lookaheadWeightReuseHitsReg <= lookaheadWeightReuseHitsReg + 1;
+        end
+    endrule
+
+    rule issueLookaheadWeight (
+        lookaheadPreparedReg && lookaheadWeightReuseCheckedReg
+        && matrixStateReg != MatrixWaitWork
+        && !lookaheadWeightReusableReg
+        && !lookaheadWeightRequestValidReg
+        && lookaheadWeightRowReg < lookaheadKCountReg
+    );
+        MatrixExtent localK = lookaheadKStartReg - matrixKOriginReg
+            + zeroExtend(lookaheadWeightRowReg);
+        lookaheadWeightTagReg <= matrixTag('h90000000
+            + zeroExtend(lookaheadWeightRowReg));
+        lookaheadWeightResponseRowReg <= truncate(lookaheadWeightRowReg);
+        lookaheadWeightRequestValidReg <= True;
+        lookaheadWeightRowReg <= lookaheadWeightRowReg + 1;
+        weightReadRequestsReg <= weightReadRequestsReg + 1;
+        lookaheadWeightRequestsReg <= lookaheadWeightRequestsReg + 1;
+        if (lookaheadFirstWeightCycleReg == 0)
+            lookaheadFirstWeightCycleReg <= matrixCycle;
+    endrule
+
+    rule reuseLookaheadScale (
+        lookaheadPreparedReg && vectorOpUsesScale(lookaheadWorkReg.vectorOp)
+        && !lookaheadScaleValidReg && !lookaheadScaleRequestValidReg
+        && (
+            (currentScaleValidReg
+             && currentScaleContextReg == matrixScaleContextReg
+                + zeroExtend(lookaheadWorkReg.jStart)
+             && currentScaleBlockReg
+                == lookaheadKStartReg / matrixScaleBlockSizeReg)
+            ||
+            (nextScaleValidReg
+             && nextScaleContextReg == matrixScaleContextReg
+                + zeroExtend(lookaheadWorkReg.jStart)
+             && nextScaleBlockReg
+                == lookaheadKStartReg / matrixScaleBlockSizeReg)
+        )
+    );
+        ScaleContext wantedContext = matrixScaleContextReg
+            + zeroExtend(lookaheadWorkReg.jStart);
+        ScaleBlockIndex wantedBlock =
+            lookaheadKStartReg / matrixScaleBlockSizeReg;
+        Bool useCurrent = currentScaleValidReg
+            && currentScaleContextReg == wantedContext
+            && currentScaleBlockReg == wantedBlock;
+        lookaheadScaleValidReg <= True;
+        lookaheadScaleRowReg <= useCurrent ? currentScaleRowReg
+                                          : nextScaleRowReg;
+        lookaheadScaleContextReg <= wantedContext;
+        lookaheadScaleBlockReg <= wantedBlock;
+        lookaheadScaleReusesReg <= lookaheadScaleReusesReg + 1;
+        if (lookaheadScaleCycleReg == 0) lookaheadScaleCycleReg <= matrixCycle;
+    endrule
+
+    // Current execution demand/prefetch has priority.  A lookahead miss may
+    // occupy the same single host S channel only after current scale traffic
+    // is clear and the current work is executing.  The distinct tag keeps its
+    // response out of current/next execution scale storage.
+    (* descending_urgency = "issueDeferredScaleDemand, issueLookaheadScale" *)
+    (* descending_urgency = "issueScalePrefetch, issueLookaheadScale" *)
+    rule issueLookaheadScale (
+        lookaheadPreparedReg && vectorOpUsesScale(lookaheadWorkReg.vectorOp)
+        && !lookaheadScaleValidReg && !lookaheadScaleRequestValidReg
+        && !scaleOutstandingReg && !scaleRequestValidReg
+        && matrixStateReg == MatrixExecute && engine.active
+        && !(
+            currentScaleValidReg
+            && currentScaleContextReg == matrixScaleContextReg
+                + zeroExtend(lookaheadWorkReg.jStart)
+            && currentScaleBlockReg
+                == lookaheadKStartReg / matrixScaleBlockSizeReg
+        )
+        && !(
+            nextScaleValidReg
+            && nextScaleContextReg == matrixScaleContextReg
+                + zeroExtend(lookaheadWorkReg.jStart)
+            && nextScaleBlockReg
+                == lookaheadKStartReg / matrixScaleBlockSizeReg
+        )
+    );
+        ScaleBlockIndex block = lookaheadKStartReg / matrixScaleBlockSizeReg;
+        lookaheadScaleContextReg <= matrixScaleContextReg
+            + zeroExtend(lookaheadWorkReg.jStart);
+        lookaheadScaleBlockReg <= block;
+        lookaheadScaleTagReg <= matrixTag('ha0000000 + truncate(block));
+        lookaheadScaleRequestValidReg <= True;
+        lookaheadScaleRequestsReg <= lookaheadScaleRequestsReg + 1;
+        scaleReadRequestsReg <= scaleReadRequestsReg + 1;
+        scaleDemandRequestsReg <= scaleDemandRequestsReg + 1;
+        scaleDemandMissesReg <= scaleDemandMissesReg + 1;
+        if (lookaheadScaleCycleReg == 0) lookaheadScaleCycleReg <= matrixCycle;
+    endrule
+
+    rule beginLookaheadPreload (
+        lookaheadPreparedReg && lookaheadWeightsFetchedReg
+        && !lookaheadWeightReusableReg
+        && !lookaheadPreloadingReg && !preloadedFragmentValidReg
+        && engine.active
+        && engine.acceptedRows == engine.configuredRows
+        && !weightLoadingReg
+        && !workScheduler.hasNextFragment
+        && matmulScheduler.lookaheadPreloadSafe
+    );
+        Bool bank = !engine.activeWeightBank;
+        engine.beginWeightLoadBank(bank);
+        residentWeightValid[bank ? 1 : 0] <= False;
+        lookaheadPreloadingReg <= True;
+        lookaheadPreloadBankReg <= bank;
+        lookaheadPreloadRowReg <= 0;
+        lookaheadWeightPreloadCycleReg <= matrixCycle;
+    endrule
+
+    rule loadLookaheadPreloadRow (
+        lookaheadPreloadingReg
+        && lookaheadPreloadRowReg < fromInteger(valueOf(arrayDim))
+    );
+        dynamicAssert(lookaheadPreloadBankReg != engine.activeWeightBank,
+                      "lookahead wrote active weight bank");
+        Vector#(arrayDim, weight_t) row = replicate(unpack(0));
+        if (lookaheadPreloadRowReg < lookaheadKCountReg)
+            row = lookaheadWeightRows[lookaheadPreloadRowReg];
+        engine.loadWeightRowBank(lookaheadPreloadBankReg,
+            truncate(lookaheadPreloadRowReg), row);
+        lookaheadPreloadRowReg <= lookaheadPreloadRowReg + 1;
+    endrule
+
+    rule finishLookaheadPreload (
+        lookaheadPreloadingReg
+        && lookaheadPreloadRowReg == fromInteger(valueOf(arrayDim))
+    );
+        lookaheadPreloadingReg <= False;
+        preloadedFragmentValidReg <= True;
+        preloadedFragmentBankReg <= lookaheadPreloadBankReg;
+        preloadedFragmentKStartReg <= lookaheadKStartReg;
+        preloadedFragmentKCountReg <= lookaheadKCountReg;
+        Bit#(1) bank = lookaheadPreloadBankReg ? 1 : 0;
+        residentWeightValid[bank] <= True;
+        residentWeightBase[bank] <= lookaheadWorkReg.weightBase;
+        residentWeightRowStride[bank] <= lookaheadWorkReg.weightRowStride;
+        residentWeightJStart[bank] <= lookaheadWorkReg.jStart;
+        residentWeightJCount[bank] <= lookaheadWorkReg.jCount;
+        residentWeightKStart[bank] <= lookaheadKStartReg;
+        residentWeightKCount[bank] <= lookaheadKCountReg;
+    endrule
 
     rule countScaleWait (pendingExecutionReg);
         scaleWaitCyclesReg <= scaleWaitCyclesReg + 1;
@@ -597,40 +940,74 @@ module mkIM2PCore(IM2PCoreIfc#(
         && matmulScheduler.workValid
         && !weightLoadingReg
         && !pendingExecutionReg
+        && (!lookaheadPreparedReg
+            || (!lookaheadActivationRequestValidReg
+                && !lookaheadWeightRequestValidReg
+                && !lookaheadScaleRequestValidReg))
+        && (!lookaheadPreparedReg || lookaheadActivationsReady)
+        && (!lookaheadPreparedReg
+            || !vectorOpUsesScale(lookaheadWorkReg.vectorOp)
+            || lookaheadScaleValidReg)
     );
         MatmulWork#(arrayDim) work = matmulScheduler.work;
         Bool usesScale = vectorOpUsesScale(work.vectorOp);
         ScaleContext workScaleContext = matrixScaleContextReg
             + zeroExtend(work.jStart);
 
+        Bool promotePrepared = lookaheadPreparedReg
+            && work.jobId == lookaheadWorkReg.jobId
+            && work.stripeId == lookaheadWorkReg.stripeId
+            && work.iStart == lookaheadWorkReg.iStart
+            && work.jStart == lookaheadWorkReg.jStart;
         matrixWorkReg <= work;
         matmulScheduler.acceptWork;
-        workScheduler.start(
-            matrixKOriginReg,
-            work.reductionCount,
-            matrixScaleBlockSizeReg,
-            usesScale,
-            matrixAccumulateFirstReg
-        );
+        if (promotePrepared && workScheduler.lookaheadValid) begin
+            workScheduler.startPrepared;
+        end
+        else begin
+            workScheduler.start(matrixKOriginReg, work.reductionCount,
+                matrixScaleBlockSizeReg, usesScale, matrixAccumulateFirstReg);
+        end
+        if (promotePrepared) begin
+            lookaheadPreparedReg <= False;
+            lookaheadStartCycleReg <= matrixCycle;
+        end
+        promotedLookaheadWeightRowsReg <=
+            promotePrepared ? lookaheadWeightRowReg : 0;
 
         if (usesScale) begin
             blockSizeReg <= matrixScaleBlockSizeReg;
             totalKReg <= matrixScaleTotalKReg;
             scalingContextReg <= workScaleContext;
             configurationValidReg <= True;
-            currentScaleValidReg <= False;
+            currentScaleValidReg <= promotePrepared && lookaheadScaleValidReg;
+            if (promotePrepared && lookaheadScaleValidReg) begin
+                currentScaleContextReg <= lookaheadScaleContextReg;
+                currentScaleBlockReg <= lookaheadScaleBlockReg;
+                currentScaleRowReg <= lookaheadScaleRowReg;
+            end
             nextScaleValidReg <= False;
             prefetchNeededReg <= False;
         end
 
-        preloadedFragmentValidReg <= False;
-        activationSlotMetadataValid[0] <= False;
+        if (!promotePrepared) preloadedFragmentValidReg <= False;
+        activationSlotMetadataValid[0] <= promotePrepared;
+        if (promotePrepared) begin
+            activationSlotKStart[0] <= lookaheadKStartReg;
+            activationSlotKCount[0] <= lookaheadKCountReg;
+            activationSlotRequestRow[0] <= truncate(work.iCount);
+        end
         activationSlotMetadataValid[1] <= False;
         currentActivationSlotReg <= False;
         activationRequestValidReg <= False;
         for (Integer slot = 0; slot < 2; slot = slot + 1) begin
             for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
-                activationSlotRowValid[slot][row] <= False;
+                if (promotePrepared && slot == 0
+                        && fromInteger(row) < work.iCount) begin
+                    activationSlotRows[slot][row] <= lookaheadActivationRows[row];
+                    activationSlotRowValid[slot][row] <= lookaheadActivationValid[row];
+                end
+                else activationSlotRowValid[slot][row] <= False;
             end
         end
         matrixStateReg <= MatrixWaitFragment;
@@ -695,6 +1072,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         end
 
         if (usePreload) begin
+            promotedLookaheadWeightRowsReg <= 0;
             preloadedFragmentValidReg <= False;
             matrixStateReg <= MatrixActivateBank;
         end
@@ -704,6 +1082,7 @@ module mkIM2PCore(IM2PCoreIfc#(
                 "matrix preload must target the inactive bank"
             );
             engine.beginWeightLoadBank(targetBank);
+            residentWeightValid[targetBank ? 1 : 0] <= False;
             weightLoadingReg <= True;
             weightLoadIsNextReg <= False;
             weightLoadBankReg <= targetBank;
@@ -718,6 +1097,10 @@ module mkIM2PCore(IM2PCoreIfc#(
         weightLoadingReg
         && !weightRequestValidReg
         && weightLoadRowReg < weightLoadKCountReg
+        && (
+            weightLoadIsNextReg
+            || weightLoadRowReg >= promotedLookaheadWeightRowsReg
+        )
     );
         MatrixExtent localK = weightLoadKStartReg
             - matrixKOriginReg
@@ -739,17 +1122,26 @@ module mkIM2PCore(IM2PCoreIfc#(
     rule padMatrixWeightRows (
         weightLoadingReg
         && !weightRequestValidReg
-        && weightLoadRowReg >= weightLoadKCountReg
+        && (
+            (
+                !weightLoadIsNextReg
+                && weightLoadRowReg < promotedLookaheadWeightRowsReg
+            )
+            || weightLoadRowReg >= weightLoadKCountReg
+        )
         && weightLoadRowReg < fromInteger(valueOf(arrayDim))
     );
         dynamicAssert(
             weightLoadBankReg != engine.activeWeightBank,
             "weight padding must target the inactive bank"
         );
+        Bool useBuffered = !weightLoadIsNextReg
+            && weightLoadRowReg < promotedLookaheadWeightRowsReg;
+        Vector#(arrayDim, weight_t) row = useBuffered
+            ? lookaheadWeightRows[weightLoadRowReg]
+            : replicate(unpack(0));
         engine.loadWeightRowBank(
-            weightLoadBankReg,
-            truncate(weightLoadRowReg),
-            replicate(unpack(0))
+            weightLoadBankReg, truncate(weightLoadRowReg), row
         );
         weightLoadRowReg <= weightLoadRowReg + 1;
     endrule
@@ -762,6 +1154,15 @@ module mkIM2PCore(IM2PCoreIfc#(
         && weightLoadRowReg == fromInteger(valueOf(arrayDim))
     );
         weightLoadingReg <= False;
+        promotedLookaheadWeightRowsReg <= 0;
+        Bit#(1) bank = weightLoadBankReg ? 1 : 0;
+        residentWeightValid[bank] <= True;
+        residentWeightBase[bank] <= matrixWorkReg.weightBase;
+        residentWeightRowStride[bank] <= matrixWorkReg.weightRowStride;
+        residentWeightJStart[bank] <= matrixWorkReg.jStart;
+        residentWeightJCount[bank] <= matrixWorkReg.jCount;
+        residentWeightKStart[bank] <= weightLoadKStartReg;
+        residentWeightKCount[bank] <= weightLoadKCountReg;
         matrixStateReg <= MatrixActivateBank;
     endrule
 
@@ -778,6 +1179,14 @@ module mkIM2PCore(IM2PCoreIfc#(
         preloadedFragmentBankReg <= weightLoadBankReg;
         preloadedFragmentKStartReg <= weightLoadKStartReg;
         preloadedFragmentKCountReg <= weightLoadKCountReg;
+        Bit#(1) bank = weightLoadBankReg ? 1 : 0;
+        residentWeightValid[bank] <= True;
+        residentWeightBase[bank] <= matrixWorkReg.weightBase;
+        residentWeightRowStride[bank] <= matrixWorkReg.weightRowStride;
+        residentWeightJStart[bank] <= matrixWorkReg.jStart;
+        residentWeightJCount[bank] <= matrixWorkReg.jCount;
+        residentWeightKStart[bank] <= weightLoadKStartReg;
+        residentWeightKCount[bank] <= weightLoadKCountReg;
     endrule
 
     rule activateMatrixWeightBank (
@@ -900,6 +1309,7 @@ module mkIM2PCore(IM2PCoreIfc#(
                 "next fragment preload selected active bank"
             );
             engine.beginWeightLoadBank(nextBank);
+            residentWeightValid[nextBank ? 1 : 0] <= False;
             weightLoadingReg <= True;
             weightLoadIsNextReg <= True;
             weightLoadBankReg <= nextBank;
@@ -1072,6 +1482,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         matrixStateReg <= MatrixWaitWork;
     endrule
 
+    (* descending_urgency = "issueVectorRequest, engine_advanceArray" *)
     rule issueVectorRequest (
         engine.resultValid && vectorUnit.ready && !scaledResultHeldReg
     );
@@ -1254,6 +1665,8 @@ module mkIM2PCore(IM2PCoreIfc#(
         MatrixExtent rowCount,
         MatrixExtent columnCount,
         MatrixExtent reductionCount,
+        MatrixExtent tileIRows,
+        MatrixExtent tileJColumns,
         MatrixExtent kOrigin,
         MatrixExtent scaleTotalK,
         MatrixExtent scaleBlockSize,
@@ -1293,8 +1706,8 @@ module mkIM2PCore(IM2PCoreIfc#(
             rowCount: rowCount,
             columnCount: columnCount,
             reductionCount: reductionCount,
-            tileIRows: dimension,
-            tileJColumns: dimension,
+            tileIRows: tileIRows,
+            tileJColumns: tileJColumns,
             blockSize: scaleBlockSize,
             activationElementBytes: fromInteger(valueOf(inputBits) / 8),
             weightElementBytes: fromInteger(valueOf(weightBits) / 8),
@@ -1313,13 +1726,23 @@ module mkIM2PCore(IM2PCoreIfc#(
         matrixScaleBlockSizeReg <= scaleBlockSize;
         matrixScaleContextReg <= scaleContext;
         matrixAccumulateFirstReg <= accumulateFirstFragment;
+        matrixStartCycleReg <= cycleReg;
+        lookaheadPublishCycleReg <= 0;
+        lookaheadFirstActivationCycleReg <= 0;
+        lookaheadFirstWeightCycleReg <= 0;
+        lookaheadWeightPreloadCycleReg <= 0;
+        lookaheadScaleCycleReg <= 0;
+        currentStripeCompletionCycleReg <= 0;
+        lookaheadReadyCycleReg <= 0;
+        lookaheadStartCycleReg <= 0;
         nextStripeIdReg <= 0;
         matrixStateReg <= MatrixWaitWork;
     endmethod
 
     method Action publishActivationStripe(
         MatrixExtent rowBegin,
-        MatrixExtent rowCount
+        MatrixExtent rowCount,
+        HostStride rowStride
     ) if (
         matrixStateReg != MatrixIdle
         && matrixStateReg != MatrixDone
@@ -1335,30 +1758,54 @@ module mkIM2PCore(IM2PCoreIfc#(
             rowBegin: rowBegin,
             rowCount: rowCount,
             activationBase: stripeBase,
+            activationRowStride: rowStride,
             stripeContext: zeroExtend(nextStripeIdReg)
         });
+        if (nextStripeIdReg == 1 && lookaheadPublishCycleReg == 0)
+            lookaheadPublishCycleReg <= matrixCycle;
         nextStripeIdReg <= nextStripeIdReg + 1;
         stripesPublishedReg <= stripesPublishedReg + 1;
         stripeRowsPublishedReg <= stripeRowsPublishedReg + zeroExtend(rowCount);
     endmethod
 
-    method Bool activationReadRequestValid = activationRequestValidReg;
+    method Bool activationReadRequestValid = activationRequestValidReg
+        || lookaheadActivationRequestValidReg;
     method HostRequestTag activationReadRequestTag
-            if (activationRequestValidReg);
-        return activationRequestTagReg;
+            if (activationRequestValidReg || lookaheadActivationRequestValidReg);
+        return activationRequestValidReg ? activationRequestTagReg
+                                         : lookaheadActivationTagReg;
     endmethod
     method HostAddress activationReadRequestAddress
-            if (activationRequestValidReg);
-        return activationRequestAddressReg;
+            if (activationRequestValidReg || lookaheadActivationRequestValidReg);
+        MatrixExtent row = zeroExtend(lookaheadActivationResponseRowReg);
+        HostAddress rowBase = matrixRowAddress(lookaheadWorkReg.activationBase,
+            row, lookaheadWorkReg.activationRowStride);
+        HostAddress lookaheadAddress = matrixElementAddress(rowBase,
+            lookaheadKStartReg - matrixKOriginReg,
+            fromInteger(valueOf(inputBits) / 8));
+        return activationRequestValidReg ? activationRequestAddressReg
+                                         : lookaheadAddress;
     endmethod
     method BoundedCount#(arrayDim) activationReadRequestElementCount
-            if (activationRequestValidReg);
-        return activationRequestKCountReg;
+            if (activationRequestValidReg || lookaheadActivationRequestValidReg);
+        return activationRequestValidReg ? activationRequestKCountReg
+                                         : lookaheadKCountReg;
     endmethod
     method Action putActivationReadResponse(
         HostRequestTag tag,
         Vector#(arrayDim, input_t) values
-    );
+    ) if (activationRequestValidReg || lookaheadActivationRequestValidReg);
+        if (lookaheadActivationRequestValidReg
+                && tag == lookaheadActivationTagReg) begin
+            Vector#(arrayDim, input_t) padded = replicate(unpack(0));
+            for (Integer lane = 0; lane < valueOf(arrayDim); lane = lane + 1)
+                if (fromInteger(lane) < lookaheadKCountReg)
+                    padded[lane] = values[lane];
+            lookaheadActivationRows[lookaheadActivationResponseRowReg] <= padded;
+            lookaheadActivationValid[lookaheadActivationResponseRowReg] <= True;
+            lookaheadActivationRequestValidReg <= False;
+        end
+        else begin
         dynamicAssert(
             activationRequestValidReg,
             "stale activation response has no outstanding request"
@@ -1403,23 +1850,47 @@ module mkIM2PCore(IM2PCoreIfc#(
         activationResponseValuesReg <= padded;
         activationResponsePendingReg <= True;
         activationRequestValidReg <= False;
+        end
     endmethod
 
-    method Bool weightReadRequestValid = weightRequestValidReg;
-    method HostRequestTag weightReadRequestTag if (weightRequestValidReg);
-        return weightRequestTagReg;
+    method Bool weightReadRequestValid = weightRequestValidReg || lookaheadWeightRequestValidReg;
+    method HostRequestTag weightReadRequestTag if (weightRequestValidReg || lookaheadWeightRequestValidReg);
+        return weightRequestValidReg ? weightRequestTagReg : lookaheadWeightTagReg;
     endmethod
-    method HostAddress weightReadRequestAddress if (weightRequestValidReg);
-        return weightRequestAddressReg;
+    method HostAddress weightReadRequestAddress if (weightRequestValidReg || lookaheadWeightRequestValidReg);
+        MatrixExtent localK = lookaheadKStartReg - matrixKOriginReg
+            + zeroExtend(lookaheadWeightResponseRowReg);
+        HostAddress lookaheadAddress = matrixRowAddress(
+            lookaheadWorkReg.weightBase, localK,
+            lookaheadWorkReg.weightRowStride);
+        return weightRequestValidReg ? weightRequestAddressReg
+                                     : lookaheadAddress;
     endmethod
     method BoundedCount#(arrayDim) weightReadRequestElementCount
-            if (weightRequestValidReg);
-        return truncate(matrixWorkReg.jCount);
+            if (weightRequestValidReg || lookaheadWeightRequestValidReg);
+        return truncate(weightRequestValidReg ? matrixWorkReg.jCount
+                                              : lookaheadWorkReg.jCount);
     endmethod
     method Action putWeightReadResponse(
         HostRequestTag tag,
         Vector#(arrayDim, weight_t) values
-    ) if (weightRequestValidReg && weightLoadingReg);
+    ) if ((weightRequestValidReg && weightLoadingReg)
+          || lookaheadWeightRequestValidReg);
+        if (lookaheadWeightRequestValidReg
+                && tag == lookaheadWeightTagReg) begin
+            BoundedIndex#(arrayDim) responseRow =
+                lookaheadWeightResponseRowReg;
+            Vector#(arrayDim, weight_t) padded = replicate(unpack(0));
+            for (Integer lane = 0; lane < valueOf(arrayDim); lane = lane + 1)
+                if (fromInteger(lane) < lookaheadWorkReg.jCount)
+                    padded[lane] = values[lane];
+            lookaheadWeightRows[responseRow] <= padded;
+            lookaheadWeightRequestValidReg <= False;
+            if (lookaheadWeightRowReg == lookaheadKCountReg)
+                lookaheadWeightsFetchedReg <= True;
+        end
+        else begin
+        dynamicAssert(weightRequestValidReg, "stale weight response");
         dynamicAssert(tag == weightRequestTagReg, "weight response tag mismatch");
         dynamicAssert(
             weightLoadBankReg != engine.activeWeightBank,
@@ -1438,70 +1909,93 @@ module mkIM2PCore(IM2PCoreIfc#(
         );
         weightLoadRowReg <= weightLoadRowReg + 1;
         weightRequestValidReg <= False;
+        end
     endmethod
 
-    method Bool scaleReadRequestValid =
-        matrixStateReg != MatrixIdle && scaleRequestValidReg;
-    method HostRequestTag scaleReadRequestTag
-            if (matrixStateReg != MatrixIdle && scaleRequestValidReg);
-        return unpack({ pack(matrixJobIdReg), pack(scaleRequestReg.block) });
+    method Bool scaleReadRequestValid = matrixStateReg != MatrixIdle
+        && (scaleRequestValidReg || lookaheadScaleRequestValidReg);
+    method HostRequestTag scaleReadRequestTag if (
+        matrixStateReg != MatrixIdle
+        && (scaleRequestValidReg || lookaheadScaleRequestValidReg)
+    );
+        HostRequestTag currentTag = unpack({
+            pack(matrixJobIdReg), pack(scaleRequestReg.block)
+        });
+        return scaleRequestValidReg ? currentTag : lookaheadScaleTagReg;
     endmethod
-    method HostAddress scaleReadRequestAddress
-            if (matrixStateReg != MatrixIdle && scaleRequestValidReg);
-        return matrixRowAddress(
-            matrixWorkReg.scaleBase,
-            scaleRequestReg.block,
-            matrixWorkReg.scaleRowStride
-        );
+    method HostAddress scaleReadRequestAddress if (
+        matrixStateReg != MatrixIdle
+        && (scaleRequestValidReg || lookaheadScaleRequestValidReg)
+    );
+        HostAddress currentAddress = matrixRowAddress(
+            matrixWorkReg.scaleBase, scaleRequestReg.block,
+            matrixWorkReg.scaleRowStride);
+        HostAddress lookaheadAddress = matrixRowAddress(
+            lookaheadWorkReg.scaleBase, lookaheadScaleBlockReg,
+            lookaheadWorkReg.scaleRowStride);
+        return scaleRequestValidReg ? currentAddress : lookaheadAddress;
     endmethod
-    method BoundedCount#(arrayDim) scaleReadRequestElementCount
-            if (matrixStateReg != MatrixIdle && scaleRequestValidReg);
-        return truncate(matrixWorkReg.jCount);
+    method BoundedCount#(arrayDim) scaleReadRequestElementCount if (
+        matrixStateReg != MatrixIdle
+        && (scaleRequestValidReg || lookaheadScaleRequestValidReg)
+    );
+        return truncate(scaleRequestValidReg ? matrixWorkReg.jCount
+                                             : lookaheadWorkReg.jCount);
     endmethod
     method Action putScaleReadResponse(
         HostRequestTag tag,
         Vector#(arrayDim, scale_t) values
     ) if (
         matrixStateReg != MatrixIdle
-        && scaleOutstandingReg
-        && scaleRequestValidReg
+        && ((scaleOutstandingReg && scaleRequestValidReg)
+            || lookaheadScaleRequestValidReg)
     );
-        HostRequestTag expected = unpack({
-            pack(matrixJobIdReg), pack(outstandingRequestReg.block)
-        });
-        dynamicAssert(tag == expected, "scale response tag mismatch");
-        Vector#(arrayDim, scale_t) padded = replicate(unpack(0));
-        for (Integer lane = 0; lane < valueOf(arrayDim); lane = lane + 1) begin
-            if (fromInteger(lane) < matrixWorkReg.jCount) begin
-                padded[lane] = values[lane];
-            end
-        end
-
-        scaleRequestValidReg <= False;
-        scaleOutstandingReg <= False;
-        scaleRowsReceivedReg <= scaleRowsReceivedReg + 1;
-        if (outstandingRequestReg.kind == ScaleDemand) begin
-            dynamicAssert(
-                pendingExecutionReg,
-                "matrix demand scale response has no pending execution"
-            );
-            dynamicAssert(
-                outstandingRequestReg.contextId == pendingContextReg
-                    && outstandingRequestReg.block == pendingBlockReg,
-                "matrix demand scale response does not match pending execution"
-            );
-            currentScaleValidReg <= True;
-            currentScaleContextReg <= outstandingRequestReg.contextId;
-            currentScaleBlockReg <= outstandingRequestReg.block;
-            currentScaleRowReg <= padded;
-            nextScaleValidReg <= False;
-            prefetchNeededReg <= True;
+        if (lookaheadScaleRequestValidReg
+                && tag == lookaheadScaleTagReg) begin
+            Vector#(arrayDim, scale_t) padded = replicate(unpack(0));
+            for (Integer lane = 0; lane < valueOf(arrayDim); lane = lane + 1)
+                if (fromInteger(lane) < lookaheadWorkReg.jCount)
+                    padded[lane] = values[lane];
+            lookaheadScaleRowReg <= padded;
+            lookaheadScaleValidReg <= True;
+            lookaheadScaleRequestValidReg <= False;
+            scaleRowsReceivedReg <= scaleRowsReceivedReg + 1;
         end
         else begin
-            nextScaleValidReg <= True;
-            nextScaleContextReg <= outstandingRequestReg.contextId;
-            nextScaleBlockReg <= outstandingRequestReg.block;
-            nextScaleRowReg <= padded;
+            HostRequestTag expected = unpack({
+                pack(matrixJobIdReg), pack(outstandingRequestReg.block)
+            });
+            dynamicAssert(scaleOutstandingReg && scaleRequestValidReg,
+                          "stale current scale response");
+            dynamicAssert(tag == expected, "scale response tag mismatch");
+            Vector#(arrayDim, scale_t) padded = replicate(unpack(0));
+            for (Integer lane = 0; lane < valueOf(arrayDim); lane = lane + 1)
+                if (fromInteger(lane) < matrixWorkReg.jCount)
+                    padded[lane] = values[lane];
+
+            scaleRequestValidReg <= False;
+            scaleOutstandingReg <= False;
+            scaleRowsReceivedReg <= scaleRowsReceivedReg + 1;
+            if (outstandingRequestReg.kind == ScaleDemand) begin
+                dynamicAssert(pendingExecutionReg,
+                    "matrix demand scale response has no pending execution");
+                dynamicAssert(
+                    outstandingRequestReg.contextId == pendingContextReg
+                        && outstandingRequestReg.block == pendingBlockReg,
+                    "matrix demand scale response does not match pending execution");
+                currentScaleValidReg <= True;
+                currentScaleContextReg <= outstandingRequestReg.contextId;
+                currentScaleBlockReg <= outstandingRequestReg.block;
+                currentScaleRowReg <= padded;
+                nextScaleValidReg <= False;
+                prefetchNeededReg <= True;
+            end
+            else begin
+                nextScaleValidReg <= True;
+                nextScaleContextReg <= outstandingRequestReg.contextId;
+                nextScaleBlockReg <= outstandingRequestReg.block;
+                nextScaleRowReg <= padded;
+            end
         end
     endmethod
 
@@ -1528,6 +2022,8 @@ module mkIM2PCore(IM2PCoreIfc#(
 
         if (zeroExtend(outputRowReg) + 1 == matrixWorkReg.iCount) begin
             matmulScheduler.completeWork;
+            if (matmulScheduler.lookaheadValid)
+                currentStripeCompletionCycleReg <= matrixCycle;
             matmulWorksCompletedReg <= matmulWorksCompletedReg + 1;
             matrixStateReg <= MatrixWaitSchedulerDone;
         end
@@ -1604,6 +2100,21 @@ module mkIM2PCore(IM2PCoreIfc#(
     method UInt#(64) weightOverlapCycles = weightOverlapCyclesReg;
     method UInt#(64) scaleOverlapCycles = scaleOverlapCyclesReg;
     method UInt#(64) overlapCycles = overlapCyclesReg;
+    method UInt#(64) crossStripeOverlapCycles = crossStripeOverlapCyclesReg;
+    method Bool lookaheadPrepared = lookaheadPreparedReg;
+    method UInt#(32) lookaheadStripeId = lookaheadWorkReg.stripeId;
+    method UInt#(64) lookaheadPublishCycle = lookaheadPublishCycleReg;
+    method UInt#(64) lookaheadFirstActivationCycle = lookaheadFirstActivationCycleReg;
+    method UInt#(64) lookaheadFirstWeightCycle = lookaheadFirstWeightCycleReg;
+    method UInt#(64) lookaheadWeightPreloadCycle = lookaheadWeightPreloadCycleReg;
+    method UInt#(64) lookaheadWeightRequests = lookaheadWeightRequestsReg;
+    method UInt#(64) lookaheadWeightReuseHits = lookaheadWeightReuseHitsReg;
+    method UInt#(64) lookaheadScaleCycle = lookaheadScaleCycleReg;
+    method UInt#(64) lookaheadScaleRequests = lookaheadScaleRequestsReg;
+    method UInt#(64) lookaheadScaleReuses = lookaheadScaleReusesReg;
+    method UInt#(64) currentStripeCompletionCycle = currentStripeCompletionCycleReg;
+    method UInt#(64) lookaheadReadyCycle = lookaheadReadyCycleReg;
+    method UInt#(64) lookaheadStartCycle = lookaheadStartCycleReg;
 
     method Action beginWeightLoad if (
         matrixStateReg == MatrixIdle

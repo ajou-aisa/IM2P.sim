@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::Im2pSimulator;
 use crate::StripedMatmul;
 
 #[repr(C)]
@@ -97,6 +101,26 @@ pub struct WorkStatsC {
     pub weight_bank_activations: u64,
 }
 
+#[repr(C)]
+#[derive(Default)]
+pub struct WorkStatsExtendedC {
+    pub base: WorkStatsC,
+    pub cross_stripe_overlap_cycles: u64,
+    pub lookahead_prepared: u64,
+    pub lookahead_publish_cycle: u64,
+    pub lookahead_first_activation_cycle: u64,
+    pub lookahead_first_weight_cycle: u64,
+    pub lookahead_weight_preload_cycle: u64,
+    pub lookahead_weight_requests: u64,
+    pub lookahead_weight_reuse_hits: u64,
+    pub lookahead_scale_cycle: u64,
+    pub lookahead_scale_requests: u64,
+    pub lookahead_scale_reuses: u64,
+    pub current_stripe_completion_cycle: u64,
+    pub lookahead_ready_cycle: u64,
+    pub lookahead_start_cycle: u64,
+}
+
 pub struct PublishedStripe {
     pub row_begin: usize,
     pub row_count: usize,
@@ -105,6 +129,7 @@ pub struct PublishedStripe {
 }
 
 pub struct StreamBox {
+    pub owner: Rc<RefCell<Option<Im2pSimulator>>>,
     pub job: Option<StripedMatmul<'static>>,
     pub stripes: Vec<PublishedStripe>,
     pub output: *mut i32,

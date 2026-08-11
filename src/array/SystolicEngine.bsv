@@ -107,6 +107,7 @@ module mkSystolicEngine(SystolicEngineIfc#(
 
     Reg#(BoundedCount#(arrayDim)) acceptedRowsReg <- mkReg(0);
     Reg#(BoundedCount#(arrayDim)) rowCountReg <- mkReg(0);
+    Reg#(Bool) activeWeightBankReg <- mkReg(False);
 
     // result FIFO가 가득 차면 InputSkew와 모든 PE를 함께 정지시켜 wavefront의
     // 상대 timing을 유지한다.
@@ -157,7 +158,8 @@ module mkSystolicEngine(SystolicEngineIfc#(
             bank != systolicArray.activeWeightBank,
             "weight preload must target inactive bank"
         );
-        systolicArray.beginWeightLoadBank(bank);
+        if (bank != activeWeightBankReg)
+            systolicArray.beginWeightLoadBank(bank);
     endmethod
 
     method Action loadWeightRow(
@@ -176,7 +178,8 @@ module mkSystolicEngine(SystolicEngineIfc#(
             bank != systolicArray.activeWeightBank,
             "weight preload must target inactive bank"
         );
-        systolicArray.loadWeightRowBank(bank, row, weights);
+        if (bank != activeWeightBankReg)
+            systolicArray.loadWeightRowBank(bank, row, weights);
     endmethod
 
     method Bool weightsReady = systolicArray.weightsReady;
@@ -185,6 +188,7 @@ module mkSystolicEngine(SystolicEngineIfc#(
 
     method Action activateWeightBank(Bool bank) if (controller.idle);
         systolicArray.activateWeightBank(bank);
+        activeWeightBankReg <= bank;
     endmethod
 
     method Bool activeWeightBank = systolicArray.activeWeightBank;

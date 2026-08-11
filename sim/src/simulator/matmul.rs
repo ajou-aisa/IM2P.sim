@@ -1,5 +1,5 @@
 use super::{Error, Im2pSimulator};
-use crate::{ffi, MatmulWork, MatrixView, MatrixViewMut, WorkStats};
+use crate::{ffi, MatmulLayout, MatmulWork, MatrixView, MatrixViewMut, WorkStats};
 mod memory;
 mod stats;
 use memory::{resolve_i8, resolve_scale, validate_work, write_i32};
@@ -16,7 +16,33 @@ impl Im2pSimulator {
         work: &MatmulWork<'_>,
         output: &mut MatrixViewMut<'_, i32>,
     ) -> Result<WorkStats, Error> {
+        let layout = MatmulLayout {
+            tile_i_rows: self.dim,
+            tile_j_columns: self.dim,
+        };
+        self.execute_matmul_layout(work, output, layout)
+    }
+
+    pub fn execute_matmul_layout(
+        &mut self,
+        work: &MatmulWork<'_>,
+        output: &mut MatrixViewMut<'_, i32>,
+        layout: MatmulLayout,
+    ) -> Result<WorkStats, Error> {
         validate_work(work, output)?;
+        if work.activations.rows > u32::MAX as usize
+            || work.activations.columns > u32::MAX as usize
+            || work.weights.columns > u32::MAX as usize
+        {
+            return Err(Error::InvalidDimension);
+        }
+        if layout.tile_i_rows == 0
+            || layout.tile_i_rows > self.dim
+            || layout.tile_j_columns == 0
+            || layout.tile_j_columns > self.dim
+        {
+            return Err(Error::InvalidLayout);
+        }
         let counters_before = self.matrix_counters();
         let scales_before = self.scale_counters();
         let start_cycle = self.cycles();
@@ -35,6 +61,8 @@ impl Im2pSimulator {
             row_count: work.activations.rows as u32,
             column_count: work.weights.columns as u32,
             reduction_count: work.activations.columns as u32,
+            tile_i_rows: layout.tile_i_rows as u32,
+            tile_j_columns: layout.tile_j_columns as u32,
             k_origin: 0,
             scale_total_k: scale.map_or(work.activations.columns, |view| view.total_k) as u32,
             scale_block_size: scale.map_or(work.activations.columns, |view| view.block_size) as u32,

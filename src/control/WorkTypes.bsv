@@ -13,6 +13,7 @@ typedef struct {
     MatrixExtent rowBegin;
     MatrixExtent rowCount;
     HostAddress activationBase;
+    HostStride activationRowStride;
     UInt#(64) stripeContext;
 } ActivationStripe deriving (Bits, Eq, FShow);
 

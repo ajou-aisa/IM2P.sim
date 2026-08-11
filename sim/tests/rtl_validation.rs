@@ -1,7 +1,10 @@
 pub mod common;
 
 use common::{scale_view as view, valid_request};
-use im2p_sim::{Im2pSimulator, KBlockScaleMatrixView, SimError, VectorOp};
+use im2p_sim::{
+    Im2pSimulator, KBlockScaleMatrixView, MatmulWork, MatrixView, MatrixViewMut, SimError,
+    StripeWorkDesc, VectorOp,
+};
 
 #[test]
 fn block_size_zero_is_rejected() -> Result<(), SimError> {
@@ -244,4 +247,63 @@ fn accumulator_row_address_is_checked() -> Result<(), SimError> {
 #[test]
 fn bad_response_identity_is_rejected_by_ffi() {
     common::assert_bad_response_identity_rejected();
+}
+
+#[test]
+fn invalid_scale_layouts_are_rejected_by_full_and_striped_apis() -> Result<(), SimError> {
+    let activations = [1_i8];
+    let weights = [1_i8];
+    let scales = [1_i8; 4];
+    let invalid_views = [
+        KBlockScaleMatrixView {
+            values: &scales,
+            block_size: 1,
+            total_k: 1,
+            columns: 1,
+            row_stride: 0,
+            column_offset: 0,
+            valid_columns: 1,
+            context: 7,
+        },
+        KBlockScaleMatrixView {
+            values: &scales,
+            block_size: 1,
+            total_k: 1,
+            columns: 4,
+            row_stride: 4,
+            column_offset: usize::MAX - 1,
+            valid_columns: 1,
+            context: 7,
+        },
+    ];
+
+    for scales in invalid_views {
+        let work = MatmulWork {
+            activations: MatrixView::new(&activations, 1, 1, 1)?,
+            weights: MatrixView::new(&weights, 1, 1, 1)?,
+            scales: Some(scales),
+            vector_op: VectorOp::Multiply,
+        };
+        let mut output = [0_i32];
+        let mut output_view = MatrixViewMut::new(&mut output, 1, 1, 1)?;
+        assert_eq!(
+            Im2pSimulator::new()?.execute_matmul(&work, &mut output_view),
+            Err(SimError::InvalidScaleMatrixLayout)
+        );
+
+        let striped = StripeWorkDesc {
+            weights: &weights,
+            scale_matrix: Some(scales),
+            rows: 1,
+            columns: 1,
+            reduction: 1,
+            vector_op: VectorOp::Multiply,
+            work_context: 7,
+        };
+        assert!(matches!(
+            Im2pSimulator::new()?.begin_striped_matmul(&striped),
+            Err(SimError::InvalidScaleMatrixLayout)
+        ));
+    }
+    Ok(())
 }

@@ -24,7 +24,7 @@ BSC_EXTRA_FLAGS ?= -steps 4000000 -steps-warn-interval 1000000 \
 BSC_COMMON := -p $(BSC_PATH) $(BSC_DIRS) -keep-fires -show-schedule \
               $(BSC_EXTRA_FLAGS)
 BSC_SIM_COMMON := -p $(BSC_PATH) $(BSC_SIM_DIRS) -keep-fires -show-schedule \
-                  $(BSC_EXTRA_FLAGS) -Xc++ -O0
+                  -check-assert $(BSC_EXTRA_FLAGS) -Xc++ -O0
 
 CPP_TOOL := $(BUILD_DIR)/bin/im2p_reference
 CPP_SRC  := tools/im2p_reference.cpp
@@ -34,6 +34,9 @@ BSV_TEST_TOPS := \
 	mkTbPE \
 	mkTbWorkScheduler \
 	mkTbMatmulScheduler \
+	mkTbMatmulLookahead \
+	mkTbIM2PLookahead \
+	mkTbIM2PLookaheadScale \
 	mkTbSystolicArrayWeightBanks \
 	mkTbSystolicEngineWeightBanks \
 	mkTbInputSkew \

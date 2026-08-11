@@ -15,6 +15,10 @@ enum {
     IM2P_OK = 0,
     IM2P_ERROR = -1,
     IM2P_BACKPRESSURE = -2,
+    IM2P_UNFINISHED_STREAM = -3,
+    IM2P_INVALID_LAYOUT = -4,
+    IM2P_DUPLICATE_STRIPE = -5,
+    IM2P_LATE_STRIPE = -6,
     IM2P_VECTOR_BYPASS = 0,
     IM2P_VECTOR_MULTIPLY = 1,
     IM2P_VECTOR_SHIFT = 2,
@@ -49,7 +53,7 @@ typedef struct {
 
 /*
  * Striped weights/scales/output remain borrowed until im2p_finish_stream or
- * im2p_destroy_stream. The current ABI requires packed KxN weights.
+ * im2p_destroy_stream. Row strides are in elements; padding is permitted.
  */
 typedef struct {
     const int8_t *weights;
@@ -75,7 +79,9 @@ typedef struct {
 
 /*
  * `activations` remains caller-owned and must remain readable until matching
- * completion is returned. Published stripes must be contiguous and ordered.
+ * completion is returned. A successful publish permits RTL reads on the next
+ * logical cycle, so the pointer must remain valid through that completion.
+ * Published stripes must be contiguous and ordered.
  */
 typedef struct {
     uint32_t stripe_id;
@@ -123,6 +129,28 @@ typedef struct {
     uint64_t weight_bank_activations;
 } im2p_work_stats_t;
 
+/*
+ * Versioned extension. Legacy entry points write exactly im2p_work_stats_t;
+ * use the *_extended entry points to request lookahead telemetry.
+ */
+typedef struct {
+    im2p_work_stats_t base;
+    uint64_t cross_stripe_overlap_cycles;
+    uint64_t lookahead_prepared;
+    uint64_t lookahead_publish_cycle;
+    uint64_t lookahead_first_activation_cycle;
+    uint64_t lookahead_first_weight_cycle;
+    uint64_t lookahead_weight_preload_cycle;
+    uint64_t lookahead_weight_requests;
+    uint64_t lookahead_weight_reuse_hits;
+    uint64_t lookahead_scale_cycle;
+    uint64_t lookahead_scale_requests;
+    uint64_t lookahead_scale_reuses;
+    uint64_t current_stripe_completion_cycle;
+    uint64_t lookahead_ready_cycle;
+    uint64_t lookahead_start_cycle;
+} im2p_work_stats_extended_t;
+
 im2p_sim_t *im2p_sim_create(void);
 void im2p_sim_destroy(im2p_sim_t *sim);
 int im2p_execute_matmul(
@@ -130,9 +158,20 @@ int im2p_execute_matmul(
     const im2p_matmul_desc_t *descriptor,
     im2p_work_stats_t *stats
 );
+int im2p_execute_matmul_extended(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_t *descriptor,
+    im2p_work_stats_extended_t *stats
+);
+/* The returned stream remains valid if `sim` is destroyed. */
 im2p_stream_t *im2p_begin_striped_matmul(
     im2p_sim_t *sim,
     const im2p_stripe_work_desc_t *descriptor
+);
+int im2p_begin_striped_matmul_ex(
+    im2p_sim_t *sim,
+    const im2p_stripe_work_desc_t *descriptor,
+    im2p_stream_t **stream
 );
 int im2p_publish_stripe(
     im2p_stream_t *stream,
@@ -144,6 +183,10 @@ int im2p_poll_completed(
     im2p_stripe_completion_t *completion
 );
 int im2p_finish_stream(im2p_stream_t *stream, im2p_work_stats_t *stats);
+int im2p_finish_stream_extended(
+    im2p_stream_t *stream,
+    im2p_work_stats_extended_t *stats
+);
 void im2p_destroy_stream(im2p_stream_t *stream);
 
 #ifdef __cplusplus

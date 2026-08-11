@@ -134,6 +134,7 @@ module mkTbMatmulScheduler(Empty);
             rowBegin: 0,
             rowCount: 2,
             activationBase: 64'h5000,
+            activationRowStride: 16,
             stripeContext: 91
         });
         state <= TbWaitAsyncWork;

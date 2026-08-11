@@ -53,6 +53,7 @@ fn validate_scaling_range(
     request: &TileRequest<'_>,
     matrix: KBlockScaleMatrixView<'_>,
 ) -> Result<(), Error> {
+    validate_scale_matrix(matrix, matrix.total_k, request.valid_n)?;
     if matrix.block_size == 0
         || matrix.total_k == 0
         || request.k_start >= matrix.total_k
@@ -76,9 +77,25 @@ fn validate_scaling_range(
     if block > u32::MAX as usize {
         return Err(Error::InvalidKRange);
     }
+    Ok(())
+}
+
+pub(crate) fn validate_scale_matrix(
+    matrix: KBlockScaleMatrixView<'_>,
+    required_k: usize,
+    required_columns: usize,
+) -> Result<(), Error> {
+    if matrix.block_size == 0
+        || matrix.total_k == 0
+        || matrix.total_k < required_k
+        || matrix.block_size > u32::MAX as usize
+        || matrix.total_k > u32::MAX as usize
+    {
+        return Err(Error::InvalidKRange);
+    }
     if matrix.columns == 0
         || matrix.valid_columns == 0
-        || matrix.valid_columns != request.valid_n
+        || matrix.valid_columns != required_columns
         || matrix.row_stride < matrix.columns
     {
         return Err(Error::InvalidScaleMatrixLayout);

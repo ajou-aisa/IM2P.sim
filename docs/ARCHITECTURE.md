@@ -238,3 +238,69 @@ post-edge combinational reevaluation에서도 state register writer가 one-hot�
 
 Rust layer는 provider, clock advance, watchdog, counter snapshot만 담당한다.
 Matrix/fragment/scale-block 선택은 RTL 외부에 복제하지 않는다.
+
+## 11. Publish-triggered lookahead
+
+Async `publishStripe`는 queue-only operation이 아니다. 승인된 stripe는 activation
+host memory가 RTL에 available하다는 event이며, current WS/RC execution이 계속되는
+동안 Core가 즉시 다음 stripe의 첫 A/W/S fragment를 prepare할 수 있게 한다.
+미공개 activation에는 A read를 발행하지 않는다. Full-matrix mode도 이 scheduler
+path를 사용하지만 A/W/S/C region 전체가 descriptor 제출 시점부터 available하므로
+publication gate가 없다.
+
+```text
+CPU / host      publish current A             publish next A
+                     |                              |
+NPU scheduler    current work ----------------> capture one lookahead
+WS/RC engine     [       current stripe executes       ]
+A/W/S staging                                   [A fetch][W fetch/S reuse-or-fetch]
+PE banks         active bank: current WS       inactive bank: preload if W is not resident
+ordered output   C/Accumulator for current ---- promotion ----> C/Accumulator for next
+```
+
+`MatmulScheduler`는 current 하나와 immediate lookahead 하나만 expose한다. 뒤에
+publish된 stripe는 2-entry publication FIFO에서 순서를 보존하며 lookahead를
+대체하지 않는다. `IM2PCore`에도 execution engine은 하나이므로 lookahead는
+실행/Accumulator/output write를 하지 않는다. A rows, W rows, 그리고 필요한 S row를
+외부 staging register에 채우고, 해당 work가 promotion된 뒤에만 engine 및
+Accumulator/output path로 넘긴다.
+
+PE weight storage는 두 bank에서 바뀌지 않는다. Current execution은 active bank를
+사용한다. Lookahead W의 처리 경로는 다음 중 정확히 하나다.
+
+| Case | Host/PE action |
+|---|---|
+| nonresident W | host W request를 내고 response를 PE 밖 external lookahead staging rows에 저장한다. |
+| exact resident W | capture 시점에 final-current-work safety가 성립하고 base, row stride, J start/count, K start/count가 모두 일치하면 matching resident bank를 reuse한다. safety가 아직 아니면 보수적으로 host fetch한다. |
+| staged nonresident W | current의 마지막 tile/fragment safety point에서만 external staging rows를 inactive bank에 preload한다. Active bank에는 쓰지 않는다. |
+| partial W | completion 전에 받은 staging row는 promotion 뒤 inactive-bank load에 직접 주입하고, 아직 없는 row만 host에 요청한다. 이미 받은 row는 다시 fetch하지 않는다. |
+| scale | `(context + J offset, block)`가 current 또는 next scale cache와 일치하면 그 row를 reuse한다. 그렇지 않으면 current scale demand/prefetch가 비어 있고 current engine이 active일 때 host S request를 낸다. |
+
+Prepared scaled work는 promotion 때 그 scale row를 execution snapshot으로
+latch한다. Execution이 drain될 때까지 이 snapshot은 immutable이므로 later scale
+prefetch/response가 column별 staggered output에 섞일 수 없다. 마찬가지로 output
+write와 Accumulator update는 promotion 이후에만 허용된다.
+
+### Logical-cycle accounting
+
+`WorkStats::cross_stripe_overlap_cycles`는 current engine
+execution이 active인 동시에 next-stripe A/W/S fetch 또는 PE preload가 active인
+logical cycle 수다. `activation_overlap_cycles`, `weight_overlap_cycles`,
+`scale_overlap_cycles`는 current work 내부 fragment 준비/compute overlap이며
+cross-stripe aggregate의 부분 counter가 아니다. Host pointer dereference, CPU thread scheduling, sleep, 기타 wall-clock은
+이 counter에 포함되지 않는다.
+`lookahead_ready_cycle`은 first-fragment A/W/S staging과 필요한 PE bank
+preload/reuse가 모두 완료된 cycle snapshot이다.
+
+`lookahead_publish_cycle`은 matmul start 기준으로 두 번째 stripe publication이
+RTL에 accept된 cycle이다. 이 값과 0이 아닌 가장 이른
+`lookahead_first_activation_cycle`, `lookahead_first_weight_cycle`,
+`lookahead_weight_preload_cycle`, `lookahead_scale_cycle`의 차가
+publish-to-first-prepare cycles다. `current_stripe_completion_cycle`에서
+`lookahead_start_cycle`까지의 차는 completion-to-next-start transition cycles다.
+`stripe_host_wait_cycles`는 current stripe transition 뒤 다음 stripe가 publish되지
+않아 scheduler가 기다린 cycle이며, A/W/S/C channel wait은 각각
+`activation_wait_cycles`, `weight_wait_cycles`, `scale_wait_cycles`,
+`output_wait_cycles`다. `lookahead_weight_requests`/`lookahead_weight_reuse_hits`와
+`lookahead_scale_requests`/`lookahead_scale_reuses`는 host fetch와 exact reuse를
+분리해 보고한다.

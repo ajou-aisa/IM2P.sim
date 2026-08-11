@@ -21,6 +21,9 @@ interface MatmulSchedulerIfc#(numeric type arrayDim);
 
     method Bool workValid;
     method MatmulWork#(arrayDim) work;
+    method Bool lookaheadValid;
+    method MatmulWork#(arrayDim) lookaheadWork;
+    method Bool lookaheadPreloadSafe;
     method Action acceptWork;
     method Action completeWork;
     method Bool completionValid;
@@ -80,6 +83,9 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
     Reg#(MatrixExtent) stripeRowBeginReg <- mkReg(0);
     Reg#(MatrixExtent) stripeRowCountReg <- mkReg(0);
     Reg#(HostAddress) stripeActivationBaseReg <- mkReg(0);
+    Reg#(HostStride) stripeActivationStrideReg <- mkReg(0);
+    Reg#(Bool) lookaheadStripeValidReg <- mkReg(False);
+    Reg#(ActivationStripe) lookaheadStripeReg <- mkRegU;
     Reg#(MatrixExtent) publishedRowsReg <- mkReg(0);
 
     Reg#(MatrixExtent) iStartReg <- mkReg(0);
@@ -98,6 +104,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             stripeRowBeginReg <= 0;
             stripeRowCountReg <= descriptor.rowCount;
             stripeActivationBaseReg <= descriptor.activationBase;
+            stripeActivationStrideReg <= descriptor.activationRowStride;
             publishedRowsReg <= descriptor.rowCount;
             stateReg <= MatmulOfferWork;
         end
@@ -125,9 +132,21 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         stripeRowBeginReg <= stripe.rowBegin;
         stripeRowCountReg <= stripe.rowCount;
         stripeActivationBaseReg <= stripe.activationBase;
+        stripeActivationStrideReg <= stripe.activationRowStride;
         iStartReg <= stripe.rowBegin;
         jStartReg <= 0;
         stateReg <= MatmulOfferWork;
+    endrule
+
+    rule capturePublishedLookahead (
+        descriptorReg.mode == AsyncStripes
+        && stateReg != MatmulIdle && stateReg != MatmulWaitStripe
+        && stateReg != MatmulDone && !lookaheadStripeValidReg
+        && stripeFifo.notEmpty
+    );
+        lookaheadStripeReg <= stripeFifo.first;
+        stripeFifo.deq;
+        lookaheadStripeValidReg <= True;
     endrule
 
     rule advanceCompletedWork (
@@ -163,7 +182,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         end
         else if (descriptorReg.mode == FullMatrix
                 || (publishedRowsReg == descriptorReg.rowCount
-                    && !stripeFifo.notEmpty)) begin
+                    && !stripeFifo.notEmpty && !lookaheadStripeValidReg)) begin
             if (descriptorReg.mode == AsyncStripes) begin
                 completionFifo.enq(StripeCompletion {
                     stripeId: stripeIdReg,
@@ -181,9 +200,34 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                 rowCount: stripeRowCountReg,
                 stripeContext: stripeContextReg
             });
-            stateReg <= MatmulWaitStripe;
+            if (lookaheadStripeValidReg) begin
+                ActivationStripe stripe = lookaheadStripeReg;
+                stripeIdReg <= stripe.stripeId;
+                stripeContextReg <= stripe.stripeContext;
+                stripeRowBeginReg <= stripe.rowBegin;
+                stripeRowCountReg <= stripe.rowCount;
+                stripeActivationBaseReg <= stripe.activationBase;
+                stripeActivationStrideReg <= stripe.activationRowStride;
+                iStartReg <= stripe.rowBegin;
+                jStartReg <= 0;
+                lookaheadStripeValidReg <= False;
+                stateReg <= MatmulOfferWork;
+            end
+            else begin
+                stateReg <= MatmulWaitStripe;
+            end
         end
     endrule
+
+    function Bool hasLookahead();
+        MatrixExtent iCount = boundedTileCount(
+            fromInteger(valueOf(arrayDim)), iStartReg,
+            stripeRowBeginReg + stripeRowCountReg, descriptorReg.tileIRows);
+        return (descriptorReg.mode == FullMatrix
+                && stateReg != MatmulIdle && stateReg != MatmulDone
+                && iStartReg + iCount < descriptorReg.rowCount)
+            || (descriptorReg.mode == AsyncStripes && lookaheadStripeValidReg);
+    endfunction
 
     method Action start(MatmulDescriptor descriptor)
             if (stateReg == MatmulIdle && !startPendingReg);
@@ -248,7 +292,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         HostAddress activationBase = rowAddress(
             stripeActivationBaseReg,
             stripeLocalRow,
-            descriptorReg.activationRowStride
+            stripeActivationStrideReg
         );
         HostAddress weightBase = columnAddress(
             descriptorReg.weightBase,
@@ -283,7 +327,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             weightBase: weightBase,
             scaleBase: scaleBase,
             outputBase: outputBase,
-            activationRowStride: descriptorReg.activationRowStride,
+            activationRowStride: stripeActivationStrideReg,
             weightRowStride: descriptorReg.weightRowStride,
             scaleRowStride: descriptorReg.scaleRowStride,
             outputRowStride: descriptorReg.outputRowStride,
@@ -292,6 +336,61 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             vectorOp: descriptorReg.vectorOp,
             workContext: descriptorReg.workContext
         };
+    endmethod
+
+    method Bool lookaheadValid = hasLookahead;
+
+    method MatmulWork#(arrayDim) lookaheadWork if (hasLookahead);
+        MatrixExtent dimension = fromInteger(valueOf(arrayDim));
+        Bool async = descriptorReg.mode == AsyncStripes;
+        MatrixExtent currentICount = boundedTileCount(
+            dimension, iStartReg, stripeRowBeginReg + stripeRowCountReg,
+            descriptorReg.tileIRows);
+        MatrixExtent nextI = async ? lookaheadStripeReg.rowBegin
+                                   : iStartReg + currentICount;
+        MatrixExtent nextEnd = async
+            ? lookaheadStripeReg.rowBegin + lookaheadStripeReg.rowCount
+            : descriptorReg.rowCount;
+        HostAddress aBase = async ? lookaheadStripeReg.activationBase
+            : rowAddress(descriptorReg.activationBase, nextI,
+                         descriptorReg.activationRowStride);
+        HostStride aStride = async ? lookaheadStripeReg.activationRowStride
+                                   : descriptorReg.activationRowStride;
+        return MatmulWork {
+            jobId: descriptorReg.jobId,
+            stripeId: async ? lookaheadStripeReg.stripeId : 0,
+            stripeContext: async ? lookaheadStripeReg.stripeContext
+                                 : descriptorReg.workContext,
+            iStart: nextI, jStart: 0,
+            iCount: boundedTileCount(dimension, nextI, nextEnd,
+                                     descriptorReg.tileIRows),
+            jCount: boundedTileCount(dimension, 0, descriptorReg.columnCount,
+                                     descriptorReg.tileJColumns),
+            activationBase: aBase, weightBase: descriptorReg.weightBase,
+            scaleBase: descriptorReg.scaleBase,
+            outputBase: rowAddress(descriptorReg.outputBase, nextI,
+                                   descriptorReg.outputRowStride),
+            activationRowStride: aStride,
+            weightRowStride: descriptorReg.weightRowStride,
+            scaleRowStride: descriptorReg.scaleRowStride,
+            outputRowStride: descriptorReg.outputRowStride,
+            reductionCount: descriptorReg.reductionCount,
+            blockSize: descriptorReg.blockSize,
+            vectorOp: descriptorReg.vectorOp,
+            workContext: descriptorReg.workContext
+        };
+    endmethod
+
+    method Bool lookaheadPreloadSafe if (hasLookahead);
+        MatrixExtent iCount = boundedTileCount(
+            fromInteger(valueOf(arrayDim)), iStartReg,
+            stripeRowBeginReg + stripeRowCountReg, descriptorReg.tileIRows);
+        MatrixExtent jCount = boundedTileCount(
+            fromInteger(valueOf(arrayDim)), jStartReg,
+            descriptorReg.columnCount, descriptorReg.tileJColumns);
+        return jStartReg + jCount >= descriptorReg.columnCount
+            && (descriptorReg.mode == FullMatrix
+                || iStartReg + iCount >= stripeRowBeginReg + stripeRowCountReg);
     endmethod
 
     method Action acceptWork if (stateReg == MatmulOfferWork);

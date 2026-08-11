@@ -17,6 +17,9 @@ pub(super) fn validate_work(
             operation: work.vector_op,
         });
     }
+    if let Some(scales) = work.scales {
+        super::super::validation::validate_scale_matrix(scales, k, n)?;
+    }
     Ok(())
 }
 

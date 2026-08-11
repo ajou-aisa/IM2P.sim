@@ -27,6 +27,11 @@ struct Simulator {
     VerilatedContext *context;
     Top *top;
     uint64_t cycles;
+    bool matrix_active;
+    bool matrix_async;
+    uint32_t matrix_rows;
+    uint32_t matrix_reduction;
+    uint32_t published_rows;
 };
 
 double sc_time_stamp() {
@@ -135,7 +140,7 @@ extern "C" im2p_handle_t im2p_create(void) {
     try {
         context = new VerilatedContext;
         top = new Top(context);
-        simulator = new Simulator{context, top, 0};
+        simulator = new Simulator{context, top, 0, false, false, 0, 0, 0};
         im2p_reset(simulator);
         return simulator;
     }
@@ -174,6 +179,11 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
     simulator->top->RST_N = 1;
     evaluate(simulator);
     simulator->cycles = 0;
+    simulator->matrix_active = false;
+    simulator->matrix_async = false;
+    simulator->matrix_rows = 0;
+    simulator->matrix_reduction = 0;
+    simulator->published_rows = 0;
 }
 
 extern "C" void im2p_tick(im2p_handle_t handle) {
@@ -447,7 +457,14 @@ extern "C" int im2p_start_matmul(
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     if (descriptor->mode > 1 || descriptor->vector_op > 2
-        || descriptor->reduction_count == 0) {
+        || descriptor->row_count == 0 || descriptor->column_count == 0
+        || descriptor->reduction_count == 0
+        || descriptor->tile_i_rows == 0 || descriptor->tile_i_rows > kDim
+        || descriptor->tile_j_columns == 0 || descriptor->tile_j_columns > kDim
+        || descriptor->activation_row_stride < descriptor->reduction_count
+        || descriptor->weight_row_stride < descriptor->column_count
+        || descriptor->output_row_stride
+            < descriptor->column_count * sizeof(int32_t)) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     auto *simulator = static_cast<Simulator *>(handle);
@@ -471,6 +488,8 @@ extern "C" int im2p_start_matmul(
     top->startMatmul_rowCount = descriptor->row_count;
     top->startMatmul_columnCount = descriptor->column_count;
     top->startMatmul_reductionCount = descriptor->reduction_count;
+    top->startMatmul_tileIRows = descriptor->tile_i_rows;
+    top->startMatmul_tileJColumns = descriptor->tile_j_columns;
     top->startMatmul_kOrigin = descriptor->k_origin;
     top->startMatmul_scaleTotalK = descriptor->scale_total_k;
     top->startMatmul_scaleBlockSize = descriptor->scale_block_size;
@@ -479,27 +498,48 @@ extern "C" int im2p_start_matmul(
         descriptor->accumulate_first_fragment ? 1 : 0;
     top->startMatmul_vectorOp = descriptor->vector_op;
     pulse(simulator, top->EN_startMatmul);
+    simulator->matrix_active = true;
+    simulator->matrix_async = descriptor->mode == 1;
+    simulator->matrix_rows = descriptor->row_count;
+    simulator->matrix_reduction = descriptor->reduction_count;
+    simulator->published_rows = descriptor->mode == 0 ? descriptor->row_count : 0;
     return 1;
 }
 
 extern "C" int im2p_publish_activation_stripe(
     im2p_handle_t handle,
     uint32_t row_begin,
-    uint32_t row_count
+    uint32_t row_count,
+    uint64_t row_stride
 ) {
     if (handle == nullptr) {
-        return IM2P_REQUEST_INVALID_ARGUMENT;
+        return IM2P_PUBLISH_INVALID;
     }
     auto *simulator = static_cast<Simulator *>(handle);
+    if (!simulator->matrix_active || !simulator->matrix_async
+        || simulator->published_rows == simulator->matrix_rows) {
+        return IM2P_PUBLISH_LATE;
+    }
+    if (row_begin < simulator->published_rows) {
+        return IM2P_PUBLISH_DUPLICATE;
+    }
+    if (row_count == 0 || row_stride < simulator->matrix_reduction
+        || row_begin != simulator->published_rows
+        || row_begin > simulator->matrix_rows
+        || row_count > simulator->matrix_rows - row_begin) {
+        return IM2P_PUBLISH_INVALID;
+    }
     evaluate(simulator);
     auto *top = simulator->top;
     if (!top->RDY_publishActivationStripe) {
-        return 0;
+        return IM2P_PUBLISH_BACKPRESSURE;
     }
     top->publishActivationStripe_rowBegin = row_begin;
     top->publishActivationStripe_rowCount = row_count;
+    top->publishActivationStripe_rowStride = row_stride;
     pulse(simulator, top->EN_publishActivationStripe);
-    return 1;
+    simulator->published_rows += row_count;
+    return IM2P_PUBLISH_ACCEPTED;
 }
 
 extern "C" int im2p_activation_stripe_ready(im2p_handle_t handle) {
@@ -530,6 +570,7 @@ extern "C" int im2p_acknowledge_matmul(im2p_handle_t handle) {
         return 0;
     }
     pulse(simulator, simulator->top->EN_acknowledgeMatmul);
+    simulator->matrix_active = false;
     return 1;
 }
 
@@ -616,6 +657,11 @@ extern "C" int im2p_put_activation_read_response(
     if (!top->RDY_putActivationReadResponse) {
         return 0;
     }
+    if (!top->activationReadRequestValid
+        || !top->RDY_activationReadRequestTag
+        || tag != top->activationReadRequestTag) {
+        return IM2P_REQUEST_IDENTITY_MISMATCH;
+    }
     top->putActivationReadResponse_tag = tag;
     set_i8_lanes(top->putActivationReadResponse_values, values, count);
     pulse(simulator, top->EN_putActivationReadResponse);
@@ -637,6 +683,11 @@ extern "C" int im2p_put_weight_read_response(
     if (!top->RDY_putWeightReadResponse) {
         return 0;
     }
+    if (!top->weightReadRequestValid
+        || !top->RDY_weightReadRequestTag
+        || tag != top->weightReadRequestTag) {
+        return IM2P_REQUEST_IDENTITY_MISMATCH;
+    }
     top->putWeightReadResponse_tag = tag;
     set_i8_lanes(top->putWeightReadResponse_values, values, count);
     pulse(simulator, top->EN_putWeightReadResponse);
@@ -657,6 +708,11 @@ extern "C" int im2p_put_scale_read_response(
     auto *top = simulator->top;
     if (!top->RDY_putScaleReadResponse) {
         return 0;
+    }
+    if (!top->scaleReadRequestValid
+        || !top->RDY_scaleReadRequestTag
+        || tag != top->scaleReadRequestTag) {
+        return IM2P_REQUEST_IDENTITY_MISMATCH;
     }
     top->putScaleReadResponse_tag = tag;
     set_i8_lanes(top->putScaleReadResponse_values, values, count);
@@ -701,6 +757,11 @@ extern "C" int im2p_put_output_write_response(
     auto *top = simulator->top;
     if (!top->RDY_putOutputWriteResponse) {
         return 0;
+    }
+    if (!top->outputWriteRequestValid
+        || !top->RDY_outputWriteRequestTag
+        || tag != top->outputWriteRequestTag) {
+        return IM2P_REQUEST_IDENTITY_MISMATCH;
     }
     top->putOutputWriteResponse_tag = tag;
     pulse(simulator, top->EN_putOutputWriteResponse);
@@ -775,6 +836,20 @@ extern "C" void im2p_matrix_counters(
     counters->weight_overlap_cycles = top->weightOverlapCycles;
     counters->scale_overlap_cycles = top->scaleOverlapCycles;
     counters->overlap_cycles = top->overlapCycles;
+    counters->cross_stripe_overlap_cycles = top->crossStripeOverlapCycles;
+    counters->lookahead_prepared = top->lookaheadPrepared ? 1 : 0;
+    counters->lookahead_publish_cycle = top->lookaheadPublishCycle;
+    counters->lookahead_first_activation_cycle = top->lookaheadFirstActivationCycle;
+    counters->lookahead_first_weight_cycle = top->lookaheadFirstWeightCycle;
+    counters->lookahead_weight_preload_cycle = top->lookaheadWeightPreloadCycle;
+    counters->lookahead_weight_requests = top->lookaheadWeightRequests;
+    counters->lookahead_weight_reuse_hits = top->lookaheadWeightReuseHits;
+    counters->lookahead_scale_cycle = top->lookaheadScaleCycle;
+    counters->lookahead_scale_requests = top->lookaheadScaleRequests;
+    counters->lookahead_scale_reuses = top->lookaheadScaleReuses;
+    counters->current_stripe_completion_cycle = top->currentStripeCompletionCycle;
+    counters->lookahead_ready_cycle = top->lookaheadReadyCycle;
+    counters->lookahead_start_cycle = top->lookaheadStartCycle;
 }
 
 extern "C" void im2p_matrix_debug(
@@ -804,4 +879,6 @@ extern "C" void im2p_matrix_debug(
     debug->scale_request_valid = top->scaleReadRequestValid ? 1 : 0;
     debug->output_request_valid = top->outputWriteRequestValid ? 1 : 0;
     debug->stripe_host_waiting = top->matmulSchedulerState == 1 ? 1 : 0;
+    debug->lookahead_prepared = top->lookaheadPrepared ? 1 : 0;
+    debug->lookahead_stripe_id = top->lookaheadStripeId;
 }

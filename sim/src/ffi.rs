@@ -66,6 +66,8 @@ pub struct MatmulDescriptor {
     pub row_count: u32,
     pub column_count: u32,
     pub reduction_count: u32,
+    pub tile_i_rows: u32,
+    pub tile_j_columns: u32,
     pub k_origin: u32,
     pub scale_total_k: u32,
     pub scale_block_size: u32,
@@ -98,6 +100,20 @@ pub struct MatrixCounters {
     pub weight_overlap_cycles: u64,
     pub scale_overlap_cycles: u64,
     pub overlap_cycles: u64,
+    pub cross_stripe_overlap_cycles: u64,
+    pub lookahead_prepared: u64,
+    pub lookahead_publish_cycle: u64,
+    pub lookahead_first_activation_cycle: u64,
+    pub lookahead_first_weight_cycle: u64,
+    pub lookahead_weight_preload_cycle: u64,
+    pub lookahead_weight_requests: u64,
+    pub lookahead_weight_reuse_hits: u64,
+    pub lookahead_scale_cycle: u64,
+    pub lookahead_scale_requests: u64,
+    pub lookahead_scale_reuses: u64,
+    pub current_stripe_completion_cycle: u64,
+    pub lookahead_ready_cycle: u64,
+    pub lookahead_start_cycle: u64,
 }
 
 #[repr(C)]
@@ -120,6 +136,8 @@ pub struct MatrixDebug {
     pub scale_request_valid: i32,
     pub output_request_valid: i32,
     pub stripe_host_waiting: i32,
+    pub lookahead_prepared: i32,
+    pub lookahead_stripe_id: u32,
 }
 
 pub const IM2P_REQUEST_ABSENT: i32 = 0;
@@ -165,6 +183,7 @@ unsafe extern "C" {
         handle: *mut c_void,
         row_begin: u32,
         row_count: u32,
+        row_stride: u64,
     ) -> i32;
     pub fn im2p_activation_stripe_ready(handle: *mut c_void) -> i32;
     pub fn im2p_matmul_done(handle: *mut c_void) -> i32;

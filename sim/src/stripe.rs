@@ -16,6 +16,14 @@ pub struct StripeCompletion {
     pub stripe_context: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripeLayout {
+    pub weight_row_stride: usize,
+    pub output_row_stride: usize,
+    pub tile_i_rows: usize,
+    pub tile_j_columns: usize,
+}
+
 #[derive(Debug)]
 pub struct StripeWorkDesc<'a> {
     pub weights: &'a [i8],

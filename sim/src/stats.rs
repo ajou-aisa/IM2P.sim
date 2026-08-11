@@ -35,6 +35,7 @@ pub struct WorkStats {
     pub scale_demand_misses: u64,
 
     pub overlap_cycles: u64,
+    pub cross_stripe_overlap_cycles: u64,
     pub activation_overlap_cycles: u64,
     pub weight_overlap_cycles: u64,
     pub scale_overlap_cycles: u64,
@@ -45,6 +46,19 @@ pub struct WorkStats {
     pub stripes_published: u64,
     pub stripe_rows_published: u64,
     pub weight_bank_activations: u64,
+    pub lookahead_prepared: bool,
+    pub lookahead_publish_cycle: u64,
+    pub lookahead_first_activation_cycle: u64,
+    pub lookahead_first_weight_cycle: u64,
+    pub lookahead_weight_preload_cycle: u64,
+    pub lookahead_weight_requests: u64,
+    pub lookahead_weight_reuse_hits: u64,
+    pub lookahead_scale_cycle: u64,
+    pub lookahead_scale_requests: u64,
+    pub lookahead_scale_reuses: u64,
+    pub current_stripe_completion_cycle: u64,
+    pub lookahead_ready_cycle: u64,
+    pub lookahead_start_cycle: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

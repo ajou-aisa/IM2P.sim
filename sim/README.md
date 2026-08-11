@@ -98,23 +98,56 @@ scale_wait_cycles
 `scale_wait_cycles` counts RTL cycles with a pending scaled execution. Host
 pointer dereference time is not an RTL cycle.
 
+`WorkStats` reports logical RTL counter deltas. In particular,
+`cross_stripe_overlap_cycles` counts a cycle only when the
+current engine executes while any next-stripe A/W/S fetch or PE preload is
+active; `activation_overlap_cycles`, `weight_overlap_cycles`, and
+`scale_overlap_cycles` instead report current-work fragment preparation
+overlapping compute; they are not components of the cross-stripe aggregate.
+Host wall-clock time is excluded. `stripe_host_wait_cycles` is the wait after a current-stripe
+transition when the next stripe has not been published; the A/W/S/C channel
+waits are reported separately.
+`lookahead_ready_cycle` records when first-fragment A/W/S staging and required
+PE-bank preload or reuse are all ready.
+
+Lookahead timestamps are per-matmul RTL cycles.
+`lookahead_publish_cycle` is the cycle where the second stripe publication is
+accepted by RTL. The difference from that cycle to the first nonzero of
+`lookahead_first_activation_cycle`, `lookahead_first_weight_cycle`,
+`lookahead_weight_preload_cycle`, and `lookahead_scale_cycle` is the
+publish-to-first-prepare latency. `lookahead_start_cycle -
+current_stripe_completion_cycle` is the completion-to-next-start transition.
+`lookahead_weight_requests` versus `lookahead_weight_reuse_hits`, and
+`lookahead_scale_requests` versus `lookahead_scale_reuses`, distinguish host
+fetches from exact reuse.
+
+The original fixed-size `im2p_work_stats_t` and its entry points retain their
+binary layout. Lookahead telemetry is available through
+`im2p_work_stats_extended_t`, `im2p_execute_matmul_extended`, and
+`im2p_finish_stream_extended`.
+
 ## Matrix and cooperative stripe APIs
 
 Blocking Rust:
 
 ```rust
 simulator.execute_matmul(&work, &mut output)?;
+simulator.execute_matmul_layout(&work, &mut output, layout)?;
 ```
 
-`MatmulWork` borrows strided activation, weight, optional scale views.
-`MatrixViewMut` borrows strided output. RTL supplies every I/J/K fragment and
-A/W/S/C address; Rust only resolves current requests and advances the model.
+`MatrixView::new(values, rows, columns, row_stride)` and
+`MatrixViewMut::new(...)` define A/W/C layouts. Each stride is in elements and
+must be at least the logical column count (A: K, W/C: N); the final readable or
+writable element is `(rows - 1) * row_stride + columns - 1`. `MatmulLayout`
+selects `tile_i_rows` and `tile_j_columns`, each in `1..=sim.dim()`.
+`MatmulWork` borrows strided activation, weight, optional scale views, and RTL
+supplies every I/J/K fragment and A/W/S/C address.
 
 Cooperative Rust:
 
 ```text
-begin_striped_matmul(static W/S/C metadata)
-publish_stripe(completed CPU activation rows)
+begin_striped_matmul[_layout](static W/S/C metadata)
+publish_stripe[_layout](completed CPU activation rows)
 progress(logical cycle budget)
 pending_activation_row / supply_activation_row
 pending_output_row / take_output_row / acknowledge_output_row
@@ -122,22 +155,59 @@ poll_completed
 finish
 ```
 
+`StripeLayout` supplies W/C row strides and I/J tiling; the default layout is
+packed. `publish_stripe_layout` supplies the activation row stride, which must
+be at least K. `publish_stripe` is an activation-availability event, not merely
+a queue push: acceptance enables immediate next-stripe A/W/S staging and
+resident-weight reuse or inactive-bank preload while the one current WS/RC
+engine remains ordered. There is one current and one prepared lookahead;
+deeper accepted stripes remain FIFO. A lookahead does not write C or update an
+Accumulator until promotion. Full-matrix execution uses the same RTL path with
+all A/W/S/C regions available at start.
+
+```text
+CPU: publish s0 ----------------------- publish s1 ------------------- retain s1 A
+NPU: [current WS/RC] ================== [prepare s1: A/W/S + PE bank] -- promote --> [s1 WS/RC]
+                                         one engine; output/accumulator only after promotion
+```
+
 `npu_ready()` reports RTL publication FIFO readiness. `host_available()`
-reports published host data still owned by an incomplete stripe. Completion is
-observable only after all matching C writes are acknowledged. No thread,
-runtime, sleep, polling delay, or CPU wall clock participates in correctness.
+reports published host data still owned by an incomplete stripe. No activation
+read is issued before its stripe is accepted. Completion is observable only
+after all matching C writes are acknowledged. No thread, runtime, sleep,
+polling delay, or CPU wall clock participates in correctness.
 
 ## C ABI and pointer ownership
 
 Public header: `sim/include/im2p_sim.h`.
 
-Full-matrix pointers are borrowed only during `im2p_execute_matmul`. Striped
-W/S/output pointers remain valid through `im2p_finish_stream` or
-`im2p_destroy_stream`; each activation stripe pointer remains valid until its
-completion event. The C bridge copies descriptors, never retains temporary
-descriptor pointers, and rejects null/invalid packed-weight layouts.
+`im2p_execute_matmul` borrows full-matrix pointers only for the call.
+`im2p_begin_striped_matmul_ex` returns status and writes the stream pointer;
+the non-`_ex` form returns that pointer directly. Zero `tile_i_rows` or
+`tile_j_columns` in C selects the simulator dimension; nonzero values must fit
+it. A/W/C strides are element strides and may include padding: full A stride
+must be at least K, W and C strides at least N; striped W/C use the same
+contracts and each published stripe A stride must be at least K.
 
-`WorkStats` reports request counts, provider wait cycles, compute/drain cycles,
-weight preload, current-next overlap by resource, fragments/tiles/stripes, and
-bank activations. Values are RTL counter deltas; they do not include host
-wall-clock time.
+For a stream, W/S/C pointers and their strides remain valid through
+`im2p_finish_stream` or `im2p_destroy_stream`. A successful
+`im2p_publish_stripe` permits RTL reads on the next logical cycle, so its A
+pointer and activation stride must remain valid through the matching completion
+returned by `im2p_poll_completed`. The bridge copies descriptors but retains
+these borrowed regions for servicing; callers must not move, free, or mutate
+them incompatibly before their lifetime ends.
+The stream retains shared simulator ownership, so destroying the originating
+`im2p_sim_t` handle does not invalidate an in-flight stream.
+
+The PE array still has two weight banks. A nonresident lookahead W is fetched
+from the host into external staging outside the PE banks, then preloaded only
+into the inactive bank at the safe point. Exact resident match (base, stride, J and K
+ranges) reuses a bank without fetch/preload only when the final-current-work
+safety predicate already holds at capture; otherwise preparation conservatively
+uses host fetch.
+If only part of W arrives before promotion, received rows feed the promoted
+inactive-bank load directly and only missing rows generate host requests.
+A scaled lookahead similarly
+reuses only an exact `(context + J offset, block)` current/next cache row;
+otherwise it fetches S. Promotion latches an immutable scale execution
+snapshot, preventing later responses from changing in-flight staggered output.

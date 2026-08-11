@@ -271,7 +271,7 @@ module mkTbIM2PCoreMatrixScale(Empty);
             31, FullMatrix,
             activationBase, weightBase, scaleBase, outputBase,
             activationStride, weightStride, scaleStride, outputStride,
-            1, 3, 4, 0, 4, 4, 100, False, VectorMultiply
+            1, 3, 4, 2, 2, 0, 4, 4, 100, False, VectorMultiply
         );
         phase <= TbReuseRun;
     endrule
@@ -311,7 +311,7 @@ module mkTbIM2PCoreMatrixScale(Empty);
             32, FullMatrix,
             activationBase, weightBase, scaleBase, outputBase,
             activationStride, weightStride, scaleStride, outputStride,
-            1, 1, 4, 0, 4, 4, 100, False, VectorBypass
+            1, 1, 4, 2, 2, 0, 4, 4, 100, False, VectorBypass
         );
         phase <= TbBypassRun;
     endrule
@@ -351,7 +351,7 @@ module mkTbIM2PCoreMatrixScale(Empty);
             33, FullMatrix,
             activationBase, weightBase, scaleBase, outputBase,
             activationStride, weightStride, scaleStride, outputStride,
-            2, 2, 4, 4, 8, 2, 200, False, VectorMultiply
+            2, 2, 4, 2, 2, 4, 8, 2, 200, False, VectorMultiply
         );
         phase <= TbPrefetchRun;
     endrule
