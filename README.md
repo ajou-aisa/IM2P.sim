@@ -246,6 +246,10 @@ make rtl-one TOP=mkSynthInt8
 ```
 
 `make check`는 BSC 없이 architecture 정적 검사와 C++20 reference self-test를 수행한다.
+기본 build는 llama.cpp-gemmini header를 요구하지 않는다. 선택형 Gemmini C++
+frontend와 실제 RTL golden은 각각 `make gemmini-frontend-test`,
+`make gemmini-frontend-real-test`로 검증하며 계약과 lifetime은
+`frontend/README.md`에 문서화되어 있다.
 
 ## 문서
 

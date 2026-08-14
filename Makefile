@@ -7,9 +7,17 @@ SHELL := /bin/bash
 BSC       ?= bsc
 CC        ?= cc
 CXX       ?= g++
+AR        ?= ar
 PYTHON    ?= python3
 VERILATOR ?= verilator
 YOSYS     ?= yosys
+
+# Optional, simulator-owned Gemmini C++ frontend. The default core build has no
+# dependency on llama.cpp-gemmini or its headers.
+ENABLE_GEMMINI_FRONTEND ?= 0
+GEMMINI_ROOT ?= $(abspath ../llama.cpp-gemmini)
+GEMMINI_PARAMS_ROOT ?= $(abspath ../RISC-V-DynDNN-gemmini-include/include)
+GEMMINI_FRONTEND_DIM ?= 16
 
 BUILD_DIR := build
 ROOT_DIR  := $(CURDIR)
@@ -72,13 +80,17 @@ BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
                                       $(BSC_PREFIX)/lib/Verilog))
 VERILATOR_COMMON := --cc --Wno-fatal
 
-.PHONY: all check verify static-check cpp-test c-api-test bsv-test bsv-test-one rtl rtl-one \
+.PHONY: all check verify static-check cpp-test c-api-test gemmini-frontend \
+        gemmini-frontend-test gemmini-frontend-real-test bsv-test bsv-test-one rtl rtl-one \
         verilator-int8x16 verilator-int8x32 verilator sim-test-int8x16 \
         sim-test-int8x32 sim-test verilator-lint yosys-stat clean help check-tools
 
 all: check
 
 check: static-check cpp-test
+ifeq ($(ENABLE_GEMMINI_FRONTEND),1)
+check: gemmini-frontend-test
+endif
 
 # BSC가 설치된 개발 환경에서 source test와 대표 RTL elaboration까지 한 번에 수행한다.
 verify: check bsv-test rtl
@@ -97,12 +109,15 @@ help:
 	  'make sim-test-int8x16 - 16x16 Rust RTL simulation test 실행' \
 	  'make sim-test-int8x32 - 32x32 Rust RTL simulation test 실행' \
 	  'make sim-test         - 두 Rust RTL simulation test 실행' \
+	  'make gemmini-frontend - optional Gemmini adapter static library' \
+	  'make gemmini-frontend-test - optional Gemmini adapter contract tests' \
+	  'make gemmini-frontend-real-test - adapter full/stripe RTL golden' \
 	  'make verilator-lint  - 생성 Verilog에 Verilator lint 적용' \
 	  'make yosys-stat      - 생성 Verilog에 Yosys generic synthesis/stat 적용' \
 	  'make check-tools     - 외부 도구 설치 여부 확인' \
 	  'make clean           - build/ 삭제'
 
-$(BUILD_DIR)/bin $(BUILD_DIR)/bsc $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info:
+$(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/bsc $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info:
 	@mkdir -p $@
 
 static-check:
@@ -126,6 +141,54 @@ c-api-test: | $(BUILD_DIR)/bin
 		sim/target/release/libim2p_sim.a \
 		-o $(BUILD_DIR)/bin/im2p_c_api_smoke
 	$(BUILD_DIR)/bin/im2p_c_api_smoke
+
+GEMMINI_DIM_CONFIG_DIR := $(BUILD_DIR)/generated/gemmini-dim$(GEMMINI_FRONTEND_DIM)
+GEMMINI_DIM_CONFIG := $(GEMMINI_DIM_CONFIG_DIR)/gemmini_params.h
+GEMMINI_FRONTEND_INCLUDES := \
+	-Ifrontend/include -Isim/include -I$(GEMMINI_DIM_CONFIG_DIR) \
+	-I$(GEMMINI_ROOT)/ggml/src/ggml-gemmini \
+	-I$(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/include \
+	-I$(GEMMINI_ROOT)/ggml/include -I$(GEMMINI_ROOT)/ggml/src \
+	-I$(GEMMINI_PARAMS_ROOT)
+GEMMINI_FRONTEND_FLAGS := -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
+	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM)
+GEMMINI_FRONTEND_OBJECT := $(BUILD_DIR)/bin/im2p_gemmini_frontend_dim$(GEMMINI_FRONTEND_DIM).o
+GEMMINI_FRONTEND_ARCHIVE := $(BUILD_DIR)/lib/dim$(GEMMINI_FRONTEND_DIM)/libim2p_gemmini_frontend.a
+
+$(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h
+	@mkdir -p $(GEMMINI_DIM_CONFIG_DIR)
+	sed 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' $< > $@
+
+$(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
+		$(GEMMINI_FRONTEND_INCLUDES) -c $< -o $@
+
+$(GEMMINI_FRONTEND_ARCHIVE): $(GEMMINI_FRONTEND_OBJECT) | $(BUILD_DIR)/lib
+	@mkdir -p $(dir $@)
+	rm -f $@
+	$(AR) rcs $@ $<
+
+gemmini-frontend: $(GEMMINI_FRONTEND_ARCHIVE)
+
+# The public declaration surface compiles without any llama include directory.
+gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -Ifrontend/include -Isim/include \
+		-c frontend/tests/forward_decl_compile.cpp \
+		-o $(BUILD_DIR)/bin/im2p_gemmini_forward_decl.o
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
+		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend.cpp \
+		$(GEMMINI_FRONTEND_ARCHIVE) \
+		-o $(BUILD_DIR)/bin/im2p_gemmini_frontend_test
+	$(BUILD_DIR)/bin/im2p_gemmini_frontend_test
+
+gemmini-frontend-real-test: gemmini-frontend-test verilator-int8x$(GEMMINI_FRONTEND_DIM) | $(BUILD_DIR)/bin
+	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_DIM=$(GEMMINI_FRONTEND_DIM) cargo build \
+		--manifest-path sim/Cargo.toml --lib --release
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
+		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend_real.cpp \
+		$(GEMMINI_FRONTEND_ARCHIVE) sim/target/release/libim2p_sim.a \
+		-o $(BUILD_DIR)/bin/im2p_gemmini_frontend_real_test
+	$(BUILD_DIR)/bin/im2p_gemmini_frontend_real_test
 
 bsv-test: | $(BUILD_DIR)/bsc/sim $(BUILD_DIR)/sim $(BUILD_DIR)/info $(BUILD_DIR)/bin
 	@set -euo pipefail; \

@@ -11,6 +11,13 @@ extern "C" {
 typedef struct im2p_sim im2p_sim_t;
 typedef struct im2p_stream im2p_stream_t;
 
+/*
+ * Raw handles are single-thread/thread-affine. The thread that starts an
+ * operation or stream must perform all progress, poll, finish, and destroy
+ * calls for that handle. Callers must externally synchronize ownership; no two
+ * operations on the same simulator or stream may execute concurrently.
+ */
+
 enum {
     IM2P_OK = 0,
     IM2P_ERROR = -1,
