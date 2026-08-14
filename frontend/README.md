@@ -40,11 +40,13 @@ submitted bytes must then remain valid and immutable through `fence` or Run
 destruction. C is a borrowed output region that must remain
 valid and exclusively writable by the Run. The caller must not read or write C
 concurrently before `fence` returns or the Run is destroyed. The frontend
-classifies H1, H2, HP1, HP2,
-channel-direct, and channel-sidecar contracts using the authoritative Gemmini
-`has_*`/route helpers, preserves selected metadata, and returns
-`unsupported_route`; it never transposes, unpacks, dequantizes, or makes a full
-operand copy.
+classifies H1, HP1, HP2, channel-direct, and channel-sidecar contracts using the
+authoritative Gemmini `has_*`/route helpers, preserves selected metadata, and
+returns `unsupported_route`. H2 metadata is likewise classified and preserved
+for ABI-safe inspection, but `q8_h2` is **deprecated** and returns
+`unsupported_route` with the diagnostic `q8_h2 is deprecated`. No unsupported
+or deprecated route starts a worker or falls back to raw `q8_h0`; the frontend
+never transposes, unpacks, dequantizes, or makes a full operand copy.
 
 The exact scalar selection is `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`,
 `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`,
@@ -88,6 +90,9 @@ counter advances; caller refills cannot conceal progress by changing queue
 occupancy. `max_stalled_cycles` therefore bounds worker progress iterations
 without a matched completion (each such progress call is exactly one logical
 cycle), not elapsed host time. No wall-clock sleep participates in scheduling.
+When no submitted stripe and no raw work are available, the worker waits on its
+condition variable and does not advance the RTL clock. This host wall-clock
+wait is not an RTL logical wait cycle.
 The model has no CPU execution, DRAM/cache/scratchpad/DMA/interconnect, or clock
 frequency, and host pointer access is zero-time. Frontend/Verilator runtime and
 RTL counters cannot establish CPU/NPU common time, physical ns/GHz/Fmax, or

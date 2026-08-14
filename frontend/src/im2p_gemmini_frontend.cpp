@@ -582,6 +582,12 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "failed to allocate IM2P run"),
             {}};
   auto &x = *run->impl_;
+  if (x.route == Route::q8_h2) {
+    x.final_status = make_status(StatusCode::unsupported_route, x.route,
+                                 x.native, "q8_h2 is deprecated");
+    x.lifecycle = Run::Impl::Lifecycle::terminal;
+    return {x.final_status, std::move(run)};
+  }
   if (x.route != Route::q8_h0) {
     x.final_status = make_status(
         StatusCode::unsupported_route, x.route, x.native,

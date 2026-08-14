@@ -1,15 +1,24 @@
 # IM2P.sim
 
-Bluespec으로 작성한 **registered weight-stationary systolic NPU RTL 모델**이다. Gemmini의 WS 실행 방식을 참고하지만 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC, ROB 같은 Gemmini generator/SoC 계층은 복제하지 않는다.
+Bluespec으로 작성한 **registered weight-stationary systolic NPU RTL
+simulator**다. DIM16/DIM32 구성을 대상으로 address-driven matrix scheduling,
+K-block-aware fragmentation, VectorUnit scale path, Accumulator, asynchronous
+stripe publication과 다음 stripe 선행 준비를 검증한다. C++ harness가 Verilated
+RTL clock을 직접 구동하므로 결과 시간은 wall-clock이 아닌 RTL logical cycle이다.
+Gemmini의 WS 실행 방식을 참고하지만 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC,
+ROB 같은 Gemmini generator/SoC 계층은 복제하지 않는다.
 
 ```text
-InputSkew
-    ↓
-SystolicArray
-    ↓  bottom-row PE의 column별 complete partial sum
-VectorUnit
-    ↓  runtime-selected contribution
-Accumulator
+IM2PCore
+├── MatmulScheduler
+├── WorkScheduler
+├── SystolicEngine
+│   ├── ExecuteController
+│   ├── InputSkew
+│   └── SystolicArray
+│       └── PE array
+├── VectorUnit
+└── Accumulator
 ```
 
 ## 설계 원칙
@@ -43,7 +52,9 @@ N extent = arrayDim
 M extent = rowCount, 1 <= rowCount <= arrayDim
 ```
 
-실제 K/N이 `arrayDim`보다 작으면 상위 model이 남는 activation/weight element를 0으로 채운다. 더 큰 GEMM은 상위 scheduler가 여러 execution으로 타일링한다.
+실제 K/N이 `arrayDim`보다 작으면 scheduler가 남는 activation/weight element를
+0으로 채운다. High-level address-driven 실행에서는 `MatmulScheduler`와
+`WorkScheduler`가 큰 M/N/K 문제를 여러 hardware execution으로 분할한다.
 
 ### Column, physical vector lane, Accumulator bank
 
@@ -201,33 +212,64 @@ src/
 │   └── VectorUnit.bsv
 ├── accumulator/
 │   └── Accumulator.bsv
+├── io/
+│   └── HostMemoryTypes.bsv
 ├── control/
 │   ├── ExecuteCmd.bsv
-│   └── ExecuteController.bsv
+│   ├── ExecuteController.bsv
+│   ├── WorkTypes.bsv
+│   ├── WorkScheduler.bsv
+│   └── MatmulScheduler.bsv
 └── core/
     └── IM2PCore.bsv
+sim/        Rust simulator와 raw C ABI
+frontend/   선택형 Gemmini-compatible C++ frontend
+synth/      DIM16/DIM32 synthesis top
 ```
 
 `tests/TestVectorUtils.bsv`는 BSV에 존재하지 않는 `vec(...)` literal 대신 테스트에서 사용하는 2/3/4-element Vector helper만 제공한다. RTL source에는 포함되지 않는다.
 
-## External boundary and time model
+## Verilator cycle 측정과 memory model
 
-현재 public simulation path는 아래 legacy tile controls뿐 아니라
+현재 public simulation path는 low-level `execute_tile`/direct row method와
 `MatmulScheduler`/`WorkScheduler`가 발행하는 tagged A/W/S/C address channels와
 full-matrix/striped descriptors를 사용한다. 독립 channel response는 같은 RTL
-edge에 함께 commit할 수 있다. Weight preload와 accumulator access를 포함한
-host boundary는 기능 검증용이며 memory system 자체가 아니다.
+edge에 함께 commit할 수 있다. Host wrapper는 동시에 service 가능한 독립
+A/W/S/C response를 여러 cycle로 직렬화하지 않는다.
 
-Logical cycle은 positive edge 하나를 포함하는 RTL clock period 하나다. Reset은
-0 cycle, raw pulse는 1 cycle, tick N회는 N cycle, combinational evaluation은 0
-cycle이며 `progress_stream(..., N)`은 scheduler state와 무관하게 정확히 N
-cycle을 진행한다. Watchdog 값은 wall-clock timeout이 아니라 progress/service
-iteration bound다.
+IM2P.sim의 cycle은 Verilator C++ 프로그램 실행시간을 환산한 값이 아니다. C++
+harness가 RTL clock을 low-high-low로 직접 toggle해 simulated edge를 만들고,
+positive edge 하나를 포함하는 RTL logical clock period를 센 값이다.
 
-DMA, DRAM, cache, scratchpad, interconnect, CPU execution 및 clock frequency는
-모델링하지 않고 host pointer access는 zero-time이다. 그러므로 logical counter와
-Verilator host runtime으로 CPU/NPU common time, physical ns/GHz/Fmax 또는 silicon
-performance를 주장할 수 없다.
+| 동작 | runtime counter 변화 |
+|---|---:|
+| reset | 0으로 초기화 |
+| eval-only | +0 |
+| direct tick | +1 |
+| accepted pulse | +1 |
+| `progress_stream(..., N)` | 정확히 +N |
+
+A/W/S/C interface는 abstract host-memory provider다. DRAM/cache/scratchpad/DMA,
+interconnect, TLB, RoCC의 physical latency는 포함하지 않는다. Wait counter는
+physical DRAM latency가 아니라 RTL request가 outstanding인 logical cycle 수다.
+C++/Rust host pointer dereference의 실제 wall-clock 비용도 logical-cycle
+statistics에 자동 포함되지 않는다.
+
+```text
+RTL logical cycle != C++ wall-clock != physical clock period
+```
+
+Verilator만으로 GHz, Fmax, ns latency, physical TOPS를 얻을 수 없다. 별도
+synthesis/STA가 `f_clock`을 제공한 경우에만
+`latency_seconds = rtl_cycles / f_clock`으로 변환한다. Verilator host 실행속도를
+`f_clock`으로 사용하지 않는다.
+
+CPU ExSIA LA/SF wall-clock과 NPU Verilated RTL cycle은 자동으로 동일한 timebase가
+아니다. 직접 지원하는 범위는 NPU RTL cycle latency, RTL lookahead overlap,
+RTL wait/stall, deterministic logical-cycle stripe injection이다. Worker가 제출된
+stripe나 raw work 없이 condition variable에서 기다리는 host wall-clock 동안에는
+RTL clock도 진행되지 않는다. 따라서 host wait을 real CPU+NPU end-to-end cycle로
+해석하지 않는다.
 
 ## Build
 
@@ -315,12 +357,22 @@ for (const auto &event : ready_events) {
 FenceResult completed = fence(*started.run);
 ```
 
-`execute`는 selected scalar fields와 pointer values를 snapshot한다. Referenced input
+`ggml_gemmini_args_t`는 matrix shape/layout, activation, weight-format 및
+scale/reconstruction metadata, output metadata, tile metadata를 담는 external work
+descriptor다. `execute`는 필요한 scalar fields와 pointer identities를 snapshot하고
+backing storage는 borrow한다. Referenced input
 buffers는 `fence` 반환 또는 `Run` destruction 완료까지 alive/immutable이어야 하며,
 output `C`는 같은 기간 alive/exclusively writable이어야 한다. 현재 numerical
-execution은 raw-compatible `q8_h0`만 지원한다. Classified H1/H2/HP/channel route는
-materialization 없이 `unsupported_route`를 반환한다. High-level caller는 raw
-`progress`/`poll`을 호출하지 않는다.
+route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 호출하지
+않는다.
+
+| route | 상태 |
+|---|---|
+| `q8_h0` | 지원, raw-compatible numerical execution |
+| `q8_h1`, `q8_hp1`, `q8_hp2` | metadata 인식, numerical execution 미지원 |
+| `q8_channel`, `q8_channel_dense_sidecar` | metadata 인식, numerical execution 미지원 |
+| `q8_0_unpacked_to_h1` | metadata 인식, numerical execution 미지원 |
+| `q8_h2` | **Deprecated**; numerical fallback 없이 `q8_h2 is deprecated` 반환 |
 
 ## 문서
 
@@ -333,6 +385,39 @@ materialization 없이 `unsupported_route`를 반환한다. High-level caller는
 소유한다. 두 scheduler가 M/N tile, K fragment, scale block을 결정하고 A/W/S/C
 주소와 tag를 발행한다. Rust는 해당 주소를 host-owned view에 resolve하고
 response를 돌려주며, I/J/K scheduling을 수행하지 않는다.
+
+- `MatmulScheduler`: 전체 matrix/stripe traversal, I/J work 선택, current 및
+  lookahead stripe, publication FIFO, stripe completion을 관리한다.
+- `WorkScheduler`: accumulation work 하나의 K progression과 K fragment, A/W/S
+  preparation, current/next fragment, next-stripe lookahead, accumulate control을
+  관리한다.
+- `ExecuteController`: SystolicArray execution 하나의 row issue, column commit,
+  done을 관리한다.
+
+K fragment는 quantization block boundary를 넘지 않는다.
+
+```text
+remaining_in_block = block_size - (k_start % block_size)
+k_count = min(DIM, K - k_start, remaining_in_block)
+```
+
+`tile_K`는 Gemmini/host metadata다. 실제 RTL K fragment는 `WorkScheduler`가 DIM과
+quantization block boundary를 기준으로 결정한다.
+
+전체 행렬 실행에서는 activation 전체가 시작부터 available하다.
+
+```text
+execute
+  -> MatmulScheduler
+  -> WorkScheduler
+  -> K-fragment generation
+  -> A/W/S request
+  -> WS execution
+  -> Accumulator
+  -> output writeback
+```
+
+Host가 K loop, weight preload, activation feed를 직접 scheduling하지 않는다.
 
 - `execute_matmul`: 전체 matrix descriptor를 한 번 제출한다. A/W/S/C의 모든
   region이 처음부터 이용 가능할 뿐, striped mode와 다른 실행 경로를 만들지
@@ -349,11 +434,18 @@ response를 돌려주며, I/J/K scheduling을 수행하지 않는다.
 - stripe completion: 마지막 C write response가 acknowledge된 뒤에만 발생한다.
 
 ```text
-CPU: publish s0 ------------------------ publish s1 ------------------- own s1 A until completion
-NPU: [current s0: WS engine + RC] ======>| prepare s1: A/W/S stage, reuse or inactive-bank preload |
-                                         |<-- current engine remains the only executor ----------->|
-                                         completion s0 -> promote s1 -> [WS engine + RC for s1]
-FIFO: current --------------------------- lookahead -------------------- deeper published stripes (FIFO)
+CPU                              NPU
+
+LA/SF(s0)
+       publish s0 -----------> prepare / execute s0
+
+      LA/SF(s1)
+             publish s1 ----> prepare s1
+                              || overlap
+                           execute s0
+                              ||
+                              \/
+                           execute s1
 ```
 
 실행 순서는 하나의 engine으로 유지된다. 현재 stripe와 즉시 다음 stripe만
@@ -361,6 +453,10 @@ prepare state를 가질 수 있고, 더 깊은 published stripe는 FIFO 순서�
 prepare되지 않는다. Lookahead는 A/W/S와 inactive PE bank만 준비한다. output
 write와 Accumulator state 갱신은 lookahead가 current로 promotion된 뒤에만
 발생한다.
+
+Early-publish regression은 개념적으로
+`publish(next) <= firstPrepare(next) < currentCompletion`을 확인한다. 특정 cycle
+값은 README에 고정하지 않고 fresh test 결과에서 관리한다.
 
 Weight stationary PE bank는 기존 두 개다. 현재 engine은 active bank를 읽고,
 lookahead의 host W fetch는 PE 밖 external staging row에 저장된다. capture 시점에

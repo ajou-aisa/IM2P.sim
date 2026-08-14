@@ -245,6 +245,7 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
 }
 
 bool test_routes_and_preservation() {
+  fake::reset();
   std::vector<int8_t> a(96), b(96);
   std::vector<int32_t> c(64);
   auto base = raw_args(a, b, c);
@@ -324,11 +325,16 @@ bool test_routes_and_preservation() {
     x.q8_channel_row_stride = 42;
     x.q8_channel_row_count = 43;
     auto started = execute(&x, Mode::full);
+    const char *reason = expected[index] == Route::q8_h2
+                             ? "q8_h2 is deprecated"
+                             : "native Gemmini route is classified but not "
+                               "raw-ABI compatible";
     if (!expect(started.run != nullptr,
                 "unsupported route still returns an inspectable run") ||
         !expect(
             started.status.code == StatusCode::unsupported_route &&
-                started.status.route == expected[index],
+                started.status.route == expected[index] &&
+                std::strcmp(started.status.message, reason) == 0,
             "every Gemmini format is classified and explicitly unsupported"))
       return false;
     const auto snap = testing::inspect(*started.run);
@@ -377,8 +383,15 @@ bool test_routes_and_preservation() {
                 snap.unpacked_blocks == x.unpacked.blocks,
             "complete route scalars, pointers, counts, and strides preserved"))
       return false;
+    const auto fenced = fence(*started.run);
+    if (!expect(fenced.status.code == StatusCode::unsupported_route &&
+                    fenced.status.route == expected[index] &&
+                    std::strcmp(fenced.status.message, reason) == 0,
+                "unsupported and deprecated routes fence cleanly"))
+      return false;
   }
-  return true;
+  return expect(fake::owner == std::thread::id{},
+                "unsupported and deprecated routes never start raw execution");
 }
 
 bool test_native_classification() {
@@ -393,9 +406,14 @@ bool test_native_classification() {
   base.B = nullptr;
   auto check = [&](ggml_gemmini_args_t &x, Route expected) {
     auto result = execute(&x);
+    const char *reason =
+        expected == Route::q8_h2
+            ? "q8_h2 is deprecated"
+            : "native Gemmini route is classified but not raw-ABI compatible";
     return expect(
         result.status.code == StatusCode::unsupported_route &&
-            result.status.route == expected && result.status.native_contract,
+            result.status.route == expected && result.status.native_contract &&
+            std::strcmp(result.status.message, reason) == 0,
         "authoritative native contract classified and explicitly unsupported");
   };
 

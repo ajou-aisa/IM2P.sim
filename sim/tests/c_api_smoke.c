@@ -130,6 +130,45 @@ int main(void) {
         im2p_sim_destroy(sim);
         return 15;
     }
+    im2p_activation_stripe_t retry_stripe = {
+        .stripe_id = 0,
+        .i_start = 0,
+        .rows = 2,
+        .activations = activations,
+        .activation_row_stride = 3,
+        .context = 19,
+    };
+    if (im2p_publish_stripe(retry_stream, &retry_stripe) != IM2P_OK) {
+        im2p_destroy_stream(retry_stream);
+        im2p_sim_destroy(sim);
+        return 16;
+    }
+    im2p_stripe_completion_t retry_completion = {0};
+    int retry_completion_seen = 0;
+    for (uint32_t cycle = 0;
+            cycle < 100000 && !retry_completion_seen;
+            ++cycle) {
+        if (im2p_progress_stream(retry_stream, 1) != IM2P_OK) {
+            im2p_destroy_stream(retry_stream);
+            im2p_sim_destroy(sim);
+            return 17;
+        }
+        int poll = im2p_poll_completed(retry_stream, &retry_completion);
+        if (poll < 0) {
+            im2p_destroy_stream(retry_stream);
+            im2p_sim_destroy(sim);
+            return 18;
+        }
+        retry_completion_seen = poll == 1;
+    }
+    if (!retry_completion_seen
+            || im2p_finish_stream(retry_stream, &stats) != IM2P_OK
+            || stats.completed_output_tiles != 4
+            || expect_output(output, 2) != 0) {
+        im2p_destroy_stream(retry_stream);
+        im2p_sim_destroy(sim);
+        return 19;
+    }
     im2p_destroy_stream(retry_stream);
 
     im2p_matmul_desc_t matmul = full_desc(activations, weights, output);

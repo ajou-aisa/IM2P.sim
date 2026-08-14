@@ -26,6 +26,19 @@ Accumulator
 - runtime `VectorOp`
 - `accumulate` policy
 
+```text
+IM2PCore
+├── MatmulScheduler
+├── WorkScheduler
+├── SystolicEngine
+│   ├── ExecuteController
+│   ├── InputSkew
+│   └── SystolicArray
+│       └── PE array
+├── VectorUnit
+└── Accumulator
+```
+
 ## 2. PE and SystolicArray
 
 ### PE
@@ -196,9 +209,9 @@ VectorUnit                 : full-width result 1개
 Accumulator                : group result를 cycle별 commit
 ```
 
-## 9. Execution contract
+## 9. Low-level과 high-level execution
 
-현재 reference execution은 square array tile을 기준으로 한다.
+Low-level DIM execution은 microkernel/debug/regression primitive다.
 
 ```text
 1 <= rowCount <= arrayDim
@@ -208,10 +221,19 @@ vectorLanes divides arrayDim
 accRows >= arrayDim
 ```
 
-작은 K/N은 0-padding하며, 큰 M/K/N은 상위 model이 여러 execution으로
-타일링한다. K progress와 block boundary에 따른 scale row selection은
-`IM2PCore`의 runtime control이며 별도 core나 wrapper가 아니다. Core는 DMA,
-scratchpad, global scheduler를 모델링하지 않는다.
+High-level address-driven execution은 `MatmulScheduler`와 `WorkScheduler`가 큰
+M/N/K 문제를 hardware execution으로 분할한다. Host는 K fragment나
+weight-preload/activation-feed 순서를 생성하지 않는다. `WorkScheduler`의 fragment
+규칙은 다음과 같아서 K-block boundary를 넘지 않는다.
+
+```text
+remaining_in_block = block_size - (k_start % block_size)
+k_count = min(DIM, K - k_start, remaining_in_block)
+```
+
+`tile_K`는 Gemmini/host metadata이고 RTL K fragment 크기는 DIM, 남은 K,
+quantization block boundary가 결정한다. Core에 DMA, scratchpad, memory-system
+timing model은 없지만 global matrix scheduling 자체는 RTL scheduler stack에 있다.
 
 ## 10. Address-driven scheduler stack
 

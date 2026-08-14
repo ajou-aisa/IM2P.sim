@@ -207,6 +207,12 @@ contracts (`IM2P_INVALID_LAYOUT`), an already-owned simulator
 generic runtime execution failure (`IM2P_ERROR`); runtime failures are not
 collapsed into layout errors.
 
+This is the raw simulator API:
+`execute_matmul` or
+`begin_striped_matmul`/`publish`/`progress`/`poll`/`finish`. The optional C++
+frontend owns that sequence behind its separate `execute`/`submit_stripe`/`fence`
+surface.
+
 `im2p_execute_matmul` borrows full-matrix pointers only for the call.
 `im2p_begin_striped_matmul_ex` returns status and writes the stream pointer;
 the non-`_ex` form returns that pointer directly. Zero `tile_i_rows` or
@@ -214,6 +220,10 @@ the non-`_ex` form returns that pointer directly. Zero `tile_i_rows` or
 it. A/W/C strides are element strides and may include padding: full A stride
 must be at least K, W and C strides at least N; striped W/C use the same
 contracts and each published stripe A stride must be at least K.
+After the simulator is taken from its owner, a rejected lower-layer begin
+returns both the error and simulator through the recovery path. The C owner is
+restored before the error status returns, so the same handle remains valid for
+a later begin, execution, finish, and destruction.
 
 For a stream, W/S/C pointers and their strides remain valid through
 `im2p_finish_stream` or `im2p_destroy_stream`. A successful
