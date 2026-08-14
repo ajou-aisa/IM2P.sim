@@ -148,7 +148,10 @@ unsafe extern "C" {
     pub fn im2p_destroy(handle: *mut c_void);
     pub fn im2p_reset(handle: *mut c_void);
     pub fn im2p_tick(handle: *mut c_void);
+    pub fn im2p_tick_staged(handle: *mut c_void);
     pub fn im2p_cycle_count(handle: *mut c_void) -> u64;
+    pub fn im2p_observed_response_mask(handle: *mut c_void) -> u32;
+    pub fn im2p_max_concurrent_responses(handle: *mut c_void) -> u32;
     pub fn im2p_weights_ready(handle: *mut c_void) -> i32;
     pub fn im2p_load_weight_ready(handle: *mut c_void) -> i32;
     pub fn im2p_activation_ready(handle: *mut c_void) -> i32;
@@ -193,19 +196,25 @@ unsafe extern "C" {
     pub fn im2p_weight_read_request(handle: *mut c_void, request: *mut ReadRequest) -> i32;
     pub fn im2p_scale_read_request(handle: *mut c_void, request: *mut ReadRequest) -> i32;
 
+    pub fn im2p_stage_activation_read_response(
+        handle: *mut c_void,
+        tag: u64,
+        values: *const i8,
+        count: u32,
+    ) -> i32;
     pub fn im2p_put_activation_read_response(
         handle: *mut c_void,
         tag: u64,
         values: *const i8,
         count: u32,
     ) -> i32;
-    pub fn im2p_put_weight_read_response(
+    pub fn im2p_stage_weight_read_response(
         handle: *mut c_void,
         tag: u64,
         values: *const i8,
         count: u32,
     ) -> i32;
-    pub fn im2p_put_scale_read_response(
+    pub fn im2p_stage_scale_read_response(
         handle: *mut c_void,
         tag: u64,
         values: *const i8,
@@ -217,9 +226,10 @@ unsafe extern "C" {
         request: *mut WriteRequest,
         values: *mut i32,
     ) -> i32;
+    pub fn im2p_stage_output_write_response(handle: *mut c_void, tag: u64) -> i32;
     pub fn im2p_put_output_write_response(handle: *mut c_void, tag: u64) -> i32;
     pub fn im2p_stripe_completion(handle: *mut c_void, completion: *mut StripeCompletion) -> i32;
-    pub fn im2p_acknowledge_stripe_completion(handle: *mut c_void) -> i32;
+    pub fn im2p_stage_acknowledge_stripe_completion(handle: *mut c_void) -> i32;
 
     pub fn im2p_matrix_counters(handle: *mut c_void, counters: *mut MatrixCounters);
     pub fn im2p_matrix_debug(handle: *mut c_void, debug: *mut MatrixDebug);

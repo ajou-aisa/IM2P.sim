@@ -54,8 +54,8 @@ struct Status {
 
 struct Options {
   size_t queue_capacity = 2;
-  // The implementation enforces a conservative 65536-cycle minimum because
-  // the raw ABI exposes completion, not intermediate RTL-state transitions.
+  // Conservative minimum number of one-logical-cycle progress iterations
+  // allowed without a matched completion. This is not a wall-clock timeout.
   uint64_t max_stalled_cycles = 65536;
 };
 
@@ -74,11 +74,13 @@ void disable_completion_gate(Run &) noexcept;
 } // namespace testing
 #endif
 
-// execute() snapshots the args object's fields before returning, so the args
-// object itself is needed only for the execute() call. Every referenced backing
-// buffer remains borrowed and must stay valid and immutable until fence()
-// returns or the Run is destroyed. Calls on one Run are internally
-// synchronized.
+// execute() copies the selected scalar values and pointer identities documented
+// in frontend/README.md; it does not copy the whole args object or any backing
+// storage. For executable q8_h0 work, B and submitted A bytes remain borrowed,
+// valid, and immutable, while C remains borrowed, valid, and exclusively
+// writable by this Run until fence() returns or the Run is destroyed. Pipeline
+// A rows may be produced before their successful submit_stripe() call. Calls on
+// one Run are internally synchronized.
 class Run {
 public:
   ~Run() noexcept;

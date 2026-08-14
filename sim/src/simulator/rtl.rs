@@ -32,6 +32,11 @@ impl Im2pSimulator {
         unsafe { ffi::im2p_tick(self.handle.as_ptr()) };
     }
 
+    pub(super) fn tick_staged_raw(&mut self) {
+        // SAFETY: all staged inputs borrow storage through this edge only.
+        unsafe { ffi::im2p_tick_staged(self.handle.as_ptr()) };
+    }
+
     pub(super) fn begin_weight_load(&mut self) -> Result<(), Error> {
         // SAFETY: handle is valid and call has no pointer arguments.
         let ready = unsafe { ffi::im2p_begin_weight_load(self.handle.as_ptr()) };

@@ -27,6 +27,10 @@ struct Simulator {
     VerilatedContext *context;
     Top *top;
     uint64_t cycles;
+    uint64_t positive_edges;
+    uint8_t staged_response_mask;
+    uint8_t observed_response_mask;
+    uint8_t max_concurrent_responses;
     bool matrix_active;
     bool matrix_async;
     uint32_t matrix_rows;
@@ -85,6 +89,26 @@ void evaluate(Simulator *simulator) {
     simulator->top->eval();
 }
 
+void clear_enables(Simulator *simulator);
+
+void clock_staged(Simulator *simulator) {
+    simulator->observed_response_mask |= simulator->staged_response_mask;
+    simulator->max_concurrent_responses = std::max(
+        simulator->max_concurrent_responses,
+        static_cast<uint8_t>(__builtin_popcount(simulator->staged_response_mask))
+    );
+    simulator->top->CLK = 0;
+    evaluate(simulator);
+    simulator->top->CLK = 1;
+    evaluate(simulator);
+    clear_enables(simulator);
+    simulator->top->CLK = 0;
+    evaluate(simulator);
+    ++simulator->cycles;
+    ++simulator->positive_edges;
+    simulator->staged_response_mask = 0;
+}
+
 /*
  * Every EN_* input of the generated model. A freshly constructed Top does not
  * value-initialize its port members, so an indeterminate scheduler enable can
@@ -115,14 +139,7 @@ void clear_enables(Simulator *simulator) {
 void pulse(Simulator *simulator, CData &enable) {
     clear_enables(simulator);
     enable = 1;
-    simulator->top->CLK = 0;
-    evaluate(simulator);
-    simulator->top->CLK = 1;
-    evaluate(simulator);
-    clear_enables(simulator);
-    simulator->top->CLK = 0;
-    evaluate(simulator);
-    ++simulator->cycles;
+    clock_staged(simulator);
 }
 
 uint32_t command_bits(uint32_t base_row, uint32_t row_count, int accumulate, uint8_t op) {
@@ -140,7 +157,7 @@ extern "C" im2p_handle_t im2p_create(void) {
     try {
         context = new VerilatedContext;
         top = new Top(context);
-        simulator = new Simulator{context, top, 0, false, false, 0, 0, 0};
+        simulator = new Simulator{context, top, 0, 0, 0, 0, 0, false, false, 0, 0, 0};
         im2p_reset(simulator);
         return simulator;
     }
@@ -179,6 +196,10 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
     simulator->top->RST_N = 1;
     evaluate(simulator);
     simulator->cycles = 0;
+    simulator->positive_edges = 0;
+    simulator->staged_response_mask = 0;
+    simulator->observed_response_mask = 0;
+    simulator->max_concurrent_responses = 0;
     simulator->matrix_active = false;
     simulator->matrix_async = false;
     simulator->matrix_rows = 0;
@@ -189,17 +210,31 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
 extern "C" void im2p_tick(im2p_handle_t handle) {
     auto *simulator = static_cast<Simulator *>(handle);
     clear_enables(simulator);
-    simulator->top->CLK = 0;
-    evaluate(simulator);
-    simulator->top->CLK = 1;
-    evaluate(simulator);
-    simulator->top->CLK = 0;
-    evaluate(simulator);
-    ++simulator->cycles;
+    clock_staged(simulator);
+}
+
+extern "C" void im2p_tick_staged(im2p_handle_t handle) {
+    clock_staged(static_cast<Simulator *>(handle));
+}
+
+extern "C" void im2p_eval(im2p_handle_t handle) {
+    evaluate(static_cast<Simulator *>(handle));
 }
 
 extern "C" uint64_t im2p_cycle_count(im2p_handle_t handle) {
     return static_cast<Simulator *>(handle)->cycles;
+}
+
+extern "C" uint64_t im2p_positive_edge_count(im2p_handle_t handle) {
+    return static_cast<Simulator *>(handle)->positive_edges;
+}
+
+extern "C" uint32_t im2p_observed_response_mask(im2p_handle_t handle) {
+    return static_cast<Simulator *>(handle)->observed_response_mask;
+}
+
+extern "C" uint32_t im2p_max_concurrent_responses(im2p_handle_t handle) {
+    return static_cast<Simulator *>(handle)->max_concurrent_responses;
 }
 
 extern "C" int im2p_weights_ready(im2p_handle_t handle) {
@@ -642,6 +677,34 @@ extern "C" int im2p_scale_read_request(
     return IM2P_REQUEST_PRESENT;
 }
 
+extern "C" int im2p_stage_activation_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putActivationReadResponse) {
+        return 0;
+    }
+    if (!top->activationReadRequestValid
+        || !top->RDY_activationReadRequestTag
+        || tag != top->activationReadRequestTag) {
+        return IM2P_REQUEST_IDENTITY_MISMATCH;
+    }
+    top->putActivationReadResponse_tag = tag;
+    set_i8_lanes(top->putActivationReadResponse_values, values, count);
+    top->EN_putActivationReadResponse = 1;
+    simulator->staged_response_mask |= 0x1;
+    evaluate(simulator);
+    return 1;
+}
+
 extern "C" int im2p_put_activation_read_response(
     im2p_handle_t handle,
     uint64_t tag,
@@ -668,6 +731,29 @@ extern "C" int im2p_put_activation_read_response(
     return 1;
 }
 
+extern "C" int im2p_stage_weight_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putWeightReadResponse) return 0;
+    if (!top->weightReadRequestValid || !top->RDY_weightReadRequestTag
+        || tag != top->weightReadRequestTag) return IM2P_REQUEST_IDENTITY_MISMATCH;
+    top->putWeightReadResponse_tag = tag;
+    set_i8_lanes(top->putWeightReadResponse_values, values, count);
+    top->EN_putWeightReadResponse = 1;
+    simulator->staged_response_mask |= 0x2;
+    evaluate(simulator);
+    return 1;
+}
+
 extern "C" int im2p_put_weight_read_response(
     im2p_handle_t handle,
     uint64_t tag,
@@ -691,6 +777,29 @@ extern "C" int im2p_put_weight_read_response(
     top->putWeightReadResponse_tag = tag;
     set_i8_lanes(top->putWeightReadResponse_values, values, count);
     pulse(simulator, top->EN_putWeightReadResponse);
+    return 1;
+}
+
+extern "C" int im2p_stage_scale_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+) {
+    if (handle == nullptr || values == nullptr || count > kDim) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putScaleReadResponse) return 0;
+    if (!top->scaleReadRequestValid || !top->RDY_scaleReadRequestTag
+        || tag != top->scaleReadRequestTag) return IM2P_REQUEST_IDENTITY_MISMATCH;
+    top->putScaleReadResponse_tag = tag;
+    set_i8_lanes(top->putScaleReadResponse_values, values, count);
+    top->EN_putScaleReadResponse = 1;
+    simulator->staged_response_mask |= 0x4;
+    evaluate(simulator);
     return 1;
 }
 
@@ -745,6 +854,24 @@ extern "C" int im2p_output_write_request(
     return IM2P_REQUEST_PRESENT;
 }
 
+extern "C" int im2p_stage_output_write_response(
+    im2p_handle_t handle,
+    uint64_t tag
+) {
+    if (handle == nullptr) return IM2P_REQUEST_INVALID_ARGUMENT;
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    auto *top = simulator->top;
+    if (!top->RDY_putOutputWriteResponse) return 0;
+    if (!top->outputWriteRequestValid || !top->RDY_outputWriteRequestTag
+        || tag != top->outputWriteRequestTag) return IM2P_REQUEST_IDENTITY_MISMATCH;
+    top->putOutputWriteResponse_tag = tag;
+    top->EN_putOutputWriteResponse = 1;
+    simulator->staged_response_mask |= 0x8;
+    evaluate(simulator);
+    return 1;
+}
+
 extern "C" int im2p_put_output_write_response(
     im2p_handle_t handle,
     uint64_t tag
@@ -790,6 +917,16 @@ extern "C" int im2p_stripe_completion(
     completion->row_count = top->stripeCompletionRowCount;
     completion->stripe_context = top->stripeCompletionContext;
     return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_stage_acknowledge_stripe_completion(im2p_handle_t handle) {
+    if (handle == nullptr) return IM2P_REQUEST_INVALID_ARGUMENT;
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_acknowledgeStripeCompletion) return 0;
+    simulator->top->EN_acknowledgeStripeCompletion = 1;
+    evaluate(simulator);
+    return 1;
 }
 
 extern "C" int im2p_acknowledge_stripe_completion(im2p_handle_t handle) {

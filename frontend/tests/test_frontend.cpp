@@ -482,6 +482,7 @@ bool test_mode_and_raw_scale_contract() {
     const auto result = execute(&changed);
     return expect(result.status.code == StatusCode::unsupported_route, message);
   };
+  int32_t bias[2] = {1, -1};
   if (!reject([](auto &x) { x.scale_B = 2.0f; },
               "nonidentity scale_B is rejected") ||
       !reject([](auto &x) { x.scale_D = 2; },
@@ -489,7 +490,13 @@ bool test_mode_and_raw_scale_contract() {
       !reject([](auto &x) { x.scale = 0.5f; },
               "nonidentity output scale is rejected") ||
       !reject([](auto &x) { x.bert_scale = 3.0f; },
-              "nonidentity bert_scale is rejected"))
+              "nonidentity bert_scale is rejected") ||
+      !reject([](auto &x) { x.repeating_bias = true; },
+              "repeating-bias semantics are rejected without a bias pointer") ||
+      !reject([&](auto &x) {
+        x.D = bias;
+        x.repeating_bias = true;
+      }, "nonzero repeating bias is rejected"))
     return false;
 
   fake::hold_full = true;

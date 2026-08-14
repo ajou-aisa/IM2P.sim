@@ -8,7 +8,7 @@ mod helpers;
 mod stream;
 mod types;
 
-use helpers::{execute_full, write_extended_stats, write_stats};
+use helpers::{execute_full, status_for_error, write_extended_stats, write_stats};
 use types::{MatmulDesc, WorkStatsC, WorkStatsExtendedC};
 
 pub struct SimBox {
@@ -77,5 +77,5 @@ unsafe fn execute_matmul_value(
     let Some(desc) = descriptor.as_ref() else {
         return Err(-1);
     };
-    execute_full(simulator, desc).map_err(|_| -4)
+    execute_full(simulator, desc).map_err(status_for_error)
 }

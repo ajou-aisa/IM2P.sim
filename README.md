@@ -210,17 +210,24 @@ src/
 
 `tests/TestVectorUtils.bsv`는 BSV에 존재하지 않는 `vec(...)` literal 대신 테스트에서 사용하는 2/3/4-element Vector helper만 제공한다. RTL source에는 포함되지 않는다.
 
-## External boundary
+## External boundary and time model
 
-DMA는 모델링하지 않는다. Testbench 또는 상위 SoC model이 다음 인터페이스를 사용한다.
+현재 public simulation path는 아래 legacy tile controls뿐 아니라
+`MatmulScheduler`/`WorkScheduler`가 발행하는 tagged A/W/S/C address channels와
+full-matrix/striped descriptors를 사용한다. 독립 channel response는 같은 RTL
+edge에 함께 commit할 수 있다. Weight preload와 accumulator access를 포함한
+host boundary는 기능 검증용이며 memory system 자체가 아니다.
 
-- stationary weight row preload
-- execution 시작
-- activation row와 optional scale sideband 공급
-- accumulator row 초기화
-- accumulator row 읽기
+Logical cycle은 positive edge 하나를 포함하는 RTL clock period 하나다. Reset은
+0 cycle, raw pulse는 1 cycle, tick N회는 N cycle, combinational evaluation은 0
+cycle이며 `progress_stream(..., N)`은 scheduler state와 무관하게 정확히 N
+cycle을 진행한다. Watchdog 값은 wall-clock timeout이 아니라 progress/service
+iteration bound다.
 
-현재 weight preload와 host accumulator access는 기능 검증용 합성 가능 boundary이며, scratchpad/DMA latency나 메모리 대역폭 모델은 아니다.
+DMA, DRAM, cache, scratchpad, interconnect, CPU execution 및 clock frequency는
+모델링하지 않고 host pointer access는 zero-time이다. 그러므로 logical counter와
+Verilator host runtime으로 CPU/NPU common time, physical ns/GHz/Fmax 또는 silicon
+performance를 주장할 수 없다.
 
 ## Build
 
@@ -251,12 +258,74 @@ frontend와 실제 RTL golden은 각각 `make gemmini-frontend-test`,
 `make gemmini-frontend-real-test`로 검증하며 계약과 lifetime은
 `frontend/README.md`에 문서화되어 있다.
 
+### High-level C++ API 사용법
+
+Read-only `llama.cpp-gemmini` checkout의 authoritative header로 optional frontend를
+build한다.
+
+```bash
+make gemmini-frontend \
+  GEMMINI_ROOT=/path/to/llama.cpp-gemmini \
+  GEMMINI_PARAMS_ROOT=/path/to/gemmini-include \
+  GEMMINI_FRONTEND_DIM=16
+```
+
+Full mode는 `execute` 성공 직후 NPU work를 시작한다. Caller는 `fence`로 완료와
+extended statistics를 받는다.
+
+```cpp
+#include "im2p_gemmini_frontend.hpp"
+
+using namespace im2p::gemmini;
+
+ExecuteResult started = execute(&args, Mode::full);
+if (!started.status.ok()) {
+    // Invalid or unsupported arguments.
+}
+
+FenceResult completed = fence(*started.run);
+if (!completed.status.ok()) {
+    // Worker or RTL execution failure.
+}
+
+const im2p_work_stats_extended_t &stats = completed.stats;
+```
+
+Stripe mode는 같은 borrowed `ggml_gemmini_args_t`를 사용한다.
+`StripeReadyEvent`마다 activation row availability를 publish한다. Explicit
+backpressure를 받으면 accepted되지 않은 같은 event를 retry한다.
+
+```cpp
+ExecuteResult started = execute(&args, Mode::stripe_pipeline);
+if (!started.status.ok()) {
+    // Stream startup failure.
+}
+
+for (const auto &event : ready_events) {
+    Status status;
+    do {
+        status = submit_stripe(*started.run, event);
+    } while (status.code == StatusCode::backpressure);
+
+    if (!status.ok()) {
+        // Ordering, run ID, row range, or worker failure.
+    }
+}
+
+FenceResult completed = fence(*started.run);
+```
+
+`execute`는 selected scalar fields와 pointer values를 snapshot한다. Referenced input
+buffers는 `fence` 반환 또는 `Run` destruction 완료까지 alive/immutable이어야 하며,
+output `C`는 같은 기간 alive/exclusively writable이어야 한다. 현재 numerical
+execution은 raw-compatible `q8_h0`만 지원한다. Classified H1/H2/HP/channel route는
+materialization 없이 `unsupported_route`를 반환한다. High-level caller는 raw
+`progress`/`poll`을 호출하지 않는다.
+
 ## 문서
 
-- `PROJECT_REVIEW.md`: 전체 검토 결과, 수정 사항, 남은 리스크
 - `docs/ARCHITECTURE.md`: 데이터·주소·제어·backpressure 흐름
 - `docs/VERIFICATION.md`: testbench 범위와 검증 상태
-- `VALIDATION_REPORT.txt`: 이번 산출물에서 실제 실행한 검사
 
 ## Address-driven full matrix와 stripe scheduling
 

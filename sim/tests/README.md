@@ -11,6 +11,7 @@ no aggregator or registry edit.
 | `rtl_scale_fetch.rs` | 8 | demand, current hit, context/reset, J stride/offset |
 | `rtl_prefetch.rs` | 4 | next prefetch/hit, no duplicate, last block |
 | `rtl_runtime.rs` | 2 | same-core runtime operation switching |
+| `rtl_cycle_accounting.rs` | 2 | exact edge/eval/pulse semantics and concurrent A/W/S/C responses |
 | `rtl_random.rs` | 3 | deterministic multi-block Multiply/Shift |
 | `rtl_validation.rs` | 14 | ranges, layouts, C-facing scale validation, buffers, response identity |
 | `rtl_stats.rs` | 4 | cycle, fetch, work, utilization invariants |

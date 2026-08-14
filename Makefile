@@ -277,7 +277,8 @@ verilator-lint: rtl
 	  package="$${top#mk}"; \
 	  echo "[Verilator] lint $$top"; \
 	  $(VERILATOR) --lint-only -Wall -Wno-fatal \
-	    --top-module $$top $(BUILD_DIR)/rtl/$$package/*.v; \
+	    --top-module $$top $(BUILD_DIR)/rtl/$$package/*.v \
+	    "$(BSC_VERILOG)/RegFile.v" "$(BSC_VERILOG)/FIFO2.v"; \
 	done
 
 yosys-stat: rtl

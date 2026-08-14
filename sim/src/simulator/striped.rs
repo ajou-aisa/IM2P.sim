@@ -117,9 +117,13 @@ impl StripedMatmul<'_> {
         for _ in 0..cycle_budget {
             self.service_static_reads()?;
             self.drain_completion()?;
-            self.simulator.tick_raw();
+            self.simulator.tick_staged_raw();
         }
         Ok(())
+    }
+
+    pub fn cycles(&self) -> u64 {
+        self.simulator.cycles().saturating_sub(self.start_cycle)
     }
 
     pub fn pending_activation_row(&self) -> Option<usize> {
@@ -148,6 +152,25 @@ impl StripedMatmul<'_> {
         self.simulator
             .require_ready("activation_read_response", accepted)
     }
+    pub(crate) fn stage_activation_row(&mut self, row: usize, values: &[i8]) -> Result<(), Error> {
+        let (expected_row, column, request) = self
+            .activation_request()?
+            .ok_or(Error::NoPendingActivation)?;
+        if row != expected_row || values.len() < column + request.element_count as usize {
+            return Err(Error::NoPendingActivation);
+        }
+        let accepted = unsafe {
+            ffi::im2p_stage_activation_read_response(
+                self.simulator.handle.as_ptr(),
+                request.tag,
+                values[column..].as_ptr(),
+                request.element_count,
+            )
+        };
+        self.simulator
+            .require_staged("activation_read_response", accepted)
+    }
+
     pub fn pending_output_row(&self) -> Option<usize> {
         self.output_request()
             .ok()
@@ -191,6 +214,18 @@ impl StripedMatmul<'_> {
             .require_ready("output_write_response", accepted)
     }
 
+    pub(crate) fn stage_output_row(&mut self, row: usize) -> Result<(), Error> {
+        let (expected_row, _, request, _) = self.output_request()?.ok_or(Error::NoPendingOutput)?;
+        if row != expected_row {
+            return Err(Error::NoPendingOutput);
+        }
+        let accepted = unsafe {
+            ffi::im2p_stage_output_write_response(self.simulator.handle.as_ptr(), request.tag)
+        };
+        self.simulator
+            .require_staged("output_write_response", accepted)
+    }
+
     pub fn poll_completed(&mut self) -> Option<StripeCompletion> {
         self.completed.pop_front()
     }
@@ -225,7 +260,7 @@ impl StripedMatmul<'_> {
                 );
                 return Ok((stats, self.simulator));
             }
-            self.simulator.tick_raw();
+            self.simulator.tick_staged_raw();
         }
         Err(self
             .simulator

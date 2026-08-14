@@ -107,7 +107,7 @@ impl StripedMatmul<'_> {
         let start = row * self.layout.weight_row_stride + column;
         // SAFETY: descriptor validation and request bounds prove readable lanes.
         let accepted = unsafe {
-            ffi::im2p_put_weight_read_response(
+            ffi::im2p_stage_weight_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
                 self.descriptor.weights[start..].as_ptr(),
@@ -115,7 +115,7 @@ impl StripedMatmul<'_> {
             )
         };
         self.simulator
-            .require_ready("weight_read_response", accepted)
+            .require_staged("weight_read_response", accepted)
     }
 
     fn service_scale(&mut self) -> Result<(), Error> {
@@ -157,7 +157,7 @@ impl StripedMatmul<'_> {
         }
         // SAFETY: validated view contains all requested lanes.
         let accepted = unsafe {
-            ffi::im2p_put_scale_read_response(
+            ffi::im2p_stage_scale_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
                 view.values[start..end].as_ptr(),
@@ -165,7 +165,7 @@ impl StripedMatmul<'_> {
             )
         };
         self.simulator
-            .require_ready("scale_read_response", accepted)
+            .require_staged("scale_read_response", accepted)
     }
 
     pub(super) fn drain_completion(&mut self) -> Result<(), Error> {
@@ -196,10 +196,11 @@ impl StripedMatmul<'_> {
         });
         self.outstanding_stripes -= 1;
         // SAFETY: completion getter established acknowledgement readiness.
-        let accepted =
-            unsafe { ffi::im2p_acknowledge_stripe_completion(self.simulator.handle.as_ptr()) };
+        let accepted = unsafe {
+            ffi::im2p_stage_acknowledge_stripe_completion(self.simulator.handle.as_ptr())
+        };
         self.simulator
-            .require_ready("acknowledge_stripe_completion", accepted)
+            .require_staged("acknowledge_stripe_completion", accepted)
     }
 }
 

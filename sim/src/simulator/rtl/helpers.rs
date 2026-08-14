@@ -79,6 +79,18 @@ impl Im2pSimulator {
         Ok(())
     }
 
+    pub(in crate::simulator) fn require_staged(
+        &self,
+        operation: &'static str,
+        ready: i32,
+    ) -> Result<(), Error> {
+        if ready == 1 {
+            Ok(())
+        } else {
+            Err(Error::RtlNotReady { operation })
+        }
+    }
+
     pub(in crate::simulator) fn require_ready(
         &mut self,
         operation: &'static str,

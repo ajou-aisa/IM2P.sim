@@ -136,7 +136,7 @@ struct ScalarSnapshot {
   acc_scale_t scale = 1.0f;
   acc_scale_t bert_scale = 1.0f;
   bool transpose_a = false, transpose_b = false, full_c = false, low_d = false;
-  bool weight_i8_scale_active = false;
+  bool repeating_bias = false, weight_i8_scale_active = false;
   int act = 0;
 };
 
@@ -194,6 +194,7 @@ ScalarSnapshot snapshot_scalars(const ggml_gemmini_args_t &a) noexcept {
           a.transpose_B,
           a.full_C,
           a.low_D,
+          a.repeating_bias,
           a.weight_i8_scale_active,
           a.act};
 }
@@ -605,14 +606,15 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                                  "missing IM2P operand, dimension, or option");
   else if (x.scalars.transpose_a || x.scalars.transpose_b ||
            x.scalars.weight_i8_scale_active || !x.scalars.full_c ||
-           x.scalars.low_d || x.pointers.d || x.scalars.act != 0 ||
+           x.scalars.low_d || x.scalars.repeating_bias || x.pointers.d ||
+           x.scalars.act != 0 ||
            x.scalars.scale_b != static_cast<scale_t>(1) ||
            x.scalars.scale_d != static_cast<scale_acc_t>(1) ||
            x.scalars.scale != static_cast<acc_scale_t>(1) ||
            x.scalars.bert_scale != static_cast<acc_scale_t>(1))
     x.final_status = make_status(
         StatusCode::unsupported_route, x.route, false,
-        "q8_h0 operands or scalar scales are not raw-ABI compatible");
+        "q8_h0 operands, bias semantics, or scalar scales are not raw-ABI compatible");
   else if (sa < x.scalars.k || sb < x.scalars.j || sc < x.scalars.j ||
            (mode == Mode::stripe_pipeline &&
             x.scalars.activation_rows_per_stripe == 0))

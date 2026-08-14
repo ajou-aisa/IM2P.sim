@@ -78,6 +78,28 @@ exactly `S[block,j]`; prefetch cannot overwrite an in-flight execution.
 `VectorBypass` needs no scale view, emits no scale request, and does not
 invalidate cached rows.
 
+## Logical-cycle model
+
+One logical cycle is one complete simulated RTL clock period containing exactly
+one rising edge. Reset edges establish initial state and leave the logical
+counter at zero. A raw command/response pulse consumes one logical cycle;
+combinational `eval()` and request/status getters consume none. The provider may
+stage simultaneously ready A/W/S/C responses and commit them on the same edge,
+matching independent RTL channels rather than serializing host function calls.
+
+`progress(cycle_budget)` and `im2p_progress_stream(..., cycle_budget)` advance
+exactly `cycle_budget` logical cycles in every scheduler state. A zero budget is
+observational and does not service or clock the model. Internal blocking-loop
+limits are watchdog **iterations**; their normal service iteration commits one
+staged provider edge, while setup/final acknowledgement pulses are separate
+logical cycles and are included by cycle-derived statistics.
+
+Logical cycles are not host wall-clock time or physical time. The simulator has
+no DRAM, cache, scratchpad, DMA, interconnect, CPU execution, or clock-frequency
+model. Host memory dereferences are functional and zero-time, so these counters
+cannot establish CPU/NPU common time, nanoseconds, GHz, Fmax, or silicon
+performance. Verilator runtime duration is only host simulation cost.
+
 ## Statistics
 
 `TileStats` retains weight, compute, total-cycle, useful MAC/Ops, rate, and
@@ -179,7 +201,11 @@ polling delay, or CPU wall clock participates in correctness.
 
 ## C ABI and pointer ownership
 
-Public header: `sim/include/im2p_sim.h`.
+Public header: `sim/include/im2p_sim.h`. C status values distinguish malformed
+contracts (`IM2P_INVALID_LAYOUT`), an already-owned simulator
+(`IM2P_UNFINISHED_STREAM`), publication backpressure/duplicate/late events, and
+generic runtime execution failure (`IM2P_ERROR`); runtime failures are not
+collapsed into layout errors.
 
 `im2p_execute_matmul` borrows full-matrix pointers only for the call.
 `im2p_begin_striped_matmul_ex` returns status and writes the stream pointer;

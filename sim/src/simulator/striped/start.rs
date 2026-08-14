@@ -19,11 +19,22 @@ impl Im2pSimulator {
     }
 
     pub fn begin_striped_matmul_layout<'a>(
-        mut self,
+        self,
         descriptor: &StripeWorkDesc<'a>,
         layout: StripeLayout,
     ) -> Result<StripedMatmul<'a>, Error> {
-        validate_descriptor(descriptor, layout, self.dim)?;
+        self.begin_striped_matmul_layout_recover(descriptor, layout)
+            .map_err(|(error, _)| error)
+    }
+
+    pub(crate) fn begin_striped_matmul_layout_recover<'a>(
+        mut self,
+        descriptor: &StripeWorkDesc<'a>,
+        layout: StripeLayout,
+    ) -> Result<StripedMatmul<'a>, (Error, Self)> {
+        if let Err(error) = validate_descriptor(descriptor, layout, self.dim) {
+            return Err((error, self));
+        }
         let counters_before = self.matrix_counters();
         let scales_before = self.scale_counters();
         let start_cycle = self.cycles();
@@ -52,7 +63,9 @@ impl Im2pSimulator {
             vector_op: descriptor.vector_op.encoding(),
         };
         let accepted = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &rtl) };
-        self.require_ready("start_striped_matmul", accepted)?;
+        if let Err(error) = self.require_ready("start_striped_matmul", accepted) {
+            return Err((error, self));
+        }
         Ok(StripedMatmul {
             simulator: self,
             descriptor: StripeWorkDesc {

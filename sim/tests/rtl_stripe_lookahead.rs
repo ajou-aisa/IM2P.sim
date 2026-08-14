@@ -7,8 +7,6 @@ use common::{
 };
 use im2p_sim::{ActivationStripe, Im2pSimulator, SimError, StripeLayout, StripeWorkDesc, VectorOp};
 
-const LIMIT: u64 = 2_000;
-
 fn stripe(id: u32, row: usize) -> ActivationStripe {
     ActivationStripe {
         stripe_id: id,
@@ -72,10 +70,19 @@ fn run(
         tile_j_columns,
     };
     let mut job = sim.begin_striped_matmul_layout(&desc, layout)?;
+    let k_fragment_count = reduction.div_ceil(dim) as u64;
+    let j_tiles = shape.n.div_ceil(tile_j_columns) as u64;
+    let scheduled_work = shape.m as u64 * k_fragment_count * j_tiles;
+    // Bound cooperative service iterations by actual scheduled work. Each work
+    // item covers DIM-scale preload/wavefront/drain phases plus K host traffic;
+    // the final term covers fixed scheduler transitions. Host response pulses
+    // outside progress mean this is intentionally an iteration, not cycle, cap.
+    let iteration_limit = publish_cycles.iter().copied().max().unwrap_or(0)
+        + scheduled_work * (4 * dim as u64 + reduction as u64 + 32);
     let mut next = 0;
     let mut written = 0;
     let mut prepared_ids = Vec::new();
-    for cycle in 0..LIMIT {
+    for cycle in 0..iteration_limit {
         while next < publish_cycles.len() && publish_cycles[next] <= cycle && job.npu_ready() {
             if next == 1 {
                 if let Some(target) = exact_second_publish_cycle {
@@ -115,7 +122,7 @@ fn run(
     assert_eq!(
         written,
         shape.m * shape.n,
-        "stream did not finish within {LIMIT} cycles; pending activation={:?}",
+        "stream did not finish within {iteration_limit} service iterations; pending activation={:?}",
         job.pending_activation_row()
     );
     let stats = job.finish()?;
@@ -259,10 +266,14 @@ fn scale_miss_is_requested_before_current_completion() -> Result<(), SimError> {
 
 #[test]
 fn partial_preparation_reuses_every_fetched_weight_row() -> Result<(), SimError> {
+    // `publish_cycles` is the host service-loop index, not the RTL cycle
+    // counter. Batched response service commits W on the budgeted edge instead
+    // of adding a second pulse edge, so publish late enough to leave a strict
+    // nonzero subset of lookahead rows fetched before current completion.
     let partial_publish = if option_env!("IM2P_DIM") == Some("32") {
-        455
+        535
     } else {
-        282
+        380
     };
     let (_, partial, _) = run(&[0, partial_publish], false, 35, 2, false, None)?;
     let (_, complete, _) = run(&[0, 13], false, 35, 2, false, None)?;

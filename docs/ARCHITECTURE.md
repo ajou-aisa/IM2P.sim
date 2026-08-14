@@ -237,7 +237,10 @@ post-edge combinational reevaluation에서도 state register writer가 one-hot�
 보장한다.
 
 Rust layer는 provider, clock advance, watchdog, counter snapshot만 담당한다.
-Matrix/fragment/scale-block 선택은 RTL 외부에 복제하지 않는다.
+Matrix/fragment/scale-block 선택은 RTL 외부에 복제하지 않는다. Provider는 같은
+combinational state에서 ready인 A/W/S/C response를 함께 stage하고 한 positive
+edge에서 commit한다. 따라서 host 함수 호출 순서가 독립 RTL channel을 여러
+cycle로 직렬화하지 않는다.
 
 ## 11. Publish-triggered lookahead
 
@@ -283,6 +286,16 @@ write와 Accumulator update는 promotion 이후에만 허용된다.
 
 ### Logical-cycle accounting
 
+Logical cycle은 positive edge 하나를 포함하는 RTL clock period 하나다. Reset
+edge는 counter를 0으로 초기화하고 logical time에 포함하지 않는다. Raw pulse는
+1 cycle, tick N회는 N cycle이며 combinational eval/getter는 0 cycle이다.
+`progress_stream(stream, N)`은 idle, host-wait, fetch, compute, drain 어느
+state에서도 정확히 N cycle을 진행하고 N=0이면 response service도 edge도 없다.
+Watchdog limit은 host wall-clock timeout이 아니라 service-loop iteration 수다.
+정상 progress iteration 하나가 staged provider edge 하나를 commit하지만 setup과
+final acknowledgement pulse도 별도 logical cycle이므로 cycle statistic은 단순
+watchdog iteration count와 동일하다고 가정하면 안 된다.
+
 `WorkStats::cross_stripe_overlap_cycles`는 current engine
 execution이 active인 동시에 next-stripe A/W/S fetch 또는 PE preload가 active인
 logical cycle 수다. `activation_overlap_cycles`, `weight_overlap_cycles`,
@@ -304,3 +317,8 @@ publish-to-first-prepare cycles다. `current_stripe_completion_cycle`에서
 `output_wait_cycles`다. `lookahead_weight_requests`/`lookahead_weight_reuse_hits`와
 `lookahead_scale_requests`/`lookahead_scale_reuses`는 host fetch와 exact reuse를
 분리해 보고한다.
+
+이 timebase는 기능 RTL time뿐이다. DRAM/cache/scratchpad/DMA/interconnect, CPU
+execution, OS scheduling, clock frequency를 모델링하지 않고 host pointer access는
+zero-time이다. 따라서 CPU와 NPU의 common-time 비교, physical ns/GHz/Fmax 또는
+silicon 성능을 이 counter나 Verilator host runtime에서 도출할 수 없다.

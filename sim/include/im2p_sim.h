@@ -184,7 +184,12 @@ int im2p_publish_stripe(
     im2p_stream_t *stream,
     const im2p_activation_stripe_t *stripe
 );
+/*
+ * Advances exactly cycle_budget logical RTL clock periods. A zero budget only
+ * observes host-visible state; it does not evaluate a clock edge.
+ */
 int im2p_progress_stream(im2p_stream_t *stream, uint64_t cycle_budget);
+uint64_t im2p_stream_cycle_count(const im2p_stream_t *stream);
 int im2p_poll_completed(
     im2p_stream_t *stream,
     im2p_stripe_completion_t *completion

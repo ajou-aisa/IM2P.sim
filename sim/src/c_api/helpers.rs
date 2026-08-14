@@ -7,6 +7,35 @@ use crate::{
 
 use super::types::{MatmulDesc, StreamBox, WorkStatsC, WorkStatsExtendedC};
 
+pub(super) fn status_for_error(error: crate::SimError) -> i32 {
+    use crate::SimError::*;
+    match error {
+        StripeQueueFull => -2,
+        UnfinishedStream => -3,
+        DuplicateStripe => -5,
+        LateStripe => -6,
+        InvalidDimension
+        | InvalidScaleMatrixLayout
+        | InvalidBufferLength { .. }
+        | MissingScales { .. }
+        | InvalidKRange
+        | UnsupportedBlockConfiguration { .. }
+        | InvalidAccumulatorRow { .. }
+        | InvalidTileShape
+        | InvalidStripe
+        | InvalidActivationStride
+        | InvalidWeightStride
+        | InvalidOutputStride
+        | InvalidLayout => -4,
+        AllocationFailed
+        | InvalidScaleRequest { .. }
+        | RtlNotReady { .. }
+        | NoPendingActivation
+        | NoPendingOutput
+        | Timeout { .. } => -1,
+    }
+}
+
 pub(super) unsafe fn execute_full(
     simulator: &mut Im2pSimulator,
     desc: &MatmulDesc,
@@ -72,7 +101,7 @@ pub(super) unsafe fn service_stream(stream: &mut StreamBox) -> Result<(), crate:
             stripe.values.add(local * stripe.row_stride),
             stream.reduction,
         );
-        job.supply_activation_row(row, values)?;
+        job.stage_activation_row(row, values)?;
     }
     if let Some((row, column)) = job.pending_output_region() {
         if column >= stream.columns {
@@ -84,7 +113,7 @@ pub(super) unsafe fn service_stream(stream: &mut StreamBox) -> Result<(), crate:
             stream.output.add(row * stream.output_stride + column),
             values.len().min(stream.columns - column),
         );
-        job.acknowledge_output_row(row)?;
+        job.stage_output_row(row)?;
     }
     Ok(())
 }
@@ -176,6 +205,24 @@ pub(super) fn write_stats(output: *mut WorkStatsC, value: WorkStats) {
         stripe_rows_published: value.stripe_rows_published,
         weight_bank_activations: value.weight_bank_activations,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_for_error;
+    use crate::SimError;
+
+    #[test]
+    fn c_status_preserves_contract_ownership_and_runtime_classes() {
+        assert_eq!(status_for_error(SimError::InvalidDimension), -4);
+        assert_eq!(status_for_error(SimError::UnfinishedStream), -3);
+        assert_eq!(
+            status_for_error(SimError::RtlNotReady {
+                operation: "runtime",
+            }),
+            -1
+        );
+    }
 }
 
 pub(super) fn write_extended_stats(output: *mut WorkStatsExtendedC, value: WorkStats) {

@@ -119,8 +119,11 @@ Cargo auto-discovered integration tests:
 - `rtl_async_stripes`, `rtl_stripe_completion`: publication gating,
   finite backpressure, deterministic logical cycles, completion ordering
 - `rtl_weight_preload`, `rtl_work_stats`: dual-bank overlap and RTL counters
+- `rtl_cycle_accounting`: reset=0, N ticks=N, pulse=1, eval-only=0, C++
+  counter/positive-edge equality, concurrent A/W/S/C response edges
 - `rtl_writeback`: prefix/tail/row-gutter guard preservation
-- `c_api_smoke.c`: blocking and cooperative C ABI happy paths
+- `c_api_smoke.c`: blocking/cooperative C ABI, zero-budget observation, and
+  exact `progress_stream(..., 1)` cycle deltas across scheduler states
 
 `make sim-test-int8x16`과 `make sim-test-int8x32`가 각 DIM의 모든 Cargo
 integration binary를 실행한다. `make c-api-test`는 strict C11 header compile,

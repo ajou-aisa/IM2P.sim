@@ -101,15 +101,36 @@ int main(void) {
     invalid_stream.scale_valid_columns = 2;
     invalid_stream.scale_row_stride = 0;
     invalid_stream.vector_op = IM2P_VECTOR_MULTIPLY;
-    im2p_stream_t *rejected = im2p_begin_striped_matmul(
-        sim,
-        &invalid_stream
-    );
-    if (rejected != NULL) {
-        im2p_destroy_stream(rejected);
+    im2p_stream_t *rejected = (im2p_stream_t *)(uintptr_t)1;
+    if (im2p_begin_striped_matmul_ex(sim, &invalid_stream, &rejected)
+            != IM2P_INVALID_LAYOUT || rejected != NULL) {
         im2p_sim_destroy(sim);
         return 12;
     }
+    invalid_stream = stripe_desc(weights, output);
+    invalid_stream.vector_op = UINT8_MAX;
+    rejected = (im2p_stream_t *)(uintptr_t)1;
+    if (im2p_begin_striped_matmul_ex(sim, &invalid_stream, &rejected)
+            != IM2P_INVALID_LAYOUT || rejected != NULL) {
+        im2p_sim_destroy(sim);
+        return 13;
+    }
+    invalid_stream = stripe_desc(weights, output);
+    invalid_stream.m = (size_t)UINT32_MAX + 1;
+    rejected = (im2p_stream_t *)(uintptr_t)1;
+    if (im2p_begin_striped_matmul_ex(sim, &invalid_stream, &rejected)
+            != IM2P_INVALID_LAYOUT || rejected != NULL) {
+        im2p_sim_destroy(sim);
+        return 14;
+    }
+    im2p_stripe_work_desc_t retry = stripe_desc(weights, output);
+    im2p_stream_t *retry_stream = NULL;
+    if (im2p_begin_striped_matmul_ex(sim, &retry, &retry_stream) != IM2P_OK
+            || retry_stream == NULL) {
+        im2p_sim_destroy(sim);
+        return 15;
+    }
+    im2p_destroy_stream(retry_stream);
 
     im2p_matmul_desc_t matmul = full_desc(activations, weights, output);
     if (im2p_execute_matmul(sim, &matmul, &stats) != IM2P_OK
@@ -148,7 +169,7 @@ int main(void) {
     };
     im2p_activation_stripe_t invalid = stripe;
     invalid.stripe_id = 1;
-    if (im2p_publish_stripe(stream, &invalid) != IM2P_ERROR
+    if (im2p_publish_stripe(stream, &invalid) != IM2P_INVALID_LAYOUT
             || im2p_publish_stripe(stream, &stripe) != IM2P_OK
             || im2p_publish_stripe(stream, &stripe) != IM2P_LATE_STRIPE) {
         im2p_destroy_stream(stream);
@@ -165,8 +186,14 @@ int main(void) {
 
     im2p_stripe_completion_t completion = {0};
     int completion_seen = 0;
+    uint64_t logical_cycles = im2p_stream_cycle_count(stream);
+    if (im2p_progress_stream(stream, 0) != IM2P_OK
+            || im2p_stream_cycle_count(stream) != logical_cycles) {
+        return 10;
+    }
     for (uint32_t cycle = 0; cycle < 100000 && !completion_seen; ++cycle) {
-        if (im2p_progress_stream(stream, 1) != IM2P_OK) {
+        if (im2p_progress_stream(stream, 1) != IM2P_OK
+                || im2p_stream_cycle_count(stream) != ++logical_cycles) {
             return 5;
         }
         int poll = im2p_poll_completed(stream, &completion);

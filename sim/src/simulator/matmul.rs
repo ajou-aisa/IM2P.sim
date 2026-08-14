@@ -86,7 +86,7 @@ impl Im2pSimulator {
                 self.wait_idle()?;
                 return Ok(self.work_stats(counters_before, scales_before, start_cycle, 1));
             }
-            self.tick_raw();
+            self.tick_staged_raw();
         }
         Err(self.matrix_timeout("execute_matmul", MATRIX_TIMEOUT_CYCLES))
     }
@@ -94,13 +94,13 @@ impl Im2pSimulator {
     fn service_matrix_reads(&mut self, work: &MatmulWork<'_>) -> Result<(), Error> {
         self.service_i8_request(
             ffi::im2p_activation_read_request,
-            ffi::im2p_put_activation_read_response,
+            ffi::im2p_stage_activation_read_response,
             &work.activations,
             ACTIVATION_BASE,
         )?;
         self.service_i8_request(
             ffi::im2p_weight_read_request,
-            ffi::im2p_put_weight_read_response,
+            ffi::im2p_stage_weight_read_response,
             &work.weights,
             WEIGHT_BASE,
         )?;
@@ -114,14 +114,14 @@ impl Im2pSimulator {
             let values = resolve_scale(scale, request)?;
             // SAFETY: values has request.element_count readable lanes.
             let accepted = unsafe {
-                ffi::im2p_put_scale_read_response(
+                ffi::im2p_stage_scale_read_response(
                     self.handle.as_ptr(),
                     request.tag,
                     values.as_ptr(),
                     request.element_count,
                 )
             };
-            self.require_ready("scale_read_response", accepted)?;
+            self.require_staged("scale_read_response", accepted)?;
         } else if status != ffi::IM2P_REQUEST_ABSENT {
             return Err(Error::RtlNotReady {
                 operation: "scale_read_request",
@@ -151,7 +151,7 @@ impl Im2pSimulator {
                     request.element_count,
                 )
             };
-            self.require_ready("matrix_read_response", accepted)?;
+            self.require_staged("matrix_read_response", accepted)?;
         } else if status != ffi::IM2P_REQUEST_ABSENT {
             return Err(Error::RtlNotReady {
                 operation: "matrix_read_request",
@@ -171,8 +171,8 @@ impl Im2pSimulator {
             write_i32(output, OUTPUT_BASE, request, &values)?;
             // SAFETY: host memory was updated before acknowledging the matching tag.
             let accepted =
-                unsafe { ffi::im2p_put_output_write_response(self.handle.as_ptr(), request.tag) };
-            self.require_ready("output_write_response", accepted)?;
+                unsafe { ffi::im2p_stage_output_write_response(self.handle.as_ptr(), request.tag) };
+            self.require_staged("output_write_response", accepted)?;
         } else if status != ffi::IM2P_REQUEST_ABSENT {
             return Err(Error::RtlNotReady {
                 operation: "output_write_request",

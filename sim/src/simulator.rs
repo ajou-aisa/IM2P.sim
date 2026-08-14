@@ -147,6 +147,17 @@ impl Im2pSimulator {
         unsafe { ffi::im2p_cycle_count(self.handle.as_ptr()) }
     }
 
+    /// Test/diagnostic telemetry for A/W/S/C responses committed on RTL edges.
+    pub fn response_concurrency(&self) -> (u8, u8) {
+        // SAFETY: handle remains valid and both getters are observational.
+        unsafe {
+            (
+                ffi::im2p_observed_response_mask(self.handle.as_ptr()) as u8,
+                ffi::im2p_max_concurrent_responses(self.handle.as_ptr()) as u8,
+            )
+        }
+    }
+
     pub fn execute_tile(
         &mut self,
         request: &TileRequest<'_>,

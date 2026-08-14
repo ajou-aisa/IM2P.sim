@@ -185,7 +185,13 @@ im2p_handle_t im2p_create(void);
 void im2p_destroy(im2p_handle_t handle);
 void im2p_reset(im2p_handle_t handle);
 void im2p_tick(im2p_handle_t handle);
+/* Internal provider batching: staged channel responses commit on one edge. */
+void im2p_tick_staged(im2p_handle_t handle);
+void im2p_eval(im2p_handle_t handle);
 uint64_t im2p_cycle_count(im2p_handle_t handle);
+uint64_t im2p_positive_edge_count(im2p_handle_t handle);
+uint32_t im2p_observed_response_mask(im2p_handle_t handle);
+uint32_t im2p_max_concurrent_responses(im2p_handle_t handle);
 
 int im2p_weights_ready(im2p_handle_t handle);
 int im2p_load_weight_ready(im2p_handle_t handle);
@@ -264,13 +270,31 @@ int im2p_scale_read_request(
  * from `values` and remaining lanes are zero-filled. They return 1 on accept,
  * 0 when the matching RDY is false, and negative on invalid arguments.
  */
+int im2p_stage_activation_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+);
 int im2p_put_activation_read_response(
     im2p_handle_t handle,
     uint64_t tag,
     const int8_t *values,
     uint32_t count
 );
+int im2p_stage_weight_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+);
 int im2p_put_weight_read_response(
+    im2p_handle_t handle,
+    uint64_t tag,
+    const int8_t *values,
+    uint32_t count
+);
+int im2p_stage_scale_read_response(
     im2p_handle_t handle,
     uint64_t tag,
     const int8_t *values,
@@ -292,11 +316,13 @@ int im2p_output_write_request(
     im2p_write_request_t *request,
     int32_t *values
 );
+int im2p_stage_output_write_response(im2p_handle_t handle, uint64_t tag);
 int im2p_put_output_write_response(im2p_handle_t handle, uint64_t tag);
 int im2p_stripe_completion(
     im2p_handle_t handle,
     im2p_stripe_completion_t *completion
 );
+int im2p_stage_acknowledge_stripe_completion(im2p_handle_t handle);
 int im2p_acknowledge_stripe_completion(im2p_handle_t handle);
 
 void im2p_matrix_counters(
