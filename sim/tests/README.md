@@ -1,50 +1,50 @@
-# RTL integration tests
+# RTL 통합 테스트
 
-Cargo auto-discovers every `sim/tests/*.rs` file. Adding a test file requires
-no aggregator or registry edit.
+Cargo는 모든 `sim/tests/*.rs` 파일을 자동으로 검색한다. 테스트 파일을 추가해도
+집계기나 레지스트리를 수정할 필요가 없다.
 
-| File | Tests | Responsibility |
+| 파일 | 테스트 | 담당 범위 |
 |---|---:|---|
-| `rtl_basic.rs` | 6 | Bypass, signed/zero data, full tile, M/N/K tails |
-| `rtl_scaling.rs` | 6 | Multiply, Shift, column scales, M-row sharing |
-| `rtl_k_blocks.rs` | 5 | B8/B16/B32/B64, 9/17/128 blocks, boundaries |
-| `rtl_scale_fetch.rs` | 8 | demand, current hit, context/reset, J stride/offset |
-| `rtl_prefetch.rs` | 4 | next prefetch/hit, no duplicate, last block |
-| `rtl_runtime.rs` | 2 | same-core runtime operation switching |
-| `rtl_cycle_accounting.rs` | 2 | exact edge/eval/pulse semantics and concurrent A/W/S/C responses |
-| `rtl_random.rs` | 3 | deterministic multi-block Multiply/Shift |
-| `rtl_validation.rs` | 14 | ranges, layouts, C-facing scale validation, buffers, response identity |
-| `rtl_stats.rs` | 4 | cycle, fetch, work, utilization invariants |
-| `rtl_full_matmul.rs` | 7 | oversized full matrices, tails, strides, CPU golden |
-| `rtl_writeback.rs` | 6 | valid-region writes and guard/padding preservation |
-| `rtl_work_scheduler.rs` | 2 | real RTL multi-I/J/K traversal and simulator reuse |
-| `rtl_memory_provider.rs` | 2 | address-backed strided A/W/C and channel counters |
-| `rtl_weight_preload.rs` | 2 | inactive-bank preload overlap and bank accounting |
-| `rtl_work_stats.rs` | 1 | RTL wait/compute/drain/preload/overlap counters |
-| `rtl_async_stripes.rs` | 7 | publish gating, FIFO pressure, readiness, errors, equivalence |
-| `rtl_stripe_completion.rs` | 2 | writeback barrier and ordered completion contexts |
-| `rtl_async_output_tiles.rs` | 1 | async N-tile output column offsets |
-| `rtl_stripe_lookahead.rs` | 5 | publish-triggered A/W/S preparation, delayed/padded and partial stripes, and resident-resource reuse |
+| `rtl_basic.rs` | 6 | Bypass, 부호/0 데이터, 전체 타일, M/N/K 끝부분 |
+| `rtl_scaling.rs` | 6 | Multiply, Shift, 열 스케일, M 행 공유 |
+| `rtl_k_blocks.rs` | 5 | B8/B16/B32/B64, 9/17/128 블록, 경계 |
+| `rtl_scale_fetch.rs` | 8 | 요청 시 로드, 현재 히트, context/reset, J stride/offset |
+| `rtl_prefetch.rs` | 4 | 다음 prefetch/hit, 중복 없음, 마지막 블록 |
+| `rtl_runtime.rs` | 2 | 동일 Core에서 runtime operation 전환 |
+| `rtl_cycle_accounting.rs` | 2 | 정확한 edge/eval/pulse 의미와 동시 A/W/S/C response |
+| `rtl_random.rs` | 3 | 결정론적 다중 block Multiply/Shift |
+| `rtl_validation.rs` | 14 | 범위, layout, C 측 scale 검증, buffer, response identity |
+| `rtl_stats.rs` | 4 | cycle, fetch, work, utilization 불변 조건 |
+| `rtl_full_matmul.rs` | 7 | 초과 크기 전체 matrix, 끝부분, stride, CPU golden |
+| `rtl_writeback.rs` | 6 | 유효 영역 write와 guard/padding 보존 |
+| `rtl_work_scheduler.rs` | 2 | 실제 RTL 다중 I/J/K traversal과 simulator 재사용 |
+| `rtl_memory_provider.rs` | 2 | address 기반 stride A/W/C와 channel counter |
+| `rtl_weight_preload.rs` | 2 | inactive bank preload overlap과 bank accounting |
+| `rtl_work_stats.rs` | 1 | RTL wait/compute/drain/preload/overlap counter |
+| `rtl_async_stripes.rs` | 7 | publish gating, FIFO pressure, 준비 상태, 오류, 동등성 |
+| `rtl_stripe_completion.rs` | 2 | writeback barrier와 순서가 보장된 completion context |
+| `rtl_async_output_tiles.rs` | 1 | 비동기 N-tile output column offset |
+| `rtl_stripe_lookahead.rs` | 5 | publish 기반 A/W/S 준비, 지연/padding, partial stripe, resident resource reuse |
 
-`rtl_stripe_lookahead.rs` is auto-discovered with the other `sim/tests/*.rs`
-integration tests. Its cases drive the actual Verilated core and cover
-publish-to-prepare timing signals, delayed publication with padded A/W/C
-layouts, partial weight preparation without refetch, scale misses, and the
-single immediate lookahead/resident-resource reuse path. The documentation
-does not treat those cases as a separate registry or report a runtime result.
+`rtl_stripe_lookahead.rs`는 다른 `sim/tests/*.rs` integration test와 함께 자동
+검색된다. 이 사례들은 실제 Verilated Core를 구동하며 publish-to-prepare timing
+signal, padding된 A/W/C layout에서의 지연 publish, 불필요한 재요청 없는 partial
+weight 준비, scale miss, 단일 immediate lookahead와 resident resource reuse
+경로를 다룬다. 이 문서는 해당 사례를 별도 registry로 취급하거나 runtime 결과를
+보고하지 않는다.
 
-`c_api_smoke.c` is compiled as strict C11 by `make c-api-test`, linked against
-the Rust static library, and run through both blocking and cooperative APIs.
-The table contains 19 auto-discovered actual-RTL Rust test files and 87 tests;
-the C API process check is an additional external-surface acceptance.
+`c_api_smoke.c`는 `make c-api-test`로 strict C11로 compile되고 Rust static
+library에 link되며 blocking API와 cooperative API 모두를 통해 실행된다. 표에는
+Cargo가 자동 검색하는 실제 RTL Rust test file 20개와 test 89개가 포함된다. C API
+process 검사는 추가 external surface 검증 항목이다.
 
-`common/` contains shape/fragment types, scale matrix builders, deterministic
-fixtures, independent CPU golden arithmetic, runner, and assertions.
+`common/`에는 shape/fragment type, scale row builder, 결정론적 fixture, 독립 CPU
+golden arithmetic, runner, assertion이 포함된다.
 
-## Add arithmetic test
+## 산술 테스트 추가
 
-Use `KBlockScaleMatrix::from_fn`, `run_case`, and compare returned
-`output`/`expected`.
+`KBlockScaleMatrix::from_fn`과 `run_case`를 사용하고 반환된
+`output`/`expected`를 비교한다.
 
 ```rust
 #[test]
@@ -67,30 +67,32 @@ fn my_k_block_case() -> Result<(), SimError> {
 }
 ```
 
-Add block arithmetic cases to `rtl_k_blocks.rs`. Add request/cache cases to
-`rtl_scale_fetch.rs` or `rtl_prefetch.rs`. Validation-only cases belong in
-`rtl_validation.rs`.
+Block arithmetic 사례는 `rtl_k_blocks.rs`에 추가한다. Request/cache 사례는
+`rtl_scale_fetch.rs` 또는 `rtl_prefetch.rs`에 추가한다. Validation 전용 사례는
+`rtl_validation.rs`에 둔다.
 
-## Add scheduler/provider coverage
+## Scheduler/provider coverage 추가
 
-High-level integration tests must exercise the Verilated `IM2PCore`; do not
-create a Rust mirror of `MatmulScheduler` or `WorkScheduler`.
+High-level integration test는 Verilated `IM2PCore`를 실행해야 하며,
+`MatmulScheduler` 또는 `WorkScheduler`의 Rust mirror를 만들면 안 된다.
 
-- Full-matrix cases construct checked `MatrixView`, `MatrixViewMut`, and
-  `MatmulWork` values, then call `execute_matmul` once.
-- Stripe cases call `begin_striped_matmul`, publish only CPU-complete rows,
-  service pending A/C events, advance logical cycles with `progress`, and
-  consume ordered completion events.
-- Tests use event/state handshakes. OS threads, async runtimes, sleeps,
-  wall-clock deadlines, and Rust I/J/K tiling loops are forbidden.
-- `npu_ready()` means RTL publish FIFO capacity. `host_available()` means
-  published host data remains associated with incomplete RTL work.
-- Output completion is observable only after the matching C request tag is
-  acknowledged.
+- Full matrix 사례는 검증된 `MatrixView`, `MatrixViewMut`, `MatmulWork` 값을 구성한
+  뒤 `execute_matmul`을 한 번 호출한다.
+- Stripe 사례는 `begin_striped_matmul`을 호출하고 CPU completion row만
+  publish하며, pending A/C event를 처리하고 `progress`로 RTL logical cycle을
+  진행한 뒤 순서가 보장된 completion event를 소비한다.
+- Test는 event/state handshake를 사용한다. OS thread, async runtime, sleep,
+  wall-clock deadline, Rust I/J/K tiling loop는 금지한다.
+- `npu_ready()`는 RTL publish FIFO capacity를 의미한다. `host_available()`는
+  publish된 host data가 완료되지 않은 RTL work와 계속 연결되어 있음을 의미한다.
+- Output completion은 일치하는 C request tag가 확인된 뒤에만 관찰할 수 있다.
 
-Run both generated dimensions for cross-DIM changes:
+DIM 간 변경에는 생성된 두 차원을 모두 실행한다.
 
 ```bash
 make sim-test-int8x16
 make sim-test-int8x32
 ```
+
+상위 simulator 계약은 [simulator 사용법](../README.md), 전체 검증 범위는
+[검증 가이드](../../docs/VERIFICATION.md)에서 확인한다.

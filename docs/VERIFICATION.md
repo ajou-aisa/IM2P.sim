@@ -1,4 +1,4 @@
-# Verification
+# IM2P.sim 검증
 
 ## 1. BSV testbench
 
@@ -75,7 +75,7 @@ make bsv-test-one TOP=mkTbIM2PCore
 make rtl-one TOP=mkSynthInt8
 ```
 
-## 4. Verilated RTL integration tests
+## 4. Verilated RTL integration test
 
 `sim/tests/*.rs`는 Cargo가 자동 발견한다. 공통 CPU golden, scale matrix,
 fragment generator는 `sim/tests/common/`에 있다.
@@ -88,43 +88,52 @@ make sim-test-int8x32
 각 target은 해당 DIM의 Verilog와 Verilated model을 다시 생성한 뒤 전체 test
 binary를 실행한다. Coverage는 다음을 포함한다.
 
-- Bypass signed/zero/full/tail
-- column-wise Multiply/Shift
+- Bypass 부호/zero/full/tail
+- Column별 Multiply/Shift
 - B8/B16/B32/B64
-- 9/17/128 K-scale blocks
+- 9/17/128 K-scale block
 - K4096/B32
 - current reuse, next prefetch, demand miss
-- context/reset, J stride/offset
-- runtime mode switching
-- deterministic random arithmetic
-- validation and tile-local statistics
+- context/reset과 J stride/offset
+- runtime mode 전환
+- 결정론적 random arithmetic
+- validation과 tile-local statistics
+- async output-tile column offset
+- publish-triggered A/W/S lookahead, resident reuse, partial weight 준비
 
-파일별 책임과 신규 test 작성 예는 `sim/tests/README.md`에 있다.
+파일별 책임과 신규 test 작성 예는
+[simulator test 가이드](../sim/tests/README.md)에 있다.
 
 ## Scheduler와 host provider coverage
 
 Bluesim:
 
-- `TbMatmulScheduler`: full/stripe extent, queue backpressure, ordering
-- `TbWorkScheduler`: K fragments, block boundaries, accumulation
-- `TbIM2PCoreMatrix`: delayed tagged A/W response, output acknowledgement
-- `TbIM2PCoreMatrixScale`: delayed S response, reuse/prefetch/snapshot
-- activation/weight bank testbenches: current/next slot safety
+- `TbMatmulScheduler`: full/stripe extent, queue backpressure, ordering 검증
+- `TbWorkScheduler`: K fragment, block boundary, accumulation 검증
+- `TbIM2PCoreMatrix`: 지연된 tagged A/W response와 output acknowledgement
+- `TbIM2PCoreMatrixScale`: 지연된 S response, reuse/prefetch/snapshot
+- activation/weight bank testbench: current/next slot safety
 
 Cargo auto-discovered integration tests:
 
-- `rtl_full_matmul`: oversized/tail/stride/golden/low-level equivalence
-- `rtl_memory_provider`: address-backed non-contiguous A/W/C views
-- `rtl_work_scheduler`: multi-I/J/K scheduling through the real RTL model
+- `rtl_full_matmul`: oversized/tail/stride/golden/low-level 동등성
+- `rtl_memory_provider`: address 기반 non-contiguous A/W/C view
+- `rtl_work_scheduler`: 실제 RTL model을 통한 multi-I/J/K scheduling
 - `rtl_async_stripes`, `rtl_stripe_completion`: publication gating,
-  finite backpressure, deterministic logical cycles, completion ordering
-- `rtl_weight_preload`, `rtl_work_stats`: dual-bank overlap and RTL counters
+  finite backpressure, 결정론적 RTL logical cycle, completion ordering
+- `rtl_async_output_tiles`: async N-tile output column offset
+- `rtl_stripe_lookahead`: publish-triggered A/W/S preparation, delayed publish,
+  padded layout, partial weight preparation, resident resource reuse 검증
+- `rtl_weight_preload`, `rtl_work_stats`: dual-bank overlap과 RTL counter
 - `rtl_cycle_accounting`: reset=0, N ticks=N, pulse=1, eval-only=0, C++
-  counter/positive-edge equality, concurrent A/W/S/C response edges
-- `rtl_writeback`: prefix/tail/row-gutter guard preservation
-- `c_api_smoke.c`: blocking/cooperative C ABI, zero-budget observation, and
-  exact `progress_stream(..., 1)` cycle deltas across scheduler states
+  counter/positive-edge equality, concurrent A/W/S/C response edge
+- `rtl_writeback`: prefix/tail/row-gutter guard 보존
+- `c_api_smoke.c`: blocking/cooperative C ABI, zero-budget 관찰,
+  scheduler state별 정확한 `progress_stream(..., 1)` cycle delta
 
 `make sim-test-int8x16`과 `make sim-test-int8x32`가 각 DIM의 모든 Cargo
 integration binary를 실행한다. `make c-api-test`는 strict C11 header compile,
 static library link, 실제 C driver 실행까지 수행한다.
+
+Architecture 기준은 [architecture 문서](ARCHITECTURE.md), 코드 분석 순서는
+[코드 분석 가이드](CODE_ANALYSIS_GUIDE.md)를 따른다.

@@ -1,4 +1,4 @@
-# Architecture
+# IM2P.sim architecture
 
 ## 1. Top-level data path
 
@@ -39,7 +39,7 @@ IM2PCore
 └── Accumulator
 ```
 
-## 2. PE and SystolicArray
+## 2. PE와 SystolicArray
 
 ### PE
 
@@ -73,7 +73,7 @@ PE `(k,j)`에서 activation과 partial token이 같은 cycle에 만나도록 한
 
 Weight preload row는 `BoundedIndex#(arrayDim)`로 전달된다. Non-power-of-two array에서도 잘못된 bit pattern을 검출하기 위해 마지막 유효 index인 `arrayDim-1`과 비교한다.
 
-## 3. SystolicEngine and output tracking
+## 3. SystolicEngine과 output tracking
 
 `SystolicEngine`은 `InputSkew`, `SystolicArray`, input/result FIFO, `ExecuteController`를 묶는다.
 
@@ -99,7 +99,7 @@ committedRows[column]
 
 Commit은 이미 issue된 row를 넘을 수 없으며, 모든 column에서 `committedRows == rowCount`가 된 뒤에만 execution이 완료된다.
 
-## 4. Column, vector lane, bank
+## 4. Column, vector lane, bank 구분
 
 ```text
 array column
@@ -174,7 +174,7 @@ Host는 block-major `S[b,j]` matrix view를 소유하고 `block_size`, `total_k`
 
 ```text
 b = floor(k_start / block_size)
-request tag = (context, b)
+request tag = (context + J tile offset, b)
 ```
 
 를 계산한다. Cache miss이면 host가 요청 row의 J tile slice를 응답한다. Core는
@@ -187,17 +187,18 @@ Staggered column output 모두 execution 시작 시 latch한
 `executionScaleRow[j] = S[b,j]`를 사용한다.
 
 전체 `ceil(K/B) × J` matrix는 host memory가 소유한다. Core는
-`kStart / blockSize`로 block을 선택하고 `(context, block)` tag의 row를
-요청한다. RTL storage는 current/next row뿐이다. Current hit은 transfer 없이
-reuse하고, next hit은 promote하며, miss는 demand response까지 execution을
-보류한다. Current row가 준비되면 가능한 `b+1` row를 prefetch한다. Context
-변경과 reset은 두 row를 무효화한다. Scale block 수에는 synthesis-time
-capacity 제한이 없다.
+`kStart / blockSize`로 block을 선택하고 `(context + J tile offset, block)` tag의
+row를 요청한다. Normal execution cache는 current/next row 두 entry를 유지한다.
+Current hit은 transfer 없이 reuse하고, next hit은 promote하며, miss는 demand
+response까지 execution을 보류한다. Current row가 준비되면 가능한 `b+1` row를
+prefetch한다. 실행 중인 row와 immediate lookahead row는 별도 immutable
+snapshot으로 보관한다. Context 변경과 reset은 cache entry를 무효화한다. Scale
+block 수에는 synthesis-time capacity 제한이 없다.
 
 SystolicArray partial은 VectorUnit으로 직접 전달된다. K-block partial을 먼저
 재결합하는 stage는 없다.
 
-## 8. Backpressure
+## 8. Backpressure 처리
 
 VectorUnit이 busy이면 Core는 다음 array result를 받지 않는다. SystolicEngine result FIFO가 가득 차면 `advanceArray` rule이 멈추며, InputSkew와 모든 PE가 함께 정지한다. 따라서 wavefront 내부 상대 timing은 유지된다.
 
@@ -245,9 +246,10 @@ WorkScheduler:   K fragment, scale block, accumulate-first selection
 IM2PCore:        tagged A/W/S/C channels, buffer/bank readiness, execution
 ```
 
-Full-matrix mode는 descriptor의 전체 M/N 범위를 즉시 scheduling한다. Async
-mode는 published stripe만 scheduling하며, 미공개 stripe 주소를 prefetch하지
-않는다. Host publication 가능 여부와 RTL FIFO readiness는 별도 상태다.
+Full-matrix mode는 descriptor의 전체 M/N 범위를 scheduler 내부에서 순차
+traversal하며 current work와 immediate lookahead 하나를 expose한다. Async mode는
+published stripe만 scheduling하며, 미공개 stripe 주소를 prefetch하지 않는다.
+Host publication 가능 여부와 RTL FIFO readiness는 별도 상태다.
 
 각 host request는 address, element count, tag를 가진다. Provider는 address를
 borrowed A/W/S/C view로 resolve하고 동일 tag로 응답한다. 최종 output row
@@ -306,7 +308,7 @@ latch한다. Execution이 drain될 때까지 이 snapshot은 immutable이므로 
 prefetch/response가 column별 staggered output에 섞일 수 없다. 마찬가지로 output
 write와 Accumulator update는 promotion 이후에만 허용된다.
 
-### Logical-cycle accounting
+### RTL logical cycle accounting
 
 Logical cycle은 positive edge 하나를 포함하는 RTL clock period 하나다. Reset
 edge는 counter를 0으로 초기화하고 logical time에 포함하지 않는다. Raw pulse는
@@ -340,7 +342,12 @@ publish-to-first-prepare cycles다. `current_stripe_completion_cycle`에서
 `lookahead_scale_requests`/`lookahead_scale_reuses`는 host fetch와 exact reuse를
 분리해 보고한다.
 
-이 timebase는 기능 RTL time뿐이다. DRAM/cache/scratchpad/DMA/interconnect, CPU
-execution, OS scheduling, clock frequency를 모델링하지 않고 host pointer access는
-zero-time이다. 따라서 CPU와 NPU의 common-time 비교, physical ns/GHz/Fmax 또는
-silicon 성능을 이 counter나 Verilator host runtime에서 도출할 수 없다.
+이 timebase는 기능 RTL time뿐이다. On-core scale cache와 resident weight-bank
+state는 기능적으로 모델링하지만 host/SoC DRAM, cache timing, scratchpad, DMA,
+interconnect, CPU execution, OS scheduling, clock frequency는 모델링하지 않는다.
+Host pointer access도 zero-time이다. 따라서 CPU와 NPU의 common-time 비교,
+physical ns/GHz/Fmax 또는 silicon 성능을 이 counter나 Verilator host runtime에서
+도출할 수 없다.
+
+코드 분석 순서와 작성 규칙은 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md), public
+simulator 계약은 [simulator 사용법](../sim/README.md)에서 확인한다.

@@ -56,7 +56,7 @@ M extent = rowCount, 1 <= rowCount <= arrayDim
 0으로 채운다. High-level address-driven 실행에서는 `MatmulScheduler`와
 `WorkScheduler`가 큰 M/N/K 문제를 여러 hardware execution으로 분할한다.
 
-### Column, physical vector lane, Accumulator bank
+### Column, physical vector lane, Accumulator bank 용어
 
 세 용어는 구분한다.
 
@@ -160,9 +160,11 @@ partialSums[column]
 
 ### Scale 선택은 Core runtime control
 
-Scale matrix 형상은 `ceil(K / B) × J`다. 전체 matrix는 host memory에 있고,
-RTL에는 current/next row만 존재한다. Multiply/Shift execution에서는
-metadata와 context를 설정한 뒤 RTL이 필요한 row를 요청한다.
+Scale matrix 형상은 `ceil(K / B) × J`다. 전체 matrix는 host memory에 있다.
+Normal execution cache는 current/next row 두 entry를 유지하며, 실행 중인 row와
+immediate lookahead row는 별도 immutable snapshot으로 보관한다.
+Multiply/Shift execution에서는 metadata와 context를 설정한 뒤 RTL이 필요한
+row를 요청한다.
 
 ```bsv
 configureScaling(blockSize, totalK, context)
@@ -194,7 +196,7 @@ Scale row 수에는 synthesis-time 제한이 없다. Row는 host view의
 padding한다. Context가 바뀌면 current/next cache를 무효화한다. Bypass는
 request나 matrix 없이 실행하며 cache를 변경하지 않는다.
 
-## Source tree
+## Source tree 구조
 
 ```text
 src/
@@ -271,7 +273,7 @@ stripe나 raw work 없이 condition variable에서 기다리는 host wall-clock 
 RTL clock도 진행되지 않는다. 따라서 host wait을 real CPU+NPU end-to-end cycle로
 해석하지 않는다.
 
-## Build
+## 빌드와 검증
 
 ```bash
 make check
@@ -376,8 +378,15 @@ route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 
 
 ## 문서
 
-- `docs/ARCHITECTURE.md`: 데이터·주소·제어·backpressure 흐름
-- `docs/VERIFICATION.md`: testbench 범위와 검증 상태
+- [Architecture](docs/ARCHITECTURE.md): 현재 RTL 및 simulator architecture
+- [코드 분석 가이드](docs/CODE_ANALYSIS_GUIDE.md): 코드 분석 순서와 작성 규칙
+- [검증 가이드](docs/VERIFICATION.md): testbench 범위와 검증 상태
+- [Simulator 사용법](sim/README.md): Rust simulator와 raw C ABI
+- [C++ frontend](frontend/README.md): Gemmini-compatible high-level frontend
+- [SRMD algorithm](ALGORITHM.md): residual GEMM compaction과 row packing
+
+코드 구조를 순서대로 분석하거나 문서화할 때는
+[코드 분석 가이드](docs/CODE_ANALYSIS_GUIDE.md)를 따른다.
 
 ## Address-driven full matrix와 stripe scheduling
 
@@ -487,10 +496,10 @@ preload/reuse가 모두 완료된 cycle이다.
 
 Lookahead timestamp는 matmul start 기준 RTL cycle number다.
 `lookahead_publish_cycle`은 두 번째 stripe publication이 RTL에 accept된 cycle이다.
-그 값에서
 `lookahead_first_activation_cycle`, `lookahead_first_weight_cycle`,
 `lookahead_weight_preload_cycle`, 또는 `lookahead_scale_cycle` 중 0이 아닌 가장
-이른 값을 빼면 publish-to-first-prepare cycles를 얻는다.
+이른 값에서 `lookahead_publish_cycle`을 빼면 publish-to-first-prepare cycles를
+얻는다.
 `lookahead_start_cycle - current_stripe_completion_cycle`은
 completion-to-next-start transition cycles다. `lookahead_weight_requests`는 host
 W fetch 수이고 `lookahead_weight_reuse_hits`는 exact resident-bank reuse 수다;

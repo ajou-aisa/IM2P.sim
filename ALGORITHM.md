@@ -1,8 +1,15 @@
-# SRMD-Based Residual GEMM with Compaction and Row Packing
+# 압축과 row packing을 사용하는 SRMD 기반 residual GEMM
 
-## 1. Problem
+> **구현 상태:** 이 문서는 SRMD residual GEMM 변환의 algorithm reference다.
+> 현재 IM2P.sim RTL, Rust simulator, C ABI, C++ frontend에는 SRMD decomposition,
+> compaction, row packing, radix-256 reconstruction이 구현되어 있지 않다. 현재
+> C++ frontend numerical execution은 `q8_h0`만 지원하며 `q8_h2`는
+> **Deprecated**다.
+> 현재 구현 범위는 [root README](README.md)에서 확인한다.
 
-For a residual stripe, we compute
+## 1. 문제
+
+Residual stripe에 대해 다음을 계산한다.
 
 [
 O_{\mathrm{RC}} = RQ_W,
@@ -12,29 +19,27 @@ R\in\mathbb Z_{32}^{M\times K},
 Q_W\in\mathbb Z_{8}^{K\times J},
 ]
 
-where (R) is a sparse signed INT32 residual matrix and (Q_W) is a
-signed INT8 weight matrix.
+여기서 (R)은 sparse signed INT32 residual matrix이고, (Q_W)는 signed INT8
+weight matrix다.
 
-Since the systolic array supports signed INT8 MACs, the INT32 residual
-matrix cannot be directly used as an input operand. We transform the
-original residual GEMM through four steps:
+SystolicArray는 signed INT8 MAC을 지원하므로 INT32 residual matrix를 input
+operand로 직접 사용할 수 없다. 원래 residual GEMM을 다음 네 단계로 변환한다.
 
-1. **Signed Radix-256 Matrix Decomposition (SRMD)** converts each INT32
-   residual value into signed INT8 digits.
-2. **Compaction** removes inactive (K) indices and all-zero digit rows.
-3. **Row Packing** places the remaining digit rows into one dense INT8
-   GEMM operand.
-4. **Radix-256 Reconstruction** maps the packed GEMM outputs back to their
-   original rows and combines them according to their digit positions.
+1. **Signed Radix-256 Matrix Decomposition(SRMD)**가 각 INT32 residual 값을
+   signed INT8 digit으로 변환한다.
+2. **Compaction**이 inactive (K) index와 all-zero digit row를 제거한다.
+3. **Row Packing**이 남은 digit row를 하나의 dense INT8 GEMM operand에 배치한다.
+4. **Radix-256 Reconstruction**이 packed GEMM output을 원래 row에 다시 매핑하고
+   digit position에 따라 결합한다.
 
 ---
 
 ## 2. Signed Radix-256 Matrix Decomposition
 
-### 2.1 Signed radix-256 digit extraction
+### 2.1 Signed radix-256 digit 추출
 
-SRMD represents a signed integer (x) as a sum of signed INT8 digits with
-radix (256=2^8):
+SRMD는 signed integer (x)를 radix (256=2^8)의 signed INT8 digit 합으로
+표현한다.
 
 [
 x=\sum_{p=0}^{P-1}256^p d_p,
@@ -42,16 +47,16 @@ x=\sum_{p=0}^{P-1}256^p d_p,
 d_p\in[-128,127].
 ]
 
-Here, (p) is the **digit index**, and (d_p) is the signed INT8 digit
-at radix position (p).
+여기서 (p)는 **digit index**이고, (d_p)는 radix position (p)의 signed INT8
+digit이다.
 
-Starting with
+다음에서 시작한다.
 
 [
 q_0=x,
 ]
 
-we first extract the low eight bits of (q_p):
+먼저 (q_p)의 low 8 bit를 추출한다.
 
 [
 u_p=q_p\bmod256,
@@ -59,7 +64,7 @@ u_p=q_p\bmod256,
 u_p\in[0,255].
 ]
 
-The unsigned byte (u_p) is then interpreted as a signed INT8 value:
+Unsigned byte (u_p)를 signed INT8 값으로 해석한다.
 
 [
 d_p=
@@ -69,13 +74,13 @@ u_p-256, & u_p\ge128.
 \end{cases}
 ]
 
-Equivalently,
+동일한 표현은 다음과 같다.
 
 [
 d_p=\operatorname{sext}_8(q_p[7:0]).
 ]
 
-After extracting (d_p), the remaining higher-order value is
+(d_p)를 추출한 뒤 남은 higher-order 값은 다음과 같다.
 
 [
 q_{p+1}
@@ -84,56 +89,54 @@ q_{p+1}
 \frac{q_p-d_p}{256}.
 ]
 
-Since (q_p-d_p) is exactly divisible by 256, no approximation is
-introduced. The process continues until
+(q_p-d_p)는 정확히 256으로 나누어지므로 approximation이 생기지 않는다. 다음
+조건까지 반복한다.
 
 [
 q_P=0.
 ]
 
-Thus,
+따라서 다음이 성립한다.
 
 [
 x=d_0+256d_1+256^2d_2+\cdots+256^{P-1}d_{P-1}.
 ]
 
-### 2.2 Why signed carry is required
+### 2.2 Signed carry가 필요한 이유
 
-This is not a simple unsigned byte split. A byte value larger than 127
-cannot be directly used by a signed INT8 MAC.
+이는 단순한 unsigned byte split이 아니다. 127보다 큰 byte 값은 signed INT8
+MAC에 직접 사용할 수 없다.
 
-For example,
+예를 들어 다음 값의 low byte는 (128)이지만
+(128\notin[-128,127])이다.
 
 [
 128
 ]
 
-has low byte (128), but (128\notin[-128,127]). SRMD interprets that
-byte as (-128) and propagates the difference to the next digit:
+SRMD는 해당 byte를 (-128)로 해석하고 차이를 next digit으로 전달한다.
 
 [
 128=-128+256(1),
 ]
 
-giving
+따라서 다음과 같다.
 
 [
 128\rightarrow[-128,;1].
 ]
 
-Likewise,
+마찬가지로,
 
 [
 -129=127+256(-1),
 ]
 
-and therefore
-
 [
 -129\rightarrow[127,;-1].
 ]
 
-Other examples are
+다른 예는 다음과 같다.
 
 [
 256\rightarrow[0,;1],
@@ -147,52 +150,44 @@ Other examples are
 65538\rightarrow[2,;0,;1],
 ]
 
-and
-
 [
 16777216\rightarrow[0,;0,;0,;1].
 ]
 
-The carry to the next radix position therefore ensures that **every
-generated digit remains a valid signed INT8 value** while preserving the
-original integer exactly.
+Next radix position으로 전달하는 carry는 원래 integer를 정확히 보존하면서 생성된
+모든 digit이 유효한 signed INT8 값으로 유지되게 한다.
 
-If an implementation supports at most (P_{\max}) digit planes, exact
-representation requires
+구현이 최대 (P_{\max}) digit plane만 지원한다면 exact representation에는 다음이
+필요하다.
 
 [
 q_{P_{\max}}=0.
 ]
 
-For example, a four-plane implementation requires (q_4=0).
+예를 들어 four-plane 구현은 (q_4=0)을 요구한다.
 
 ---
 
-## 3. Matrix Digit-Plane Construction
+## 3. Matrix digit-plane 구성
 
-The scalar decomposition is applied independently to every element
-(R(i,k)).
-
-Let
+Scalar decomposition을 모든 (R(i,k)) element에 독립적으로 적용한다.
 
 [
 d_p(R(i,k))
 ]
 
-denote the (p)th signed radix-256 digit of (R(i,k)). We construct a
-**digit-plane matrix**
+이는 (R(i,k))의 (p)번째 signed radix-256 digit이다. 다음 **digit-plane
+matrix**를 구성한다.
 
 [
 D_p(i,k)=d_p(R(i,k)).
 ]
 
-Hence,
+따라서,
 
 [
 D_p\in\mathbb Z_8^{M\times K}
 ]
-
-and
 
 [
 R
@@ -201,11 +196,10 @@ R
 \sum_{p=0}^{P-1}256^pD_p.
 ]
 
-Importantly, SRMD itself does **not** change the matrix coordinates:
-every digit generated from (R(i,k)) initially remains at the same
-((i,k)) position in its corresponding (D_p).
+SRMD 자체는 matrix coordinate를 변경하지 않는다. (R(i,k))에서 생성된 각
+digit은 처음에 해당 (D_p)의 동일한 ((i,k)) position에 남는다.
 
-For example, consider
+예를 들어 다음 matrix를 사용한다.
 
 [
 R=
@@ -216,7 +210,7 @@ R=
 \end{bmatrix}.
 ]
 
-SRMD produces
+SRMD는 다음을 생성한다.
 
 [
 D_0=
@@ -245,8 +239,6 @@ D_2=
 \end{bmatrix},
 ]
 
-and
-
 [
 D_3=
 \begin{bmatrix}
@@ -256,7 +248,7 @@ D_3=
 \end{bmatrix}.
 ]
 
-These matrices satisfy
+이 matrix는 다음을 만족한다.
 
 [
 R=D_0+256D_1+256^2D_2+256^3D_3.
@@ -264,18 +256,16 @@ R=D_0+256D_1+256^2D_2+256^3D_3.
 
 ---
 
-# 4. Compaction
+## 4. Compaction
 
-SRMD converts the element precision but preserves all original matrix
-coordinates. Because the residual matrix is sparse, many of those
-coordinates need not participate in GEMM.
+SRMD는 element precision을 변환하지만 원래 matrix coordinate를 모두 유지한다.
+Residual matrix가 sparse이므로 많은 coordinate는 GEMM에 참여할 필요가 없다.
 
-Compaction removes redundancy along both the (K) dimension and the
-digit-row dimension.
+Compaction은 (K) dimension과 digit-row dimension의 redundancy를 제거한다.
 
-## 4.1 K-index compaction
+### 4.1 K-index compaction
 
-Define the (K) indices active in at least one digit plane:
+하나 이상의 digit plane에서 active인 (K) index를 정의한다.
 
 [
 \mathcal U
@@ -289,15 +279,12 @@ D_p(i,k)\neq0
 \right}.
 ]
 
-Let
-
 [
 H=|\mathcal U|.
 ]
 
-Only these (K) indices can contribute to the residual GEMM.
-
-The digit planes are therefore compacted along their (K) columns,
+이 (K) index만 residual GEMM에 기여할 수 있다. Digit plane을 (K) column
+방향으로 compact한다.
 
 [
 \widetilde D_p
@@ -307,7 +294,7 @@ D_p[:,\mathcal U]
 \in\mathbb Z_8^{M\times H},
 ]
 
-while the corresponding (K) rows are selected from the weight matrix,
+대응하는 (K) row를 weight matrix에서 선택한다.
 
 [
 \widetilde Q_W
@@ -317,15 +304,13 @@ Q_W[\mathcal U,:]
 \in\mathbb Z_8^{H\times J}.
 ]
 
-For the example above,
+위 예에서는 다음과 같다.
 
 [
 \mathcal U={k_1,k_2,k_4},
 ]
 
-so (K) is reduced from 5 to 3.
-
-The compacted digit planes are
+(K)는 5에서 3으로 줄어든다.
 
 [
 \widetilde D_0=
@@ -363,30 +348,24 @@ The compacted digit planes are
 \end{bmatrix}.
 ]
 
-The same ordered (K)-index set is used for both
-(\widetilde D_p) and (\widetilde Q_W), preserving GEMM alignment.
+동일한 ordered (K)-index set을 (\widetilde D_p)와 (\widetilde Q_W)에 사용해
+GEMM alignment를 보존한다.
 
----
+### 4.2 Digit-row compaction
 
-## 4.2 Digit-row compaction
-
-A compacted digit plane may still contain rows that are entirely zero.
-
-Such a row satisfies
+Compacted digit plane에도 전체가 0인 row가 남을 수 있다.
 
 [
 \widetilde D_p(i,:)=0
 ]
 
-and consequently
+따라서,
 
 [
 \widetilde D_p(i,:)\widetilde Q_W=0.
 ]
 
-It can therefore be omitted from the GEMM.
-
-Define the set of active **digit rows**
+이 row는 GEMM에서 생략할 수 있다. Active **digit row** set을 정의한다.
 
 [
 \mathcal A
@@ -400,7 +379,7 @@ Define the set of active **digit rows**
 \right}.
 ]
 
-For the example,
+예에서는 다음과 같다.
 
 [
 \mathcal A=
@@ -412,20 +391,19 @@ For the example,
 }.
 ]
 
-Notice that a row is identified by the pair
+Row는 (i)만이 아니라 다음 pair로 식별한다.
 
 [
 (p,i),
 ]
 
-not only by (i). The same original residual row may be active at several
-different radix positions.
+같은 원래 residual row가 여러 radix position에서 active일 수 있다.
 
 ---
 
-# 5. Row Packing
+## 5. Row packing
 
-Let
+Active digit row의 ordered list를 다음과 같이 둔다.
 
 [
 \Gamma=
@@ -437,21 +415,16 @@ Let
 \bigr)
 ]
 
-be an ordered list of the active digit rows, where
-
 [
 N=|\mathcal A|.
 ]
 
-(\Gamma) serves as the **packed-row map** used later for reconstruction.
-
-The active digit rows are placed consecutively into
+(\Gamma)는 reconstruction에 사용하는 **packed-row map**이다. Active digit
+row를 다음 matrix에 연속 배치한다.
 
 [
 A_{\mathrm{pack}}\in\mathbb Z_8^{N\times H}
 ]
-
-such that
 
 [
 A_{\mathrm{pack}}[n,:]
@@ -460,7 +433,7 @@ A_{\mathrm{pack}}[n,:]
 \widetilde D_{p_n}[i_n,:].
 ]
 
-For the running example,
+예에서는 다음과 같다.
 
 [
 A_{\mathrm{pack}}
@@ -477,19 +450,20 @@ A_{\mathrm{pack}}
 \in\mathbb Z_8^{6\times3}.
 ]
 
-Without digit-row compaction, four (3\times3) digit planes would require
+Digit-row compaction이 없다면 four (3\times3) digit plane은 conventional row
+stacking 뒤 다음 row 수를 요구한다.
 
 [
 12\times3
 ]
 
-rows after conventional row stacking. Row packing reduces this example to
+Row packing은 이 예를 다음 크기로 줄인다.
 
 [
 6\times3.
 ]
 
-For compact visualization, the figure may display
+간결한 시각화에서는 다음 transpose를 표시할 수 있다.
 
 [
 A_{\mathrm{pack}}^T\in\mathbb Z_8^{3\times6}.
@@ -497,10 +471,9 @@ A_{\mathrm{pack}}^T\in\mathbb Z_8^{3\times6}.
 
 ---
 
-# 6. Residual GEMM
+## 6. Residual GEMM
 
-The transformed residual compensation can now be executed as a standard
-signed INT8 GEMM:
+변환된 residual compensation은 standard signed INT8 GEMM으로 실행할 수 있다.
 
 [
 C_{\mathrm{pack}}
@@ -509,15 +482,13 @@ C_{\mathrm{pack}}
 A_{\mathrm{pack}}\widetilde Q_W,
 ]
 
-where
-
 [
 C_{\mathrm{pack}}
 \in
 \mathbb Z_{32}^{N\times J}.
 ]
 
-Each packed output row preserves the mapping stored in (\Gamma):
+각 packed output row는 (\Gamma)의 mapping을 보존한다.
 
 [
 C_{\mathrm{pack}}[n,:]
@@ -526,8 +497,8 @@ C_{\mathrm{pack}}[n,:]
 \widetilde D_{p_n}[i_n,:]\widetilde Q_W.
 ]
 
-The systolic array therefore does not need to understand the original
-INT32 representation or the digit structure. It only performs an ordinary
+따라서 SystolicArray는 원래 INT32 representation이나 digit structure를 알 필요
+없이 다음 GEMM만 수행한다.
 
 [
 \mathrm{INT8}\times\mathrm{INT8}
@@ -535,37 +506,29 @@ INT32 representation or the digit structure. It only performs an ordinary
 \mathrm{INT32}
 ]
 
-GEMM.
-
 ---
 
-# 7. Radix-256 Reconstruction
+## 7. Radix-256 reconstruction
 
-After GEMM, output rows no longer appear at their original (M)-row
-positions because the active digit rows were packed consecutively.
-
-The packed-row map
+GEMM 뒤 active digit row가 연속 배치되어 있으므로 output row는 원래 (M)-row
+position과 다르다.
 
 [
 \Gamma[n]=(p_n,i_n)
 ]
 
-provides the information required to reconstruct the original output.
+이 packed-row map이 원래 output reconstruction에 필요한 정보를 제공한다.
 
-For each packed output row (n),
+1. (i_n)은 원래 output row를 지정한다.
+2. (p_n)은 radix-256 place value를 지정한다.
 
-1. (i_n) specifies the original output row,
-2. (p_n) specifies its radix-256 place value.
-
-Thus, each packed output contributes
+각 packed output은 원래 output row (i_n)에 다음 값을 기여한다.
 
 [
 256^{p_n}C_{\mathrm{pack}}[n,:]
 ]
 
-to original output row (i_n).
-
-The reconstruction is therefore
+따라서 reconstruction은 다음과 같다.
 
 [
 O_{\mathrm{RC}}[i,:]
@@ -576,7 +539,7 @@ O_{\mathrm{RC}}[i,:]
 C_{\mathrm{pack}}[n,:].
 ]
 
-Equivalently,
+동일한 표현은 다음과 같다.
 
 [
 \begin{aligned}
@@ -598,7 +561,7 @@ R[i,:]Q_W.
 \end{aligned}
 ]
 
-Hence,
+따라서,
 
 [
 \boxed{
@@ -606,13 +569,16 @@ O_{\mathrm{RC}}=RQ_W
 }
 ]
 
-and the transformation is exact.
+이 equality는 decomposition과 reconstruction의 mathematical integer
+arithmetic에 대해 exact하다. Fixed-width INT32 GEMM output이나 reconstruction을
+사용하는 구현에서는 overflow가 없다는 bound 또는 명시된 wrapping semantics가
+추가로 필요하다.
 
 ---
 
-# 8. DIM=16 Physical Execution
+## 8. DIM16/DIM32 physical execution
 
-After compaction and row packing, the logical GEMM dimensions are
+Compaction과 row packing 뒤 logical GEMM dimension은 다음과 같다.
 
 [
 N\times H
@@ -620,30 +586,27 @@ N\times H
 H\times J.
 ]
 
-For a DIM(=16) systolic array, the number of physical GEMM tiles is
+Array dimension을 (D)라 하면 physical GEMM tile 수는 다음과 같다.
 
 [
 N_{\mathrm{tiles}}
 =
 
-\left\lceil\frac{N}{16}\right\rceil
-\left\lceil\frac{H}{16}\right\rceil
-\left\lceil\frac{J}{16}\right\rceil.
+\left\lceil\frac{N}{D}\right\rceil
+\left\lceil\frac{H}{D}\right\rceil
+\left\lceil\frac{J}{D}\right\rceil.
 ]
 
-This differs from plane-wise row stacking, where an active digit plane
-retains all (M) rows regardless of how many are nonzero.
+IM2P.sim의 현재 generated INT8 target에서는 (D=16) 또는 (D=32)다. 이는
+active digit plane이 all-zero가 아닌 row 수와 관계없이 모든 (M) row를 유지하는
+plane-wise row stacking과 다르다.
 
-With row packing, active digit rows from **different digit planes** can
-occupy the same physical (M) tile.
-
-Thus, compaction reduces both:
+Row packing에서는 서로 다른 digit plane의 active digit row가 같은 physical
+(M) tile에 들어갈 수 있다. 따라서 compaction은 다음 두 dimension을 줄인다.
 
 [
 K \rightarrow H
 ]
-
-and
 
 [
 PM \rightarrow N.
