@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::rc::Rc;
 
 use crate::Im2pSimulator;
@@ -49,6 +50,40 @@ pub struct StripeWorkDescC {
     pub stripe_count: usize,
     pub vector_op: u8,
     pub work_context: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProviderC {
+    pub context: *mut c_void,
+    pub read_weight: Option<crate::simulator::ReadProvider>,
+    pub read_scale: Option<crate::simulator::ReadProvider>,
+    pub write_output: Option<crate::simulator::WriteProvider>,
+}
+
+#[repr(C)]
+pub struct MatmulDescV1 {
+    pub version: u32,
+    pub legacy: MatmulDesc,
+    pub provider: ProviderC,
+}
+
+#[repr(C)]
+pub struct StripeWorkDescV1 {
+    pub version: u32,
+    pub legacy: StripeWorkDescC,
+    pub provider: ProviderC,
+}
+
+impl From<ProviderC> for crate::simulator::MemoryProvider {
+    fn from(value: ProviderC) -> Self {
+        Self {
+            context: value.context,
+            read_weight: value.read_weight,
+            read_scale: value.read_scale,
+            write_output: value.write_output,
+        }
+    }
 }
 
 #[repr(C)]
@@ -136,4 +171,5 @@ pub struct StreamBox {
     pub output_stride: usize,
     pub columns: usize,
     pub reduction: usize,
+    pub failed: bool,
 }

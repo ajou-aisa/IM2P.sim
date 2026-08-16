@@ -32,6 +32,7 @@ pub(super) fn status_for_error(error: crate::SimError) -> i32 {
         | RtlNotReady { .. }
         | NoPendingActivation
         | NoPendingOutput
+        | ProviderFailure
         | Timeout { .. } => -1,
     }
 }
@@ -85,6 +86,44 @@ pub(super) unsafe fn execute_full(
     )
 }
 
+pub(super) unsafe fn execute_full_provider(
+    simulator: &mut Im2pSimulator,
+    desc: &MatmulDesc,
+    provider: crate::simulator::MemoryProvider,
+) -> Result<WorkStats, crate::SimError> {
+    let op = vector_op(desc.vector_op).ok_or(crate::SimError::InvalidDimension)?;
+    if desc.activations.is_null() {
+        return Err(crate::SimError::InvalidDimension);
+    }
+    let activation_len = matrix_len(desc.m, desc.k, desc.activation_row_stride, 1)?;
+    let activations = slice::from_raw_parts(desc.activations, activation_len);
+    let activations = MatrixView::new(activations, desc.m, desc.k, desc.activation_row_stride)?;
+    simulator.execute_matmul_provider(
+        activations,
+        desc.m,
+        desc.n,
+        desc.k,
+        desc.weight_row_stride,
+        desc.output_row_stride,
+        desc.block_size,
+        op,
+        desc.work_context,
+        MatmulLayout {
+            tile_i_rows: if desc.tile_i_rows == 0 {
+                simulator.dim()
+            } else {
+                desc.tile_i_rows
+            },
+            tile_j_columns: if desc.tile_j_columns == 0 {
+                simulator.dim()
+            } else {
+                desc.tile_j_columns
+            },
+        },
+        provider,
+    )
+}
+
 pub(super) unsafe fn service_stream(stream: &mut StreamBox) -> Result<(), crate::SimError> {
     let job = stream
         .job
@@ -103,17 +142,19 @@ pub(super) unsafe fn service_stream(stream: &mut StreamBox) -> Result<(), crate:
         );
         job.stage_activation_row(row, values)?;
     }
-    if let Some((row, column)) = job.pending_output_region() {
-        if column >= stream.columns {
-            return Err(crate::SimError::InvalidLayout);
+    if !job.provider_handles_output() {
+        if let Some((row, column)) = job.pending_output_region() {
+            if column >= stream.columns {
+                return Err(crate::SimError::InvalidLayout);
+            }
+            let values = job.take_output_region(row, column)?;
+            ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                stream.output.add(row * stream.output_stride + column),
+                values.len().min(stream.columns - column),
+            );
+            job.stage_output_row(row)?;
         }
-        let values = job.take_output_region(row, column)?;
-        ptr::copy_nonoverlapping(
-            values.as_ptr(),
-            stream.output.add(row * stream.output_stride + column),
-            values.len().min(stream.columns - column),
-        );
-        job.stage_output_row(row)?;
     }
     Ok(())
 }
@@ -123,6 +164,7 @@ pub(super) fn vector_op(value: u8) -> Option<VectorOp> {
         0 => Some(VectorOp::Bypass),
         1 => Some(VectorOp::Multiply),
         2 => Some(VectorOp::Shift),
+        3 => Some(VectorOp::External),
         _ => None,
     }
 }

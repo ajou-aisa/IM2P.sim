@@ -52,6 +52,7 @@ EXPECTED_TESTS = {
     "TbIM2PCoreActivationBuffer.bsv",
     "TbIM2PCoreMatrix.bsv",
     "TbIM2PCoreMatrixScale.bsv",
+    "TbIM2PCoreExternal.bsv",
     "TbIM2PLookahead.bsv",
     "TbIM2PLookaheadScale.bsv",
     "TbMatmulLookahead.bsv",

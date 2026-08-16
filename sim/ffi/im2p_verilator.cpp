@@ -408,7 +408,7 @@ extern "C" int im2p_start_execution(
         || row_count == 0
         || k_count > kDim
         || k_count == 0
-        || vector_op > 2) {
+            || vector_op > 3) {
         return 0;
     }
     simulator->top->startExecution_command =
@@ -491,7 +491,7 @@ extern "C" int im2p_start_matmul(
     if (handle == nullptr || descriptor == nullptr) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
-    if (descriptor->mode > 1 || descriptor->vector_op > 2
+    if (descriptor->mode > 1 || descriptor->vector_op > 3
         || descriptor->row_count == 0 || descriptor->column_count == 0
         || descriptor->reduction_count == 0
         || descriptor->tile_i_rows == 0 || descriptor->tile_i_rows > kDim

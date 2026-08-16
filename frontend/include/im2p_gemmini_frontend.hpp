@@ -76,9 +76,10 @@ void disable_completion_gate(Run &) noexcept;
 
 // execute() copies the selected scalar values and pointer identities documented
 // in frontend/README.md; it does not copy the whole args object or any backing
-// storage. For executable q8_h0 work, B and submitted A bytes remain borrowed,
-// valid, and immutable, while C remains borrowed, valid, and exclusively
-// writable by this Run until fence() returns or the Run is destroyed. Pipeline
+// storage. For executable work, submitted A and selected native weight/scale
+// storage remain borrowed, valid, and immutable through fence/destruction. The
+// q8_h0 C or native f_out remains borrowed, valid, and exclusively writable by
+// this Run over its logical region. Pipeline
 // A rows may be produced before their successful submit_stripe() call. Calls on
 // one Run are internally synchronized.
 class Run {

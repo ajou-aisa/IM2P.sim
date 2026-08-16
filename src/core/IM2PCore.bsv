@@ -344,11 +344,16 @@ module mkIM2PCore(IM2PCoreIfc#(
     Reg#(MatrixExtent) matrixScaleBlockSizeReg <- mkReg(0);
     Reg#(ScaleContext) matrixScaleContextReg <- mkReg(0);
     Reg#(Bool) matrixAccumulateFirstReg <- mkReg(False);
+    Reg#(Bool) matrixBlockOutputReg <- mkReg(False);
+    Reg#(HostAddress) matrixOutputBlockStrideReg <- mkReg(0);
     Reg#(UInt#(32)) nextStripeIdReg <- mkReg(0);
 
     Reg#(MatrixExtent) matrixFragmentKStartReg <- mkReg(0);
     Reg#(BoundedCount#(arrayDim)) matrixFragmentKCountReg <- mkReg(0);
     Reg#(Bool) matrixFragmentAccumulateReg <- mkReg(False);
+    Reg#(Bool) matrixFragmentEndsBlockReg <- mkReg(False);
+    Reg#(ScaleBlockIndex) matrixFragmentBlockIndexReg <- mkReg(0);
+    Reg#(Bool) matrixFinalBlockReg <- mkReg(False);
     Reg#(Bool) matrixFragmentBankReg <- mkReg(False);
 
     Reg#(Bool) weightLoadingReg <- mkReg(False);
@@ -591,6 +596,15 @@ module mkIM2PCore(IM2PCoreIfc#(
         return base + truncate(offset);
     endfunction
 
+    function HostAddress matrixBlockAddress(
+        HostAddress base,
+        ScaleBlockIndex block,
+        HostAddress blockStride
+    );
+        UInt#(96) offset = zeroExtend(block) * zeroExtend(blockStride);
+        return base + truncate(offset);
+    endfunction
+
     rule countCycles;
         cycleReg <= cycleReg + 1;
     endrule
@@ -619,7 +633,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         lookaheadScaleValidReg <= False;
         workScheduler.prepareLookahead(matrixKOriginReg, work.reductionCount,
             matrixScaleBlockSizeReg, vectorOpUsesScale(work.vectorOp),
-            matrixAccumulateFirstReg);
+            matrixAccumulateFirstReg, work.vectorOp == VectorExternal);
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1)
             lookaheadActivationValid[row] <= False;
     endrule
@@ -966,7 +980,8 @@ module mkIM2PCore(IM2PCoreIfc#(
         end
         else begin
             workScheduler.start(matrixKOriginReg, work.reductionCount,
-                matrixScaleBlockSizeReg, usesScale, matrixAccumulateFirstReg);
+                matrixScaleBlockSizeReg, usesScale, matrixAccumulateFirstReg,
+                work.vectorOp == VectorExternal);
         end
         if (promotePrepared) begin
             lookaheadPreparedReg <= False;
@@ -1031,6 +1046,8 @@ module mkIM2PCore(IM2PCoreIfc#(
         matrixFragmentKStartReg <= kStart;
         matrixFragmentKCountReg <= kCount;
         matrixFragmentAccumulateReg <= workScheduler.fragmentAccumulate;
+        matrixFragmentEndsBlockReg <= workScheduler.fragmentEndsBlock;
+        matrixFragmentBlockIndexReg <= workScheduler.fragmentBlockIndex;
         matrixFragmentBankReg <= targetBank;
         workScheduler.acceptFragment;
 
@@ -1434,14 +1451,26 @@ module mkIM2PCore(IM2PCoreIfc#(
     rule continueMatrixFragments (
         matrixStateReg == MatrixFinishFragment
         && workScheduler.fragmentValid
+        && !(matrixBlockOutputReg && matrixFragmentEndsBlockReg)
     );
         matrixStateReg <= MatrixWaitFragment;
     endrule
 
-    rule beginMatrixWriteback (
+    rule beginFinalMatrixWriteback (
         matrixStateReg == MatrixFinishFragment && workScheduler.done
     );
         workScheduler.acknowledge;
+        matrixFinalBlockReg <= True;
+        outputRowReg <= 0;
+        matrixStateReg <= MatrixWriteOutput;
+    endrule
+
+    rule beginIntermediateMatrixWriteback (
+        matrixStateReg == MatrixFinishFragment
+        && matrixBlockOutputReg && matrixFragmentEndsBlockReg
+        && workScheduler.fragmentValid
+    );
+        matrixFinalBlockReg <= False;
         outputRowReg <= 0;
         matrixStateReg <= MatrixWriteOutput;
     endrule
@@ -1452,8 +1481,15 @@ module mkIM2PCore(IM2PCoreIfc#(
         && zeroExtend(outputRowReg) < matrixWorkReg.iCount
     );
         HostRequestTag tag = matrixTag(outputTagSequenceReg);
+        HostAddress blockBase = matrixBlockOutputReg
+            ? matrixBlockAddress(
+                matrixWorkReg.outputBase,
+                matrixFragmentBlockIndexReg,
+                matrixOutputBlockStrideReg
+            )
+            : matrixWorkReg.outputBase;
         HostAddress address = matrixRowAddress(
-            matrixWorkReg.outputBase,
+            blockBase,
             zeroExtend(outputRowReg),
             matrixWorkReg.outputRowStride
         );
@@ -1726,6 +1762,10 @@ module mkIM2PCore(IM2PCoreIfc#(
         matrixScaleBlockSizeReg <= scaleBlockSize;
         matrixScaleContextReg <= scaleContext;
         matrixAccumulateFirstReg <= accumulateFirstFragment;
+        matrixBlockOutputReg <= vectorOp == VectorExternal;
+        UInt#(96) outputBlockStride =
+            zeroExtend(rowCount) * zeroExtend(outputRowStride);
+        matrixOutputBlockStrideReg <= truncate(outputBlockStride);
         matrixStartCycleReg <= cycleReg;
         lookaheadPublishCycleReg <= 0;
         lookaheadFirstActivationCycleReg <= 0;
@@ -2021,11 +2061,16 @@ module mkIM2PCore(IM2PCoreIfc#(
         outputWriteResponsesReg <= outputWriteResponsesReg + 1;
 
         if (zeroExtend(outputRowReg) + 1 == matrixWorkReg.iCount) begin
-            matmulScheduler.completeWork;
-            if (matmulScheduler.lookaheadValid)
-                currentStripeCompletionCycleReg <= matrixCycle;
-            matmulWorksCompletedReg <= matmulWorksCompletedReg + 1;
-            matrixStateReg <= MatrixWaitSchedulerDone;
+            if (matrixFinalBlockReg) begin
+                matmulScheduler.completeWork;
+                if (matmulScheduler.lookaheadValid)
+                    currentStripeCompletionCycleReg <= matrixCycle;
+                matmulWorksCompletedReg <= matmulWorksCompletedReg + 1;
+                matrixStateReg <= MatrixWaitSchedulerDone;
+            end
+            else begin
+                matrixStateReg <= MatrixWaitFragment;
+            end
         end
         else begin
             outputRowReg <= outputRowReg + 1;

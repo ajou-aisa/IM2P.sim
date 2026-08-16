@@ -487,15 +487,24 @@ Numerical route는 current source의 classification을 사용한다. 현재 문�
 최소한 다음 상태를 일관되게 유지한다.
 
 ```text
-q8_h0
+q8_0_unpacked_to_h1, q8_h0, q8_h1, q8_hp1
     supported
+
+q8_channel, q8_channel_dense_sidecar
+    supported
+    RTL VectorBypass
+    channel scale은 host output에서 한 번 적용
 
 q8_h2
     Deprecated
+
+q8_hp2
+    Unsupported
 ```
 
-다른 route도 현재 source와 tests에서 상태를 확인한 뒤 쓴다. `q8_h2`를 향후
-지원이나 일시 미지원으로 표현하지 않는다.
+Native/provider route가 전체 tensor materialization 없이 요청된 logical fragment를
+제공하고 RTL scheduling을 유지하는지 확인한다. `q8_h2`를 향후 지원이나 일시
+미지원으로 표현하지 않으며 `q8_hp2`와 같은 상태로 합치지 않는다.
 
 ### 3.20 Tests
 

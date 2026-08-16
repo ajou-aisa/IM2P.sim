@@ -46,10 +46,14 @@ typedef struct {
 //
 // VectorShift
 //     scale을 signed exponent로 해석해 좌/우 shift한다.
+//
+// VectorExternal
+//     scale sideband와 block identity는 사용하지만 partial은 변경하지 않는다.
 typedef enum {
     VectorBypass,
     VectorMultiply,
-    VectorShift
+    VectorShift,
+    VectorExternal
 } VectorOp deriving (Bits, Eq, FShow);
 
 // 선택한 연산이 scale sideband를 실제로 사용하는지 반환한다.

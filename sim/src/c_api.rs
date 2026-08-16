@@ -8,8 +8,12 @@ mod helpers;
 mod stream;
 mod types;
 
-use helpers::{execute_full, status_for_error, write_extended_stats, write_stats};
-use types::{MatmulDesc, WorkStatsC, WorkStatsExtendedC};
+use helpers::{
+    execute_full, execute_full_provider, status_for_error, write_extended_stats, write_stats,
+};
+use types::{MatmulDesc, MatmulDescV1, WorkStatsC, WorkStatsExtendedC};
+
+const PROVIDER_VERSION_1: u32 = 1;
 
 pub struct SimBox {
     pub(super) simulator: Rc<RefCell<Option<Im2pSimulator>>>,
@@ -60,6 +64,62 @@ pub unsafe extern "C" fn im2p_execute_matmul_extended(
             0
         }
         Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_execute_matmul_ex(
+    sim: *mut SimBox,
+    descriptor: *const MatmulDescV1,
+    stats: *mut WorkStatsC,
+) -> i32 {
+    let (Some(owner), Some(desc)) = (sim.as_mut(), descriptor.as_ref()) else {
+        return -1;
+    };
+    if desc.version != PROVIDER_VERSION_1 {
+        return -4;
+    }
+    let mut state = owner.simulator.borrow_mut();
+    let Some(simulator) = state.as_mut() else {
+        return -3;
+    };
+    match execute_full_provider(simulator, &desc.legacy, desc.provider.into()) {
+        Ok(value) => {
+            write_stats(stats, value);
+            0
+        }
+        Err(error) => {
+            simulator.reset();
+            status_for_error(error)
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_execute_matmul_extended_ex(
+    sim: *mut SimBox,
+    descriptor: *const MatmulDescV1,
+    stats: *mut WorkStatsExtendedC,
+) -> i32 {
+    let (Some(owner), Some(desc)) = (sim.as_mut(), descriptor.as_ref()) else {
+        return -1;
+    };
+    if desc.version != PROVIDER_VERSION_1 {
+        return -4;
+    }
+    let mut state = owner.simulator.borrow_mut();
+    let Some(simulator) = state.as_mut() else {
+        return -3;
+    };
+    match execute_full_provider(simulator, &desc.legacy, desc.provider.into()) {
+        Ok(value) => {
+            write_extended_stats(stats, value);
+            0
+        }
+        Err(error) => {
+            simulator.reset();
+            status_for_error(error)
+        }
     }
 }
 

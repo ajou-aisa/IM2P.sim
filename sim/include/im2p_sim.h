@@ -29,6 +29,8 @@ enum {
     IM2P_VECTOR_BYPASS = 0,
     IM2P_VECTOR_MULTIPLY = 1,
     IM2P_VECTOR_SHIFT = 2,
+    IM2P_VECTOR_EXTERNAL = 3,
+    IM2P_PROVIDER_VERSION_1 = 1,
 };
 
 /*
@@ -83,6 +85,41 @@ typedef struct {
     uint8_t vector_op;
     uint64_t work_context;
 } im2p_stripe_work_desc_t;
+
+typedef int (*im2p_read_weight_fn)(
+    void *context, size_t row, size_t column, size_t count, int8_t *out
+);
+typedef int (*im2p_read_scale_fn)(
+    void *context, size_t row, size_t column, size_t count, int8_t *out
+);
+typedef int (*im2p_write_output_fn)(
+    void *context,
+    size_t block,
+    size_t row,
+    size_t column,
+    size_t count,
+    const int32_t *values
+);
+
+typedef struct {
+    void *context;
+    im2p_read_weight_fn read_weight;
+    im2p_read_scale_fn read_scale;
+    im2p_write_output_fn write_output;
+} im2p_provider_t;
+
+/* Version 1 embeds the complete legacy descriptor without changing its ABI. */
+typedef struct {
+    uint32_t version;
+    im2p_matmul_desc_t legacy;
+    im2p_provider_t provider;
+} im2p_matmul_desc_v1_t;
+
+typedef struct {
+    uint32_t version;
+    im2p_stripe_work_desc_t legacy;
+    im2p_provider_t provider;
+} im2p_stripe_work_desc_v1_t;
 
 /*
  * `activations` remains caller-owned and must remain readable until matching
@@ -170,6 +207,16 @@ int im2p_execute_matmul_extended(
     const im2p_matmul_desc_t *descriptor,
     im2p_work_stats_extended_t *stats
 );
+int im2p_execute_matmul_ex(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_v1_t *descriptor,
+    im2p_work_stats_t *stats
+);
+int im2p_execute_matmul_extended_ex(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_v1_t *descriptor,
+    im2p_work_stats_extended_t *stats
+);
 /* The returned stream remains valid if `sim` is destroyed. */
 im2p_stream_t *im2p_begin_striped_matmul(
     im2p_sim_t *sim,
@@ -178,6 +225,11 @@ im2p_stream_t *im2p_begin_striped_matmul(
 int im2p_begin_striped_matmul_ex(
     im2p_sim_t *sim,
     const im2p_stripe_work_desc_t *descriptor,
+    im2p_stream_t **stream
+);
+int im2p_begin_striped_matmul_v1_ex(
+    im2p_sim_t *sim,
+    const im2p_stripe_work_desc_v1_t *descriptor,
     im2p_stream_t **stream
 );
 int im2p_publish_stripe(

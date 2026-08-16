@@ -371,10 +371,14 @@ route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 
 | route | 상태 |
 |---|---|
 | `q8_h0` | 지원, raw-compatible numerical execution |
-| `q8_h1`, `q8_hp1`, `q8_hp2` | metadata 인식, numerical execution 미지원 |
-| `q8_channel`, `q8_channel_dense_sidecar` | metadata 인식, numerical execution 미지원 |
-| `q8_0_unpacked_to_h1` | metadata 인식, numerical execution 미지원 |
+| `q8_0_unpacked_to_h1`, `q8_h1`, `q8_hp1` | 지원, provider 기반 numerical execution |
+| `q8_channel`, `q8_channel_dense_sidecar` | 지원, RTL `VectorBypass` 이후 host output에서 channel scale을 한 번 적용 |
 | `q8_h2` | **Deprecated**; numerical fallback 없이 `q8_h2 is deprecated` 반환 |
+| `q8_hp2` | **Unsupported**; numerical fallback 없이 `q8_hp2 is unsupported` 반환 |
+
+Provider route는 요청된 logical fragment만 native storage에서 읽는다. 전체 weight
+tensor를 unpack, transpose 또는 materialize하지 않으며 M/N tile, K fragment,
+block boundary와 accumulate 결정은 계속 RTL scheduler가 소유한다.
 
 ## 문서
 

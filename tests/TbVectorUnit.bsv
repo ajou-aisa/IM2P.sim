@@ -8,15 +8,16 @@ import Types::*;
 import VectorUnit::*;
 
 
-function VectorOp operationFor(UInt#(2) index);
+function VectorOp operationFor(UInt#(3) index);
     case (index)
         0: return VectorBypass;
         1: return VectorMultiply;
-        default: return VectorShift;
+        2: return VectorShift;
+        default: return VectorExternal;
     endcase
 endfunction
 
-function Vector#(4, Bool) validsFor(UInt#(2) index);
+function Vector#(4, Bool) validsFor(UInt#(3) index);
     case (index)
         // Bypass는 네 column을 모두 처리한다.
         0: return replicate(True);
@@ -25,24 +26,29 @@ function Vector#(4, Bool) validsFor(UInt#(2) index);
         1: return vector4(True, False, True, False);
 
         // Shift는 첫 group 전체를 Invalid로 두어 empty-group 처리도 검증한다.
-        default: return vector4(False, False, True, False);
+        2: return vector4(False, False, True, False);
+
+        // External은 scale sideband가 있어도 partial을 그대로 통과시킨다.
+        default: return replicate(True);
     endcase
 endfunction
 
-function Vector#(4, Int#(8)) scaleFor(UInt#(2) index);
+function Vector#(4, Int#(8)) scaleFor(UInt#(3) index);
     case (index)
         // Bypass에서도 non-zero scale을 넣어 실제로 무시되는지 확인한다.
         0: return vector4(7, 7, 7, 7);
         1: return vector4(2, -3, 4, -5);
-        default: return vector4(1, -1, 2, -2);
+        2: return vector4(1, -1, 2, -2);
+        default: return vector4(99, -99, 7, -7);
     endcase
 endfunction
 
-function Vector#(4, Int#(32)) expectedFor(UInt#(2) index);
+function Vector#(4, Int#(32)) expectedFor(UInt#(3) index);
     case (index)
         0: return vector4(3, -4, 5, -6);
         1: return vector4(6, 12, 20, 30);
-        default: return vector4(6, -2, 20, -2);
+        2: return vector4(6, -2, 20, -2);
+        default: return vector4(3, -4, 5, -6);
     endcase
 endfunction
 
@@ -58,11 +64,11 @@ module mkTbVectorUnit(Empty);
         Int#(8)
     ) dut <- mkVectorUnit;
 
-    Reg#(UInt#(2)) executionIndex <- mkReg(0);
+    Reg#(UInt#(3)) executionIndex <- mkReg(0);
     Reg#(UInt#(2)) groupIndex <- mkReg(0);
     Reg#(Bool) inFlight <- mkReg(False);
 
-    rule issue (!inFlight && executionIndex < 3 && dut.ready);
+    rule issue (!inFlight && executionIndex < 4 && dut.ready);
         dut.put(
             validsFor(executionIndex),
             vector4(3, -4, 5, -6),
@@ -118,7 +124,11 @@ module mkTbVectorUnit(Empty);
         end
     endrule
 
-    rule finish (!inFlight && executionIndex == 3 && dut.ready);
+    rule finish (!inFlight && executionIndex == 4 && dut.ready);
+        if (pack(VectorExternal) != 2'b11 || !vectorOpUsesScale(VectorExternal)) begin
+            $display("VECTOR UNIT: FAIL external encoding/scale policy");
+            $finish(1);
+        end
         $display("VECTOR UNIT: PASS");
         $finish(0);
     endrule

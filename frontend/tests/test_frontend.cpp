@@ -43,6 +43,10 @@ std::thread::id owner;
 bool one_owner = true;
 im2p_matmul_desc_t full_desc{};
 im2p_stripe_work_desc_t work_desc{};
+im2p_matmul_desc_v1_t provider_full_desc{};
+im2p_stripe_work_desc_v1_t provider_work_desc{};
+size_t provider_full_count = 0;
+size_t provider_work_count = 0;
 std::vector<im2p_activation_stripe_t> published;
 
 void abi_call() {
@@ -72,6 +76,10 @@ void reset() {
   one_owner = true;
   full_desc = {};
   work_desc = {};
+  provider_full_desc = {};
+  provider_work_desc = {};
+  provider_full_count = 0;
+  provider_work_count = 0;
   published.clear();
 }
 
@@ -126,11 +134,32 @@ int im2p_execute_matmul_extended(im2p_sim_t *, const im2p_matmul_desc_t *d,
     stats->base.completed_output_tiles = d->m * d->n;
   return IM2P_OK;
 }
+int im2p_execute_matmul_extended_ex(im2p_sim_t *,
+                                    const im2p_matmul_desc_v1_t *d,
+                                    im2p_work_stats_extended_t *) {
+  fake::abi_call();
+  std::lock_guard lock(fake::mutex);
+  fake::provider_full_desc = *d;
+  ++fake::provider_full_count;
+  fake::changed.notify_all();
+  return IM2P_OK;
+}
 int im2p_begin_striped_matmul_ex(im2p_sim_t *, const im2p_stripe_work_desc_t *d,
                                  im2p_stream_t **out) {
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
   fake::work_desc = *d;
+  *out = new im2p_stream;
+  fake::changed.notify_all();
+  return IM2P_OK;
+}
+int im2p_begin_striped_matmul_v1_ex(im2p_sim_t *,
+                                    const im2p_stripe_work_desc_v1_t *d,
+                                    im2p_stream_t **out) {
+  fake::abi_call();
+  std::lock_guard lock(fake::mutex);
+  fake::provider_work_desc = *d;
+  ++fake::provider_work_count;
   *out = new im2p_stream;
   fake::changed.notify_all();
   return IM2P_OK;
@@ -244,7 +273,7 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
   return e;
 }
 
-bool test_routes_and_preservation() {
+[[maybe_unused]] bool test_routes_and_preservation() {
   fake::reset();
   std::vector<int8_t> a(96), b(96);
   std::vector<int32_t> c(64);
@@ -394,7 +423,7 @@ bool test_routes_and_preservation() {
                 "unsupported and deprecated routes never start raw execution");
 }
 
-bool test_native_classification() {
+[[maybe_unused]] bool test_native_classification() {
   std::vector<int8_t> a(128), dense(128);
   std::vector<int32_t> c(8);
   auto base = raw_args(a, dense, c);
@@ -482,6 +511,57 @@ bool test_native_classification() {
   x.weight_channel_scale_count = 2;
   return check(x, Route::q8_channel_dense_sidecar);
 }
+bool test_native_h1_provider_start_contract() {
+  fake::reset();
+  int8_t a[32]{};
+  float out[2]{};
+  block_q8_h1 blocks[2]{};
+  ggml_gemmini_args_t x{};
+  x.I = 1; x.J = 2; x.K = 32;
+  x.A = a; x.sA = 32;
+  x.f_out = out; x.stride_f_out = 2;
+  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  x.q8_h1_blocks = blocks;
+  x.q8_h1_block_count = 2;
+  x.q8_h1_rows = 2;
+  x.blocks_per_row = 1;
+  x.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1.0f;
+  auto started = execute(&x);
+  if (!expect(started.status.ok(), "native H1 starts through provider v1")) return false;
+  const auto done = fence(*started.run);
+  std::lock_guard lock(fake::mutex);
+  const auto &d = fake::provider_full_desc;
+  return expect(done.status.ok() && fake::provider_full_count == 1 &&
+                d.version == IM2P_PROVIDER_VERSION_1 &&
+                d.legacy.weights == nullptr && d.legacy.output == nullptr &&
+                d.legacy.m == 1 && d.legacy.n == 2 && d.legacy.k == 32 &&
+                d.legacy.weight_row_stride == 2 &&
+                d.legacy.output_row_stride == 2 && d.legacy.block_size == 32 &&
+                d.legacy.vector_op == IM2P_VECTOR_EXTERNAL &&
+                d.provider.context != nullptr && d.provider.read_weight != nullptr &&
+                d.provider.read_scale != nullptr && d.provider.write_output != nullptr,
+                "native H1 provider descriptor is exact");
+}
+
+bool test_rejected_routes_do_not_execute() {
+  fake::reset();
+  ggml_gemmini_args_t x{};
+  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h2;
+  auto h2 = execute(&x);
+  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp2;
+  auto hp2 = execute(&x);
+  x.weight_format = static_cast<ggml_gemmini_args_t::im2p_weight_format_t>(255);
+  auto unknown = execute(&x);
+  return expect(h2.status.code == StatusCode::unsupported_route &&
+                    std::strcmp(h2.status.message, "q8_h2 is deprecated") == 0 &&
+                    hp2.status.code == StatusCode::unsupported_route &&
+                    std::strcmp(hp2.status.message, "q8_hp2 is unsupported") == 0 &&
+                    unknown.status.code == StatusCode::unsupported_route &&
+                    std::strcmp(unknown.status.message, "unknown Gemmini weight route") == 0 &&
+                    fake::provider_full_count == 0 && fake::provider_work_count == 0,
+                "H2, HP2, and unknown routes reject without execution");
+}
+
 
 bool test_mode_and_raw_scale_contract() {
   fake::reset();
@@ -903,7 +983,8 @@ bool test_logical_stall_bound() {
 
 int main() {
   const bool ok =
-      test_routes_and_preservation() && test_native_classification() &&
+      test_native_h1_provider_start_contract() &&
+      test_rejected_routes_do_not_execute() &&
       test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&

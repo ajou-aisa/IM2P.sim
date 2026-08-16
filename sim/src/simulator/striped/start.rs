@@ -1,7 +1,8 @@
 use crate::{ffi, StripeLayout, StripeWorkDesc};
 
 use super::{
-    Error, Im2pSimulator, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE,
+    Error, Im2pSimulator, MemoryProvider, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE,
+    WEIGHT_BASE,
 };
 
 impl Im2pSimulator {
@@ -28,11 +29,27 @@ impl Im2pSimulator {
     }
 
     pub(crate) fn begin_striped_matmul_layout_recover<'a>(
-        mut self,
+        self,
         descriptor: &StripeWorkDesc<'a>,
         layout: StripeLayout,
     ) -> Result<StripedMatmul<'a>, (Error, Self)> {
-        if let Err(error) = validate_descriptor(descriptor, layout, self.dim) {
+        self.begin_striped_matmul_provider_recover(descriptor, layout, None, None)
+    }
+
+    pub(crate) fn begin_striped_matmul_provider_recover<'a>(
+        mut self,
+        descriptor: &StripeWorkDesc<'a>,
+        layout: StripeLayout,
+        provider: Option<MemoryProvider>,
+        provider_block_size: Option<usize>,
+    ) -> Result<StripedMatmul<'a>, (Error, Self)> {
+        if let Err(error) = validate_descriptor(
+            descriptor,
+            layout,
+            self.dim,
+            provider.is_some(),
+            provider_block_size,
+        ) {
             return Err((error, self));
         }
         let counters_before = self.matrix_counters();
@@ -48,7 +65,11 @@ impl Im2pSimulator {
             output_base: OUTPUT_BASE,
             activation_row_stride: descriptor.reduction as u64,
             weight_row_stride: layout.weight_row_stride as u64,
-            scale_row_stride: scale.map_or(1, |view| view.row_stride) as u64,
+            scale_row_stride: if provider.is_some() {
+                descriptor.columns as u64
+            } else {
+                scale.map_or(1, |view| view.row_stride) as u64
+            },
             output_row_stride: (layout.output_row_stride * size_of::<i32>()) as u64,
             row_count: descriptor.rows as u32,
             column_count: descriptor.columns as u32,
@@ -57,7 +78,9 @@ impl Im2pSimulator {
             tile_j_columns: layout.tile_j_columns as u32,
             k_origin: 0,
             scale_total_k: scale.map_or(descriptor.reduction, |view| view.total_k) as u32,
-            scale_block_size: scale.map_or(descriptor.reduction, |view| view.block_size) as u32,
+            scale_block_size: provider_block_size
+                .or_else(|| scale.map(|view| view.block_size))
+                .unwrap_or(descriptor.reduction) as u32,
             scale_context: descriptor.work_context,
             accumulate_first_fragment: 0,
             vector_op: descriptor.vector_op.encoding(),
@@ -78,6 +101,7 @@ impl Im2pSimulator {
                 work_context: descriptor.work_context,
             },
             layout,
+            provider,
             published: Default::default(),
             completed: Default::default(),
             outstanding_stripes: 0,
@@ -94,6 +118,8 @@ fn validate_descriptor(
     descriptor: &StripeWorkDesc<'_>,
     layout: StripeLayout,
     dim: usize,
+    provider: bool,
+    provider_block_size: Option<usize>,
 ) -> Result<(), Error> {
     if descriptor.rows == 0
         || descriptor.columns == 0
@@ -121,17 +147,26 @@ fn validate_descriptor(
         .checked_mul(layout.weight_row_stride)
         .and_then(|prefix| prefix.checked_add(descriptor.columns))
         .ok_or(Error::InvalidDimension)?;
-    if descriptor.weights.len() < expected {
+    if !provider && descriptor.weights.len() < expected {
         return Err(Error::InvalidBufferLength {
             name: "weights",
             expected,
             actual: descriptor.weights.len(),
         });
     }
-    if descriptor.vector_op != super::super::VectorOp::Bypass && descriptor.scale_matrix.is_none() {
+    if !provider
+        && descriptor.vector_op != super::super::VectorOp::Bypass
+        && descriptor.scale_matrix.is_none()
+    {
         return Err(Error::MissingScales {
             operation: descriptor.vector_op,
         });
+    }
+    if provider
+        && descriptor.vector_op != super::super::VectorOp::Bypass
+        && provider_block_size.is_none_or(|block_size| block_size == 0)
+    {
+        return Err(Error::InvalidLayout);
     }
     if let Some(scales) = descriptor.scale_matrix {
         super::super::validation::validate_scale_matrix(

@@ -17,7 +17,8 @@ interface WorkSchedulerIfc#(numeric type arrayDim);
         MatrixExtent reductionCount,
         MatrixExtent blockSize,
         Bool usesScale,
-        Bool accumulateFirstFragment
+        Bool accumulateFirstFragment,
+        Bool resetAtBlockBoundary
     );
 
     method Action prepareLookahead(
@@ -25,7 +26,8 @@ interface WorkSchedulerIfc#(numeric type arrayDim);
         MatrixExtent reductionCount,
         MatrixExtent blockSize,
         Bool usesScale,
-        Bool accumulateFirstFragment
+        Bool accumulateFirstFragment,
+        Bool resetAtBlockBoundary
     );
     method Bool lookaheadValid;
     method MatrixExtent lookaheadKStart;
@@ -36,6 +38,8 @@ interface WorkSchedulerIfc#(numeric type arrayDim);
     method MatrixExtent fragmentKStart;
     method BoundedCount#(arrayDim) fragmentKCount;
     method Bool fragmentAccumulate;
+    method Bool fragmentEndsBlock;
+    method ScaleBlockIndex fragmentBlockIndex;
     method Bool hasNextFragment;
     method MatrixExtent nextFragmentKStart;
     method BoundedCount#(arrayDim) nextFragmentKCount;
@@ -91,6 +95,7 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
     Reg#(Bool) usesScaleReg <- mkReg(False);
     Reg#(Bool) firstFragmentReg <- mkReg(True);
     Reg#(Bool) accumulateFirstReg <- mkReg(False);
+    Reg#(Bool) resetAtBlockBoundaryReg <- mkReg(False);
     Reg#(MatrixExtent) kStartReg <- mkReg(0);
     Reg#(Bool) lookaheadValidReg <- mkReg(False);
     Reg#(MatrixExtent) lookaheadKOriginReg <- mkReg(0);
@@ -98,6 +103,7 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
     Reg#(MatrixExtent) lookaheadBlockSizeReg <- mkReg(0);
     Reg#(Bool) lookaheadUsesScaleReg <- mkReg(False);
     Reg#(Bool) lookaheadAccumulateReg <- mkReg(False);
+    Reg#(Bool) lookaheadResetAtBlockBoundaryReg <- mkReg(False);
 
     function MatrixExtent countAt(MatrixExtent kStart);
         return nextKFragmentCount(
@@ -114,7 +120,8 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         MatrixExtent reductionCount,
         MatrixExtent blockSize,
         Bool usesScale,
-        Bool accumulateFirstFragment
+        Bool accumulateFirstFragment,
+        Bool resetAtBlockBoundary
     ) if (!lookaheadValidReg);
         dynamicAssert(reductionCount > 0, "lookahead K must be positive");
         dynamicAssert(!usesScale || blockSize > 0,
@@ -124,6 +131,7 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         lookaheadBlockSizeReg <= blockSize;
         lookaheadUsesScaleReg <= usesScale;
         lookaheadAccumulateReg <= accumulateFirstFragment;
+        lookaheadResetAtBlockBoundaryReg <= resetAtBlockBoundary;
         lookaheadValidReg <= True;
     endmethod
 
@@ -145,6 +153,7 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         usesScaleReg <= lookaheadUsesScaleReg;
         firstFragmentReg <= True;
         accumulateFirstReg <= lookaheadAccumulateReg;
+        resetAtBlockBoundaryReg <= lookaheadResetAtBlockBoundaryReg;
         kStartReg <= lookaheadKOriginReg;
         lookaheadValidReg <= False;
         stateReg <= WorkOfferFragment;
@@ -155,7 +164,8 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         MatrixExtent reductionCount,
         MatrixExtent blockSize,
         Bool usesScale,
-        Bool accumulateFirstFragment
+        Bool accumulateFirstFragment,
+        Bool resetAtBlockBoundary
     ) if (stateReg == WorkIdle);
         dynamicAssert(reductionCount > 0, "work K must be positive");
         dynamicAssert(
@@ -169,6 +179,7 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         usesScaleReg <= usesScale;
         firstFragmentReg <= True;
         accumulateFirstReg <= accumulateFirstFragment;
+        resetAtBlockBoundaryReg <= resetAtBlockBoundary;
         kStartReg <= kOrigin;
         stateReg <= WorkOfferFragment;
     endmethod
@@ -183,7 +194,25 @@ module mkWorkScheduler(WorkSchedulerIfc#(arrayDim)) provisos (
         return truncate(count);
     endmethod
     method Bool fragmentAccumulate if (stateReg == WorkOfferFragment);
-        return !firstFragmentReg || accumulateFirstReg;
+        MatrixExtent safeBlockSize = blockSizeReg == 0 ? 1 : blockSizeReg;
+        Bool startsBlock = usesScaleReg
+            && kStartReg % safeBlockSize == 0;
+        return resetAtBlockBoundaryReg && startsBlock
+            ? False
+            : !firstFragmentReg || accumulateFirstReg;
+    endmethod
+
+    method Bool fragmentEndsBlock if (stateReg == WorkOfferFragment);
+        MatrixExtent nextStart = kStartReg + countAt(kStartReg);
+        MatrixExtent safeBlockSize = blockSizeReg == 0 ? 1 : blockSizeReg;
+        return usesScaleReg
+            && (nextStart >= totalKReg || nextStart % safeBlockSize == 0);
+    endmethod
+
+    method ScaleBlockIndex fragmentBlockIndex
+            if (stateReg == WorkOfferFragment);
+        MatrixExtent safeBlockSize = blockSizeReg == 0 ? 1 : blockSizeReg;
+        return usesScaleReg ? kStartReg / safeBlockSize : 0;
     endmethod
 
     method Bool hasNextFragment

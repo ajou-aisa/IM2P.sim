@@ -5,15 +5,20 @@
 #include "quants/common/weight_route.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <limits>
 #include <mutex>
 #include <new>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #if defined(IM2P_GEMMINI_FRONTEND_EXPECTED_DIM)
 static_assert(DIM == IM2P_GEMMINI_FRONTEND_EXPECTED_DIM,
@@ -30,27 +35,28 @@ Status make_status(StatusCode code, Route route, bool native,
   return {code, route, native, message};
 }
 
-Status from_c_status(int value, Route route, const char *operation) noexcept {
+Status from_c_status(int value, Route route, const char *operation,
+                     bool native = false) noexcept {
   switch (value) {
   case IM2P_OK:
-    return make_status(StatusCode::success, route, false, "success");
+    return make_status(StatusCode::success, route, native, "success");
   case IM2P_BACKPRESSURE:
-    return make_status(StatusCode::backpressure, route, false,
+    return make_status(StatusCode::backpressure, route, native,
                        "IM2P raw queue is full");
   case IM2P_INVALID_LAYOUT:
-    return make_status(StatusCode::invalid_contract, route, false,
+    return make_status(StatusCode::invalid_contract, route, native,
                        "invalid IM2P operand layout");
   case IM2P_UNFINISHED_STREAM:
-    return make_status(StatusCode::invalid_state, route, false,
+    return make_status(StatusCode::invalid_state, route, native,
                        "IM2P simulator already owns a stream");
   case IM2P_DUPLICATE_STRIPE:
-    return make_status(StatusCode::invalid_contract, route, false,
+    return make_status(StatusCode::invalid_contract, route, native,
                        "duplicate IM2P stripe");
   case IM2P_LATE_STRIPE:
-    return make_status(StatusCode::invalid_contract, route, false,
+    return make_status(StatusCode::invalid_contract, route, native,
                        "late IM2P stripe");
   default:
-    return make_status(StatusCode::execution_failure, route, false, operation);
+    return make_status(StatusCode::execution_failure, route, native, operation);
   }
 }
 
@@ -109,10 +115,102 @@ bool native_contract(const ggml_gemmini_args_t &args, Route route) noexcept {
     return wroute::is_q8_channel_direct_read_args(args) &&
            args.has_q8_channel_direct_read_contract();
   case Route::q8_channel_dense_sidecar:
-    return wroute::is_q8_channel_dense_sidecar_args(args);
+    return false;
   default:
     return false;
   }
+}
+
+enum class RoutePolicy : uint8_t { legacy, provider, deprecated, unsupported, unknown };
+
+RoutePolicy route_policy(Route route) noexcept {
+  switch (route) {
+  case Route::q8_h0: return RoutePolicy::legacy;
+  case Route::q8_0_unpacked_to_h1:
+  case Route::q8_h1:
+  case Route::q8_hp1:
+  case Route::q8_channel:
+  case Route::q8_channel_dense_sidecar: return RoutePolicy::provider;
+  case Route::q8_h2: return RoutePolicy::deprecated;
+  case Route::q8_hp2: return RoutePolicy::unsupported;
+  case Route::unknown: return RoutePolicy::unknown;
+  }
+  return RoutePolicy::unknown;
+}
+
+bool provider_route_contract(const ggml_gemmini_args_t &a, Route route) noexcept {
+  if (a.I == 0 || a.J == 0 || a.K == 0 || a.A == nullptr || a.f_out == nullptr ||
+      (a.sA != 0 && a.sA < a.K) || a.transpose_A || a.D != nullptr ||
+      a.repeating_bias || a.low_D || a.weight_i8_scale_active || a.act != 0 ||
+      a.scale_B != static_cast<scale_t>(1) ||
+      a.scale_D != static_cast<scale_acc_t>(1) ||
+      a.scale != static_cast<acc_scale_t>(1) ||
+      a.bert_scale != static_cast<acc_scale_t>(1)) return false;
+  switch (route) {
+  case Route::q8_0_unpacked_to_h1: {
+    const size_t blocks = (a.K + 31) / 32;
+    const bool striped = a.stripe_J > 1;
+    return a.B != nullptr && a.sB == a.K && a.blocks_per_row == blocks &&
+           a.c_b != nullptr &&
+           (striped ? (a.s_rf_stripe != nullptr && a.R_stripe != nullptr)
+                    : (a.s_rf != nullptr && a.R != nullptr));
+  }
+  case Route::q8_h1:
+    return wroute::is_q8_h1_args(a) && a.has_q8_h1_im2p_contract();
+  case Route::q8_hp1:
+    return wroute::has_q8_hp1_native_contract(a);
+  case Route::q8_channel:
+    return wroute::is_q8_channel_direct_read_args(a) &&
+           a.has_q8_channel_direct_read_contract();
+  case Route::q8_channel_dense_sidecar:
+    return a.has_q8_channel_dense_sidecar_contract();
+  default: return false;
+  }
+}
+
+bool snapshot_activation_scales(const ggml_gemmini_args_t &a,
+                                std::vector<float> &out) {
+  if (a.I > std::numeric_limits<size_t>::max() - a.activation_row_offset)
+    return false;
+  size_t rows_per_stripe = a.I;
+  if (a.tile_I != 0 &&
+      !checked_mul(a.tile_I, static_cast<size_t>(DIM), rows_per_stripe))
+    return false;
+  if (rows_per_stripe == 0)
+    return false;
+  try { out.resize(a.I); } catch (...) { return false; }
+  const auto &storage = a.act_quant.storage();
+  for (size_t i = 0; i < a.I; ++i) {
+    const size_t row = a.activation_row_offset + i;
+    float scale = 0.0f;
+    bool valid = true;
+    std::visit([&](const auto &meta) {
+      using T = std::decay_t<decltype(meta)>;
+      if constexpr (std::is_same_v<T, act::exsia::Meta>) {
+        const size_t stripe = row / rows_per_stripe;
+        if (stripe >= meta.theta.size() ||
+            meta.theta[stripe] == std::numeric_limits<int16_t>::min())
+          valid = false;
+        else scale = std::ldexp(1.0f, meta.theta[stripe]);
+      } else if constexpr (std::is_same_v<T, act::tensor::Meta>) {
+        scale = meta.scale;
+      } else if constexpr (std::is_same_v<T, act::token::Meta> ||
+                           std::is_same_v<T, act::block::Meta>) {
+        if (row >= meta.scales.size()) valid = false;
+        else scale = meta.scales[row];
+      } else if constexpr (std::is_same_v<T, act::stripe::Meta>) {
+        const size_t stripe = row / rows_per_stripe;
+        if (stripe >= meta.scales.size()) valid = false;
+        else scale = meta.scales[stripe];
+      } else {
+        valid = false;
+      }
+    }, storage);
+    if (!valid || !std::isfinite(scale) || scale <= 0.0f)
+      return false;
+    out[i] = scale;
+  }
+  return true;
 }
 
 struct ScalarSnapshot {
@@ -269,6 +367,204 @@ struct Run::Impl {
   bool bound_run = false;
   uint64_t run_id = 0;
   size_t tile_i_rows = 0, tile_j_columns = 0;
+  std::vector<float> activation_scales;
+  bool provider_failed = false;
+
+  struct FactorCache {
+    bool valid = false;
+    size_t block = 0, column = 0, count = 0;
+    std::array<double, DIM> values{};
+  };
+  std::array<FactorCache, 2> factor_cache{};
+  size_t next_factor_cache = 0;
+
+  struct ReducerSlot {
+    bool valid = false;
+    size_t row = 0, tile_begin = 0, expected_block = 0;
+    std::array<double, DIM> sums{};
+    std::array<bool, DIM> seen{};
+  };
+  std::array<ReducerSlot, DIM> reducers{};
+
+  size_t provider_block_size() const noexcept {
+    switch (route) {
+    case Route::q8_0_unpacked_to_h1:
+    case Route::q8_h1:
+    case Route::q8_hp1: return 32;
+    default: return scalars.k;
+    }
+  }
+
+  size_t provider_block_count() const noexcept {
+    const size_t block = provider_block_size();
+    return (scalars.k + block - 1) / block;
+  }
+
+  uint8_t provider_vector_op() const noexcept {
+    switch (route) {
+    case Route::q8_channel:
+    case Route::q8_channel_dense_sidecar:
+      return IM2P_VECTOR_BYPASS;
+    default:
+      return IM2P_VECTOR_EXTERNAL;
+    }
+  }
+
+  bool factor(size_t block, size_t column, double &value) const noexcept {
+    if (block >= provider_block_count() || column >= scalars.j) return false;
+    switch (route) {
+    case Route::q8_0_unpacked_to_h1: {
+      const auto *cb = static_cast<const uint8_t *>(pointers.c_b);
+      const bool striped = scalars.stripe_j > 1;
+      const auto *sr = static_cast<const float *>(striped ? pointers.s_rf_stripe : pointers.s_rf);
+      const auto *rr = static_cast<const uint16_t *>(striped ? pointers.r_stripe : pointers.r);
+      const size_t scale_row = striped ? column / scalars.stripe_j : column;
+      if (!cb || !sr || !rr) return false;
+      value = static_cast<double>(sr[scale_row]) *
+              static_cast<double>(uint32_t(cb[column * scalars.blocks_per_row + block]) +
+                                  uint32_t(rr[scale_row]));
+      break;
+    }
+    case Route::q8_h1: {
+      const auto *blocks = static_cast<const block_q8_h1 *>(pointers.q8_h1);
+      const auto &b = blocks[column * scalars.blocks_per_row + block];
+      value = static_cast<double>(b.s_rf) *
+              static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
+      break;
+    }
+    case Route::q8_hp1: {
+      const auto *blocks = static_cast<const block_q8_hp1 *>(pointers.q8_hp1);
+      const auto &b = blocks[column * scalars.q8_hp1_blocks_per_row + block];
+      value = b.m == INT16_MIN ? 0.0 :
+              static_cast<double>(gemmini_ldexp_fast_pos(b.channel_scale, int(b.m)));
+      break;
+    }
+    case Route::q8_channel: {
+      const auto *base = static_cast<const uint8_t *>(pointers.channel_rows);
+      float scale = 0.0f;
+      std::memcpy(&scale, base + column * scalars.channel_row_stride, sizeof(scale));
+      value = scale;
+      break;
+    }
+    case Route::q8_channel_dense_sidecar:
+      value = static_cast<const float *>(pointers.channel_scales)[column];
+      break;
+    default: return false;
+    }
+    return std::isfinite(value);
+  }
+
+  int read_weight(size_t row, size_t column, size_t count, int8_t *out) noexcept {
+    if (!out || count == 0 || count > DIM || row >= scalars.k ||
+        column > scalars.j || count > scalars.j - column) return IM2P_ERROR;
+    const size_t block = row / provider_block_size(), lane = row % provider_block_size();
+    for (size_t n = 0; n < count; ++n) {
+      const size_t j = column + n;
+      switch (route) {
+      case Route::q8_0_unpacked_to_h1:
+        out[n] = static_cast<const int8_t *>(pointers.b)[j * scalars.k + row]; break;
+      case Route::q8_h1:
+        out[n] = static_cast<const block_q8_h1 *>(pointers.q8_h1)
+                     [j * scalars.blocks_per_row + block].qs[lane]; break;
+      case Route::q8_hp1:
+        out[n] = static_cast<const block_q8_hp1 *>(pointers.q8_hp1)
+                     [j * scalars.q8_hp1_blocks_per_row + block].qs[lane]; break;
+      case Route::q8_channel: {
+        const auto *base = static_cast<const uint8_t *>(pointers.channel_rows);
+        out[n] = static_cast<int8_t>(base[j * scalars.channel_row_stride + sizeof(float) + row]);
+        break;
+      }
+      case Route::q8_channel_dense_sidecar:
+        out[n] = static_cast<const int8_t *>(pointers.b)[j * scalars.k + row]; break;
+      default: return IM2P_ERROR;
+      }
+    }
+    return IM2P_OK;
+  }
+
+  int read_scale(size_t block, size_t column, size_t count, int8_t *out) noexcept {
+    if (!out || count == 0 || count > DIM || column > scalars.j ||
+        count > scalars.j - column) return IM2P_ERROR;
+    auto &entry = factor_cache[next_factor_cache++ % factor_cache.size()];
+    entry = {}; entry.valid = true; entry.block = block; entry.column = column; entry.count = count;
+    for (size_t n = 0; n < count; ++n) {
+      if (!factor(block, column + n, entry.values[n])) return IM2P_ERROR;
+      out[n] = 1;
+    }
+    return IM2P_OK;
+  }
+
+  bool cached_factor(size_t block, size_t column, double &value) const noexcept {
+    for (const auto &entry : factor_cache)
+      if (entry.valid && entry.block == block && column >= entry.column &&
+          column - entry.column < entry.count) {
+        value = entry.values[column - entry.column];
+        return true;
+      }
+    return factor(block, column, value);
+  }
+
+  int write_output(size_t block, size_t row, size_t column, size_t count,
+                   const int32_t *values) noexcept {
+    if (!values || count == 0 || count > DIM || row >= scalars.i ||
+        column > scalars.j || count > scalars.j - column ||
+        block >= provider_block_count()) return IM2P_ERROR;
+    const size_t tile_begin = (column / DIM) * DIM;
+    auto &slot = reducers[row % DIM];
+    if (!slot.valid || slot.row != row || slot.tile_begin != tile_begin) {
+      if (slot.valid && slot.expected_block != provider_block_count()) return IM2P_ERROR;
+      slot = {}; slot.valid = true; slot.row = row; slot.tile_begin = tile_begin;
+    }
+    if (block != slot.expected_block) return IM2P_ERROR;
+    for (size_t n = 0; n < count; ++n) {
+      const size_t lane = column + n - tile_begin;
+      double weight = 0.0;
+      if (lane >= DIM || slot.seen[lane] || !cached_factor(block, column + n, weight))
+        return IM2P_ERROR;
+      slot.sums[lane] += static_cast<double>(values[n]) * weight;
+      slot.seen[lane] = true;
+    }
+    const size_t width = std::min<size_t>(DIM, scalars.j - tile_begin);
+    if (!std::all_of(slot.seen.begin(), slot.seen.begin() + width, [](bool v) { return v; }))
+      return IM2P_OK;
+    ++slot.expected_block;
+    slot.seen.fill(false);
+    if (slot.expected_block == provider_block_count()) {
+      auto *dst = static_cast<float *>(const_cast<void *>(pointers.f_out));
+      const size_t row_stride = scalars.stride_f_out ? scalars.stride_f_out : scalars.j;
+      const size_t col_stride = scalars.col_stride_f_out ? scalars.col_stride_f_out : 1;
+      for (size_t lane = 0; lane < width; ++lane)
+        dst[row * row_stride + (tile_begin + lane) * col_stride] +=
+            static_cast<float>(slot.sums[lane] * static_cast<double>(activation_scales[row]));
+    }
+    return IM2P_OK;
+  }
+
+  static int provider_read_weight(void *context, size_t row, size_t column,
+                                  size_t count, int8_t *out) {
+    auto &x = *static_cast<Impl *>(context);
+    const int result = x.read_weight(row, column, count, out);
+    if (result != IM2P_OK) x.provider_failed = true;
+    return result;
+  }
+  static int provider_read_scale(void *context, size_t row, size_t column,
+                                 size_t count, int8_t *out) {
+    auto &x = *static_cast<Impl *>(context);
+    const int result = x.read_scale(row, column, count, out);
+    if (result != IM2P_OK) x.provider_failed = true;
+    return result;
+  }
+  static int provider_write_output(void *context, size_t block, size_t row,
+                                   size_t column, size_t count, const int32_t *values) {
+    auto &x = *static_cast<Impl *>(context);
+    const int result = x.write_output(block, row, column, count, values);
+    if (result != IM2P_OK) x.provider_failed = true;
+    return result;
+  }
+
+  im2p_provider_t provider() noexcept {
+    return {this, provider_read_weight, provider_read_scale, provider_write_output};
+  }
 
   void set_error(Status value) noexcept {
     std::lock_guard lock(mutex);
@@ -301,6 +597,44 @@ struct Run::Impl {
     d.block_size =
         scalars.block_size == 0 ? GGML_GEMMINI_BLOCK_SIZE : scalars.block_size;
     d.vector_op = IM2P_VECTOR_BYPASS;
+    return d;
+  }
+
+  im2p_matmul_desc_v1_t provider_full_descriptor() noexcept {
+    im2p_matmul_desc_v1_t d{};
+    d.version = IM2P_PROVIDER_VERSION_1;
+    d.legacy.activations = static_cast<const int8_t *>(pointers.a);
+    d.legacy.m = scalars.i; d.legacy.n = scalars.j; d.legacy.k = scalars.k;
+    d.legacy.activation_row_stride = scalars.sa ? scalars.sa : scalars.k;
+    d.legacy.weight_row_stride = scalars.j;
+    d.legacy.output_row_stride = scalars.j;
+    d.legacy.tile_i_rows = tile_i_rows;
+    d.legacy.tile_j_columns = tile_j_columns;
+    d.legacy.block_size = provider_block_size();
+    d.legacy.scale_total_k = scalars.k;
+    d.legacy.scale_row_stride = scalars.j;
+    d.legacy.scale_valid_columns = scalars.j;
+    d.legacy.vector_op = provider_vector_op();
+    d.provider = provider();
+    return d;
+  }
+
+  im2p_stripe_work_desc_v1_t provider_stripe_descriptor() noexcept {
+    im2p_stripe_work_desc_v1_t d{};
+    d.version = IM2P_PROVIDER_VERSION_1;
+    d.legacy.m = scalars.i; d.legacy.n = scalars.j; d.legacy.k = scalars.k;
+    d.legacy.weight_row_stride = scalars.j;
+    d.legacy.output_row_stride = scalars.j;
+    d.legacy.tile_i_rows = tile_i_rows;
+    d.legacy.tile_j_columns = tile_j_columns;
+    d.legacy.block_size = provider_block_size();
+    d.legacy.scale_total_k = scalars.k;
+    d.legacy.scale_row_stride = scalars.j;
+    d.legacy.scale_valid_columns = scalars.j;
+    d.legacy.stripe_count = (scalars.i + scalars.activation_rows_per_stripe - 1) /
+                            scalars.activation_rows_per_stripe;
+    d.legacy.vector_op = provider_vector_op();
+    d.provider = provider();
     return d;
   }
 
@@ -343,10 +677,19 @@ struct Run::Impl {
                             "failed to create IM2P simulator"));
       return;
     }
-    const auto d = full_descriptor();
-    const int result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
-    if (result != IM2P_OK)
-      set_error(from_c_status(result, route, "IM2P full execution failed"));
+    int result = IM2P_ERROR;
+    if (route_policy(route) == RoutePolicy::legacy) {
+      const auto d = full_descriptor();
+      result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+    } else {
+      auto d = provider_full_descriptor();
+      result = im2p_execute_matmul_extended_ex(sim.get(), &d, &stats);
+    }
+    if (provider_failed)
+      set_error(make_status(StatusCode::execution_failure, route, native,
+                            "IM2P provider callback failed"));
+    else if (result != IM2P_OK)
+      set_error(from_c_status(result, route, "IM2P full execution failed", native));
   }
 
   int publish(im2p_stream_t *stream, const DenseEvent &e) {
@@ -375,7 +718,7 @@ struct Run::Impl {
       im2p_stripe_completion_t c{};
       const int result = im2p_poll_completed(stream, &c);
       if (result < 0) {
-        set_error(from_c_status(result, route, "IM2P completion poll failed"));
+        set_error(from_c_status(result, route, "IM2P completion poll failed", native));
         return false;
       }
       if (result == 0) {
@@ -449,10 +792,16 @@ struct Run::Impl {
     std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
     im2p_stream_t *raw = nullptr;
     if (sim) {
-      const auto d = stripe_descriptor();
-      const int result = im2p_begin_striped_matmul_ex(sim.get(), &d, &raw);
+      int result = IM2P_ERROR;
+      if (route_policy(route) == RoutePolicy::legacy) {
+        const auto d = stripe_descriptor();
+        result = im2p_begin_striped_matmul_ex(sim.get(), &d, &raw);
+      } else {
+        auto d = provider_stripe_descriptor();
+        result = im2p_begin_striped_matmul_v1_ex(sim.get(), &d, &raw);
+      }
       if (result != IM2P_OK)
-        set_error(from_c_status(result, route, "failed to start IM2P stream"));
+        set_error(from_c_status(result, route, "failed to start IM2P stream", native));
     } else
       set_error(make_status(StatusCode::execution_failure, route, false,
                             "failed to create IM2P simulator"));
@@ -500,7 +849,7 @@ struct Run::Impl {
             break;
           if (result != IM2P_BACKPRESSURE) {
             set_error(
-                from_c_status(result, route, "IM2P stripe publish failed"));
+                from_c_status(result, route, "IM2P stripe publish failed", native));
             break;
           }
           if (!progress(stream.get(), stalled, observed_generation,
@@ -537,8 +886,14 @@ struct Run::Impl {
     }
     if (complete) {
       const int result = im2p_finish_stream_extended(stream.get(), &stats);
-      if (result != IM2P_OK)
-        set_error(from_c_status(result, route, "IM2P stream fence failed"));
+      if (provider_failed)
+        set_error(make_status(StatusCode::execution_failure, route, native,
+                              "IM2P provider callback failed"));
+      else if (result != IM2P_OK)
+        set_error(from_c_status(result, route, "IM2P stream fence failed", native));
+    } else if (provider_failed) {
+      set_error(make_status(StatusCode::execution_failure, route, native,
+                            "IM2P provider callback failed"));
     }
   }
 };
@@ -582,22 +937,24 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "failed to allocate IM2P run"),
             {}};
   auto &x = *run->impl_;
-  if (x.route == Route::q8_h2) {
-    x.final_status = make_status(StatusCode::unsupported_route, x.route,
-                                 x.native, "q8_h2 is deprecated");
-    x.lifecycle = Run::Impl::Lifecycle::terminal;
-    return {x.final_status, std::move(run)};
+  const RoutePolicy policy = route_policy(x.route);
+  if (policy == RoutePolicy::deprecated) {
+    x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
+                                 "q8_h2 is deprecated");
+  } else if (policy == RoutePolicy::unsupported) {
+    x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
+                                 "q8_hp2 is unsupported");
+  } else if (policy == RoutePolicy::unknown) {
+    x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
+                                 "unknown Gemmini weight route");
   }
-  if (x.route != Route::q8_h0) {
-    x.final_status = make_status(
-        StatusCode::unsupported_route, x.route, x.native,
-        "native Gemmini route is classified but not raw-ABI compatible");
+  if (!x.final_status.ok()) {
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
   if (!normalize_tile_count(x.scalars.tile_i, x.scalars.i, x.tile_i_rows) ||
       !normalize_tile_count(x.scalars.tile_j, x.scalars.j, x.tile_j_columns)) {
-    x.final_status = make_status(StatusCode::invalid_contract, x.route, false,
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
                                  "Gemmini tile count overflows element extent");
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
@@ -605,27 +962,47 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   const size_t sa = x.scalars.sa == 0 ? x.scalars.k : x.scalars.sa;
   const size_t sb = x.scalars.sb == 0 ? x.scalars.j : x.scalars.sb;
   const size_t sc = x.scalars.sc == 0 ? x.scalars.j : x.scalars.sc;
-  if (options.queue_capacity == 0 || options.max_stalled_cycles == 0 ||
-      x.scalars.i == 0 || x.scalars.j == 0 || x.scalars.k == 0 ||
-      !x.pointers.a || !x.pointers.b || !x.pointers.c)
-    x.final_status = make_status(StatusCode::invalid_argument, x.route, false,
-                                 "missing IM2P operand, dimension, or option");
-  else if (x.scalars.transpose_a || x.scalars.transpose_b ||
-           x.scalars.weight_i8_scale_active || !x.scalars.full_c ||
-           x.scalars.low_d || x.scalars.repeating_bias || x.pointers.d ||
-           x.scalars.act != 0 ||
-           x.scalars.scale_b != static_cast<scale_t>(1) ||
-           x.scalars.scale_d != static_cast<scale_acc_t>(1) ||
-           x.scalars.scale != static_cast<acc_scale_t>(1) ||
-           x.scalars.bert_scale != static_cast<acc_scale_t>(1))
-    x.final_status = make_status(
-        StatusCode::unsupported_route, x.route, false,
-        "q8_h0 operands, bias semantics, or scalar scales are not raw-ABI compatible");
-  else if (sa < x.scalars.k || sb < x.scalars.j || sc < x.scalars.j ||
-           (mode == Mode::stripe_pipeline &&
-            x.scalars.activation_rows_per_stripe == 0))
-    x.final_status = make_status(StatusCode::invalid_contract, x.route, false,
-                                 "invalid IM2P stride or stripe layout");
+  if (policy == RoutePolicy::legacy) {
+    if (options.queue_capacity == 0 || options.max_stalled_cycles == 0 ||
+        x.scalars.i == 0 || x.scalars.j == 0 || x.scalars.k == 0 ||
+        !x.pointers.a || !x.pointers.b || !x.pointers.c)
+      x.final_status = make_status(StatusCode::invalid_argument, x.route, x.native,
+                                   "missing IM2P operand, dimension, or option");
+    else if (x.scalars.transpose_a || x.scalars.transpose_b ||
+             x.scalars.weight_i8_scale_active || !x.scalars.full_c ||
+             x.scalars.low_d || x.scalars.repeating_bias || x.pointers.d ||
+             x.scalars.act != 0 || x.scalars.scale_b != static_cast<scale_t>(1) ||
+             x.scalars.scale_d != static_cast<scale_acc_t>(1) ||
+             x.scalars.scale != static_cast<acc_scale_t>(1) ||
+             x.scalars.bert_scale != static_cast<acc_scale_t>(1))
+      x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
+          "q8_h0 operands, bias semantics, or scalar scales are not raw-ABI compatible");
+    else if (sa < x.scalars.k || sb < x.scalars.j || sc < x.scalars.j ||
+             (mode == Mode::stripe_pipeline && x.scalars.activation_rows_per_stripe == 0))
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "invalid IM2P stride or stripe layout");
+  } else {
+    if (options.queue_capacity == 0 || options.max_stalled_cycles == 0)
+      x.final_status = make_status(StatusCode::invalid_argument, x.route, x.native,
+                                   "invalid IM2P option");
+    else if (!provider_route_contract(*args, x.route))
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "invalid native Gemmini route contract");
+    else if (mode == Mode::stripe_pipeline && x.scalars.activation_rows_per_stripe == 0)
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "invalid native stripe layout");
+    else if (!snapshot_activation_scales(*args, x.activation_scales))
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "invalid activation scale metadata");
+    else {
+      auto *dst = static_cast<float *>(const_cast<void *>(x.pointers.f_out));
+      const size_t rs = x.scalars.stride_f_out ? x.scalars.stride_f_out : x.scalars.j;
+      const size_t cs = x.scalars.col_stride_f_out ? x.scalars.col_stride_f_out : 1;
+      for (size_t i = 0; i < x.scalars.i; ++i)
+        for (size_t j = 0; j < x.scalars.j; ++j)
+          dst[i * rs + j * cs] = 0.0f;
+    }
+  }
   if (!x.final_status.ok()) {
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
@@ -644,11 +1021,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
             state.run_pipeline();
         } catch (const std::bad_alloc &) {
           state.worker_failed(make_status(StatusCode::out_of_memory,
-                                          state.route, false,
+                                          state.route, state.native,
                                           "IM2P worker allocation failed"));
         } catch (...) {
           state.worker_failed(make_status(StatusCode::execution_failure,
-                                          state.route, false,
+                                          state.route, state.native,
                                           "IM2P worker exception"));
         }
       });
@@ -667,7 +1044,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     if (!x.final_status.ok())
       return {x.final_status, std::move(run)};
   }
-  return {make_status(StatusCode::success, x.route, false, "success"),
+  return {make_status(StatusCode::success, x.route, x.native, "success"),
           std::move(run)};
 }
 
@@ -676,7 +1053,7 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e) noexcept {
   std::lock_guard lock(x.mutex);
   if (x.lifecycle != Run::Impl::Lifecycle::running ||
       x.mode != Mode::stripe_pipeline)
-    return make_status(StatusCode::invalid_state, x.route, false,
+    return make_status(StatusCode::invalid_state, x.route, x.native,
                        "run is not accepting stripes");
   if (!x.final_status.ok())
     return x.final_status;
@@ -684,26 +1061,26 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e) noexcept {
       e.stripe_id != x.next_stripe || e.row_begin != x.next_row ||
       e.row_begin >= e.row_end || e.row_end > x.scalars.i ||
       (x.bound_run && e.run_id != x.run_id))
-    return make_status(StatusCode::invalid_argument, x.route, false,
+    return make_status(StatusCode::invalid_argument, x.route, x.native,
                        "invalid stripe run, order, or bounds");
   const size_t rows = e.row_end - e.row_begin,
                expected = x.scalars.activation_rows_per_stripe;
   if ((e.row_end != x.scalars.i && rows != expected) ||
       (e.row_end == x.scalars.i && rows > expected))
-    return make_status(StatusCode::invalid_argument, x.route, false,
+    return make_status(StatusCode::invalid_argument, x.route, x.native,
                        "invalid stripe row count");
   if (x.outstanding >= x.options.queue_capacity)
-    return make_status(StatusCode::backpressure, x.route, false,
+    return make_status(StatusCode::backpressure, x.route, x.native,
                        "frontend stripe queue is full");
   Run::Impl::DenseEvent dense{e.run_id, e.stripe_id, e.slot, e.row_begin,
                               e.row_end};
   try {
     x.ready.push_back(dense);
   } catch (const std::bad_alloc &) {
-    return make_status(StatusCode::out_of_memory, x.route, false,
+    return make_status(StatusCode::out_of_memory, x.route, x.native,
                        "failed to queue stripe metadata");
   } catch (...) {
-    return make_status(StatusCode::execution_failure, x.route, false,
+    return make_status(StatusCode::execution_failure, x.route, x.native,
                        "failed to queue stripe metadata");
   }
   if (!x.bound_run) {
@@ -714,7 +1091,7 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e) noexcept {
   ++x.next_stripe;
   x.next_row = e.row_end;
   x.changed.notify_all();
-  return make_status(StatusCode::success, x.route, false, "success");
+  return make_status(StatusCode::success, x.route, x.native, "success");
 }
 
 FenceResult fence(Run &run) noexcept {

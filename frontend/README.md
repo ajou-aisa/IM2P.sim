@@ -33,20 +33,24 @@ IM2P C ABI에 연결하는, 시뮬레이터가 소유하는 선택적 어댑터�
 
 원시 ABI와 호환되는 `q8_h0`(`A[M,K]` INT8, `B[K,N]` INT8, 완전한 INT32
 `C[M,N]`, 전치 없음, `repeating_bias`, `D` bias, activation 또는 float scaling
-없음)만 실행됩니다. 전체 모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야
-하는 차용 입력 영역입니다. 파이프라인 모드에서 B도 같은 규칙을 따릅니다. A 행은
+없음)과 `q8_0_unpacked_to_h1`, `q8_h1`, `q8_hp1`, `q8_channel`,
+`q8_channel_dense_sidecar`가 numerical execution으로 지원됩니다. 전체 모드에서 A와
+B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력 영역입니다.
+파이프라인 모드에서 B도 같은 규칙을 따릅니다. A 행은
 해당 stripe가 수락되기 전에 채울 수 있지만, 제출된 바이트는 이후 `fence` 또는 Run
 소멸 시점까지 유효하고 변경되지 않아야 합니다. C는 Run이 차용하는 출력 영역으로,
 유효해야 하며 Run만 단독으로 쓸 수 있어야 합니다. `fence`가 반환되거나 Run이
-소멸되기 전에는 호출자가 C를 동시에 읽거나 써서는 안 됩니다. 프런트엔드는
-권위 있는 Gemmini `has_*`/route helper를 사용해 H1, HP1, HP2, channel-direct 및
-channel-sidecar 계약을 분류하고 선택된 메타데이터를 보존한 뒤 `unsupported_route`를
-반환합니다. H2 메타데이터도 internal/test route-contract 검사에 맞게 분류 및
-보존하지만 public inspection API는 제공하지 않는다. `q8_h2`는
-**Deprecated**이며 진단 `q8_h2 is deprecated`와 함께 `unsupported_route`를
-반환합니다. 지원되지 않거나 **Deprecated** 상태인 어떤 경로도 worker를 시작하거나
-원시 `q8_h0`로 대체 실행하지 않습니다. 프런트엔드는 전치, 언패킹, 역양자화 또는
-전체 operand 복사를 수행하지 않습니다.
+소멸되기 전에는 호출자가 C를 동시에 읽거나 써서는 안 됩니다. 프런트엔드는 권위 있는
+Gemmini `has_*`/route helper로 route를 분류합니다. Native/provider route는 전체
+tensor를 materialize하지 않고 요청된 logical fragment만 공급하므로 RTL의 M/N tile,
+K fragment, block boundary 및 accumulate scheduling을 보존합니다. Channel route는
+RTL `VectorBypass`로 정수 dot product를 실행하고 channel scale은 host output에서 한
+번만 적용합니다. H2/HP2 메타데이터는 internal/test route-contract 검사에 맞게
+보존하지만 public inspection API는 제공하지 않습니다. `q8_h2`는
+**Deprecated**이며 `q8_h2 is deprecated`, `q8_hp2`는 **Unsupported**이며
+`q8_hp2 is unsupported`와 함께 `unsupported_route`를 반환합니다. 두 route 모두
+worker를 시작하거나 원시 `q8_h0`로 fallback하지 않습니다. 프런트엔드는 전체
+operand 전치, 언패킹, 역양자화 또는 복사를 수행하지 않습니다.
 
 정확히 선택되는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`,
 `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`,
@@ -62,9 +66,9 @@ channel-sidecar 계약을 분류하고 선택된 메타데이터를 보존한 �
 `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`,
 `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`,
 `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`,
-`exsia_stripe_ready_sink`, `unpacked.blocks`입니다. 지원되지 않거나 **Deprecated**
-상태인 경로에 속한 pointer selection은 internal/test route-contract 검사
-목적으로만 보존되며 처리되지 않는다.
+`exsia_stripe_ready_sink`, `unpacked.blocks`입니다. 지원 route의 pointer selection은
+해당 provider가 실행 중 직접 사용합니다. `q8_h2`와 `q8_hp2`의 selection은
+route-contract 검사 목적으로만 보존되며 numerical execution에는 사용하지 않습니다.
 
 `activation_row_offset`는 메타데이터로만 복사됩니다. 원시 ABI descriptor는 이를
 사용하지 않으므로, 실행하려면 A가 이미 첫 activation 행을 가리켜야 합니다.

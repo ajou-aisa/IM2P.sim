@@ -36,7 +36,7 @@ pub fn golden_output(
 
 fn transform(partial: i32, scale: i8, operation: VectorOp) -> i32 {
     match operation {
-        VectorOp::Bypass => partial,
+        VectorOp::Bypass | VectorOp::External => partial,
         VectorOp::Multiply => partial.wrapping_mul(i32::from(scale)),
         VectorOp::Shift => signed_shift(partial, scale),
     }

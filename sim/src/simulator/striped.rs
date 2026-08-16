@@ -4,7 +4,7 @@ use crate::{ffi, ActivationStripe, StripeCompletion, StripeLayout, StripeWorkDes
 
 use super::{
     matmul::{ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE},
-    Error, Im2pSimulator,
+    Error, Im2pSimulator, MemoryProvider,
 };
 
 mod provider;
@@ -15,6 +15,7 @@ pub struct StripedMatmul<'a> {
     simulator: Im2pSimulator,
     descriptor: StripeWorkDesc<'a>,
     layout: StripeLayout,
+    provider: Option<MemoryProvider>,
     published: VecDeque<PublishedActivationStripe>,
     completed: VecDeque<StripeCompletion>,
     outstanding_stripes: usize,
@@ -116,6 +117,7 @@ impl StripedMatmul<'_> {
     pub fn progress(&mut self, cycle_budget: u64) -> Result<(), Error> {
         for _ in 0..cycle_budget {
             self.service_static_reads()?;
+            self.service_provider_output()?;
             self.drain_completion()?;
             self.simulator.tick_staged_raw();
         }
@@ -226,6 +228,10 @@ impl StripedMatmul<'_> {
             .require_staged("output_write_response", accepted)
     }
 
+    pub(crate) fn provider_handles_output(&self) -> bool {
+        self.provider.is_some()
+    }
+
     pub fn poll_completed(&mut self) -> Option<StripeCompletion> {
         self.completed.pop_front()
     }
@@ -242,6 +248,7 @@ impl StripedMatmul<'_> {
     pub(crate) fn finish_recover(mut self) -> Result<(WorkStats, Im2pSimulator), Error> {
         for _ in 0..STRIPED_TIMEOUT_CYCLES {
             self.service_static_reads()?;
+            self.service_provider_output()?;
             self.drain_completion()?;
             // SAFETY: simulator handle remains valid.
             if unsafe { ffi::im2p_matmul_done(self.simulator.handle.as_ptr()) } != 0 {

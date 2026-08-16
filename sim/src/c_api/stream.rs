@@ -8,9 +8,9 @@ use super::{
     },
     types::{
         ActivationStripeC, PublishedStripe, StreamBox, StripeCompletionC, StripeWorkDescC,
-        WorkStatsC, WorkStatsExtendedC,
+        StripeWorkDescV1, WorkStatsC, WorkStatsExtendedC,
     },
-    SimBox,
+    SimBox, PROVIDER_VERSION_1,
 };
 
 #[no_mangle]
@@ -32,6 +32,38 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
     descriptor: *const StripeWorkDescC,
     output: *mut *mut StreamBox,
 ) -> i32 {
+    begin_striped_matmul_value(sim, descriptor, output, None)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_begin_striped_matmul_v1_ex(
+    sim: *mut SimBox,
+    descriptor: *const StripeWorkDescV1,
+    output: *mut *mut StreamBox,
+) -> i32 {
+    let Some(descriptor) = descriptor.as_ref() else {
+        return -1;
+    };
+    if descriptor.version != PROVIDER_VERSION_1 {
+        if let Some(output) = output.as_mut() {
+            *output = ptr::null_mut();
+        }
+        return -4;
+    }
+    begin_striped_matmul_value(
+        sim,
+        &descriptor.legacy,
+        output,
+        Some(descriptor.provider.into()),
+    )
+}
+
+unsafe fn begin_striped_matmul_value(
+    sim: *mut SimBox,
+    descriptor: *const StripeWorkDescC,
+    output: *mut *mut StreamBox,
+    provider: Option<crate::simulator::MemoryProvider>,
+) -> i32 {
     let (Some(owner), Some(desc), Some(output)) =
         (sim.as_mut(), descriptor.as_ref(), output.as_mut())
     else {
@@ -41,7 +73,14 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
     let Some(op) = vector_op(desc.vector_op) else {
         return status_for_error(crate::SimError::InvalidDimension);
     };
-    if desc.weights.is_null() || desc.output.is_null() {
+    if provider.is_some_and(|provider| {
+        provider.read_weight.is_none()
+            || provider.write_output.is_none()
+            || (op != crate::VectorOp::Bypass && provider.read_scale.is_none())
+    }) {
+        return status_for_error(crate::SimError::InvalidLayout);
+    }
+    if provider.is_none() && (desc.weights.is_null() || desc.output.is_null()) {
         return -1;
     }
     if desc.weight_row_stride < desc.n {
@@ -76,20 +115,28 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
     } else {
         desc.tile_j_columns
     };
-    let weights = std::slice::from_raw_parts(desc.weights, weight_len);
-    let scale = match scale_view(
-        desc.scales,
-        desc.scale_values_len,
-        desc.block_size,
-        desc.scale_total_k,
-        desc.n,
-        desc.scale_row_stride,
-        desc.scale_column_offset,
-        desc.scale_valid_columns,
-        desc.work_context,
-    ) {
-        Ok(scale) => scale,
-        Err(error) => return status_for_error(error),
+    let weights = if provider.is_some() {
+        &[]
+    } else {
+        std::slice::from_raw_parts(desc.weights, weight_len)
+    };
+    let scale = if provider.is_some() {
+        None
+    } else {
+        match scale_view(
+            desc.scales,
+            desc.scale_values_len,
+            desc.block_size,
+            desc.scale_total_k,
+            desc.n,
+            desc.scale_row_stride,
+            desc.scale_column_offset,
+            desc.scale_valid_columns,
+            desc.work_context,
+        ) {
+            Ok(scale) => scale,
+            Err(error) => return status_for_error(error),
+        }
     };
     let work = StripeWorkDesc {
         weights,
@@ -110,7 +157,7 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
     {
         return status_for_error(crate::SimError::InvalidDimension);
     }
-    if op != crate::VectorOp::Bypass && scale.is_none() {
+    if provider.is_none() && op != crate::VectorOp::Bypass && scale.is_none() {
         return status_for_error(crate::SimError::MissingScales { operation: op });
     }
     if let Some(scales) = scale {
@@ -129,7 +176,13 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
         tile_i_rows,
         tile_j_columns,
     };
-    match simulator.begin_striped_matmul_layout_recover(&work, layout) {
+    let provider_block_size = provider.map(|_| desc.block_size);
+    match simulator.begin_striped_matmul_provider_recover(
+        &work,
+        layout,
+        provider,
+        provider_block_size,
+    ) {
         Ok(job) => {
             *output = Box::into_raw(Box::new(StreamBox {
                 owner: owner.simulator.clone(),
@@ -139,6 +192,7 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
                 output_stride: desc.output_row_stride,
                 columns: desc.n,
                 reduction: desc.k,
+                failed: false,
             }));
             0
         }
@@ -288,14 +342,19 @@ pub unsafe extern "C" fn im2p_progress_stream(stream: *mut StreamBox, cycle_budg
     let Some(stream) = stream.as_mut() else {
         return -1;
     };
+    if stream.failed {
+        return -1;
+    }
     for _ in 0..cycle_budget {
         if let Err(error) = service_stream(stream) {
+            stream.failed = true;
             return status_for_error(error);
         }
         let Some(job) = stream.job.as_mut() else {
             return -1;
         };
         if let Err(error) = job.progress(1) {
+            stream.failed = true;
             return status_for_error(error);
         }
     }
@@ -365,6 +424,9 @@ unsafe fn finish_stream_value(stream: *mut StreamBox) -> Result<WorkStats, i32> 
     let Some(stream) = stream.as_mut() else {
         return Err(-1);
     };
+    if stream.failed {
+        return Err(-1);
+    }
     let Some(job) = stream.job.take() else {
         return Err(-1);
     };

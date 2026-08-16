@@ -15,6 +15,7 @@ pub enum VectorOp {
     Bypass,
     Multiply,
     Shift,
+    External,
 }
 
 impl VectorOp {
@@ -23,10 +24,68 @@ impl VectorOp {
             Self::Bypass => 0,
             Self::Multiply => 1,
             Self::Shift => 2,
+            Self::External => 3,
         }
     }
 }
 
+pub(crate) type ReadProvider =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
+pub(crate) type WriteProvider =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i32) -> i32;
+
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryProvider {
+    pub context: *mut c_void,
+    pub read_weight: Option<ReadProvider>,
+    pub read_scale: Option<ReadProvider>,
+    pub write_output: Option<WriteProvider>,
+}
+
+impl MemoryProvider {
+    pub fn read_weight(self, row: usize, column: usize, values: &mut [i8]) -> Result<(), Error> {
+        let callback = self.read_weight.ok_or(Error::ProviderFailure)?;
+        if unsafe { callback(self.context, row, column, values.len(), values.as_mut_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(Error::ProviderFailure)
+        }
+    }
+
+    pub fn read_scale(self, row: usize, column: usize, values: &mut [i8]) -> Result<(), Error> {
+        let callback = self.read_scale.ok_or(Error::ProviderFailure)?;
+        if unsafe { callback(self.context, row, column, values.len(), values.as_mut_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(Error::ProviderFailure)
+        }
+    }
+
+    pub fn write_output(
+        self,
+        block: usize,
+        row: usize,
+        column: usize,
+        values: &[i32],
+    ) -> Result<(), Error> {
+        let callback = self.write_output.ok_or(Error::ProviderFailure)?;
+        let status = unsafe {
+            callback(
+                self.context,
+                block,
+                row,
+                column,
+                values.len(),
+                values.as_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(Error::ProviderFailure)
+        }
+    }
+}
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     AllocationFailed,
@@ -68,6 +127,7 @@ pub enum Error {
     UnfinishedStream,
     NoPendingActivation,
     NoPendingOutput,
+    ProviderFailure,
     Timeout {
         operation: &'static str,
         cycles: u64,

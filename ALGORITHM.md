@@ -3,8 +3,10 @@
 > **구현 상태:** 이 문서는 SRMD residual GEMM 변환의 algorithm reference다.
 > 현재 IM2P.sim RTL, Rust simulator, C ABI, C++ frontend에는 SRMD decomposition,
 > compaction, row packing, radix-256 reconstruction이 구현되어 있지 않다. 현재
-> C++ frontend numerical execution은 `q8_h0`만 지원하며 `q8_h2`는
-> **Deprecated**다.
+> C++ frontend numerical execution은 `q8_0_unpacked_to_h1`, `q8_h0`, `q8_h1`,
+> `q8_hp1`, `q8_channel`, `q8_channel_dense_sidecar`를 지원한다. `q8_h2`는
+> **Deprecated**이고 `q8_hp2`는 **Unsupported**다. Channel route는 RTL
+> `VectorBypass`를 사용하며 channel scale은 host output에서 한 번만 적용한다.
 > 현재 구현 범위는 [root README](README.md)에서 확인한다.
 
 ## 1. 문제

@@ -56,6 +56,7 @@ BSV_TEST_TOPS := \
 	mkTbIM2PCoreActivationBuffer \
 	mkTbIM2PCoreMatrix \
 	mkTbIM2PCoreMatrixScale \
+	mkTbIM2PCoreExternal \
 	mkTbIM2PCoreGrouped \
 	mkTbFloatCore \
 	mkTbSynthInt8x16 \
