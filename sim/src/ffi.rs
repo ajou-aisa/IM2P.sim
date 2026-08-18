@@ -150,6 +150,11 @@ unsafe extern "C" {
     pub fn im2p_tick(handle: *mut c_void);
     pub fn im2p_tick_staged(handle: *mut c_void);
     pub fn im2p_cycle_count(handle: *mut c_void) -> u64;
+    pub fn im2p_work_active(handle: *mut c_void) -> i32;
+    pub fn im2p_work_cycle_count(handle: *mut c_void) -> u64;
+    pub fn im2p_last_completed_work_cycles(handle: *mut c_void) -> u64;
+    pub fn im2p_work_start_cycle(handle: *mut c_void) -> u64;
+    pub fn im2p_work_completion_cycle(handle: *mut c_void) -> u64;
     pub fn im2p_observed_response_mask(handle: *mut c_void) -> u32;
     pub fn im2p_max_concurrent_responses(handle: *mut c_void) -> u32;
     pub fn im2p_weights_ready(handle: *mut c_void) -> i32;

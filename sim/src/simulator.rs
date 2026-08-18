@@ -207,6 +207,31 @@ impl Im2pSimulator {
         unsafe { ffi::im2p_cycle_count(self.handle.as_ptr()) }
     }
 
+    pub fn work_active(&self) -> bool {
+        // SAFETY: handle remains valid and the getter is observational.
+        unsafe { ffi::im2p_work_active(self.handle.as_ptr()) != 0 }
+    }
+
+    pub fn work_cycles(&self) -> u64 {
+        // SAFETY: handle remains valid and the getter is observational.
+        unsafe { ffi::im2p_work_cycle_count(self.handle.as_ptr()) }
+    }
+
+    pub fn last_completed_work_cycles(&self) -> u64 {
+        // SAFETY: handle remains valid and the getter is observational.
+        unsafe { ffi::im2p_last_completed_work_cycles(self.handle.as_ptr()) }
+    }
+
+    pub fn work_interval(&self) -> (u64, u64) {
+        // SAFETY: handle remains valid and both getters are observational.
+        unsafe {
+            (
+                ffi::im2p_work_start_cycle(self.handle.as_ptr()),
+                ffi::im2p_work_completion_cycle(self.handle.as_ptr()),
+            )
+        }
+    }
+
     /// Test/diagnostic telemetry for A/W/S/C responses committed on RTL edges.
     pub fn response_concurrency(&self) -> (u8, u8) {
         // SAFETY: handle remains valid and both getters are observational.

@@ -1,5 +1,6 @@
 #include "im2p_sim.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +8,20 @@
 _Static_assert(
     sizeof(im2p_work_stats_t) == 27 * sizeof(uint64_t),
     "legacy stats ABI size changed"
+);
+_Static_assert(
+    sizeof(im2p_work_stats_extended_t) == 41 * sizeof(uint64_t),
+    "extended stats ABI size changed"
+);
+_Static_assert(
+    offsetof(im2p_work_stats_extended_t, cross_stripe_overlap_cycles)
+        == sizeof(im2p_work_stats_t),
+    "extended stats prefix changed"
+);
+_Static_assert(
+    offsetof(im2p_work_stats_extended_t, lookahead_start_cycle)
+        == 40 * sizeof(uint64_t),
+    "extended stats tail changed"
 );
 _Static_assert(IM2P_VECTOR_EXTERNAL == 3, "external vector ABI encoding changed");
 
@@ -308,6 +323,11 @@ int main(void) {
             || im2p_stream_cycle_count(stream) != logical_cycles) {
         return 10;
     }
+    if (im2p_progress_stream(stream, 7) != IM2P_OK
+            || im2p_stream_cycle_count(stream) != logical_cycles + 7) {
+        return 11;
+    }
+    logical_cycles += 7;
     for (uint32_t cycle = 0; cycle < 100000 && !completion_seen; ++cycle) {
         if (im2p_progress_stream(stream, 1) != IM2P_OK
                 || im2p_stream_cycle_count(stream) != ++logical_cycles) {

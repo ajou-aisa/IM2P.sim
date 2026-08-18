@@ -43,9 +43,6 @@ impl Im2pSimulator {
         {
             return Err(Error::InvalidLayout);
         }
-        let counters_before = self.matrix_counters();
-        let scales_before = self.scale_counters();
-        let start_cycle = self.cycles();
         let scale = work.scales;
         let descriptor = ffi::MatmulDescriptor {
             job_id: work.scales.map_or(1, |view| view.context as u32),
@@ -84,7 +81,7 @@ impl Im2pSimulator {
                 let accepted = unsafe { ffi::im2p_acknowledge_matmul(self.handle.as_ptr()) };
                 self.require_ready("acknowledge_matmul", accepted)?;
                 self.wait_idle()?;
-                return Ok(self.work_stats(counters_before, scales_before, start_cycle, 1));
+                return Ok(self.work_stats(1));
             }
             self.tick_staged_raw();
         }
@@ -126,9 +123,6 @@ impl Im2pSimulator {
         {
             return Err(Error::InvalidLayout);
         }
-        let counters_before = self.matrix_counters();
-        let scales_before = self.scale_counters();
-        let start_cycle = self.cycles();
         let descriptor = ffi::MatmulDescriptor {
             job_id: work_context as u32,
             mode: 0,
@@ -174,7 +168,7 @@ impl Im2pSimulator {
                 let accepted = unsafe { ffi::im2p_acknowledge_matmul(self.handle.as_ptr()) };
                 self.require_ready("acknowledge_matmul", accepted)?;
                 self.wait_idle()?;
-                return Ok(self.work_stats(counters_before, scales_before, start_cycle, 1));
+                return Ok(self.work_stats(1));
             }
             self.tick_staged_raw();
         }

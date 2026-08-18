@@ -96,6 +96,10 @@ completion 카운터가 진행될 때만 재설정됩니다. 호출자가 큐 �
 제출된 stripe나 원시 작업이 없으면 worker는 condition variable에서 기다리고 RTL
 클록을 진행하지 않습니다. 이 호스트 wall-clock 대기는 RTL 논리 대기 사이클이
 아닙니다.
+성능 cycle의 source of truth는 IM2PCore 내부 RTL telemetry다. External C++
+Host는 `execute`/`submit_stripe`/`fence`를 사용하고, Simulation Bridge는
+clock과 A/W/S/C I/O를 구동하며 RTL counter를 읽습니다. Frontend worker 반복
+횟수와 native provider wall-clock은 `total_cycles`에 사용되지 않습니다.
 Model은 on-core scale cache와 resident weight-bank state를 기능적으로
 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA,
 interconnect, clock frequency를 포함하지 않는다. Host pointer access는

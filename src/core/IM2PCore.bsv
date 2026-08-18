@@ -187,6 +187,12 @@ interface IM2PCoreIfc#(
     method UInt#(64) currentStripeCompletionCycle;
     method UInt#(64) lookaheadReadyCycle;
     method UInt#(64) lookaheadStartCycle;
+    method UInt#(64) rtlCycleCount;
+    method Bool workActive;
+    method UInt#(64) workCycles;
+    method UInt#(64) lastCompletedWorkCycles;
+    method UInt#(64) workStartCycle;
+    method UInt#(64) workCompletionCycle;
 
     method Action beginWeightLoad;
     method Action loadWeightRow(
@@ -436,6 +442,11 @@ module mkIM2PCore(IM2PCoreIfc#(
     Reg#(UInt#(64)) crossStripeOverlapCyclesReg <- mkReg(0);
     Reg#(UInt#(64)) cycleReg <- mkReg(0);
     Reg#(UInt#(64)) matrixStartCycleReg <- mkReg(0);
+    Reg#(Bool) workActiveReg <- mkReg(False);
+    Reg#(UInt#(64)) workCyclesReg <- mkReg(0);
+    Reg#(UInt#(64)) lastCompletedWorkCyclesReg <- mkReg(0);
+    Reg#(UInt#(64)) workStartCycleReg <- mkReg(0);
+    Reg#(UInt#(64)) workCompletionCycleReg <- mkReg(0);
     Reg#(Bool) lookaheadPreparedReg <- mkReg(False);
     Reg#(MatmulWork#(arrayDim)) lookaheadWorkReg <- mkRegU;
     Reg#(MatrixExtent) lookaheadKStartReg <- mkReg(0);
@@ -508,7 +519,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         end
         if (matrixStateReg == MatrixWaitSchedulerDone
                 && matmulScheduler.active
-                && !matmulScheduler.workValid) begin
+                && matmulScheduler.waitingForStripe) begin
             stripeHostWaitCyclesReg <= stripeHostWaitCyclesReg + 1;
         end
         if (matrixStateReg == MatrixExecute) begin
@@ -607,6 +618,13 @@ module mkIM2PCore(IM2PCoreIfc#(
 
     rule countCycles;
         cycleReg <= cycleReg + 1;
+    endrule
+
+    rule countActiveWork (
+        workActiveReg
+        && !(matrixStateReg == MatrixWaitSchedulerDone && matmulScheduler.done)
+    );
+        workCyclesReg <= workCyclesReg + 1;
     endrule
 
     rule captureLookaheadWork (
@@ -1508,6 +1526,10 @@ module mkIM2PCore(IM2PCoreIfc#(
             !outputRequestValidReg,
             "matmul completed before C write acknowledgement"
         );
+        workCyclesReg <= workCyclesReg + 1;
+        lastCompletedWorkCyclesReg <= workCyclesReg + 1;
+        workCompletionCycleReg <= cycleReg + 1;
+        workActiveReg <= False;
         matrixStateReg <= MatrixDone;
     endrule
 
@@ -1767,6 +1789,43 @@ module mkIM2PCore(IM2PCoreIfc#(
             zeroExtend(rowCount) * zeroExtend(outputRowStride);
         matrixOutputBlockStrideReg <= truncate(outputBlockStride);
         matrixStartCycleReg <= cycleReg;
+        workActiveReg <= True;
+        workCyclesReg <= 0;
+        workStartCycleReg <= cycleReg + 1;
+        workCompletionCycleReg <= 0;
+        matmulFragmentsCompletedReg <= 0;
+        matmulWorksCompletedReg <= 0;
+        stripesPublishedReg <= 0;
+        stripeRowsPublishedReg <= 0;
+        activationReadRequestsReg <= 0;
+        weightReadRequestsReg <= 0;
+        scaleReadRequestsReg <= 0;
+        outputWriteRequestsReg <= 0;
+        outputWriteResponsesReg <= 0;
+        weightBankActivationsReg <= 0;
+        activationWaitCyclesReg <= 0;
+        weightWaitCyclesReg <= 0;
+        outputWaitCyclesReg <= 0;
+        stripeHostWaitCyclesReg <= 0;
+        computeCyclesReg <= 0;
+        drainCyclesReg <= 0;
+        weightPreloadCyclesReg <= 0;
+        activationOverlapCyclesReg <= 0;
+        weightOverlapCyclesReg <= 0;
+        scaleOverlapCyclesReg <= 0;
+        overlapCyclesReg <= 0;
+        crossStripeOverlapCyclesReg <= 0;
+        scaleDemandRequestsReg <= 0;
+        scalePrefetchRequestsReg <= 0;
+        scaleCurrentHitsReg <= 0;
+        scaleNextHitsReg <= 0;
+        scaleDemandMissesReg <= 0;
+        scaleRowsReceivedReg <= 0;
+        scaleWaitCyclesReg <= 0;
+        lookaheadWeightRequestsReg <= 0;
+        lookaheadWeightReuseHitsReg <= 0;
+        lookaheadScaleRequestsReg <= 0;
+        lookaheadScaleReusesReg <= 0;
         lookaheadPublishCycleReg <= 0;
         lookaheadFirstActivationCycleReg <= 0;
         lookaheadFirstWeightCycleReg <= 0;
@@ -2160,6 +2219,12 @@ module mkIM2PCore(IM2PCoreIfc#(
     method UInt#(64) currentStripeCompletionCycle = currentStripeCompletionCycleReg;
     method UInt#(64) lookaheadReadyCycle = lookaheadReadyCycleReg;
     method UInt#(64) lookaheadStartCycle = lookaheadStartCycleReg;
+    method UInt#(64) rtlCycleCount = cycleReg;
+    method Bool workActive = workActiveReg;
+    method UInt#(64) workCycles = workCyclesReg;
+    method UInt#(64) lastCompletedWorkCycles = lastCompletedWorkCyclesReg;
+    method UInt#(64) workStartCycle = workStartCycleReg;
+    method UInt#(64) workCompletionCycle = workCompletionCycleReg;
 
     method Action beginWeightLoad if (
         matrixStateReg == MatrixIdle

@@ -62,12 +62,6 @@ module mkTbIM2PCoreMatrixScale(Empty);
     Reg#(HostRequestTag) outputTag <- mkRegU;
     Reg#(UInt#(4)) phaseOutputs <- mkReg(0);
 
-    Reg#(UInt#(64)) bypassWaitBaseline <- mkReg(0);
-    Reg#(UInt#(64)) prefetchDemandBaseline <- mkReg(0);
-    Reg#(UInt#(64)) prefetchRequestBaseline <- mkReg(0);
-    Reg#(UInt#(64)) prefetchMissBaseline <- mkReg(0);
-    Reg#(UInt#(64)) prefetchNextHitBaseline <- mkReg(0);
-    Reg#(UInt#(64)) prefetchRowsBaseline <- mkReg(0);
 
     rule watch;
         watchdog <= watchdog + 1;
@@ -295,7 +289,6 @@ module mkTbIM2PCoreMatrixScale(Empty);
             );
             $finish(1);
         end
-        bypassWaitBaseline <= core.scaleWaitCycles;
         core.acknowledgeMatmul;
         phase <= TbReuseDone;
     endrule
@@ -318,20 +311,15 @@ module mkTbIM2PCoreMatrixScale(Empty);
 
     rule finishBypass (phase == TbBypassRun && core.matmulDone);
         if (phaseScaleRequests != 0 || phaseOutputs != 1
-                || core.scaleReadRequests != 2
-                || core.scaleWaitCycles != bypassWaitBaseline) begin
+                || core.scaleReadRequests != 0
+                || core.scaleWaitCycles != 0) begin
             $display(
-                "IM2P MATRIX SCALE: FAIL bypass requests=%0d reads=%0d wait=%0d baseline=%0d",
+                "IM2P MATRIX SCALE: FAIL bypass requests=%0d reads=%0d wait=%0d",
                 phaseScaleRequests, core.scaleReadRequests,
-                core.scaleWaitCycles, bypassWaitBaseline
+                core.scaleWaitCycles
             );
             $finish(1);
         end
-        prefetchDemandBaseline <= core.scaleDemandRequests;
-        prefetchRequestBaseline <= core.scalePrefetchRequests;
-        prefetchMissBaseline <= core.scaleDemandMisses;
-        prefetchNextHitBaseline <= core.scaleNextHits;
-        prefetchRowsBaseline <= core.scaleRowsReceived;
         core.acknowledgeMatmul;
         phase <= TbBypassDone;
     endrule
@@ -359,11 +347,11 @@ module mkTbIM2PCoreMatrixScale(Empty);
     rule finishPrefetch (phase == TbPrefetchRun && core.matmulDone);
         if (phaseScaleRequests != 2 || phaseOutputs != 2
                 || !prefetchResponseDuringExecution
-                || core.scaleDemandRequests != prefetchDemandBaseline + 1
-                || core.scalePrefetchRequests != prefetchRequestBaseline + 1
-                || core.scaleDemandMisses != prefetchMissBaseline + 1
-                || core.scaleNextHits != prefetchNextHitBaseline + 1
-                || core.scaleRowsReceived != prefetchRowsBaseline + 2) begin
+                || core.scaleDemandRequests != 1
+                || core.scalePrefetchRequests != 1
+                || core.scaleDemandMisses != 1
+                || core.scaleNextHits != 1
+                || core.scaleRowsReceived != 2) begin
             $display(
                 "IM2P MATRIX SCALE: FAIL prefetch requests=%0d outputs=%0d during=%0d demand=%0d prefetch=%0d miss=%0d next=%0d rows=%0d",
                 phaseScaleRequests, phaseOutputs,

@@ -450,6 +450,44 @@ def main() -> None:
         if re.search(r"\b(std::thread|thread::|sleep|Instant|SystemTime)\b", text):
             fail(f"host timing dependency in {path.relative_to(ROOT)}")
 
+    bridge_path = ROOT / "sim/ffi/im2p_verilator.cpp"
+    bridge_text = bridge_path.read_text(encoding="utf-8")
+    if re.search(r"\buint64_t\s+cycles\s*;", bridge_text):
+        fail("simulation bridge owns a forbidden performance cycle counter")
+    cycle_getter = re.search(
+        r'extern "C" uint64_t im2p_cycle_count\(.*?\n\}',
+        bridge_text,
+        flags=re.DOTALL,
+    )
+    if cycle_getter is None or "rtlCycleCount" not in cycle_getter.group(0):
+        fail("im2p_cycle_count must read IM2PCore RTL telemetry")
+
+    work_stats_path = ROOT / "sim/src/simulator/matmul/stats.rs"
+    work_stats_text = work_stats_path.read_text(encoding="utf-8")
+    if re.search(
+        r"work_total_cycles:\s*self\.cycles\(\)",
+        work_stats_text,
+    ):
+        fail("WorkStats total cycle source must be RTL per-work telemetry")
+    if "last_completed_work_cycles" not in work_stats_text:
+        fail("WorkStats must read RTL last-completed-work telemetry")
+
+    cycle_assignment = re.compile(
+        r"\b(?:total|compute|drain|wait|overlap)_cycles\s*="
+        r"[^;\n]*(?:chrono|steady_clock|high_resolution_clock|elapsed)",
+        flags=re.IGNORECASE,
+    )
+    for path in [
+        bridge_path,
+        *(ROOT / "sim/src").rglob("*.rs"),
+        *(ROOT / "frontend/src").rglob("*.cpp"),
+    ]:
+        if cycle_assignment.search(path.read_text(encoding="utf-8")):
+            fail(
+                "wall-clock value assigned to performance cycles: "
+                f"{path.relative_to(ROOT)}"
+            )
+
     source_text = "\n".join(
         strip_comments(path.read_text(encoding="utf-8"))
         for path in [*SRC.rglob("*.bsv"), *(ROOT / "sim/src").rglob("*.rs")]

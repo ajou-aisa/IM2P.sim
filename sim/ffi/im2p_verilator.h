@@ -188,8 +188,15 @@ void im2p_tick(im2p_handle_t handle);
 /* Internal provider batching: staged channel responses commit on one edge. */
 void im2p_tick_staged(im2p_handle_t handle);
 void im2p_eval(im2p_handle_t handle);
+/* RTL logical-cycle counter read from IM2PCore telemetry. */
 uint64_t im2p_cycle_count(im2p_handle_t handle);
+/* Test/debug-only count of positive edges driven by the simulation bridge. */
 uint64_t im2p_positive_edge_count(im2p_handle_t handle);
+int im2p_work_active(im2p_handle_t handle);
+uint64_t im2p_work_cycle_count(im2p_handle_t handle);
+uint64_t im2p_last_completed_work_cycles(im2p_handle_t handle);
+uint64_t im2p_work_start_cycle(im2p_handle_t handle);
+uint64_t im2p_work_completion_cycle(im2p_handle_t handle);
 uint32_t im2p_observed_response_mask(im2p_handle_t handle);
 uint32_t im2p_max_concurrent_responses(im2p_handle_t handle);
 

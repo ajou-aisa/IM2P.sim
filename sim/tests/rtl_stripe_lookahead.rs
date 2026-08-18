@@ -170,6 +170,8 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
     assert!(stats.lookahead_ready_cycle > 0);
     assert!(stats.lookahead_ready_cycle <= stats.current_stripe_completion_cycle);
     assert!(stats.cross_stripe_overlap_cycles > 0);
+    assert!(stats.lookahead_start_cycle <= stats.work_total_cycles);
+    assert!(stats.cross_stripe_overlap_cycles <= stats.work_total_cycles);
     assert_eq!(
         stats.lookahead_start_cycle - stats.current_stripe_completion_cycle,
         3
@@ -213,17 +215,21 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
 }
 
 #[test]
-fn delayed_publish_and_padded_guards_match_cpu() -> Result<(), SimError> {
+fn published_lookahead_has_no_host_wait_and_late_publish_waits() -> Result<(), SimError> {
     let (padded, stats, _) = run(&[0, 37, 151, 200], true, 35, 2, false, None)?;
     let (packed, _, _) = run(&[0, 1, 2, 3], false, 35, 2, false, None)?;
+    let (_, late, _) = run(&[0, 800, 801, 802], false, 35, 2, false, None)?;
     assert_eq!(padded, packed);
-    assert_eq!(stats.stripe_host_wait_cycles, 8);
+    assert_eq!(stats.stripe_host_wait_cycles, 0);
+    assert!(late.stripe_host_wait_cycles > 0);
+    assert!(late.stripe_host_wait_cycles <= late.work_total_cycles);
     assert!(stats.lookahead_start_cycle >= stats.current_stripe_completion_cycle);
     println!(
-        "delayed complete={} start={} host_wait={}",
+        "published complete={} start={} host_wait={} late_host_wait={}",
         stats.current_stripe_completion_cycle,
         stats.lookahead_start_cycle,
-        stats.stripe_host_wait_cycles
+        stats.stripe_host_wait_cycles,
+        late.stripe_host_wait_cycles
     );
     Ok(())
 }

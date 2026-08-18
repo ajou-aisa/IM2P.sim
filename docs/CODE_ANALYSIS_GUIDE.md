@@ -385,11 +385,27 @@ RTL logical cycle
 != physical clock period
 ```
 
-`C++ 실행 명령 수를 cycle로 환산한다.`라고 쓰지 않는다. 정확한 설명은 다음과
-같다.
+Cycle 분석에서는 다음 네 계층도 분리한다.
 
-> C++ harness가 Verilated RTL의 CLK를 직접 토글하고 simulated positive edge를
-> 발생시키며, 해당 RTL logical clock period를 센다.
+```text
+External C++ Host
+    execute / submit_stripe / fence
+
+Simulation Bridge
+    Verilated model clock / RDY-EN / memory service
+
+Verilated RTL Model
+    BSV state와 scheduler/datapath
+
+RTL Telemetry
+    global/work/detailed/event counters
+```
+
+성능 cycle의 source of truth는 `IM2PCore` RTL telemetry다. C++ private edge
+counter, bridge loop count, progress 호출 횟수, wall-clock을 NPU cycle이라고
+설명하지 않는다. `im2p_cycle_count()`는 RTL `rtlCycleCount`를 읽는다.
+Simulation Bridge는 CLK를 토글하고 I/O를 service할 뿐 performance counter를
+재구성하지 않는다.
 
 ### 3.15 Rust FFI와 RTL primitive
 
@@ -405,7 +421,10 @@ pulse
 cycle count
 ```
 
-이 계층이 RTL scheduler를 대신한다고 설명하지 않는다.
+이 계층이 RTL scheduler나 performance counter를 대신한다고 설명하지 않는다.
+`WorkStats::work_total_cycles`는 RTL `lastCompletedWorkCycles`에서 온다. Detailed
+cycle은 새 work acceptance 때 RTL에서 초기화되고 완료 뒤 직접 전달된다.
+Low-level `execute_tile()` phase latency는 전후 RTL global-cycle snapshot 차다.
 
 ### 3.16 Memory provider
 
@@ -524,6 +543,28 @@ Native/provider route가 전체 tensor materialization 없이 요청된 logical 
 11. C ABI tests
 12. high-level frontend tests
 ```
+
+Cycle test에서는 다음 edge contract를 확인한다.
+
+```text
+reset = 0
+eval-only = +0
+tick/pulse = +1
+progress(N) = +N
+
+startMatmul acceptance:
+    workCycles = 0
+
+terminal MatrixDone edge:
+    lastCompletedWorkCycles latch
+    workCompletionCycle - workStartCycle
+        == lastCompletedWorkCycles
+```
+
+Detailed counter는 registered-state occupancy이며 서로 exclusive하지 않다.
+`total = compute + drain + waits + overlaps` equality를 가정하지 않는다.
+Back-to-back work에서 work cycle, detailed counter, event timestamp가 새
+acceptance 때 reset되는지 확인한다.
 
 ## 4. 코드 제시 규칙
 

@@ -101,11 +101,17 @@ scale_wait_cycles
 
 `scale_transfer_cycles`는 수락된 RTL 행 응답 사이클을 셉니다. `scale_wait_cycles`는 보류 중인 스케일 실행이 있는 RTL 사이클을 셉니다. 호스트 포인터 역참조 시간은 RTL 사이클이 아닙니다.
 
-`WorkStats`는 논리 RTL 카운터 차이를 보고합니다. 특히 `cross_stripe_overlap_cycles`는 현재 엔진이 실행되는 동안 다음 stripe의 A/W/S fetch 또는 PE preload 중 하나라도 활성인 사이클만 셉니다. 반면 `activation_overlap_cycles`, `weight_overlap_cycles`, `scale_overlap_cycles`는 현재 작업의 조각 준비가 compute와 겹치는 것을 보고하며, cross-stripe 집계의 구성 요소가 아닙니다. 호스트 wall-clock 시간은 제외됩니다. `stripe_host_wait_cycles`는 현재 stripe 전환 후 다음 stripe가 publish되지 않았을 때의 대기이며, A/W/S/C 채널 대기는 별도로 보고됩니다. `lookahead_ready_cycle`은 첫 조각의 A/W/S staging과 필요한 PE-bank preload 또는 reuse가 모두 준비된 시점을 기록합니다.
+`WorkStats::work_total_cycles`는 RTL `lastCompletedWorkCycles`를 직접 읽습니다.
+Detailed cycle과 request telemetry는 새 work가 accepted될 때 RTL에서 초기화되고
+완료 후 직접 전달됩니다. C++ private counter나 host-side before/after delta가
+performance source로 사용되지 않습니다. 특히 `cross_stripe_overlap_cycles`는 현재 엔진이 실행되는 동안 다음 stripe의 A/W/S fetch 또는 PE preload 중 하나라도 활성인 사이클만 셉니다. 반면 `activation_overlap_cycles`, `weight_overlap_cycles`, `scale_overlap_cycles`는 현재 작업의 조각 준비가 compute와 겹치는 것을 보고하며, cross-stripe 집계의 구성 요소가 아닙니다. 호스트 wall-clock 시간은 제외됩니다. `stripe_host_wait_cycles`는 현재 stripe 전환 후 다음 stripe가 publish되지 않았을 때의 대기이며, A/W/S/C 채널 대기는 별도로 보고됩니다. `lookahead_ready_cycle`은 첫 조각의 A/W/S staging과 필요한 PE-bank preload 또는 reuse가 모두 준비된 시점을 기록합니다.
 
 Lookahead 타임스탬프는 matmul별 RTL 사이클입니다. `lookahead_publish_cycle`은 두 번째 stripe publish가 RTL에 수락된 사이클입니다. 해당 사이클부터 `lookahead_first_activation_cycle`, `lookahead_first_weight_cycle`, `lookahead_weight_preload_cycle`, `lookahead_scale_cycle`의 첫 0이 아닌 값까지의 차이는 publish-to-first-prepare 지연입니다. `lookahead_start_cycle - current_stripe_completion_cycle`은 completion-to-next-start 전환입니다. `lookahead_weight_requests`와 `lookahead_weight_reuse_hits`, 그리고 `lookahead_scale_requests`와 `lookahead_scale_reuses`는 호스트 fetch와 정확한 reuse를 구분합니다.
 
 원래의 고정 크기 `im2p_work_stats_t`와 그 진입점은 바이너리 레이아웃을 유지합니다. Lookahead telemetry는 `im2p_work_stats_extended_t`, `im2p_execute_matmul_extended`, `im2p_finish_stream_extended`를 통해 사용할 수 있습니다.
+
+전체 source mapping과 start/completion edge convention은
+[`docs/RTL_CYCLE_ACCOUNTING.md`](../docs/RTL_CYCLE_ACCOUNTING.md)에 정의합니다.
 
 ## 행렬 및 협력적 stripe API
 

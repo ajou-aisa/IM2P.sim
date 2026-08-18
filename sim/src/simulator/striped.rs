@@ -21,8 +21,6 @@ pub struct StripedMatmul<'a> {
     outstanding_stripes: usize,
     next_stripe_id: u32,
     next_row: usize,
-    counters_before: ffi::MatrixCounters,
-    scales_before: ffi::ScaleCounters,
     start_cycle: u64,
 }
 
@@ -259,12 +257,7 @@ impl StripedMatmul<'_> {
                 self.simulator
                     .require_ready("acknowledge_matmul", accepted)?;
                 self.simulator.wait_idle()?;
-                let stats = self.simulator.work_stats(
-                    self.counters_before,
-                    self.scales_before,
-                    self.start_cycle,
-                    completed,
-                );
+                let stats = self.simulator.work_stats(completed);
                 return Ok((stats, self.simulator));
             }
             self.simulator.tick_staged_raw();

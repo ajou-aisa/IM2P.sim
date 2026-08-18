@@ -31,6 +31,7 @@ interface MatmulSchedulerIfc#(numeric type arrayDim);
     method Action acknowledgeCompletion;
 
     method Bool active;
+    method Bool waitingForStripe;
     method Bool done;
     method Action acknowledge;
 
@@ -412,6 +413,8 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
 
     method Bool active =
         stateReg != MatmulIdle && stateReg != MatmulDone;
+
+    method Bool waitingForStripe = stateReg == MatmulWaitStripe;
 
     method Bool done = stateReg == MatmulDone;
 

@@ -26,8 +26,7 @@ constexpr uint32_t kAccumulatorWords = 32;
 struct Simulator {
     VerilatedContext *context;
     Top *top;
-    uint64_t cycles;
-    uint64_t positive_edges;
+    uint64_t debug_positive_edges;
     uint8_t staged_response_mask;
     uint8_t observed_response_mask;
     uint8_t max_concurrent_responses;
@@ -104,8 +103,7 @@ void clock_staged(Simulator *simulator) {
     clear_enables(simulator);
     simulator->top->CLK = 0;
     evaluate(simulator);
-    ++simulator->cycles;
-    ++simulator->positive_edges;
+    ++simulator->debug_positive_edges;
     simulator->staged_response_mask = 0;
 }
 
@@ -157,7 +155,7 @@ extern "C" im2p_handle_t im2p_create(void) {
     try {
         context = new VerilatedContext;
         top = new Top(context);
-        simulator = new Simulator{context, top, 0, 0, 0, 0, 0, false, false, 0, 0, 0};
+        simulator = new Simulator{context, top, 0, 0, 0, 0, false, false, 0, 0, 0};
         im2p_reset(simulator);
         return simulator;
     }
@@ -190,13 +188,11 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
         evaluate(simulator);
         simulator->top->CLK = 0;
         evaluate(simulator);
-        ++simulator->cycles;
     }
     clear_enables(simulator);
     simulator->top->RST_N = 1;
     evaluate(simulator);
-    simulator->cycles = 0;
-    simulator->positive_edges = 0;
+    simulator->debug_positive_edges = 0;
     simulator->staged_response_mask = 0;
     simulator->observed_response_mask = 0;
     simulator->max_concurrent_responses = 0;
@@ -222,11 +218,43 @@ extern "C" void im2p_eval(im2p_handle_t handle) {
 }
 
 extern "C" uint64_t im2p_cycle_count(im2p_handle_t handle) {
-    return static_cast<Simulator *>(handle)->cycles;
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->rtlCycleCount;
 }
 
 extern "C" uint64_t im2p_positive_edge_count(im2p_handle_t handle) {
-    return static_cast<Simulator *>(handle)->positive_edges;
+    return static_cast<Simulator *>(handle)->debug_positive_edges;
+}
+
+extern "C" int im2p_work_active(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->workActive ? 1 : 0;
+}
+
+extern "C" uint64_t im2p_work_cycle_count(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->workCycles;
+}
+
+extern "C" uint64_t im2p_last_completed_work_cycles(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->lastCompletedWorkCycles;
+}
+
+extern "C" uint64_t im2p_work_start_cycle(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->workStartCycle;
+}
+
+extern "C" uint64_t im2p_work_completion_cycle(im2p_handle_t handle) {
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    return simulator->top->workCompletionCycle;
 }
 
 extern "C" uint32_t im2p_observed_response_mask(im2p_handle_t handle) {

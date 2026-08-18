@@ -52,8 +52,6 @@ impl Im2pSimulator {
         ) {
             return Err((error, self));
         }
-        let counters_before = self.matrix_counters();
-        let scales_before = self.scale_counters();
         let start_cycle = self.cycles();
         let scale = descriptor.scale_matrix;
         let rtl = ffi::MatmulDescriptor {
@@ -107,8 +105,6 @@ impl Im2pSimulator {
             outstanding_stripes: 0,
             next_stripe_id: 0,
             next_row: 0,
-            counters_before,
-            scales_before,
             start_cycle,
         })
     }

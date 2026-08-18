@@ -76,6 +76,17 @@ fn raw_clock_periods_are_exact() {
             "one pulse is one period"
         );
         assert_eq!(im2p_cycle_count(handle), im2p_positive_edge_count(handle));
+
+        let before_host_work = im2p_cycle_count(handle);
+        let mut checksum = 0_u64;
+        for value in 0..100_000 {
+            checksum = checksum.wrapping_add(value);
+        }
+        std::hint::black_box(checksum);
+        assert_eq!(im2p_cycle_count(handle), before_host_work);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert_eq!(im2p_cycle_count(handle), before_host_work);
         im2p_destroy(handle);
     }
 }

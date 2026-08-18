@@ -216,6 +216,8 @@ module mkTbIM2PCoreMatrix(Empty);
     Reg#(Bool) previousActiveBank <- mkReg(False);
     Reg#(Bool) bankSwitchSeen <- mkReg(False);
     Reg#(Bool) preloadDuringExecutionSeen <- mkReg(False);
+    Reg#(UInt#(64)) fullWorkCycles <- mkReg(0);
+    Reg#(Bool) asyncInitialCountersChecked <- mkReg(False);
 
     rule watch;
         watchdog <= watchdog + 1;
@@ -224,12 +226,17 @@ module mkTbIM2PCoreMatrix(Empty);
             $display(
                 "IM2P CORE MATRIX: FAIL timeout phase=",
                 fshow(phase),
-                " a=%0d w=%0d s=%0d c=%0d/%0d",
+                " a=%0d w=%0d s=%0d c=%0d/%0d core=%0d matmul=%0d work=%0d active=%0d cycles=%0d",
                 activationRequests,
                 weightRequests,
                 scaleRequests,
                 outputRequests,
-                outputResponses
+                outputResponses,
+                core.matrixCoreState,
+                core.matmulSchedulerState,
+                core.workSchedulerState,
+                core.workActive,
+                core.workCycles
             );
             $finish(1);
         end
@@ -538,6 +545,22 @@ module mkTbIM2PCoreMatrix(Empty);
             $finish(1);
         end
 
+        if (core.workActive
+                || core.lastCompletedWorkCycles == 0
+                || core.stripeHostWaitCycles != 0
+                || core.workCompletionCycle - core.workStartCycle
+                    != core.lastCompletedWorkCycles) begin
+            $display(
+                "IM2P CORE MATRIX: FAIL full work interval active=%0d start=%0d completion=%0d total=%0d",
+                core.workActive,
+                core.workStartCycle,
+                core.workCompletionCycle,
+                core.lastCompletedWorkCycles
+            );
+            $finish(1);
+        end
+        fullWorkCycles <= core.lastCompletedWorkCycles;
+
         // Full mode must prepare the next I tile/J0 while the current I
         // tile traverses J, then promote it without changing numerical output.
         if (core.lookaheadFirstActivationCycle == 0
@@ -624,6 +647,32 @@ module mkTbIM2PCoreMatrix(Empty);
     // Publish 없이 충분한 cycle 동안 A 요청이 나오지 않아야 한다.
     // captureActivationRequest가 이 phase에서 곧바로 실패시킨다.
     rule observeAsyncGate (phase == TbAsyncObserveGate);
+        if (!asyncInitialCountersChecked) begin
+            if (!core.workActive
+                    || core.workCycles != 0
+                    || core.matmulFragmentsCompleted != 0
+                    || core.matmulWorksCompleted != 0
+                    || core.computeCycles != 0
+                    || core.drainCycles != 0
+                    || core.activationWaitCycles != 0
+                    || core.weightWaitCycles != 0
+                    || core.outputWaitCycles != 0
+                    || core.overlapCycles != 0
+                    || core.lastCompletedWorkCycles != fullWorkCycles) begin
+                $display(
+                    "IM2P CORE MATRIX: FAIL work reset active=%0d cycles=%0d fragments=%0d works=%0d compute=%0d drain=%0d",
+                    core.workActive,
+                    core.workCycles,
+                    core.matmulFragmentsCompleted,
+                    core.matmulWorksCompleted,
+                    core.computeCycles,
+                    core.drainCycles
+                );
+                $finish(1);
+            end
+            asyncInitialCountersChecked <= True;
+        end
+
         if (activationRequests != 0) begin
             $display(
                 "IM2P CORE MATRIX: FAIL async issued %0d activation reads before publish",
@@ -658,6 +707,19 @@ module mkTbIM2PCoreMatrix(Empty);
                 activationRequests,
                 outputRequests,
                 outputResponses
+            );
+            $finish(1);
+        end
+
+        if (core.workActive
+                || core.lastCompletedWorkCycles == 0
+                || core.workCompletionCycle - core.workStartCycle
+                    != core.lastCompletedWorkCycles) begin
+            $display(
+                "IM2P CORE MATRIX: FAIL async work interval start=%0d completion=%0d total=%0d",
+                core.workStartCycle,
+                core.workCompletionCycle,
+                core.lastCompletedWorkCycles
             );
             $finish(1);
         end

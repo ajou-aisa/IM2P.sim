@@ -239,9 +239,10 @@ full-matrix/striped descriptors를 사용한다. 독립 channel response는 같�
 edge에 함께 commit할 수 있다. Host wrapper는 동시에 service 가능한 독립
 A/W/S/C response를 여러 cycle로 직렬화하지 않는다.
 
-IM2P.sim의 cycle은 Verilator C++ 프로그램 실행시간을 환산한 값이 아니다. C++
-harness가 RTL clock을 low-high-low로 직접 toggle해 simulated edge를 만들고,
-positive edge 하나를 포함하는 RTL logical clock period를 센 값이다.
+성능 cycle의 source of truth는 IM2PCore 내부 RTL telemetry다. C++ Verilator
+bridge는 clock과 I/O를 구동하고 RTL counter를 읽는다. IM2P.sim의 cycle은
+Verilator C++ 프로그램 실행시간, bridge loop 횟수, host progress 반복 횟수를
+환산한 값이 아니다.
 
 | 동작 | runtime counter 변화 |
 |---|---:|
@@ -272,6 +273,10 @@ RTL wait/stall, deterministic logical-cycle stripe injection이다. Worker가 �
 stripe나 raw work 없이 condition variable에서 기다리는 host wall-clock 동안에는
 RTL clock도 진행되지 않는다. 따라서 host wait을 real CPU+NPU end-to-end cycle로
 해석하지 않는다.
+
+Global logical cycle, per-work interval, detailed counter, event timestamp의 정확한
+source와 edge convention은
+[RTL 사이클 측정 구조](docs/RTL_CYCLE_ACCOUNTING.md)를 따른다.
 
 ## 빌드와 검증
 
