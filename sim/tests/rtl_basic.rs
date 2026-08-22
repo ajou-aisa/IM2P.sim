@@ -1,12 +1,12 @@
 pub mod common;
 
 use common::{assert_matrix_eq, run_case, structured_activations, structured_weights, Case, Shape};
-use im2p_sim::{Im2pSimulator, SimError, VectorOp};
+use im2p_sim::{ActivationValue, Im2pSimulator, SimError, VectorOp};
 
 fn run_bypass(
     simulator: &mut Im2pSimulator,
     shape: Shape,
-    activations: &[i8],
+    activations: &[ActivationValue],
     weights: &[i8],
 ) -> Result<(), SimError> {
     let result = run_case(

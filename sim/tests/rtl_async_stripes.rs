@@ -4,15 +4,20 @@ use common::{
     assert_matrix_eq, golden_output, k_fragments, structured_activations, structured_weights, Shape,
 };
 use im2p_sim::{
-    ActivationStripe, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut, SimError,
-    StripeWorkDesc, VectorOp,
+    ActivationStripe, ActivationValue, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut,
+    SimError, StripeWorkDesc, VectorOp,
 };
 const CYCLE_BUDGET: u64 = 1;
 const MAX_ITERATIONS: usize = 100_000;
 const STRIPE_ROWS: usize = 2;
 const STRIPE_COUNT: usize = 4;
 const BACKPRESSURE_STRIPE_COUNT: usize = 5;
-fn cpu_golden(shape: Shape, activations: &[i8], weights: &[i8], dim: usize) -> Vec<i32> {
+fn cpu_golden(
+    shape: Shape,
+    activations: &[ActivationValue],
+    weights: &[i8],
+    dim: usize,
+) -> Vec<i32> {
     golden_output(
         activations,
         weights,
@@ -25,14 +30,14 @@ fn cpu_golden(shape: Shape, activations: &[i8], weights: &[i8], dim: usize) -> V
     )
 }
 struct HostMemory {
-    activations: Vec<i8>,
+    activations: Vec<ActivationValue>,
     outputs: Vec<i32>,
     shape: Shape,
     activation_reads: Vec<usize>,
     output_writes: Vec<usize>,
 }
 impl HostMemory {
-    fn new(shape: Shape, activations: Vec<i8>) -> Self {
+    fn new(shape: Shape, activations: Vec<ActivationValue>) -> Self {
         Self {
             activations,
             outputs: vec![0; shape.m * shape.n],
@@ -41,7 +46,7 @@ impl HostMemory {
             output_writes: Vec::new(),
         }
     }
-    fn activation_row(&mut self, row: usize) -> &[i8] {
+    fn activation_row(&mut self, row: usize) -> &[ActivationValue] {
         self.activation_reads.push(row);
         &self.activations[row * self.shape.k..][..self.shape.k]
     }

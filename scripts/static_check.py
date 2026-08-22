@@ -51,6 +51,7 @@ EXPECTED_TESTS = {
     "TbIM2PCoreGrouped.bsv",
     "TbIM2PCoreActivationBuffer.bsv",
     "TbIM2PCoreMatrix.bsv",
+    "TbIM2PCoreMultiwidth.bsv",
     "TbIM2PCoreMatrixScale.bsv",
     "TbIM2PCoreExternal.bsv",
     "TbIM2PLookahead.bsv",
@@ -67,8 +68,12 @@ EXPECTED_TESTS = {
 
 EXPECTED_SYNTH = {
     "SynthInt8.bsv",
+    "SynthInt4x16.bsv",
     "SynthInt8x16.bsv",
+    "SynthInt16x16.bsv",
+    "SynthInt4x32.bsv",
     "SynthInt8x32.bsv",
+    "SynthInt16x32.bsv",
     "SynthFp16.bsv",
     "SynthFp32.bsv",
 }
@@ -110,10 +115,7 @@ VEC_CALL_RE = re.compile(r"\bvec\s*\(")
 
 
 def relative_files(directory: Path) -> set[str]:
-    return {
-        path.relative_to(directory).as_posix()
-        for path in directory.rglob("*.bsv")
-    }
+    return {path.relative_to(directory).as_posix() for path in directory.rglob("*.bsv")}
 
 
 def fail(message: str) -> NoReturn:
@@ -248,10 +250,7 @@ def main() -> None:
     for path in all_bsv:
         name = package_name(path)
         if name != path.stem:
-            fail(
-                f"package/file mismatch: {path.relative_to(ROOT)} "
-                f"declares {name}"
-            )
+            fail(f"package/file mismatch: {path.relative_to(ROOT)} declares {name}")
         if name in package_to_path:
             fail(f"duplicate package: {name}")
         package_to_path[name] = path
@@ -278,8 +277,7 @@ def main() -> None:
         unresolved = imports - STANDARD_PACKAGES - set(package_to_path)
         if unresolved:
             fail(
-                f"unresolved imports in {path.relative_to(ROOT)}: "
-                f"{sorted(unresolved)}"
+                f"unresolved imports in {path.relative_to(ROOT)}: {sorted(unresolved)}"
             )
         graph[name] = imports & set(package_to_path)
     detect_cycle(graph)
@@ -287,9 +285,7 @@ def main() -> None:
     # 모든 package는 적어도 하나의 synthesis top 또는 Tb* testbench에서
     # 도달 가능해야 한다. 연결되지 않은 placeholder/helper가 남는 것을 막는다.
     root_packages = {
-        name
-        for name in package_to_path
-        if name.startswith("Synth") or name.startswith("Tb")
+        name for name in package_to_path if name.startswith(("Synth", "Tb"))
     }
     reachable: set[str] = set()
 
@@ -305,29 +301,38 @@ def main() -> None:
 
     unused_packages = set(package_to_path) - reachable
     if unused_packages:
-        fail(
-            "packages unreachable from synth/test tops: "
-            f"{sorted(unused_packages)}"
-        )
+        fail(f"packages unreachable from synth/test tops: {sorted(unused_packages)}")
 
     # Makefile의 실행 목록이 실제 testbench/synthesis package와 일치하는지 확인한다.
     makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
     expected_test_tops = {
-        f"mk{Path(name).stem}"
-        for name in EXPECTED_TESTS
-        if name.startswith("Tb")
+        f"mk{Path(name).stem}" for name in EXPECTED_TESTS if name.startswith("Tb")
     }
     expected_synth_tops = {f"mk{Path(name).stem}" for name in EXPECTED_SYNTH}
 
-    for top in sorted(expected_test_tops | expected_synth_tops):
+    generated_multiwidth_tops = {
+        top
+        for top in expected_synth_tops
+        if re.fullmatch(r"mkSynthInt(?:4|8|16)x(?:16|32)", top)
+    }
+    for top in sorted(
+        expected_test_tops | (expected_synth_tops - generated_multiwidth_tops)
+    ):
         if not re.search(rf"\b{re.escape(top)}\b", makefile_text):
             fail(f"Makefile top list missing: {top}")
+    if "TOP=mkSynthInt$(1)x$(2)" not in makefile_text:
+        fail("Makefile multiwidth top template missing")
+    for top in sorted(generated_multiwidth_tops):
+        match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32)", top)
+        assert match is not None
+        target = f"verilator-int{match.group(1)}x{match.group(2)}"
+        if target not in makefile_text:
+            fail(f"Makefile explicit multiwidth target missing: {target}")
     if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):
         fail("Bluesim tests must compile dynamicAssert checks")
 
     source_text = "\n".join(
-        strip_comments(path.read_text(encoding="utf-8"))
-        for path in SRC.rglob("*.bsv")
+        strip_comments(path.read_text(encoding="utf-8")) for path in SRC.rglob("*.bsv")
     )
     for symbol in LEGACY_SYMBOLS:
         if symbol in source_text:
@@ -360,9 +365,7 @@ def main() -> None:
         accumulator_path,
         ("RegFile", "rowAddresses", "commit", "readRow", "writeRow"),
     )
-    accumulator_clean = strip_comments(
-        accumulator_path.read_text(encoding="utf-8")
-    )
+    accumulator_clean = strip_comments(accumulator_path.read_text(encoding="utf-8"))
     for forbidden in ("VectorOp", "VectorMultiply", "VectorShift", "scale"):
         if forbidden in accumulator_clean:
             fail(f"Accumulator knows vector transform concern: {forbidden}")
@@ -510,13 +513,13 @@ def main() -> None:
     makefile_text = makefile_path.read_text(encoding="utf-8")
 
     expected_test_tops = {
-        "mk" + Path(name).stem
-        for name in EXPECTED_TESTS
-        if name.startswith("Tb")
+        "mk" + Path(name).stem for name in EXPECTED_TESTS if name.startswith("Tb")
     }
     expected_synth_tops = {"mk" + Path(name).stem for name in EXPECTED_SYNTH}
 
-    for top in sorted(expected_test_tops | expected_synth_tops):
+    for top in sorted(
+        expected_test_tops | (expected_synth_tops - generated_multiwidth_tops)
+    ):
         if top not in makefile_text:
             fail(f"Makefile does not include expected top: {top}")
 

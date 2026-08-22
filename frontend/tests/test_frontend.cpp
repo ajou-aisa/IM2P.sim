@@ -1,5 +1,6 @@
 #define IM2P_GEMMINI_FRONTEND_TESTING 1
 #include "im2p_gemmini_frontend.hpp"
+#include "im2p_gemmini_frontend_testing.hpp"
 
 #include "ggml-gemmini-args.h"
 #include "quants/act/exsia/exsia.hpp"
@@ -8,6 +9,7 @@
 #include <im2p_sim.h>
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -15,8 +17,13 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 
 using namespace im2p::gemmini;
 namespace exsia = ggml::gemmini::quants::act::exsia;
@@ -29,9 +36,17 @@ bool full_entered = false;
 bool allow_completion = true;
 bool raw_pressure_once = false;
 bool raw_pressure_forever = false;
+bool fail_full = false;
+bool fail_begin = false;
+bool fail_publish = false;
 bool fail_progress = false;
 bool fail_poll = false;
+bool fail_finish = false;
 bool throw_create = false;
+std::atomic<size_t> sim_created{0};
+std::atomic<size_t> sim_destroyed{0};
+std::atomic<size_t> stream_created{0};
+std::atomic<size_t> stream_destroyed{0};
 bool hold_publish = false;
 bool publish_entered = false;
 size_t required_progress_cycles = 1;
@@ -41,13 +56,13 @@ size_t publish_count = 0;
 size_t finish_count = 0;
 std::thread::id owner;
 bool one_owner = true;
-im2p_matmul_desc_t full_desc{};
-im2p_stripe_work_desc_t work_desc{};
-im2p_matmul_desc_v1_t provider_full_desc{};
-im2p_stripe_work_desc_v1_t provider_work_desc{};
+im2p_matmul_desc_v2_t full_desc{};
+im2p_stripe_work_desc_v2_t work_desc{};
+im2p_matmul_desc_v2_t provider_full_desc{};
+im2p_stripe_work_desc_v2_t provider_work_desc{};
 size_t provider_full_count = 0;
 size_t provider_work_count = 0;
-std::vector<im2p_activation_stripe_t> published;
+std::vector<im2p_activation_stripe_v2_t> published;
 
 void abi_call() {
   const auto here = std::this_thread::get_id();
@@ -62,9 +77,17 @@ void reset() {
   allow_completion = true;
   raw_pressure_once = false;
   raw_pressure_forever = false;
+  fail_full = false;
+  fail_begin = false;
+  fail_publish = false;
   fail_progress = false;
   fail_poll = false;
+  fail_finish = false;
   throw_create = false;
+  sim_created = 0;
+  sim_destroyed = 0;
+  stream_created = 0;
+  stream_destroyed = 0;
   hold_publish = false;
   publish_entered = false;
   required_progress_cycles = 1;
@@ -88,14 +111,25 @@ template <class P> bool wait(P predicate) {
   return changed.wait_for(lock, std::chrono::seconds(5), predicate);
 }
 
-void multiply(const int8_t *a, size_t sa, const int8_t *b, size_t sb,
-              int32_t *c, size_t sc, size_t rows, size_t n, size_t k,
+int32_t activation(const void *data, size_t stride, uint32_t bits, size_t row,
+                   size_t column) {
+  const auto *bytes = static_cast<const uint8_t *>(data) + row * stride;
+  if (bits == 16) {
+    int16_t value = 0;
+    std::memcpy(&value, bytes + column * 2, sizeof(value));
+    return value;
+  }
+  return static_cast<int8_t>(bytes[column]);
+}
+
+void multiply(const void *a, size_t sa, uint32_t bits, const int8_t *b,
+              size_t sb, int32_t *c, size_t sc, size_t rows, size_t n, size_t k,
               size_t row0 = 0) {
   for (size_t i = 0; i < rows; ++i)
     for (size_t j = 0; j < n; ++j) {
       int32_t sum = 0;
       for (size_t x = 0; x < k; ++x)
-        sum += a[i * sa + x] * b[x * sb + j];
+        sum += activation(a, sa, bits, i, x) * b[x * sb + j];
       c[(row0 + i) * sc + j] = sum;
     }
 }
@@ -112,65 +146,76 @@ im2p_sim_t *im2p_sim_create(void) {
   fake::abi_call();
   if (fake::throw_create)
     throw std::bad_alloc();
+  ++fake::sim_created;
   return new im2p_sim;
 }
 void im2p_sim_destroy(im2p_sim_t *p) {
   fake::abi_call();
+  ++fake::sim_destroyed;
   delete p;
 }
-int im2p_execute_matmul_extended(im2p_sim_t *, const im2p_matmul_desc_t *d,
-                                 im2p_work_stats_extended_t *stats) {
+uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION_2; }
+uint32_t im2p_sim_activation_bits(void) {
+  return IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
+}
+uint32_t im2p_sim_activation_storage_bytes(void) {
+  return (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS + 7) / 8;
+}
+uint32_t im2p_sim_dim(void) { return DIM; }
+int im2p_execute_matmul_extended_v2(im2p_sim_t *,
+                                    const im2p_matmul_desc_v2_t *d,
+                                    im2p_work_stats_extended_t *stats) {
   fake::abi_call();
+  if (fake::fail_full)
+    return IM2P_ERROR;
+  if (d->provider.context != nullptr) {
+    std::lock_guard lock(fake::mutex);
+    fake::provider_full_desc = *d;
+    ++fake::provider_full_count;
+    fake::changed.notify_all();
+    return IM2P_OK;
+  }
   std::unique_lock lock(fake::mutex);
   fake::full_desc = *d;
   fake::full_entered = true;
   fake::changed.notify_all();
   fake::changed.wait(lock, [] { return !fake::hold_full; });
   lock.unlock();
-  fake::multiply(d->activations, d->activation_row_stride, d->weights,
-                 d->weight_row_stride, d->output, d->output_row_stride, d->m,
-                 d->n, d->k);
+  fake::multiply(d->activations, d->activation_row_stride_bytes,
+                 d->activation_bits, d->weights, d->weight_row_stride,
+                 d->output, d->output_row_stride, d->m, d->n, d->k);
   if (stats)
     stats->base.completed_output_tiles = d->m * d->n;
   return IM2P_OK;
 }
-int im2p_execute_matmul_extended_ex(im2p_sim_t *,
-                                    const im2p_matmul_desc_v1_t *d,
-                                    im2p_work_stats_extended_t *) {
-  fake::abi_call();
-  std::lock_guard lock(fake::mutex);
-  fake::provider_full_desc = *d;
-  ++fake::provider_full_count;
-  fake::changed.notify_all();
-  return IM2P_OK;
-}
-int im2p_begin_striped_matmul_ex(im2p_sim_t *, const im2p_stripe_work_desc_t *d,
+int im2p_begin_striped_matmul_v2(im2p_sim_t *,
+                                 const im2p_stripe_work_desc_v2_t *d,
                                  im2p_stream_t **out) {
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
-  fake::work_desc = *d;
+  if (fake::fail_begin)
+    return IM2P_ERROR;
+  if (d->provider.context != nullptr) {
+    fake::provider_work_desc = *d;
+    ++fake::provider_work_count;
+  } else {
+    fake::work_desc = *d;
+  }
   *out = new im2p_stream;
+  ++fake::stream_created;
   fake::changed.notify_all();
   return IM2P_OK;
 }
-int im2p_begin_striped_matmul_v1_ex(im2p_sim_t *,
-                                    const im2p_stripe_work_desc_v1_t *d,
-                                    im2p_stream_t **out) {
-  fake::abi_call();
-  std::lock_guard lock(fake::mutex);
-  fake::provider_work_desc = *d;
-  ++fake::provider_work_count;
-  *out = new im2p_stream;
-  fake::changed.notify_all();
-  return IM2P_OK;
-}
-int im2p_publish_stripe(im2p_stream_t *, const im2p_activation_stripe_t *s) {
+int im2p_publish_stripe_v2(im2p_stream_t *,
+                           const im2p_activation_stripe_v2_t *s) {
   fake::abi_call();
   std::unique_lock lock(fake::mutex);
   ++fake::publish_attempts;
   fake::publish_entered = true;
   fake::changed.notify_all();
   fake::changed.wait(lock, [] { return !fake::hold_publish; });
+  if (fake::fail_publish)
+    return IM2P_ERROR;
   if (fake::raw_pressure_forever)
     return IM2P_BACKPRESSURE;
   if (fake::raw_pressure_once) {
@@ -193,10 +238,11 @@ int im2p_progress_stream(im2p_stream_t *stream, uint64_t) {
          fake::progress_calls >= fake::required_progress_cycles &&
          stream->serviced < fake::published.size()) {
     const auto &s = fake::published[stream->serviced++];
-    fake::multiply(s.activations, s.activation_row_stride,
-                   fake::work_desc.weights, fake::work_desc.weight_row_stride,
-                   fake::work_desc.output, fake::work_desc.output_row_stride,
-                   s.rows, fake::work_desc.n, fake::work_desc.k, s.i_start);
+    fake::multiply(s.activations, s.activation_row_stride_bytes,
+                   s.activation_bits, fake::work_desc.weights,
+                   fake::work_desc.weight_row_stride, fake::work_desc.output,
+                   fake::work_desc.output_row_stride, s.rows, fake::work_desc.n,
+                   fake::work_desc.k, s.i_start);
     stream->done.push_back({s.stripe_id, s.i_start, s.rows, s.context});
   }
   return IM2P_OK;
@@ -217,6 +263,8 @@ int im2p_finish_stream_extended(im2p_stream_t *,
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
   ++fake::finish_count;
+  if (fake::fail_finish)
+    return IM2P_ERROR;
   stats->base.completed_stripes = fake::published.size();
   stats->lookahead_prepared = fake::published.size() > 1;
   stats->lookahead_publish_cycle = 10;
@@ -231,6 +279,7 @@ int im2p_finish_stream_extended(im2p_stream_t *,
 }
 void im2p_destroy_stream(im2p_stream_t *p) {
   fake::abi_call();
+  ++fake::stream_destroyed;
   delete p;
 }
 }
@@ -248,7 +297,12 @@ ggml_gemmini_args_t raw_args(std::vector<int8_t> &a, std::vector<int8_t> &b,
   x.I = m;
   x.J = 2;
   x.K = 3;
-  x.A = a.data();
+  if (!x.A.allocate(m, 3, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    std::abort();
+  for (size_t row = 0; row < m; ++row)
+    for (size_t column = 0; column < 3; ++column)
+      if (!x.A.set(row, column, a[row * 3 + column]))
+        std::abort();
   x.B = b.data();
   x.C = c.data();
   x.sA = 3;
@@ -366,7 +420,7 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
                 std::strcmp(started.status.message, reason) == 0,
             "every Gemmini format is classified and explicitly unsupported"))
       return false;
-    const auto snap = testing::inspect(*started.run);
+    const auto snap = RunTestAccess::inspect(*started.run);
     if (!expect(
             snap.i == x.I && snap.j == x.J && snap.k == x.K &&
                 snap.sa == x.sA && snap.sb == x.sB && snap.sc == x.sC &&
@@ -378,7 +432,7 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
                 snap.tile_i == x.tile_I && snap.tile_j == x.tile_J &&
                 snap.tile_k == x.tile_K &&
                 snap.weight_format == static_cast<uint8_t>(x.weight_format) &&
-                snap.a == x.A && snap.b == x.B && snap.c == x.C &&
+                snap.a == x.A.raw_data() && snap.b == x.B && snap.c == x.C &&
                 snap.d == x.D && snap.a_fp32 == x.A_fp32 &&
                 snap.b_fp32 == x.B_fp32 && snap.b_blocks == x.B_blocks &&
                 snap.b_scales == x.B_scales && snap.blocks_k == x.blocks_K &&
@@ -513,34 +567,42 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
 }
 bool test_native_h1_provider_start_contract() {
   fake::reset();
-  int8_t a[32]{};
   float out[2]{};
   block_q8_h1 blocks[2]{};
   ggml_gemmini_args_t x{};
-  x.I = 1; x.J = 2; x.K = 32;
-  x.A = a; x.sA = 32;
-  x.f_out = out; x.stride_f_out = 2;
+  x.I = 1;
+  x.J = 2;
+  x.K = 32;
+  if (!x.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  x.sA = 32;
+  x.f_out = out;
+  x.stride_f_out = 2;
   x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
   x.q8_h1_blocks = blocks;
   x.q8_h1_block_count = 2;
   x.q8_h1_rows = 2;
   x.blocks_per_row = 1;
-  x.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1.0f;
+  x.act_quant.storage()
+      .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+      .scale = 1.0f;
   auto started = execute(&x);
-  if (!expect(started.status.ok(), "native H1 starts through provider v1")) return false;
+  if (!expect(started.status.ok(), "native H1 starts through provider v1"))
+    return false;
   const auto done = fence(*started.run);
   std::lock_guard lock(fake::mutex);
   const auto &d = fake::provider_full_desc;
-  return expect(done.status.ok() && fake::provider_full_count == 1 &&
-                d.version == IM2P_PROVIDER_VERSION_1 &&
-                d.legacy.weights == nullptr && d.legacy.output == nullptr &&
-                d.legacy.m == 1 && d.legacy.n == 2 && d.legacy.k == 32 &&
-                d.legacy.weight_row_stride == 2 &&
-                d.legacy.output_row_stride == 2 && d.legacy.block_size == 32 &&
-                d.legacy.vector_op == IM2P_VECTOR_EXTERNAL &&
-                d.provider.context != nullptr && d.provider.read_weight != nullptr &&
-                d.provider.read_scale != nullptr && d.provider.write_output != nullptr,
-                "native H1 provider descriptor is exact");
+  return expect(
+      done.status.ok() && fake::provider_full_count == 1 &&
+          d.abi_version == IM2P_ABI_VERSION_2 &&
+          d.activation_bits == IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
+          d.weights == nullptr && d.output == nullptr && d.m == 1 && d.n == 2 &&
+          d.k == 32 && d.weight_row_stride == 2 && d.output_row_stride == 2 &&
+          d.block_size == 32 && d.vector_op == IM2P_VECTOR_EXTERNAL &&
+          d.provider.context != nullptr && d.provider.read_weight != nullptr &&
+          d.provider.read_scale != nullptr &&
+          d.provider.write_output != nullptr,
+      "native H1 provider descriptor is exact");
 }
 
 bool test_rejected_routes_do_not_execute() {
@@ -552,16 +614,17 @@ bool test_rejected_routes_do_not_execute() {
   auto hp2 = execute(&x);
   x.weight_format = static_cast<ggml_gemmini_args_t::im2p_weight_format_t>(255);
   auto unknown = execute(&x);
-  return expect(h2.status.code == StatusCode::unsupported_route &&
-                    std::strcmp(h2.status.message, "q8_h2 is deprecated") == 0 &&
-                    hp2.status.code == StatusCode::unsupported_route &&
-                    std::strcmp(hp2.status.message, "q8_hp2 is unsupported") == 0 &&
-                    unknown.status.code == StatusCode::unsupported_route &&
-                    std::strcmp(unknown.status.message, "unknown Gemmini weight route") == 0 &&
-                    fake::provider_full_count == 0 && fake::provider_work_count == 0,
-                "H2, HP2, and unknown routes reject without execution");
+  return expect(
+      h2.status.code == StatusCode::unsupported_route &&
+          std::strcmp(h2.status.message, "q8_h2 is deprecated") == 0 &&
+          hp2.status.code == StatusCode::unsupported_route &&
+          std::strcmp(hp2.status.message, "q8_hp2 is unsupported") == 0 &&
+          unknown.status.code == StatusCode::unsupported_route &&
+          std::strcmp(unknown.status.message, "unknown Gemmini weight route") ==
+              0 &&
+          fake::provider_full_count == 0 && fake::provider_work_count == 0,
+      "H2, HP2, and unknown routes reject without execution");
 }
-
 
 bool test_mode_and_raw_scale_contract() {
   fake::reset();
@@ -591,10 +654,12 @@ bool test_mode_and_raw_scale_contract() {
               "nonidentity bert_scale is rejected") ||
       !reject([](auto &x) { x.repeating_bias = true; },
               "repeating-bias semantics are rejected without a bias pointer") ||
-      !reject([&](auto &x) {
-        x.D = bias;
-        x.repeating_bias = true;
-      }, "nonzero repeating bias is rejected"))
+      !reject(
+          [&](auto &x) {
+            x.D = bias;
+            x.repeating_bias = true;
+          },
+          "nonzero repeating bias is rejected"))
     return false;
 
   fake::hold_full = true;
@@ -605,7 +670,7 @@ bool test_mode_and_raw_scale_contract() {
   args.scale_D = 9;
   args.scale = 9.0f;
   args.bert_scale = 9.0f;
-  const auto snapshot = testing::inspect(*valid.run);
+  const auto snapshot = RunTestAccess::inspect(*valid.run);
   {
     std::lock_guard lock(fake::mutex);
     fake::hold_full = false;
@@ -627,13 +692,17 @@ bool test_full_golden_and_scalar_snapshot() {
   args.tile_I = 99;
   args.tile_J = 99;
   args.tile_K = 101;
+  std::fill(c.begin(), c.end(), 123456);
   auto started = execute(&args, Mode::full);
   if (!expect(started.status.ok() &&
                   fake::wait([] { return fake::full_entered; }),
-              "full worker starts"))
+              "full worker starts") ||
+      !expect(c == std::vector<int32_t>(4, 123456),
+              "destination remains untouched before successful fence"))
     return false;
   args.I = 999;
-  args.A = nullptr;
+  args.A = {};
+  std::fill(b.begin(), b.end(), 99);
   {
     std::lock_guard lock(fake::mutex);
     fake::hold_full = false;
@@ -644,14 +713,52 @@ bool test_full_golden_and_scalar_snapshot() {
          expect(c == std::vector<int32_t>({4, 5, 10, 11}),
                 "full real mapping golden") &&
          expect(fake::full_desc.m == 2 &&
-                    fake::full_desc.activations == a.data(),
-                "scalars snapshotted and pointer identity") &&
+                    fake::full_desc.activations != nullptr &&
+                    fake::full_desc.activation_bits ==
+                        IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+                "scalars and owned activation backing are snapshotted") &&
          expect(fake::full_desc.tile_i_rows == 2 &&
                     fake::full_desc.tile_j_columns == 2 &&
                     fake::full_desc.block_size == args.block_size_k,
                 "tile counts multiply by DIM then clamp to tails; tile_K is "
                 "metadata only") &&
          expect(fake::one_owner, "dedicated C ABI owner");
+}
+
+bool test_multiwidth_activation_snapshot_validation() {
+  fake::reset();
+  std::vector<int8_t> activation = {1, 2, 3};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> output(2);
+  auto args = raw_args(activation, weights, output, 1);
+  auto malformed = args;
+  malformed.A.row_stride_bytes = 1;
+  if (!expect(
+          execute(&malformed).status.code == StatusCode::invalid_argument,
+          "malformed activation byte stride rejects before worker creation"))
+    return false;
+  malformed = args;
+  malformed.A.bits = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 16 ? 8 : 16;
+  if (!expect(execute(&malformed).status.code == StatusCode::invalid_argument,
+              "stale activation width rejects before worker creation"))
+    return false;
+  fake::hold_full = true;
+  auto started = execute(&args);
+  if (!started.status.ok() || !fake::wait([] { return fake::full_entered; }))
+    return false;
+  const auto snapshot = RunTestAccess::inspect(*started.run);
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::hold_full = false;
+    fake::changed.notify_all();
+  }
+  return expect(
+      snapshot.a != nullptr &&
+          snapshot.activation_bits == IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
+          snapshot.activation_raw_size == args.A.raw_size() &&
+          snapshot.activation_row_stride_bytes == args.A.row_stride_bytes &&
+          fence(*started.run).status.ok(),
+      "A4/A16 snapshot uses raw bytes instead of implicit elem_t conversion");
 }
 
 bool test_tile_normalization_validation() {
@@ -676,7 +783,7 @@ bool test_pipeline_lifecycle() {
   std::vector<int8_t> a = {1, 2, 3, 4, 5, 6}, b = {1, 0, 0, 1, 1, 1};
   std::vector<int32_t> c(4);
   auto args = raw_args(a, b, c);
-  auto started = execute(&args, Mode::stripe_pipeline, {2, 64});
+  auto started = execute(&args, Mode::stripe_pipeline, {64});
   if (!started.status.ok())
     return false;
   bool packet_released = false;
@@ -691,7 +798,7 @@ bool test_pipeline_lifecycle() {
     if (!expect(submit_stripe(*started.run, first).ok(), "first accepted"))
       return false;
   }
-  if (!expect(packet_released, "event/RMD ownership not retained"))
+  if (!expect(!packet_released, "submitted residual handle is retained"))
     return false;
   if (!expect(submit_stripe(*started.run, event(1, 1, 2)).ok(),
               "lookahead accepted") ||
@@ -710,9 +817,11 @@ bool test_pipeline_lifecycle() {
   }
   auto done = fence(*started.run);
   auto again = fence(*started.run);
+  const auto authorized = authorize_output_commit(*started.run, true);
   return expect(done.status.ok() && again.status.code == done.status.code,
                 "sticky idempotent fence") &&
-         expect(c == std::vector<int32_t>({4, 5, 10, 11}), "stripe golden") &&
+         expect(authorized.ok() && c == std::vector<int32_t>({4, 5, 10, 11}),
+                "RMD authorization commits stripe golden") &&
          expect(done.stats.lookahead_publish_cycle == 10 &&
                     done.stats.lookahead_first_activation_cycle == 11 &&
                     done.stats.lookahead_first_weight_cycle == 12 &&
@@ -727,30 +836,39 @@ bool test_pipeline_lifecycle() {
 bool test_backpressure_runid_incomplete_and_concurrent() {
   fake::reset();
   fake::allow_completion = false;
+  fake::hold_publish = true;
   std::vector<int8_t> a(9), b(6);
-  std::vector<int32_t> c(6);
+  std::vector<int32_t> c(6, 99);
   auto args = raw_args(a, b, c, 3);
-  auto one = execute(&args, Mode::stripe_pipeline, {1, 32});
-  if (!submit_stripe(*one.run, event(0, 0, 1, 4)).ok())
-    return false;
-  if (!expect(submit_stripe(*one.run, event(1, 1, 2, 4)).code ==
-                  StatusCode::backpressure,
-              "frontend pressure") ||
-      !expect(submit_stripe(*one.run, event(1, 1, 2, 5)).code ==
+  auto one = execute(&args, Mode::stripe_pipeline, {32});
+  if (!expect(submit_stripe(*one.run, event(0, 0, 1, 4)).ok() &&
+                  submit_stripe(*one.run, event(1, 1, 2, 4)).ok(),
+              "exactly two producer slots accept without blocking") ||
+      !expect(submit_stripe(*one.run, event(2, 2, 3, 5)).code ==
                   StatusCode::invalid_argument,
-              "first run id binding checked before pressure"))
+              "run id validation precedes the capacity wait"))
+    return false;
+  Status third_status{};
+  std::thread producer(
+      [&] { third_status = submit_stripe(*one.run, event(2, 2, 3, 4)); });
+  if (!expect(RunTestAccess::wait_for_blocked_submit(*one.run, 1),
+              "third producer blocks on the fixed two-slot contract"))
     return false;
   {
     std::lock_guard lock(fake::mutex);
     fake::allow_completion = true;
+    fake::hold_publish = false;
     fake::changed.notify_all();
   }
-  const auto incomplete = fence(*one.run);
-  const auto repeated = fence(*one.run);
-  if (!expect(incomplete.status.code == StatusCode::invalid_contract &&
-                  repeated.status.code == incomplete.status.code,
-              "incomplete fence is sticky and idempotent") ||
-      !expect(submit_stripe(*one.run, event(1, 1, 2, 4)).code ==
+  producer.join();
+  const auto completed = fence(*one.run);
+  if (!expect(third_status.ok() && completed.status.ok(),
+              "completion wakes and accepts the third producer") ||
+      !expect(c == std::vector<int32_t>(6, 99),
+              "pipeline fence leaves output staged before RMD authorization") ||
+      !expect(authorize_output_commit(*one.run, true).ok(),
+              "RMD authorization commits the fixed-slot run") ||
+      !expect(submit_stripe(*one.run, event(3, 3, 3, 4)).code ==
                   StatusCode::invalid_state,
               "submission is linearized after fence"))
     return false;
@@ -846,7 +964,7 @@ bool test_submit_fence_orderings_and_error_stickiness() {
                                [&] { return fence_entered == 2; }))
       return false;
   }
-  if (!expect(testing::wait_for_closing(*submitted.run),
+  if (!expect(RunTestAccess::wait_for_closing(*submitted.run),
               "fence reaches the observed closing transition") ||
       !expect(submit_stripe(*submitted.run, event(1, 1, 1)).code ==
                   StatusCode::invalid_state,
@@ -860,7 +978,9 @@ bool test_submit_fence_orderings_and_error_stickiness() {
   one.join();
   two.join();
   if (!expect(first.status.ok() && second.status.ok(),
-              "truly overlapping fences share one terminal result"))
+              "truly overlapping fences share one terminal result") ||
+      !expect(authorize_output_commit(*submitted.run, true).ok(),
+              "one post-fence authorization commits concurrent fence result"))
     return false;
 
   fake::reset();
@@ -900,15 +1020,17 @@ bool test_inflight_progress_and_long_valid_completion() {
   std::vector<int8_t> a = {1, 2, 3, 4, 5, 6}, b = {1, 0, 0, 1, 1, 1};
   std::vector<int32_t> c(4);
   auto args = raw_args(a, b, c);
-  auto run = execute(&args, Mode::stripe_pipeline, {1, 4096});
+  auto run = execute(&args, Mode::stripe_pipeline, {4096});
   if (!run.status.ok() || !submit_stripe(*run.run, event(0, 0, 1)).ok())
     return false;
-  if (!expect(testing::wait_for_completion(*run.run, 1),
+  if (!expect(RunTestAccess::wait_for_completion(*run.run, 1),
               "capacity wait observes a matched completion poll") ||
       !expect(submit_stripe(*run.run, event(1, 1, 2)).ok(),
               "frontend capacity is released after the completion poll") ||
       !expect(fence(*run.run).status.ok(),
-              "multi-cycle pipeline fences without deadlock"))
+              "multi-cycle pipeline fences without deadlock") ||
+      !expect(authorize_output_commit(*run.run, true).ok(),
+              "successful RMD authorization commits completed pipeline"))
     return false;
 
   fake::reset();
@@ -916,13 +1038,16 @@ bool test_inflight_progress_and_long_valid_completion() {
   std::vector<int8_t> long_a = {1, 2, 3};
   std::vector<int32_t> long_c(2);
   auto long_args = raw_args(long_a, b, long_c, 1);
-  auto long_run = execute(&long_args, Mode::stripe_pipeline, {1, 4096});
+  auto long_run = execute(&long_args, Mode::stripe_pipeline, {4096});
   if (!long_run.status.ok() ||
       !submit_stripe(*long_run.run, event(0, 0, 1)).ok())
     return false;
-  return expect(fence(*long_run.run).status.ok() &&
-                    testing::inspect(*long_run.run).completion_generation == 1,
-                "valid completion beyond 4096 logical cycles is not rejected");
+  const auto long_fence = fence(*long_run.run);
+  return expect(
+      long_fence.status.ok() &&
+          authorize_output_commit(*long_run.run, true).ok() &&
+          RunTestAccess::inspect(*long_run.run).completion_generation == 1,
+      "valid completion beyond 4096 logical cycles is not rejected");
 }
 
 bool test_continuous_refill_completion_generation() {
@@ -932,17 +1057,17 @@ bool test_continuous_refill_completion_generation() {
   std::vector<int8_t> b = {1, 0, 0, 1, 1, 1};
   std::vector<int32_t> c(stripe_count * 2);
   auto args = raw_args(a, b, c, stripe_count);
-  auto run = execute(&args, Mode::stripe_pipeline, {1, 1});
+  auto run = execute(&args, Mode::stripe_pipeline, {1});
   if (!run.status.ok())
     return false;
-  testing::enable_completion_gate(*run.run);
+  RunTestAccess::enable_completion_gate(*run.run);
   if (!submit_stripe(*run.run, event(0, 0, 1)).ok()) {
-    testing::disable_completion_gate(*run.run);
+    RunTestAccess::disable_completion_gate(*run.run);
     return false;
   }
   bool sequence_ok = true;
   for (size_t completed = 1; completed <= stripe_count; ++completed) {
-    if (!expect(testing::wait_for_completion(*run.run, completed),
+    if (!expect(RunTestAccess::wait_for_completion(*run.run, completed),
                 "bounded wait observes each matched completion")) {
       sequence_ok = false;
       break;
@@ -955,16 +1080,358 @@ bool test_continuous_refill_completion_generation() {
       sequence_ok = false;
       break;
     }
-    testing::release_completion_gate(*run.run);
+    RunTestAccess::release_completion_gate(*run.run);
   }
-  testing::disable_completion_gate(*run.run);
+  RunTestAccess::disable_completion_gate(*run.run);
   const auto done = fence(*run.run);
+  const auto authorized = authorize_output_commit(*run.run, true);
   return sequence_ok &&
-         expect(done.status.ok(),
+         expect(done.status.ok() && authorized.ok(),
                 "continuous complete-then-refill does not falsely stall") &&
-         expect(testing::inspect(*run.run).completion_generation ==
+         expect(RunTestAccess::inspect(*run.run).completion_generation ==
                     stripe_count,
                 "worker counts every matched completion monotonically");
+}
+
+bool test_args_and_inputs_can_expire_after_execute() {
+  fake::reset();
+  fake::hold_full = true;
+  std::vector<int32_t> destination(2, 777);
+  ExecuteResult started;
+  {
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    auto args = raw_args(activation, weights, destination, 1);
+    started = execute(&args, Mode::full);
+  }
+  if (!expect(
+          started.status.ok() && fake::wait([] { return fake::full_entered; }),
+          "worker retains activation and copied weights after args expire") ||
+      !expect(destination == std::vector<int32_t>(2, 777),
+              "expired caller inputs do not expose partial output"))
+    return false;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::hold_full = false;
+    fake::changed.notify_all();
+  }
+  return expect(fence(*started.run).status.ok() &&
+                    destination == std::vector<int32_t>({4, 5}),
+                "fence succeeds after caller args and input buffers expire");
+}
+
+bool test_pipeline_args_and_inputs_expire_before_submit() {
+  fake::reset();
+  std::vector<int32_t> destination(2, 0x23456789);
+  ExecuteResult started;
+  {
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    auto args = raw_args(activation, weights, destination, 1);
+    started = execute(&args, Mode::stripe_pipeline, {64});
+  }
+  if (!expect(started.status.ok(),
+              "pipeline execute snapshots every later-used args field") ||
+      !expect(submit_stripe(*started.run, event(0, 0, 1)).ok(),
+              "stripe submission does not dereference expired args"))
+    return false;
+  const auto done = fence(*started.run);
+  return expect(
+             done.status.ok() &&
+                 destination == std::vector<int32_t>(2, 0x23456789),
+             "pipeline fence succeeds with expired inputs and staged output") &&
+         expect(authorize_output_commit(*started.run, true).ok() &&
+                    destination == std::vector<int32_t>({4, 5}),
+                "post-RMD authorization commits expired-input result");
+}
+
+bool test_exsia_metadata_is_published_explicitly_after_args_expire() {
+  fake::reset();
+  fake::hold_publish = true;
+  float destination[2] = {73.0f, 73.0f};
+  ExecuteResult started;
+  {
+    ggml_gemmini_args_t args{};
+    args.I = 1;
+    args.J = 2;
+    args.K = 32;
+    if (!args.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+      return false;
+    args.activation_rows_per_stripe = 1;
+    args.f_out = destination;
+    args.stride_f_out = 2;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+    std::vector<block_q8_h1> blocks(2);
+    args.q8_h1_blocks = blocks.data();
+    args.q8_h1_block_count = blocks.size();
+    args.q8_h1_rows = 2;
+    args.blocks_per_row = 1;
+    args.act_quant.storage().emplace<exsia::Meta>();
+    started = execute(&args, Mode::stripe_pipeline, {64});
+  }
+  if (!started.status.ok() ||
+      !expect(submit_stripe(*started.run, event(0, 0, 1)).code ==
+                  StatusCode::invalid_contract,
+              "ExSIA publication rejects absent post-fold theta") ||
+      !expect(submit_stripe(*started.run, event(0, 0, 1), {true, 0}).ok(),
+              "ExSIA publication copies explicit theta after args expire") ||
+      !fake::wait([] { return fake::publish_entered; }))
+    return false;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::fail_progress = true;
+    fake::hold_publish = false;
+    fake::changed.notify_all();
+  }
+  return expect(fence(*started.run).status.code ==
+                        StatusCode::execution_failure &&
+                    destination[0] == 73.0f && destination[1] == 73.0f,
+                "later worker failure preserves ExSIA destination sentinel");
+}
+
+bool test_rmd_finalizes_frontend_stage_before_authorization() {
+  fake::reset();
+  float destination[2] = {91.0f, 91.0f};
+  ggml_gemmini_args_t args{};
+  args.I = 1;
+  args.J = 2;
+  args.K = 32;
+  if (!args.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  args.activation_rows_per_stripe = 1;
+  args.f_out = destination;
+  args.stride_f_out = 2;
+  args.col_stride_f_out = 1;
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  std::vector<block_q8_h1> blocks(2);
+  args.q8_h1_blocks = blocks.data();
+  args.q8_h1_block_count = blocks.size();
+  args.q8_h1_rows = 2;
+  args.blocks_per_row = 1;
+  args.act_quant.storage().emplace<exsia::Meta>();
+
+  auto started = execute(&args, Mode::stripe_pipeline, {64});
+  if (!started.status.ok() ||
+      !expect(acquire_pipeline_output_stage(*started.run).status.code ==
+                  StatusCode::invalid_state,
+              "RMD staging is unavailable before fence") ||
+      !submit_stripe(*started.run, event(0, 0, 1), {true, 0}).ok() ||
+      !fence(*started.run).status.ok())
+    return false;
+
+  auto stage = acquire_pipeline_output_stage(*started.run);
+  if (!expect(stage.status.ok() && stage.data != nullptr &&
+                  stage.element_count >= 2,
+              "successful fence exposes frontend-owned RMD staging") ||
+      !expect(destination[0] == 91.0f && destination[1] == 91.0f,
+              "RMD staging access preserves borrowed destination"))
+    return false;
+  stage.data[0] = 17.0f;
+  stage.data[1] = 23.0f;
+  return expect(authorize_output_commit(*started.run, true).ok() &&
+                    destination[0] == 17.0f && destination[1] == 23.0f,
+                "authorization commits finalized frontend staging") &&
+         expect(acquire_pipeline_output_stage(*started.run).status.code ==
+                    StatusCode::invalid_state,
+                "committed staging cannot be acquired again");
+}
+
+bool test_rmd_commit_authorization_ordering() {
+  auto make_run = [](std::vector<int32_t> &destination) {
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    auto args = raw_args(activation, weights, destination, 1);
+    return execute(&args, Mode::stripe_pipeline, {64});
+  };
+
+  fake::reset();
+  std::vector<int32_t> success_destination(2, 31337);
+  auto success = make_run(success_destination);
+  if (!success.status.ok() ||
+      !submit_stripe(*success.run, event(0, 0, 1)).ok() ||
+      !expect(authorize_output_commit(*success.run, true).code ==
+                  StatusCode::invalid_state,
+              "RMD cannot authorize output before simulator fence") ||
+      !expect(success_destination == std::vector<int32_t>(2, 31337),
+              "early authorization cannot mutate destination"))
+    return false;
+  if (!expect(fence(*success.run).status.ok() &&
+                  success_destination == std::vector<int32_t>(2, 31337),
+              "successful fence remains staged pending RMD"))
+    return false;
+  if (!expect(authorize_output_commit(*success.run, true).ok() &&
+                  success_destination == std::vector<int32_t>({4, 5}),
+              "successful RMD authorization commits after fence"))
+    return false;
+
+  fake::reset();
+  std::vector<int32_t> failure_destination(2, 42424);
+  auto failure = make_run(failure_destination);
+  if (!failure.status.ok() ||
+      !submit_stripe(*failure.run, event(0, 0, 1)).ok() ||
+      !fence(*failure.run).status.ok())
+    return false;
+  const auto rejected = authorize_output_commit(*failure.run, false);
+  const auto retry = authorize_output_commit(*failure.run, true);
+  return expect(rejected.code == StatusCode::execution_failure &&
+                    retry.code == rejected.code,
+                "failed RMD authorization is sticky") &&
+         expect(failure_destination == std::vector<int32_t>(2, 42424),
+                "failed RMD permanently preserves destination sentinel");
+}
+
+bool test_blocked_producer_failure_is_transactional() {
+  fake::reset();
+  fake::hold_publish = true;
+  std::vector<int8_t> activation(9, 1);
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> destination(6, 0x12345678);
+  auto args = raw_args(activation, weights, destination, 3);
+  auto started = execute(&args, Mode::stripe_pipeline, {64});
+  if (!started.status.ok() ||
+      !submit_stripe(*started.run, event(0, 0, 1)).ok() ||
+      !submit_stripe(*started.run, event(1, 1, 2)).ok() ||
+      !fake::wait([] { return fake::publish_entered; }))
+    return false;
+  Status producer_status{};
+  std::thread producer(
+      [&] { producer_status = submit_stripe(*started.run, event(2, 2, 3)); });
+  if (!expect(RunTestAccess::wait_for_blocked_submit(*started.run, 1),
+              "third capacity-two producer reaches deterministic wait"))
+    return false;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::fail_progress = true;
+    fake::hold_publish = false;
+    fake::changed.notify_all();
+  }
+  producer.join();
+  const auto done = fence(*started.run);
+  return expect(producer_status.code == StatusCode::execution_failure &&
+                    done.status.code == producer_status.code,
+                "worker failure wakes blocked producer with sticky failure") &&
+         expect(destination == std::vector<int32_t>(6, 0x12345678),
+                "failed run leaves destination sentinel intact");
+}
+
+enum class FullFailure { create, execute };
+enum class StripeFailure { create, begin, publish, progress, poll, finish };
+
+bool resources_balanced(bool expect_stream) {
+  return fake::sim_created.load() == fake::sim_destroyed.load() &&
+         fake::stream_created.load() == fake::stream_destroyed.load() &&
+         (expect_stream ? fake::stream_created.load() == 1
+                        : fake::stream_created.load() == 0);
+}
+
+bool test_full_failure_matrix() {
+  for (const auto failure : {FullFailure::create, FullFailure::execute}) {
+    fake::reset();
+    fake::throw_create = failure == FullFailure::create;
+    fake::fail_full = failure == FullFailure::execute;
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    std::vector<int32_t> destination(2, 0x34567812);
+    auto args = raw_args(activation, weights, destination, 1);
+    auto started = execute(&args, Mode::full);
+    if (!expect(started.status.ok(), "full failure starts asynchronously"))
+      return false;
+    const auto done = fence(*started.run);
+    const auto expected = failure == FullFailure::create
+                              ? StatusCode::out_of_memory
+                              : StatusCode::execution_failure;
+    if (!expect(done.status.code == expected,
+                "full boundary returns its typed sticky error") ||
+        !expect(fence(*started.run).status.code == expected,
+                "full boundary error is stable across repeated fence") ||
+        !expect(destination == std::vector<int32_t>(2, 0x34567812),
+                "full failure preserves caller sentinel") ||
+        !expect(resources_balanced(false),
+                "full failure destroys every simulator resource"))
+      return false;
+  }
+  return true;
+}
+
+bool test_stripe_failure_matrix() {
+  for (const auto failure :
+       {StripeFailure::create, StripeFailure::begin, StripeFailure::publish,
+        StripeFailure::progress, StripeFailure::poll, StripeFailure::finish}) {
+    fake::reset();
+    fake::throw_create = failure == StripeFailure::create;
+    fake::fail_begin = failure == StripeFailure::begin;
+    fake::fail_publish = failure == StripeFailure::publish;
+    fake::fail_progress = failure == StripeFailure::progress;
+    fake::fail_poll = failure == StripeFailure::poll;
+    fake::fail_finish = failure == StripeFailure::finish;
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    std::vector<int32_t> destination(2, 0x45678123);
+    auto args = raw_args(activation, weights, destination, 1);
+    auto started = execute(&args, Mode::stripe_pipeline, {64});
+    const bool startup_failure =
+        failure == StripeFailure::create || failure == StripeFailure::begin;
+    StatusCode code = started.status.code;
+    if (!startup_failure) {
+      if (!expect(started.status.ok(), "stripe boundary starts") ||
+          !expect(submit_stripe(*started.run, event(0, 0, 1)).ok(),
+                  "stripe boundary accepts publication"))
+        return false;
+      code = fence(*started.run).status.code;
+      if (!expect(fence(*started.run).status.code == code,
+                  "stripe boundary error is stable across repeated fence"))
+        return false;
+    }
+    const auto expected = failure == StripeFailure::create
+                              ? StatusCode::out_of_memory
+                              : StatusCode::execution_failure;
+    if (!expect(code == expected, "stripe boundary returns typed error") ||
+        !expect(destination == std::vector<int32_t>(2, 0x45678123),
+                "stripe failure preserves caller sentinel") ||
+        !expect(resources_balanced(!startup_failure &&
+                                   failure != StripeFailure::begin),
+                "stripe failure destroys stream and simulator resources"))
+      return false;
+  }
+  return true;
+}
+
+size_t resident_bytes() {
+#if defined(__APPLE__)
+  mach_task_basic_info_data_t info{};
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+    return static_cast<size_t>(info.resident_size);
+#endif
+  return 0;
+}
+
+bool test_invalid_reuse_is_bounded() {
+  fake::reset();
+  std::vector<int8_t> activation = {1, 2, 3};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> destination(2, 0x56781234);
+  auto args = raw_args(activation, weights, destination, 1);
+  args.A.bits = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 16 ? 8 : 16;
+  const auto warmup = execute(&args);
+  if (!expect(warmup.status.code == StatusCode::invalid_argument,
+              "invalid width warmup rejects before worker"))
+    return false;
+  const size_t before = resident_bytes();
+  for (size_t iteration = 0; iteration < 1000; ++iteration) {
+    const auto rejected = execute(&args);
+    if (rejected.status.code != StatusCode::invalid_argument)
+      return expect(false, "reused invalid input returns the same typed error");
+  }
+  const size_t after = resident_bytes();
+  return expect(fake::sim_created.load() == 0 &&
+                    fake::stream_created.load() == 0,
+                "invalid input creates no simulator, stream, or worker") &&
+         expect(destination == std::vector<int32_t>(2, 0x56781234),
+                "reused invalid input preserves caller sentinel") &&
+         expect(before == 0 || after <= before + 8 * 1024 * 1024,
+                "1000 invalid calls keep observed resident memory bounded");
 }
 
 bool test_logical_stall_bound() {
@@ -973,7 +1440,7 @@ bool test_logical_stall_bound() {
   std::vector<int8_t> a = {1, 2, 3}, b = {1, 0, 0, 1, 1, 1};
   std::vector<int32_t> c(2);
   auto args = raw_args(a, b, c, 1);
-  auto run = execute(&args, Mode::stripe_pipeline, {1, 8});
+  auto run = execute(&args, Mode::stripe_pipeline, {8});
   if (!run.status.ok() || !submit_stripe(*run.run, event(0, 0, 1)).ok())
     return false;
   return expect(fence(*run.run).status.code == StatusCode::execution_failure,
@@ -981,19 +1448,56 @@ bool test_logical_stall_bound() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2) {
+    const std::string_view selected(argv[1]);
+    const bool selected_ok =
+        selected == "blocked_producer_fence_failure"
+            ? test_blocked_producer_failure_is_transactional()
+        : selected == "caller_args_expire"
+            ? test_args_and_inputs_can_expire_after_execute()
+        : selected == "pipeline_args_expire"
+            ? test_pipeline_args_and_inputs_expire_before_submit()
+        : selected == "fixed_two_slots"
+            ? test_backpressure_runid_incomplete_and_concurrent()
+        : selected == "exsia_postfold_metadata"
+            ? test_exsia_metadata_is_published_explicitly_after_args_expire()
+        : selected == "rmd_commit_authorization"
+            ? test_rmd_commit_authorization_ordering()
+        : selected == "rmd_terminal_staging"
+            ? test_rmd_finalizes_frontend_stage_before_authorization()
+        : selected == "full_failure_matrix"   ? test_full_failure_matrix()
+        : selected == "stripe_failure_matrix" ? test_stripe_failure_matrix()
+        : selected == "invalid_reuse"         ? test_invalid_reuse_is_bounded()
+                                              : false;
+    if (selected_ok)
+      std::printf("IM2P Gemmini frontend case %s: PASS\n", argv[1]);
+    else
+      std::fprintf(stderr, "IM2P Gemmini frontend case %s: FAIL\n", argv[1]);
+    return selected_ok ? 0 : 1;
+  }
+  if (argc != 1)
+    return 2;
   const bool ok =
       test_native_h1_provider_start_contract() &&
       test_rejected_routes_do_not_execute() &&
       test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&
+      test_multiwidth_activation_snapshot_validation() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&
       test_backpressure_runid_incomplete_and_concurrent() &&
       test_startup_failure_and_destruction() &&
       test_submit_fence_orderings_and_error_stickiness() &&
       test_inflight_progress_and_long_valid_completion() &&
       test_continuous_refill_completion_generation() &&
-      test_logical_stall_bound();
+      test_args_and_inputs_can_expire_after_execute() &&
+      test_pipeline_args_and_inputs_expire_before_submit() &&
+      test_exsia_metadata_is_published_explicitly_after_args_expire() &&
+      test_rmd_finalizes_frontend_stage_before_authorization() &&
+      test_rmd_commit_authorization_ordering() &&
+      test_blocked_producer_failure_is_transactional() &&
+      test_full_failure_matrix() && test_stripe_failure_matrix() &&
+      test_invalid_reuse_is_bounded() && test_logical_stall_bound();
   if (ok)
     std::puts("IM2P Gemmini frontend: PASS");
   return ok ? 0 : 1;

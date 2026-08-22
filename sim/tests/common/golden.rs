@@ -1,9 +1,9 @@
-use im2p_sim::VectorOp;
+use im2p_sim::{activation_to_i32, ActivationValue, VectorOp};
 
 use super::{KBlockScaleMatrix, KFragment, Shape};
 
 pub fn golden_output(
-    activations: &[i8],
+    activations: &[ActivationValue],
     weights: &[i8],
     shape: Shape,
     column_offset: usize,
@@ -20,7 +20,7 @@ pub fn golden_output(
                 let mut partial = 0_i32;
                 for k in fragment.start..fragment.start + fragment.count {
                     partial = partial.wrapping_add(
-                        i32::from(activations[row * shape.k + k])
+                        activation_to_i32(activations[row * shape.k + k])
                             .wrapping_mul(i32::from(weights[k * shape.n + column])),
                     );
                 }

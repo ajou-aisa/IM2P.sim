@@ -1,4 +1,4 @@
-use im2p_sim::{Im2pSimulator, SimError, TileRequest, TileStats, VectorOp};
+use im2p_sim::{ActivationValue, Im2pSimulator, SimError, TileRequest, TileStats, VectorOp};
 
 use super::{golden_output, k_fragments, KBlockScaleMatrix, KFragment, Shape};
 
@@ -11,7 +11,7 @@ pub struct RunResult {
 
 pub struct Case<'a> {
     pub shape: Shape,
-    pub activations: &'a [i8],
+    pub activations: &'a [ActivationValue],
     pub weights: &'a [i8],
     pub scales: Option<&'a KBlockScaleMatrix>,
     pub column_offset: usize,

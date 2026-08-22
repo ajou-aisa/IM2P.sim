@@ -1,11 +1,14 @@
+use im2p_sim::{parse_activation, ActivationValue};
+
 use super::Shape;
 
-pub fn structured_activations(shape: Shape) -> Vec<i8> {
+pub fn structured_activations(shape: Shape) -> Vec<ActivationValue> {
     (0..shape.m * shape.k)
         .map(|index| {
             let row = index / shape.k;
             let k = index % shape.k;
-            ((17 * row + 13 * k + 5) % 15) as i8 - 7
+            let value = ((17 * row + 13 * k + 5) % 15) as i32 - 7;
+            parse_activation(value).expect("structured activation is valid for every width")
         })
         .collect()
 }

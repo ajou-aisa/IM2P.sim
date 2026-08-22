@@ -1,4 +1,7 @@
-use crate::{ffi, StripeCompletion};
+use crate::{
+    activation::{activation_byte_indices, activation_elements_to_address_bytes},
+    ffi, StripeCompletion,
+};
 
 use super::{Error, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE};
 
@@ -29,13 +32,18 @@ impl StripedMatmul<'_> {
             .stripe
             .row_begin
             .checked_mul(self.descriptor.reduction)
-            .ok_or(Error::InvalidKRange)? as u64;
+            .and_then(|elements| activation_elements_to_address_bytes(elements).ok())
+            .ok_or(Error::InvalidKRange)?;
+        let stripe_base = ACTIVATION_BASE
+            .checked_add(stripe_offset)
+            .ok_or(Error::InvalidKRange)?;
         let offset = request
             .address
-            .checked_sub(ACTIVATION_BASE + stripe_offset)
-            .ok_or(Error::InvalidKRange)? as usize;
-        let local_row = offset / published.row_stride;
-        let column = offset % published.row_stride;
+            .checked_sub(stripe_base)
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(Error::InvalidKRange)?;
+        let (local_row, column) = activation_byte_indices(offset, published.row_stride)
+            .map_err(|_| Error::InvalidActivationStride)?;
         if local_row >= published.stripe.row_count
             || column + request.element_count as usize > self.descriptor.reduction
         {

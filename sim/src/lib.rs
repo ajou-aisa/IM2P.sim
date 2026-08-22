@@ -1,3 +1,5 @@
+mod activation;
+mod activation_validation;
 mod c_api;
 mod ffi;
 mod matrix;
@@ -5,6 +7,11 @@ mod simulator;
 mod stats;
 mod stripe;
 
+pub use activation::{
+    activation_bytes_to_elements, activation_elements_to_bytes, activation_to_i32, activation_view,
+    activation_view_from_bytes, parse_activation, validate_activation_values, ActivationError,
+    ActivationMatrixView, ActivationValue, ACTIVATION_BITS, ACTIVATION_STORAGE_BYTES,
+};
 pub use matrix::{MatmulLayout, MatmulWork, MatrixView, MatrixViewMut};
 pub use simulator::{
     Error as SimError, Im2pSimulator, KBlockScaleMatrixView, StripedMatmul, TileRequest, VectorOp,

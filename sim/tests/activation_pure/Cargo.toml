@@ -1,0 +1,17 @@
+[package]
+name = "im2p-sim-activation-contract"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "im2p_sim"
+path = "lib.rs"
+
+[[test]]
+name = "activation_contract"
+path = "../activation_contract.rs"
+
+[[test]]
+name = "activation_boundary"
+path = "activation_boundary.rs"

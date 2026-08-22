@@ -1,4 +1,4 @@
-use crate::ffi;
+use crate::{ffi, ActivationValue};
 
 use super::{Error, Im2pSimulator, KBlockScaleMatrixView, VectorOp};
 
@@ -117,13 +117,22 @@ impl Im2pSimulator {
 
     pub(super) fn push_activation_row(
         &mut self,
-        values: &[i8],
+        values: &[ActivationValue],
         matrix: Option<&KBlockScaleMatrixView<'_>>,
     ) -> Result<(), Error> {
-        self.require_i8_row("activations", values)?;
+        if values.len() != self.dim {
+            return Err(Error::InvalidBufferLength {
+                name: "activations",
+                expected: self.dim,
+                actual: values.len(),
+            });
+        }
         self.service_scale_request(matrix)?;
-        // SAFETY: values contains exactly DIM readable i8 elements for this call.
-        let ready = unsafe { ffi::im2p_put_activation_row(self.handle.as_ptr(), values.as_ptr()) };
+        // SAFETY: values contains exactly DIM readable activation elements. The bridge
+        // interprets their representation according to the build-selected width.
+        let ready = unsafe {
+            ffi::im2p_put_activation_row(self.handle.as_ptr(), values.as_ptr().cast::<i8>())
+        };
         self.require_ready("put_activation_row", ready)
     }
 

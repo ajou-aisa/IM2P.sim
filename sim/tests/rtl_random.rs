@@ -1,7 +1,7 @@
 pub mod common;
 
 use common::{assert_matrix_eq, run_case, Case, KBlockScaleMatrix, Lcg, Shape};
-use im2p_sim::{Im2pSimulator, SimError, VectorOp};
+use im2p_sim::{parse_activation, Im2pSimulator, SimError, VectorOp};
 
 fn random_case(operation: VectorOp, block_size: usize, seed: u32) -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
@@ -12,7 +12,7 @@ fn random_case(operation: VectorOp, block_size: usize, seed: u32) -> Result<(), 
     };
     let mut random = Lcg::new(seed);
     let activations = (0..shape.m * shape.k)
-        .map(|_| random.signed(-7, 7))
+        .map(|_| parse_activation(i32::from(random.signed(-7, 7))).expect("bounded activation"))
         .collect::<Vec<_>>();
     let weights = (0..shape.k * shape.n)
         .map(|_| random.signed(-6, 6))

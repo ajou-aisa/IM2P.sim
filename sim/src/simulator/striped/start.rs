@@ -1,4 +1,4 @@
-use crate::{ffi, StripeLayout, StripeWorkDesc};
+use crate::{activation::activation_elements_to_address_bytes, ffi, StripeLayout, StripeWorkDesc};
 
 use super::{
     Error, Im2pSimulator, MemoryProvider, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE,
@@ -61,7 +61,11 @@ impl Im2pSimulator {
             weight_base: WEIGHT_BASE,
             scale_base: SCALE_BASE,
             output_base: OUTPUT_BASE,
-            activation_row_stride: descriptor.reduction as u64,
+            activation_row_stride: match activation_elements_to_address_bytes(descriptor.reduction)
+            {
+                Ok(bytes) => bytes,
+                Err(_) => return Err((Error::InvalidActivationStride, self)),
+            },
             weight_row_stride: layout.weight_row_stride as u64,
             scale_row_stride: if provider.is_some() {
                 descriptor.columns as u64

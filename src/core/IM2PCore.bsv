@@ -15,6 +15,10 @@ import WorkTypes::*;
 import WorkScheduler::*;
 import MatmulScheduler::*;
 
+function Integer storageBytes(Integer bitCount);
+    return (bitCount + 7) / 8;
+endfunction
+
 typedef enum {
     MatrixIdle,
     MatrixWaitWork,
@@ -665,7 +669,7 @@ module mkIM2PCore(IM2PCoreIfc#(
             row, lookaheadWorkReg.activationRowStride);
         HostAddress address = matrixElementAddress(rowBase,
             lookaheadKStartReg - matrixKOriginReg,
-            fromInteger(valueOf(inputBits) / 8));
+            fromInteger(storageBytes(valueOf(inputBits))));
         lookaheadActivationTagReg <= matrixTag('h80000000
             + zeroExtend(lookaheadActivationRowReg));
         lookaheadActivationResponseRowReg <= truncate(lookaheadActivationRowReg);
@@ -1395,7 +1399,7 @@ module mkIM2PCore(IM2PCoreIfc#(
             HostAddress address = matrixElementAddress(
                 rowBase,
                 kStart - matrixKOriginReg,
-                fromInteger(valueOf(inputBits) / 8)
+                fromInteger(storageBytes(valueOf(inputBits)))
             );
             HostRequestTag tag = matrixTag(activationTagSequenceReg);
 
@@ -1767,7 +1771,8 @@ module mkIM2PCore(IM2PCoreIfc#(
             tileIRows: tileIRows,
             tileJColumns: tileJColumns,
             blockSize: scaleBlockSize,
-            activationElementBytes: fromInteger(valueOf(inputBits) / 8),
+            activationElementBytes:
+                fromInteger(storageBytes(valueOf(inputBits))),
             weightElementBytes: fromInteger(valueOf(weightBits) / 8),
             scaleElementBytes: fromInteger(valueOf(scaleBits) / 8),
             outputElementBytes: fromInteger(valueOf(accBits) / 8),
@@ -1881,7 +1886,7 @@ module mkIM2PCore(IM2PCoreIfc#(
             row, lookaheadWorkReg.activationRowStride);
         HostAddress lookaheadAddress = matrixElementAddress(rowBase,
             lookaheadKStartReg - matrixKOriginReg,
-            fromInteger(valueOf(inputBits) / 8));
+            fromInteger(storageBytes(valueOf(inputBits))));
         return activationRequestValidReg ? activationRequestAddressReg
                                          : lookaheadAddress;
     endmethod

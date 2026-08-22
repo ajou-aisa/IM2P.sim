@@ -4,9 +4,13 @@
 #include "ggml-gemmini-args.h"
 #include "quants/act/exsia/exsia.hpp"
 
-#include <cmath>
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
-#include <cstring>
+#include <cstdlib>
+#include <limits>
+#include <memory>
+#include <string_view>
 #include <vector>
 
 using namespace im2p::gemmini;
@@ -15,287 +19,269 @@ namespace exsia = ggml::gemmini::quants::act::exsia;
 #ifndef IM2P_GEMMINI_FRONTEND_EXPECTED_DIM
 #error "real frontend test requires an explicit authoritative DIM config"
 #endif
+#ifndef IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS
+#error "real frontend test requires an explicit activation width"
+#endif
 static_assert(DIM == IM2P_GEMMINI_FRONTEND_EXPECTED_DIM);
+static_assert(IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 4 ||
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 8 ||
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 16);
 
 namespace {
-constexpr float kGuard = 12345.0f;
+constexpr int32_t kGuard = 0x5a5a5a5a;
+constexpr size_t kWeightOrigin = 7;
+constexpr size_t kOutputOrigin = 5;
+constexpr uint64_t kRunId = 41;
+
+size_t activation_storage_bytes() {
+  return (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS + 7) / 8;
+}
+
+int32_t activation_min() {
+  return -(int32_t{1} << (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS - 1));
+}
+
+int32_t activation_max() {
+  return (int32_t{1} << (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS - 1)) - 1;
+}
 
 exsia::StripeReadyEvent stripe(size_t id, size_t begin, size_t end) {
-  exsia::StripeReadyEvent e{};
-  e.run_id = 41; e.stripe_id = id; e.row_begin = begin; e.row_end = end;
-  return e;
+  exsia::StripeReadyEvent event{};
+  event.run_id = kRunId;
+  event.stripe_id = id;
+  event.slot = id % 2;
+  event.row_begin = begin;
+  event.row_end = end;
+  return event;
 }
 
-struct NativeCase {
-  size_t m = DIM + 3, n = DIM + 5, k, blocks_k;
-  size_t row_stride = 0, col_stride = 2;
-  std::vector<int8_t> a, logical_w, planar;
-  std::vector<uint8_t> cb, channel_rows;
-  std::vector<uint16_t> r;
-  std::vector<float> srf, channel_scales, out, expected;
-  std::vector<block_q8_h1> h1;
-  std::vector<block_q8_hp1> hp1;
+struct RealCase {
+  const size_t m = DIM + 3;
+  const size_t n = DIM + 5;
+  const size_t k = DIM + 7;
+  const size_t stripe_rows = (m + 2) / 3;
+  const size_t activation_stride_bytes = (k + 3) * activation_storage_bytes();
+  const size_t weight_stride = n + 5;
+  const size_t output_stride = n + 4;
+
+  ggml::gemmini::quants::act::QuantizedActivationBuffer activations;
+  std::vector<int8_t> weight_storage;
+  std::vector<int32_t> output_storage;
+  std::vector<int32_t> expected;
   ggml_gemmini_args_t args{};
 
-  explicit NativeCase(ggml_gemmini_args_t::im2p_weight_format_t format)
-      : k(format == ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1 ? 64 : 65),
-        blocks_k((k + 31) / 32) {
-    row_stride = n * col_stride + 3;
-    a.resize(m * k); logical_w.resize(n * k); planar.resize(n * k);
-    cb.resize(n * blocks_k); r.resize(n); srf.resize(n);
-    channel_scales.resize(n); channel_rows.resize(n * (sizeof(float) + k));
-    h1.resize(n * blocks_k); hp1.resize(n * blocks_k);
-    out.assign(m * row_stride + 7, kGuard);
-    expected.assign(m * n, 0.0f);
-    for (size_t i = 0; i < m; ++i)
-      for (size_t x = 0; x < k; ++x) a[i * k + x] = int8_t((i + 2 * x) % 7 - 3);
-    for (size_t j = 0; j < n; ++j) {
-      r[j] = uint16_t(2 + j % 3); srf[j] = 0.125f * float(1 + j % 4);
-      channel_scales[j] = 0.25f * float(1 + j % 3);
-      std::memcpy(channel_rows.data() + j * (sizeof(float) + k), &channel_scales[j], sizeof(float));
+  RealCase()
+      : weight_storage(kWeightOrigin + k * weight_stride + 9, int8_t{0x33}),
+        output_storage(kOutputOrigin + m * output_stride + 11, kGuard),
+        expected(m * n, 0) {
+    activations.bits = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
+    activations.rows = m;
+    activations.cols = k;
+    activations.row_stride_bytes = activation_stride_bytes;
+    activations.bytes = std::make_shared<std::vector<uint8_t>>(
+        m * activation_stride_bytes + 13, uint8_t{0xa5});
+
+    for (size_t i = 0; i < m; ++i) {
       for (size_t x = 0; x < k; ++x) {
-        const int8_t q = int8_t((3 * j + x) % 9 - 4);
-        logical_w[j * k + x] = q; planar[j * k + x] = q;
-        channel_rows[j * (sizeof(float) + k) + sizeof(float) + x] = uint8_t(q);
-      }
-      for (size_t b = 0; b < blocks_k; ++b) {
-        cb[j * blocks_k + b] = uint8_t(1 + b + j % 2);
-        auto &hb = h1[j * blocks_k + b];
-        auto &pb = hp1[j * blocks_k + b];
-        const size_t begin = b * 32;
-        const size_t count = std::min<size_t>(32, k - begin);
-        std::memcpy(hb.qs, logical_w.data() + j * k + begin, count);
-        std::memcpy(pb.qs, logical_w.data() + j * k + begin, count);
-        hb.c_b = cb[j * blocks_k + b]; hb.R = r[j]; hb.s_rf = srf[j];
-        pb.channel_scale = 0.125f * float(1 + j % 4); pb.m = int16_t(b + 1);
+        int32_t value = static_cast<int32_t>((i * 11 + x * 7) % 13) - 6;
+        if (i == 0 && x == 0)
+          value = activation_min();
+        else if (i == 0 && x == 1)
+          value = activation_max();
+        if (!activations.set(i, x, value)) {
+          std::fprintf(stderr,
+                       "failed to set activation i=%zu k=%zu value=%d\n", i, x,
+                       value);
+          std::abort();
+        }
       }
     }
-    args.I = m; args.J = n; args.K = k; args.A = a.data(); args.sA = k;
-    args.f_out = out.data(); args.stride_f_out = row_stride;
-    args.col_stride_f_out = col_stride; args.activation_rows_per_stripe = DIM / 2;
-    args.weight_format = format;
-    args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 0.5f;
-    switch (format) {
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1:
-      args.B = planar.data(); args.sB = k; args.c_b = cb.data(); args.s_rf = srf.data();
-      args.R = r.data(); args.blocks_per_row = blocks_k; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_h1:
-      args.q8_h1_blocks = h1.data(); args.q8_h1_block_count = h1.size();
-      args.q8_h1_rows = n; args.blocks_per_row = blocks_k; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1:
-      args.q8_hp1_blocks = hp1.data(); args.q8_hp1_block_count = hp1.size();
-      args.q8_hp1_blocks_per_row = blocks_k; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_channel:
-      args.q8_channel_row_base = channel_rows.data();
-      args.q8_channel_row_stride = sizeof(float) + k; args.q8_channel_row_count = n;
-      args.B = reinterpret_cast<elem_t *>(channel_rows.data() + sizeof(float));
-      args.sB = sizeof(float) + k; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar:
-      args.B = logical_w.data(); args.sB = k; args.weight_channel_scales = channel_scales.data();
-      args.weight_channel_scale_count = n; break;
-    default: break;
-    }
-    for (size_t i = 0; i < m; ++i) for (size_t j = 0; j < n; ++j) {
-      double sum = 0.0;
-      for (size_t b = 0; b < blocks_k; ++b) {
-        int32_t dot = 0;
-        for (size_t x = b * 32; x < std::min(k, (b + 1) * 32); ++x)
-          dot += int32_t(a[i * k + x]) * int32_t(logical_w[j * k + x]);
-        double factor = channel_scales[j];
-        if (format == ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1 ||
-            format == ggml_gemmini_args_t::im2p_weight_format_t::q8_h1)
-          factor = double(srf[j]) * double(uint32_t(cb[j * blocks_k + b]) + uint32_t(r[j]));
-        else if (format == ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1)
-          factor = double(gemmini_ldexp_fast_pos(hp1[j * blocks_k + b].channel_scale,
-                                                hp1[j * blocks_k + b].m));
-        sum += double(dot) * factor;
+
+    auto *weights = weight_storage.data() + kWeightOrigin;
+    for (size_t x = 0; x < k; ++x) {
+      for (size_t j = 0; j < n; ++j) {
+        int32_t value = static_cast<int32_t>((x * 5 + j * 3) % 17) - 8;
+        if (x == 0 && j == 0)
+          value = -128;
+        else if (x == 1 && j == 0)
+          value = 127;
+        weights[x * weight_stride + j] = static_cast<int8_t>(value);
       }
-      expected[i * n + j] = float(sum * 0.5);
     }
+
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = 0; j < n; ++j) {
+        int64_t sum = 0;
+        for (size_t x = 0; x < k; ++x)
+          sum += int64_t(activations.get(i, x)) *
+                 int64_t(weights[x * weight_stride + j]);
+        if (sum < std::numeric_limits<int32_t>::min() ||
+            sum > std::numeric_limits<int32_t>::max())
+          std::abort();
+        expected[i * n + j] = static_cast<int32_t>(sum);
+      }
+    }
+
+    args.I = m;
+    args.J = n;
+    args.K = k;
+    args.A = activations;
+    args.B = weights;
+    args.C = output_storage.data() + kOutputOrigin;
+    args.sA = k;
+    args.sB = weight_stride;
+    args.sC = output_stride;
+    args.full_C = true;
+    args.activation_rows_per_stripe = stripe_rows;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h0;
+  }
+
+  bool verify_layout_contract() const {
+    const size_t bytes = activation_storage_bytes();
+    if (activations.row_stride_bytes != (k + 3) * bytes)
+      return false;
+    if (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 4 && bytes != 1) {
+      std::fprintf(stderr, "A4 must use one host byte per value\n");
+      return false;
+    }
+    if (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 16 && bytes != 2) {
+      std::fprintf(stderr, "A16 must use two bytes per value\n");
+      return false;
+    }
+    return activations.get(0, 0) == activation_min() &&
+           activations.get(0, 1) == activation_max();
+  }
+
+  bool verify_output() const {
+    const auto *output = output_storage.data() + kOutputOrigin;
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = 0; j < n; ++j) {
+        if (output[i * output_stride + j] != expected[i * n + j]) {
+          std::fprintf(stderr,
+                       "oracle mismatch bits=%d dim=%d i=%zu j=%zu got=%d "
+                       "want=%d\n",
+                       IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM, i, j,
+                       output[i * output_stride + j], expected[i * n + j]);
+          return false;
+        }
+      }
+      for (size_t j = n; j < output_stride; ++j)
+        if (output[i * output_stride + j] != kGuard)
+          return false;
+    }
+    return std::all_of(output_storage.begin(),
+                       output_storage.begin() + kOutputOrigin,
+                       [](int32_t value) { return value == kGuard; }) &&
+           std::all_of(output_storage.begin() + kOutputOrigin +
+                           m * output_stride,
+                       output_storage.end(),
+                       [](int32_t value) { return value == kGuard; });
   }
 };
 
-struct NativeResult {
-  std::vector<float> output;
-  im2p_work_stats_extended_t stats{};
-};
+bool run_real(Mode mode) {
+  RealCase test;
+  if (!test.verify_layout_contract())
+    return false;
 
-bool check_native(ggml_gemmini_args_t::im2p_weight_format_t format, Mode mode,
-                  NativeResult *result = nullptr) {
-  NativeCase c(format);
-  const size_t expected_stripes =
-      (c.m + size_t(DIM / 2) - 1) / size_t(DIM / 2);
-  auto run = execute(&c.args, mode, {expected_stripes, 1000000});
-  if (!run.status.ok()) {
-    std::fprintf(stderr, "native start failed route=%d mode=%d: %s\n",
-                 int(format), int(mode), run.status.message);
+  auto started = execute(&test.args, mode, Options{1000000});
+  if (!started.status.ok()) {
+    std::fprintf(stderr, "execute failed bits=%d dim=%d mode=%d: %s\n",
+                 IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM, int(mode),
+                 started.status.message);
     return false;
   }
+
+  size_t submitted = 0;
   if (mode == Mode::stripe_pipeline) {
-    size_t id = 0;
-    for (size_t row = 0; row < c.m; row += DIM / 2, ++id)
-      if (const auto submitted =
-              submit_stripe(*run.run,
-                            stripe(id, row, std::min(c.m, row + size_t(DIM / 2))));
-          !submitted.ok()) {
-        std::fprintf(stderr, "native submit failed route=%d stripe=%zu: %s\n",
-                     int(format), id, submitted.message);
+    for (size_t row = 0; row < test.m; row += test.stripe_rows, ++submitted) {
+      const auto status = submit_stripe(
+          *started.run,
+          stripe(submitted, row, std::min(test.m, row + test.stripe_rows)));
+      if (!status.ok()) {
+        std::fprintf(stderr, "stripe %zu failed: %s\n", submitted,
+                     status.message);
         return false;
       }
-  }
-  auto done = fence(*run.run);
-  if (!done.status.ok()) { std::fprintf(stderr, "native fence failed route=%u mode=%u: %s\n", unsigned(format), unsigned(mode), done.status.message); return false; }
-  for (size_t i = 0; i < c.m; ++i) for (size_t j = 0; j < c.n; ++j)
-    if (std::fabs(c.out[i * c.row_stride + j * c.col_stride] - c.expected[i * c.n + j]) > 1e-5f) {
-      std::fprintf(stderr, "native mismatch route=%u mode=%u i=%zu j=%zu got=%g want=%g\n",
-                   unsigned(format), unsigned(mode), i, j,
-                   c.out[i * c.row_stride + j * c.col_stride], c.expected[i * c.n + j]); return false;
     }
-  for (size_t i = 0; i < c.m; ++i) for (size_t x = 0; x < c.row_stride; ++x)
-    if (x % c.col_stride != 0 && c.out[i * c.row_stride + x] != kGuard) return false;
-  if (mode == Mode::stripe_pipeline &&
-      (done.stats.lookahead_prepared == 0 ||
-       done.stats.base.completed_stripes != expected_stripes ||
-       done.stats.lookahead_first_activation_cycle >=
-           done.stats.current_stripe_completion_cycle ||
-       done.stats.lookahead_first_weight_cycle >=
-           done.stats.current_stripe_completion_cycle ||
-       done.stats.lookahead_weight_preload_cycle >=
-           done.stats.current_stripe_completion_cycle ||
-       done.stats.lookahead_ready_cycle >=
-           done.stats.current_stripe_completion_cycle ||
-       done.stats.lookahead_start_cycle <
-           done.stats.current_stripe_completion_cycle)) return false;
-  const bool channel =
-      format == ggml_gemmini_args_t::im2p_weight_format_t::q8_channel ||
-      format == ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar;
-  if (done.stats.base.weight_read_requests == 0 ||
-      done.stats.base.output_write_requests == 0 ||
-      (channel ? done.stats.base.scale_read_requests != 0
-               : done.stats.base.scale_read_requests == 0))
-    return false;
-  if (result) {
-    result->output.reserve(c.m * c.n);
-    for (size_t i = 0; i < c.m; ++i)
-      for (size_t j = 0; j < c.n; ++j)
-        result->output.push_back(c.out[i * c.row_stride + j * c.col_stride]);
-    result->stats = done.stats;
+    if (submitted != 3) {
+      std::fprintf(stderr, "expected three stripes, got %zu\n", submitted);
+      return false;
+    }
   }
-  return true;
-}
 
-bool check_raw_h0(Mode mode) {
-  const size_t m = DIM + 1, n = DIM + 3, k = DIM + 5;
-  std::vector<int8_t> a(m * k), b(k * n);
-  std::vector<int32_t> out(m * n), expected(m * n);
-  for (size_t i = 0; i < m; ++i)
-    for (size_t x = 0; x < k; ++x)
-      a[i * k + x] = int8_t((i + 2 * x) % 7 - 3);
-  for (size_t x = 0; x < k; ++x)
-    for (size_t j = 0; j < n; ++j)
-      b[x * n + j] = int8_t((x + 3 * j) % 9 - 4);
-  for (size_t i = 0; i < m; ++i)
-    for (size_t j = 0; j < n; ++j)
-      for (size_t x = 0; x < k; ++x)
-        expected[i * n + j] += int32_t(a[i * k + x]) * int32_t(b[x * n + j]);
-
-  ggml_gemmini_args_t args{};
-  args.I = m; args.J = n; args.K = k;
-  args.A = a.data(); args.B = b.data(); args.C = out.data();
-  args.sA = k; args.sB = n; args.sC = n; args.full_C = true;
-  args.activation_rows_per_stripe = DIM / 2;
-  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h0;
-  const size_t expected_stripes =
-      (m + size_t(DIM / 2) - 1) / size_t(DIM / 2);
-  auto run = execute(&args, mode, {expected_stripes, 1000000});
-  if (!run.status.ok()) {
-    std::fprintf(stderr, "q8_h0 start failed mode=%d: %s\n", int(mode),
-                 run.status.message);
-    return false;
-  }
-  if (mode == Mode::stripe_pipeline) {
-    size_t id = 0;
-    for (size_t row = 0; row < m; row += DIM / 2, ++id)
-      if (!submit_stripe(*run.run,
-                         stripe(id, row, std::min(m, row + size_t(DIM / 2)))).ok())
-        return false;
-  }
-  const auto done = fence(*run.run);
+  const auto done = fence(*started.run);
   if (!done.status.ok()) {
-    std::fprintf(stderr, "q8_h0 fence failed mode=%d: %s\n", int(mode),
+    std::fprintf(stderr, "fence failed bits=%d dim=%d mode=%d: %s\n",
+                 IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM, int(mode),
                  done.status.message);
     return false;
   }
-  for (size_t index = 0; index < out.size(); ++index)
-    if (out[index] != expected[index]) {
-      std::fprintf(stderr,
-                   "q8_h0 mismatch mode=%d i=%zu j=%zu got=%d want=%d\n",
-                   int(mode), index / n, index % n, out[index], expected[index]);
-      return false;
-    }
-  if (done.stats.base.weight_read_requests == 0 ||
-      done.stats.base.output_write_requests == 0 ||
-      done.stats.base.scale_read_requests != 0) {
-    std::fprintf(stderr, "q8_h0 request stats invalid mode=%d W=%llu S=%llu C=%llu\n",
-                 int(mode),
-                 static_cast<unsigned long long>(
-                     done.stats.base.weight_read_requests),
-                 static_cast<unsigned long long>(
-                     done.stats.base.scale_read_requests),
-                 static_cast<unsigned long long>(
-                     done.stats.base.output_write_requests));
+  if (mode == Mode::stripe_pipeline &&
+      !authorize_output_commit(*started.run, true).ok())
     return false;
-  }
+  if (!test.verify_output())
+    return false;
+  if (done.stats.base.activation_read_requests == 0 ||
+      done.stats.base.weight_read_requests == 0 ||
+      done.stats.base.output_write_requests == 0 ||
+      done.stats.base.scale_read_requests != 0)
+    return false;
+  if (mode == Mode::stripe_pipeline &&
+      (done.stats.base.completed_stripes != 3 ||
+       done.stats.base.stripes_published != 3))
+    return false;
+
+  std::printf("REAL_EXECUTION bits=%d dim=%d mode=%s PASS "
+              "M=%zu N=%zu K=%zu activation_byte_stride=%zu "
+              "weight_origin=%zu output_origin=%zu stripes=%zu\n",
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM,
+              mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
+              test.activation_stride_bytes, kWeightOrigin, kOutputOrigin,
+              mode == Mode::stripe_pipeline ? submitted : 0);
   return true;
 }
-}
 
-int main() {
-  if (!check_raw_h0(Mode::full) || !check_raw_h0(Mode::stripe_pipeline)) return 1;
-  NativeResult q8_0_full, q8_0_stripe, h1_full, h1_stripe;
-  NativeResult channel_full, channel_stripe, sidecar_full, sidecar_stripe;
-  const ggml_gemmini_args_t::im2p_weight_format_t routes[] = {
-    ggml_gemmini_args_t::im2p_weight_format_t::q8_channel,
-    ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1,
-    ggml_gemmini_args_t::im2p_weight_format_t::q8_h1,
-    ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1,
-    ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar,
-  };
-  for (auto route : routes) {
-    NativeResult *full = nullptr, *stripe_result = nullptr;
-    switch (route) {
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1:
-      full = &q8_0_full; stripe_result = &q8_0_stripe; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_h1:
-      full = &h1_full; stripe_result = &h1_stripe; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_channel:
-      full = &channel_full; stripe_result = &channel_stripe; break;
-    case ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar:
-      full = &sidecar_full; stripe_result = &sidecar_stripe; break;
-    default: break;
-    }
-    if (!check_native(route, Mode::full, full) ||
-        !check_native(route, Mode::stripe_pipeline, stripe_result))
-      return 2;
+bool expect_configuration_mismatch() {
+  RealCase test;
+  const auto before = test.output_storage;
+  auto started = execute(&test.args, Mode::full, Options{1000000});
+  if (!started.status.ok()) {
+    std::fprintf(stderr, "mismatch execute setup unexpectedly failed: %s\n",
+                 started.status.message);
+    return false;
   }
-  if (q8_0_full.output != h1_full.output ||
-      q8_0_stripe.output != h1_stripe.output ||
-      channel_full.output != sidecar_full.output ||
-      channel_stripe.output != sidecar_stripe.output ||
-      q8_0_full.stats.base.work_total_cycles !=
-          h1_full.stats.base.work_total_cycles ||
-      q8_0_stripe.stats.base.work_total_cycles !=
-          h1_stripe.stats.base.work_total_cycles ||
-      channel_full.stats.base.work_total_cycles !=
-          sidecar_full.stats.base.work_total_cycles ||
-      channel_stripe.stats.base.work_total_cycles !=
-          sidecar_stripe.stats.base.work_total_cycles)
-    return 5;
-  ggml_gemmini_args_t rejected{};
-  rejected.weight_format=ggml_gemmini_args_t::im2p_weight_format_t::q8_h2;
-  if (execute(&rejected).status.code != StatusCode::unsupported_route) return 3;
-  rejected.weight_format=ggml_gemmini_args_t::im2p_weight_format_t::q8_hp2;
-  if (execute(&rejected).status.code != StatusCode::unsupported_route) return 4;
-  std::printf("IM2P Gemmini frontend real RTL DIM=%d: PASS\n", DIM);
+  const auto done = fence(*started.run);
+  const auto &stats = done.stats.base;
+  const bool no_work =
+      stats.work_total_cycles == 0 && stats.activation_read_requests == 0 &&
+      stats.weight_read_requests == 0 && stats.output_write_requests == 0;
+  const bool pass =
+      done.status.code == StatusCode::invalid_contract &&
+      im2p_sim_activation_bits() != IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
+      test.output_storage == before && no_work;
+  std::printf("CONFIGURATION_MISMATCH frontend_bits=%d simulator_bits=%u "
+              "dim=%d no_rtl_work=%s output_unchanged=%s %s\n",
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, im2p_sim_activation_bits(),
+              DIM, no_work ? "yes" : "no",
+              test.output_storage == before ? "yes" : "no",
+              pass ? "PASS" : "FAIL");
+  return pass;
+}
+} // namespace
+
+int main(int argc, char **argv) {
+  if (argc == 2 &&
+      std::string_view(argv[1]) == "--expect-configuration-mismatch")
+    return expect_configuration_mismatch() ? 0 : 3;
+  if (argc != 1) {
+    std::fprintf(stderr, "usage: %s [--expect-configuration-mismatch]\n",
+                 argv[0]);
+    return 64;
+  }
+  if (!run_real(Mode::full) || !run_real(Mode::stripe_pipeline))
+    return 1;
+  std::printf("IM2P Gemmini frontend real RTL bits=%d DIM=%d: PASS\n",
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM);
   return 0;
 }

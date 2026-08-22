@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::{ffi, ActivationStripe, StripeCompletion, StripeLayout, StripeWorkDesc, WorkStats};
+use crate::{
+    activation::activation_elements_to_address_bytes, ffi, ActivationStripe, ActivationValue,
+    StripeCompletion, StripeLayout, StripeWorkDesc, WorkStats,
+};
 
 use super::{
     matmul::{ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE},
@@ -10,6 +13,18 @@ use super::{
 mod provider;
 mod start;
 const STRIPED_TIMEOUT_CYCLES: u64 = 10_000_000;
+
+#[cfg(test)]
+static ACTIVATION_REQUEST_INTERCEPT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static SUPPLY_REQUEST_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static STAGE_REQUEST_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static ACTIVATION_BOUNDARY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct StripedMatmul<'a> {
     simulator: Im2pSimulator,
@@ -64,7 +79,8 @@ impl StripedMatmul<'_> {
                 self.simulator.handle.as_ptr(),
                 stripe.row_begin as u32,
                 stripe.row_count as u32,
-                activation_row_stride as u64,
+                activation_elements_to_address_bytes(activation_row_stride)
+                    .map_err(|_| Error::InvalidActivationStride)?,
             )
         };
         if accepted == 0 {
@@ -133,7 +149,17 @@ impl StripedMatmul<'_> {
             .map(|(row, _, _)| row)
     }
 
-    pub fn supply_activation_row(&mut self, row: usize, values: &[i8]) -> Result<(), Error> {
+    pub fn supply_activation_row(
+        &mut self,
+        row: usize,
+        values: &[ActivationValue],
+    ) -> Result<(), Error> {
+        crate::activation_validation::validate_activation_row(values)?;
+        #[cfg(test)]
+        if ACTIVATION_REQUEST_INTERCEPT.load(std::sync::atomic::Ordering::SeqCst) {
+            SUPPLY_REQUEST_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(Error::ProviderFailure);
+        }
         let (expected_row, column, request) = self
             .activation_request()?
             .ok_or(Error::NoPendingActivation)?;
@@ -145,14 +171,24 @@ impl StripedMatmul<'_> {
             ffi::im2p_put_activation_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
-                values[column..].as_ptr(),
+                values[column..].as_ptr().cast::<i8>(),
                 request.element_count,
             )
         };
         self.simulator
             .require_ready("activation_read_response", accepted)
     }
-    pub(crate) fn stage_activation_row(&mut self, row: usize, values: &[i8]) -> Result<(), Error> {
+    pub(crate) fn stage_activation_row(
+        &mut self,
+        row: usize,
+        values: &[ActivationValue],
+    ) -> Result<(), Error> {
+        crate::activation_validation::validate_activation_row(values)?;
+        #[cfg(test)]
+        if ACTIVATION_REQUEST_INTERCEPT.load(std::sync::atomic::Ordering::SeqCst) {
+            STAGE_REQUEST_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(Error::ProviderFailure);
+        }
         let (expected_row, column, request) = self
             .activation_request()?
             .ok_or(Error::NoPendingActivation)?;
@@ -163,7 +199,7 @@ impl StripedMatmul<'_> {
             ffi::im2p_stage_activation_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
-                values[column..].as_ptr(),
+                values[column..].as_ptr().cast::<i8>(),
                 request.element_count,
             )
         };
@@ -265,5 +301,139 @@ impl StripedMatmul<'_> {
         Err(self
             .simulator
             .matrix_timeout("finish_striped_matmul", STRIPED_TIMEOUT_CYCLES))
+    }
+}
+
+#[cfg(test)]
+mod activation_boundary_tests {
+    use std::collections::VecDeque;
+    use std::mem::ManuallyDrop;
+    use std::ptr::NonNull;
+    use std::sync::atomic::Ordering;
+
+    use super::{
+        Error, Im2pSimulator, StripeLayout, StripeWorkDesc, StripedMatmul,
+        ACTIVATION_BOUNDARY_TEST_LOCK, ACTIVATION_REQUEST_INTERCEPT, STAGE_REQUEST_ATTEMPTS,
+        SUPPLY_REQUEST_ATTEMPTS,
+    };
+    use crate::{parse_activation, ActivationValue, VectorOp, ACTIVATION_BITS};
+
+    fn selected_extrema() -> [ActivationValue; 2] {
+        let extrema = match ACTIVATION_BITS {
+            4 => [-8, 7],
+            8 => [-128, 127],
+            16 => [-32_768, 32_767],
+            _ => unreachable!("supported widths are compile-time selected"),
+        };
+        extrema.map(|value| parse_activation(value).expect("selected-width extrema"))
+    }
+
+    fn job<'a>(weights: &'a [i8]) -> ManuallyDrop<StripedMatmul<'a>> {
+        ManuallyDrop::new(StripedMatmul {
+            simulator: Im2pSimulator {
+                handle: NonNull::<u8>::dangling().cast(),
+                dim: 2,
+            },
+            descriptor: StripeWorkDesc {
+                weights,
+                scale_matrix: None,
+                rows: 1,
+                columns: 1,
+                reduction: 2,
+                vector_op: VectorOp::Bypass,
+                work_context: 0,
+            },
+            layout: StripeLayout {
+                weight_row_stride: 1,
+                output_row_stride: 1,
+                tile_i_rows: 1,
+                tile_j_columns: 1,
+            },
+            provider: None,
+            published: VecDeque::new(),
+            completed: VecDeque::new(),
+            outstanding_stripes: 0,
+            next_stripe_id: 0,
+            next_row: 0,
+            start_cycle: 0,
+        })
+    }
+
+    #[test]
+    fn production_activation_boundary_supply_rejects_malformed_a4_before_request() {
+        if ACTIVATION_BITS != 4 {
+            return;
+        }
+        let _guard = ACTIVATION_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values: [ActivationValue; 2] = [-9, 8];
+        let weights = [1_i8, 1];
+        let mut job = job(&weights);
+        SUPPLY_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
+        ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = job.supply_activation_row(0, &values);
+
+        ACTIVATION_REQUEST_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::InvalidLayout));
+        assert_eq!(SUPPLY_REQUEST_ATTEMPTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn production_activation_boundary_stage_rejects_malformed_a4_before_request() {
+        if ACTIVATION_BITS != 4 {
+            return;
+        }
+        let _guard = ACTIVATION_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values: [ActivationValue; 2] = [-9, 8];
+        let weights = [1_i8, 1];
+        let mut job = job(&weights);
+        STAGE_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
+        ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = job.stage_activation_row(0, &values);
+
+        ACTIVATION_REQUEST_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::InvalidLayout));
+        assert_eq!(STAGE_REQUEST_ATTEMPTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn production_activation_boundary_supply_accepts_selected_extrema_before_request() {
+        let _guard = ACTIVATION_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values = selected_extrema();
+        let weights = [1_i8, 1];
+        let mut job = job(&weights);
+        SUPPLY_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
+        ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = job.supply_activation_row(0, &values);
+
+        ACTIVATION_REQUEST_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::ProviderFailure));
+        assert_eq!(SUPPLY_REQUEST_ATTEMPTS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn production_activation_boundary_stage_accepts_selected_extrema_before_request() {
+        let _guard = ACTIVATION_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values = selected_extrema();
+        let weights = [1_i8, 1];
+        let mut job = job(&weights);
+        STAGE_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
+        ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = job.stage_activation_row(0, &values);
+
+        ACTIVATION_REQUEST_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::ProviderFailure));
+        assert_eq!(STAGE_REQUEST_ATTEMPTS.load(Ordering::SeqCst), 1);
     }
 }

@@ -82,6 +82,124 @@ static int expect_output(const int32_t *output, size_t stride) {
         ? 0 : -1;
 }
 
+static int run_v2_configuration_smoke(uint32_t activation_bits,
+                                      uint32_t activation_storage_bytes,
+                                      uint32_t dim) {
+  static const uint16_t zero_activations[8] = {0};
+  static const int8_t weights[6] = {1, -1, 2, -2, 3, -3};
+  int32_t output[4] = {91, 92, 93, 94};
+  im2p_sim_t *sim = im2p_sim_create();
+  if (sim == NULL)
+    return 40;
+
+  im2p_matmul_desc_v2_t full = {
+      .abi_version = IM2P_ABI_VERSION_2,
+      .activation_bits = activation_bits,
+      .activation_storage_bytes = activation_storage_bytes,
+      .dim = dim,
+      .activations = zero_activations,
+      .weights = weights,
+      .output = output,
+      .m = 2,
+      .n = 2,
+      .k = 3,
+      .activation_row_stride_bytes = 4 * activation_storage_bytes,
+      .weight_row_stride = 2,
+      .output_row_stride = 2,
+      .tile_i_rows = 1,
+      .tile_j_columns = 1,
+      .block_size = 3,
+      .vector_op = IM2P_VECTOR_BYPASS,
+  };
+  if (activation_storage_bytes == 2) {
+    full.activation_row_stride_bytes = 3;
+    if (im2p_execute_matmul_v2(sim, &full, NULL) != IM2P_INVALID_LAYOUT ||
+        output[0] != 91 || output[1] != 92 || output[2] != 93 ||
+        output[3] != 94) {
+      im2p_sim_destroy(sim);
+      return 41;
+    }
+    full.activation_row_stride_bytes = 8;
+  }
+  if (im2p_execute_matmul_v2(sim, &full, NULL) != IM2P_OK || output[0] != 0 ||
+      output[1] != 0 || output[2] != 0 || output[3] != 0) {
+    im2p_sim_destroy(sim);
+    return 42;
+  }
+
+  output[0] = 91;
+  output[1] = 92;
+  output[2] = 93;
+  output[3] = 94;
+  im2p_stripe_work_desc_v2_t work = {
+      .abi_version = IM2P_ABI_VERSION_2,
+      .activation_bits = activation_bits,
+      .activation_storage_bytes = activation_storage_bytes,
+      .dim = dim,
+      .weights = weights,
+      .output = output,
+      .m = 2,
+      .n = 2,
+      .k = 3,
+      .weight_row_stride = 2,
+      .output_row_stride = 2,
+      .tile_i_rows = 1,
+      .tile_j_columns = 1,
+      .block_size = 3,
+      .stripe_count = 1,
+      .vector_op = IM2P_VECTOR_BYPASS,
+  };
+  im2p_stream_t *stream = NULL;
+  if (im2p_begin_striped_matmul_v2(sim, &work, &stream) != IM2P_OK ||
+      stream == NULL) {
+    im2p_sim_destroy(sim);
+    return 43;
+  }
+  im2p_activation_stripe_v2_t stripe = {
+      .abi_version = IM2P_ABI_VERSION_2,
+      .activation_bits = activation_bits,
+      .activation_storage_bytes = activation_storage_bytes,
+      .dim = dim,
+      .stripe_id = 0,
+      .i_start = 0,
+      .rows = 2,
+      .activations = zero_activations,
+      .activation_row_stride_bytes = 4 * activation_storage_bytes,
+  };
+  if (im2p_publish_stripe_v2(stream, &stripe) != IM2P_OK) {
+    im2p_destroy_stream(stream);
+    im2p_sim_destroy(sim);
+    return 44;
+  }
+  int completed = 0;
+  im2p_stripe_completion_t completion = {0};
+  for (uint32_t cycle = 0; cycle < 100000 && !completed; ++cycle) {
+    if (im2p_progress_stream(stream, 1) != IM2P_OK) {
+      im2p_destroy_stream(stream);
+      im2p_sim_destroy(sim);
+      return 45;
+    }
+    completed = im2p_poll_completed(stream, &completion) == 1;
+  }
+  if (!completed ||
+      im2p_publish_stripe_v2(stream, &stripe) != IM2P_LATE_STRIPE) {
+    im2p_destroy_stream(stream);
+    im2p_sim_destroy(sim);
+    return 46;
+  }
+  int status = im2p_finish_stream(stream, NULL);
+  im2p_destroy_stream(stream);
+  im2p_sim_destroy(sim);
+  if (status != IM2P_OK || output[0] != 0 || output[1] != 0 || output[2] != 0 ||
+      output[3] != 0) {
+    return 47;
+  }
+  printf("IM2P C API v2: PASS A%u/DIM%u storage=%u stride=%u\n",
+         activation_bits, dim, activation_storage_bytes,
+         4 * activation_storage_bytes);
+  return 0;
+}
+
 static im2p_matmul_desc_t full_desc(
     const int8_t *activations,
     const int8_t *weights,
@@ -135,6 +253,21 @@ int main(void) {
     int32_t output[8] = {0};
     im2p_work_stats_t stats = {0};
 
+    uint32_t configured_bits = im2p_sim_activation_bits();
+    uint32_t configured_storage_bytes = im2p_sim_activation_storage_bytes();
+    uint32_t configured_dim = im2p_sim_dim();
+    if (im2p_sim_abi_version() != IM2P_ABI_VERSION_2 ||
+        (configured_bits != 4 && configured_bits != 8 &&
+         configured_bits != 16) ||
+        configured_storage_bytes != (configured_bits == 16 ? 2u : 1u) ||
+        (configured_dim != 16 && configured_dim != 32)) {
+      return 31;
+    }
+    if (configured_bits != 8 || configured_dim != 16) {
+      return run_v2_configuration_smoke(
+          configured_bits, configured_storage_bytes, configured_dim);
+    }
+
     if (im2p_execute_matmul(NULL, NULL, NULL) != IM2P_ERROR
             || im2p_progress_stream(NULL, 1) != IM2P_ERROR) {
         return 8;
@@ -144,6 +277,155 @@ int main(void) {
     if (sim == NULL) {
         return 1;
     }
+
+    int32_t v2_sentinel[4] = {INT32_C(0x5a5a5a5a), INT32_C(0x5a5a5a5a),
+                              INT32_C(0x5a5a5a5a), INT32_C(0x5a5a5a5a)};
+    im2p_matmul_desc_v2_t v2 = {
+        .abi_version = IM2P_ABI_VERSION_2,
+        .activation_bits = 8,
+        .activation_storage_bytes = 1,
+        .dim = 16,
+        .activations = activations,
+        .weights = weights,
+        .output = v2_sentinel,
+        .m = 2,
+        .n = 2,
+        .k = 3,
+        .activation_row_stride_bytes = 3,
+        .weight_row_stride = 2,
+        .output_row_stride = 2,
+        .tile_i_rows = 1,
+        .tile_j_columns = 1,
+        .block_size = 3,
+        .vector_op = IM2P_VECTOR_BYPASS,
+        .work_context = 31,
+    };
+    const uint32_t wrong_values[4][4] = {
+        {IM2P_ABI_VERSION_2 + 1, 8, 1, 16},
+        {IM2P_ABI_VERSION_2, 4, 1, 16},
+        {IM2P_ABI_VERSION_2, 8, 2, 16},
+        {IM2P_ABI_VERSION_2, 8, 1, 32},
+    };
+    for (size_t mismatch = 0; mismatch < 4; ++mismatch) {
+      v2.abi_version = wrong_values[mismatch][0];
+      v2.activation_bits = wrong_values[mismatch][1];
+      v2.activation_storage_bytes = wrong_values[mismatch][2];
+      v2.dim = wrong_values[mismatch][3];
+      if (im2p_execute_matmul_v2(sim, &v2, NULL) !=
+          IM2P_CONFIGURATION_MISMATCH) {
+        im2p_sim_destroy(sim);
+        return 32;
+      }
+      for (size_t i = 0; i < 4; ++i) {
+        if (v2_sentinel[i] != INT32_C(0x5a5a5a5a)) {
+          im2p_sim_destroy(sim);
+          return 33;
+        }
+      }
+    }
+    puts("IM2P C ABI v2 mismatch status/sentinel: PASS");
+    v2.abi_version = IM2P_ABI_VERSION_2;
+    v2.activation_bits = 8;
+    v2.activation_storage_bytes = 1;
+    v2.dim = 16;
+    if (im2p_execute_matmul_v2(sim, &v2, &stats) != IM2P_OK ||
+        expect_output(v2_sentinel, 2) != 0) {
+      im2p_sim_destroy(sim);
+      return 34;
+    }
+
+    for (size_t i = 0; i < 4; ++i)
+      v2_sentinel[i] = INT32_C(0x5a5a5a5a);
+    im2p_stripe_work_desc_v2_t v2_work = {
+        .abi_version = IM2P_ABI_VERSION_2,
+        .activation_bits = 8,
+        .activation_storage_bytes = 1,
+        .dim = 16,
+        .weights = weights,
+        .output = v2_sentinel,
+        .m = 2,
+        .n = 2,
+        .k = 3,
+        .weight_row_stride = 2,
+        .output_row_stride = 2,
+        .tile_i_rows = 1,
+        .tile_j_columns = 1,
+        .block_size = 3,
+        .stripe_count = 1,
+        .vector_op = IM2P_VECTOR_BYPASS,
+        .work_context = 32,
+    };
+    im2p_stream_t *v2_stream = (im2p_stream_t *)(uintptr_t)1;
+    v2_work.activation_bits = 16;
+    if (im2p_begin_striped_matmul_v2(sim, &v2_work, &v2_stream) !=
+            IM2P_CONFIGURATION_MISMATCH ||
+        v2_stream != NULL) {
+      im2p_sim_destroy(sim);
+      return 35;
+    }
+    v2_work.activation_bits = 8;
+    if (im2p_begin_striped_matmul_v2(sim, &v2_work, &v2_stream) != IM2P_OK ||
+        v2_stream == NULL) {
+      im2p_sim_destroy(sim);
+      return 36;
+    }
+    im2p_activation_stripe_v2_t v2_stripe = {
+        .abi_version = IM2P_ABI_VERSION_2,
+        .activation_bits = 8,
+        .activation_storage_bytes = 1,
+        .dim = 16,
+        .stripe_id = 0,
+        .i_start = 0,
+        .rows = 2,
+        .activations = activations,
+        .activation_row_stride_bytes = 3,
+        .context = 33,
+    };
+    v2_stripe.activation_row_stride_bytes = 2;
+    if (im2p_publish_stripe_v2(v2_stream, &v2_stripe) != IM2P_INVALID_LAYOUT ||
+        v2_sentinel[0] != INT32_C(0x5a5a5a5a) ||
+        v2_sentinel[1] != INT32_C(0x5a5a5a5a) ||
+        v2_sentinel[2] != INT32_C(0x5a5a5a5a) ||
+        v2_sentinel[3] != INT32_C(0x5a5a5a5a)) {
+      im2p_destroy_stream(v2_stream);
+      im2p_sim_destroy(sim);
+      return 37;
+    }
+    v2_stripe.activation_row_stride_bytes = 3;
+    im2p_activation_stripe_t mixed_version_stripe = {
+        .stripe_id = 0,
+        .i_start = 0,
+        .rows = 2,
+        .activations = activations,
+        .activation_row_stride = 3,
+        .context = 33,
+    };
+    if (im2p_publish_stripe(v2_stream, &mixed_version_stripe) !=
+            IM2P_CONFIGURATION_MISMATCH ||
+        im2p_publish_stripe_v2(v2_stream, &v2_stripe) != IM2P_OK) {
+      im2p_destroy_stream(v2_stream);
+      im2p_sim_destroy(sim);
+      return 37;
+    }
+    int v2_done = 0;
+    im2p_stripe_completion_t v2_completion = {0};
+    for (uint32_t cycle = 0; cycle < 100000 && !v2_done; ++cycle) {
+      if (im2p_progress_stream(v2_stream, 1) != IM2P_OK) {
+        im2p_destroy_stream(v2_stream);
+        im2p_sim_destroy(sim);
+        return 38;
+      }
+      v2_done = im2p_poll_completed(v2_stream, &v2_completion) == 1;
+    }
+    if (!v2_done ||
+        im2p_publish_stripe_v2(v2_stream, &v2_stripe) != IM2P_LATE_STRIPE ||
+        im2p_finish_stream(v2_stream, &stats) != IM2P_OK ||
+        expect_output(v2_sentinel, 2) != 0) {
+      im2p_destroy_stream(v2_stream);
+      im2p_sim_destroy(sim);
+      return 39;
+    }
+    im2p_destroy_stream(v2_stream);
 
     static const int8_t scales[2] = {1, 1};
     im2p_matmul_desc_t invalid_matmul =

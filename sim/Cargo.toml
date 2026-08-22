@@ -8,5 +8,13 @@ build = "build.rs"
 path = "src/lib.rs"
 crate-type = ["rlib", "staticlib"]
 
+[features]
+test-hooks = []
+
+[[test]]
+name = "verilator_activation_packing"
+path = "tests/verilator_activation_packing.rs"
+required-features = ["test-hooks"]
+
 [build-dependencies]
 cc = "1"

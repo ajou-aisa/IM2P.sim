@@ -26,6 +26,7 @@ pub(super) fn validate_tile<'a>(
         request.weights.len(),
     )?;
     require_len("output", request.valid_m * request.valid_n, output.len())?;
+    crate::activation_validation::validate_tile_activations(request)?;
 
     if request.vector_op == VectorOp::Bypass {
         return Ok(None);
@@ -133,4 +134,61 @@ fn require_len(name: &'static str, expected: usize, actual: usize) -> Result<(),
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod activation_boundary_tests {
+    use super::{validate_tile, Error};
+    use crate::{parse_activation, ActivationValue, TileRequest, VectorOp, ACTIVATION_BITS};
+
+    fn selected_extrema() -> [ActivationValue; 2] {
+        let extrema = match ACTIVATION_BITS {
+            4 => [-8, 7],
+            8 => [-128, 127],
+            16 => [-32_768, 32_767],
+            _ => unreachable!("supported widths are compile-time selected"),
+        };
+        extrema.map(|value| parse_activation(value).expect("selected-width extrema"))
+    }
+
+    #[test]
+    fn production_activation_boundary_validate_tile_rejects_malformed_a4() {
+        if ACTIVATION_BITS != 4 {
+            return;
+        }
+        let activations: [ActivationValue; 2] = [-9, 8];
+        let weights = [1_i8, 1];
+        let request = TileRequest {
+            activations: &activations,
+            weights: &weights,
+            scale_matrix: None,
+            valid_m: 1,
+            valid_n: 1,
+            valid_k: 2,
+            k_start: 0,
+            accumulate: false,
+            vector_op: VectorOp::Bypass,
+        };
+
+        assert_eq!(validate_tile(&request, &[0], 2), Err(Error::InvalidLayout));
+    }
+
+    #[test]
+    fn production_activation_boundary_validate_tile_accepts_selected_extrema() {
+        let activations = selected_extrema();
+        let weights = [1_i8, 1];
+        let request = TileRequest {
+            activations: &activations,
+            weights: &weights,
+            scale_matrix: None,
+            valid_m: 1,
+            valid_n: 1,
+            valid_k: 2,
+            k_start: 0,
+            accumulate: false,
+            vector_op: VectorOp::Bypass,
+        };
+
+        assert_eq!(validate_tile(&request, &[0], 2), Ok(None));
+    }
 }

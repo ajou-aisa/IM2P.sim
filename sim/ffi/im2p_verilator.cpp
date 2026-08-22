@@ -1,5 +1,9 @@
 #include "im2p_verilator.h"
 
+#ifdef IM2P_VERILATOR_TEST_HOOKS
+#include "testing/im2p_verilator_testing.h"
+#endif
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -7,21 +11,36 @@
 
 #include "verilated.h"
 
-#if IM2P_DIM == 16
+#if IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 16
+#include "VmkSynthInt4x16.h"
+using Top = VmkSynthInt4x16;
+#elif IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
+#include "VmkSynthInt4x32.h"
+using Top = VmkSynthInt4x32;
+#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 16
 #include "VmkSynthInt8x16.h"
 using Top = VmkSynthInt8x16;
-constexpr uint32_t kDim = 16;
-constexpr uint32_t kCommandWidth = 16;
-constexpr uint32_t kAccumulatorWords = 16;
-#elif IM2P_DIM == 32
+#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 32
 #include "VmkSynthInt8x32.h"
 using Top = VmkSynthInt8x32;
-constexpr uint32_t kDim = 32;
-constexpr uint32_t kCommandWidth = 17;
-constexpr uint32_t kAccumulatorWords = 32;
+#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
+#include "VmkSynthInt16x16.h"
+using Top = VmkSynthInt16x16;
+#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
+#include "VmkSynthInt16x32.h"
+using Top = VmkSynthInt16x32;
 #else
-#error "IM2P_DIM must be 16 or 32"
+#error                                                                         \
+    "IM2P_ACTIVATION_BITS/IM2P_DIM must select 4, 8, or 16 bits and DIM 16 or 32"
 #endif
+
+constexpr uint32_t kDim = IM2P_DIM;
+constexpr uint32_t kActivationBits = IM2P_ACTIVATION_BITS;
+constexpr uint32_t kActivationStorageBytes = kActivationBits == 16 ? 2 : 1;
+constexpr uint32_t kActivationWords = (kActivationBits * kDim + 31) / 32;
+constexpr uint32_t kByteLaneWords = (8 * kDim + 31) / 32;
+constexpr uint32_t kCommandWidth = kDim == 16 ? 16 : 17;
+constexpr uint32_t kAccumulatorWords = kDim;
 
 struct Simulator {
     VerilatedContext *context;
@@ -82,6 +101,80 @@ void set_i8_lanes(VlWide<Words> &signal, const int8_t *values, size_t count) {
         const size_t shift = (index % 4) * 8;
         signal[word] |= static_cast<uint32_t>(value) << shift;
     }
+}
+
+int32_t activation_value(const void *values, size_t index) {
+#if IM2P_ACTIVATION_BITS == 16
+  int16_t value;
+  std::memcpy(&value,
+              static_cast<const uint8_t *>(values) + index * sizeof(value),
+              sizeof(value));
+  return value;
+#else
+  return static_cast<const int8_t *>(values)[index];
+#endif
+}
+
+bool valid_activation_values(const void *values, size_t count) {
+#if IM2P_ACTIVATION_BITS == 4
+  for (size_t index = 0; index < count; ++index) {
+    const int32_t value = activation_value(values, index);
+    if (value < -8 || value > 7) {
+      return false;
+    }
+  }
+#else
+  (void)values;
+  (void)count;
+#endif
+  return true;
+}
+
+void clear_activation_signal(QData &signal) { signal = 0; }
+
+template <size_t Words> void clear_activation_signal(VlWide<Words> &signal) {
+  for (size_t index = 0; index < Words; ++index) {
+    signal[index] = 0U;
+  }
+}
+
+void set_activation_lane(QData &signal, size_t word, size_t shift,
+                         uint32_t value) {
+  signal |= static_cast<uint64_t>(value) << (word * 32 + shift);
+}
+
+template <size_t Words>
+void set_activation_lane(VlWide<Words> &signal, size_t word, size_t shift,
+                         uint32_t value) {
+  signal[word] |= value << shift;
+}
+
+template <typename Signal>
+bool set_activation_lanes(Signal &signal, const void *values, size_t count) {
+  if (!valid_activation_values(values, count)) {
+    return false;
+  }
+  clear_activation_signal(signal);
+  constexpr uint32_t mask = (1U << kActivationBits) - 1U;
+  for (size_t index = 0; index < count; ++index) {
+    const size_t bit = index * kActivationBits;
+    set_activation_lane(signal, bit / 32, bit % 32,
+                        static_cast<uint32_t>(activation_value(values, index)) &
+                            mask);
+  }
+  return true;
+}
+
+void copy_signal_words(QData signal, uint32_t *words, size_t count) {
+  for (size_t index = 0; index < count; ++index) {
+    words[index] = static_cast<uint32_t>(signal >> (index * 32));
+  }
+}
+
+template <size_t Words>
+void copy_signal_words(const VlWide<Words> &signal, uint32_t *words,
+                       size_t count) {
+  std::copy_n(signal.data(), count, words);
 }
 
 void evaluate(Simulator *simulator) {
@@ -263,6 +356,16 @@ extern "C" uint32_t im2p_observed_response_mask(im2p_handle_t handle) {
 
 extern "C" uint32_t im2p_max_concurrent_responses(im2p_handle_t handle) {
     return static_cast<Simulator *>(handle)->max_concurrent_responses;
+}
+
+extern "C" uint32_t im2p_compiled_activation_bits(void) {
+  return kActivationBits;
+}
+
+extern "C" uint32_t im2p_compiled_dim(void) { return kDim; }
+
+extern "C" uint32_t im2p_compiled_activation_storage_bytes(void) {
+  return kActivationStorageBytes;
 }
 
 extern "C" int im2p_weights_ready(im2p_handle_t handle) {
@@ -447,21 +550,23 @@ extern "C" int im2p_start_execution(
     return 1;
 }
 
-extern "C" int im2p_put_activation_row(
-    im2p_handle_t handle,
-    const int8_t *values
-) {
-    if (handle == nullptr || values == nullptr) {
-        return 0;
-    }
-    auto *simulator = static_cast<Simulator *>(handle);
-    evaluate(simulator);
-    if (!simulator->top->RDY_putActivationRow) {
-        return 0;
-    }
-    set_bytes(simulator->top->putActivationRow_activations, values, kDim);
-    pulse(simulator, simulator->top->EN_putActivationRow);
-    return 1;
+extern "C" int im2p_put_activation_row(im2p_handle_t handle,
+                                       const void *values) {
+  if (handle == nullptr || values == nullptr) {
+    return 0;
+  }
+  if (!valid_activation_values(values, kDim)) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *simulator = static_cast<Simulator *>(handle);
+  evaluate(simulator);
+  if (!simulator->top->RDY_putActivationRow) {
+    return 0;
+  }
+  set_activation_lanes(simulator->top->putActivationRow_activations, values,
+                       kDim);
+  pulse(simulator, simulator->top->EN_putActivationRow);
+  return 1;
 }
 
 extern "C" int im2p_acknowledge_execution(im2p_handle_t handle) {
@@ -705,58 +810,54 @@ extern "C" int im2p_scale_read_request(
     return IM2P_REQUEST_PRESENT;
 }
 
-extern "C" int im2p_stage_activation_read_response(
-    im2p_handle_t handle,
-    uint64_t tag,
-    const int8_t *values,
-    uint32_t count
-) {
-    if (handle == nullptr || values == nullptr || count > kDim) {
-        return IM2P_REQUEST_INVALID_ARGUMENT;
-    }
-    auto *simulator = static_cast<Simulator *>(handle);
-    evaluate(simulator);
-    auto *top = simulator->top;
-    if (!top->RDY_putActivationReadResponse) {
-        return 0;
-    }
-    if (!top->activationReadRequestValid
-        || !top->RDY_activationReadRequestTag
-        || tag != top->activationReadRequestTag) {
-        return IM2P_REQUEST_IDENTITY_MISMATCH;
-    }
-    top->putActivationReadResponse_tag = tag;
-    set_i8_lanes(top->putActivationReadResponse_values, values, count);
-    top->EN_putActivationReadResponse = 1;
-    simulator->staged_response_mask |= 0x1;
-    evaluate(simulator);
-    return 1;
+extern "C" int im2p_stage_activation_read_response(im2p_handle_t handle,
+                                                   uint64_t tag,
+                                                   const void *values,
+                                                   uint32_t count) {
+  if (handle == nullptr || values == nullptr || count > kDim ||
+      !valid_activation_values(values, count)) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *simulator = static_cast<Simulator *>(handle);
+  evaluate(simulator);
+  auto *top = simulator->top;
+  if (!top->RDY_putActivationReadResponse) {
+    return 0;
+  }
+  if (!top->activationReadRequestValid || !top->RDY_activationReadRequestTag ||
+      tag != top->activationReadRequestTag) {
+    return IM2P_REQUEST_IDENTITY_MISMATCH;
+  }
+  top->putActivationReadResponse_tag = tag;
+  set_activation_lanes(top->putActivationReadResponse_values, values, count);
+  top->EN_putActivationReadResponse = 1;
+  simulator->staged_response_mask |= 0x1;
+  evaluate(simulator);
+  return 1;
 }
 
-extern "C" int im2p_put_activation_read_response(
-    im2p_handle_t handle,
-    uint64_t tag,
-    const int8_t *values,
-    uint32_t count
-) {
-    if (handle == nullptr || values == nullptr || count > kDim) {
-        return IM2P_REQUEST_INVALID_ARGUMENT;
-    }
-    auto *simulator = static_cast<Simulator *>(handle);
-    evaluate(simulator);
-    auto *top = simulator->top;
-    if (!top->RDY_putActivationReadResponse) {
-        return 0;
-    }
-    if (!top->activationReadRequestValid
-        || !top->RDY_activationReadRequestTag
-        || tag != top->activationReadRequestTag) {
-        return IM2P_REQUEST_IDENTITY_MISMATCH;
-    }
-    top->putActivationReadResponse_tag = tag;
-    set_i8_lanes(top->putActivationReadResponse_values, values, count);
-    pulse(simulator, top->EN_putActivationReadResponse);
-    return 1;
+extern "C" int im2p_put_activation_read_response(im2p_handle_t handle,
+                                                 uint64_t tag,
+                                                 const void *values,
+                                                 uint32_t count) {
+  if (handle == nullptr || values == nullptr || count > kDim ||
+      !valid_activation_values(values, count)) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *simulator = static_cast<Simulator *>(handle);
+  evaluate(simulator);
+  auto *top = simulator->top;
+  if (!top->RDY_putActivationReadResponse) {
+    return 0;
+  }
+  if (!top->activationReadRequestValid || !top->RDY_activationReadRequestTag ||
+      tag != top->activationReadRequestTag) {
+    return IM2P_REQUEST_IDENTITY_MISMATCH;
+  }
+  top->putActivationReadResponse_tag = tag;
+  set_activation_lanes(top->putActivationReadResponse_values, values, count);
+  pulse(simulator, top->EN_putActivationReadResponse);
+  return 1;
 }
 
 extern "C" int im2p_stage_weight_read_response(
@@ -969,6 +1070,87 @@ extern "C" int im2p_acknowledge_stripe_completion(im2p_handle_t handle) {
     pulse(simulator, simulator->top->EN_acknowledgeStripeCompletion);
     return 1;
 }
+
+#ifdef IM2P_VERILATOR_TEST_HOOKS
+extern "C" int im2p_test_drive_port(im2p_handle_t handle, uint32_t port,
+                                    const void *values, uint32_t count) {
+  if (handle == nullptr || values == nullptr || count > kDim) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *simulator = static_cast<Simulator *>(handle);
+  auto *top = simulator->top;
+  clear_enables(simulator);
+  switch (port) {
+  case IM2P_TEST_PORT_ACTIVATION_ROW:
+    if (!set_activation_lanes(top->putActivationRow_activations, values,
+                              count)) {
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    top->EN_putActivationRow = 1;
+    return 1;
+  case IM2P_TEST_PORT_ACTIVATION_RESPONSE:
+    if (!set_activation_lanes(top->putActivationReadResponse_values, values,
+                              count)) {
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    top->EN_putActivationReadResponse = 1;
+    return 1;
+  case IM2P_TEST_PORT_WEIGHT_RESPONSE:
+    set_i8_lanes(top->putWeightReadResponse_values,
+                 static_cast<const int8_t *>(values), count);
+    top->EN_putWeightReadResponse = 1;
+    return 1;
+  case IM2P_TEST_PORT_SCALE_RESPONSE:
+    set_i8_lanes(top->putScaleReadResponse_values,
+                 static_cast<const int8_t *>(values), count);
+    top->EN_putScaleReadResponse = 1;
+    return 1;
+  default:
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+}
+
+extern "C" int im2p_test_copy_port_words(im2p_handle_t handle, uint32_t port,
+                                         uint32_t *words, uint32_t word_count) {
+  if (handle == nullptr || words == nullptr) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *top = static_cast<Simulator *>(handle)->top;
+  switch (port) {
+  case IM2P_TEST_PORT_ACTIVATION_ROW:
+    if (word_count != kActivationWords)
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    copy_signal_words(top->putActivationRow_activations, words, word_count);
+    return 1;
+  case IM2P_TEST_PORT_ACTIVATION_RESPONSE:
+    if (word_count != kActivationWords)
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    copy_signal_words(top->putActivationReadResponse_values, words, word_count);
+    return 1;
+  case IM2P_TEST_PORT_WEIGHT_RESPONSE:
+    if (word_count != kByteLaneWords)
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    copy_signal_words(top->putWeightReadResponse_values, words, word_count);
+    return 1;
+  case IM2P_TEST_PORT_SCALE_RESPONSE:
+    if (word_count != kByteLaneWords)
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    copy_signal_words(top->putScaleReadResponse_values, words, word_count);
+    return 1;
+  default:
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+}
+
+extern "C" uint32_t im2p_test_activation_enable_mask(im2p_handle_t handle) {
+  if (handle == nullptr) {
+    return 0;
+  }
+  auto *top = static_cast<Simulator *>(handle)->top;
+  return (top->EN_putActivationRow ? 0x1U : 0U) |
+         (top->EN_putActivationReadResponse ? 0x2U : 0U);
+}
+#endif
 
 extern "C" void im2p_matrix_counters(
     im2p_handle_t handle,

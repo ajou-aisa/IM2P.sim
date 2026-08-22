@@ -2,7 +2,8 @@ pub mod common;
 
 use common::{structured_activations, structured_weights, Shape};
 use im2p_sim::{
-    ActivationStripe, Im2pSimulator, SimError, StripeWorkDesc, StripedMatmul, VectorOp,
+    ActivationStripe, ActivationValue, Im2pSimulator, SimError, StripeWorkDesc, StripedMatmul,
+    VectorOp,
 };
 
 const ROWS_PER_STRIPE: usize = 2;
@@ -32,7 +33,7 @@ fn stripe(index: usize) -> ActivationStripe {
 
 fn service(
     job: &mut StripedMatmul<'_>,
-    activations: &[i8],
+    activations: &[ActivationValue],
     shape: Shape,
     acknowledge_output: bool,
 ) -> Result<Option<usize>, SimError> {

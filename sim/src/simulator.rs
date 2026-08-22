@@ -6,7 +6,7 @@ pub(crate) mod validation;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use crate::{ffi, ScaleFetchStats, TileStats};
+use crate::{ffi, ActivationValue, ScaleFetchStats, TileStats};
 use rtl::StartExecution;
 pub use striped::StripedMatmul;
 
@@ -168,7 +168,7 @@ pub struct KBlockScaleMatrixView<'a> {
 
 #[derive(Debug)]
 pub struct TileRequest<'a> {
-    pub activations: &'a [i8],
+    pub activations: &'a [ActivationValue],
     pub weights: &'a [i8],
     pub scale_matrix: Option<KBlockScaleMatrixView<'a>>,
     pub valid_m: usize,
@@ -279,7 +279,7 @@ impl Im2pSimulator {
         })?;
         let compute_start = self.cycles();
         for row in 0..request.valid_m {
-            let mut values = vec![0_i8; self.dim];
+            let mut values = vec![ActivationValue::default(); self.dim];
             let source = &request.activations[row * request.valid_k..(row + 1) * request.valid_k];
             values[..request.valid_k].copy_from_slice(source);
             self.wait_activation_ready(scale_matrix.as_ref())?;

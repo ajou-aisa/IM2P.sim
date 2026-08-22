@@ -1,14 +1,26 @@
 use super::{Error, Im2pSimulator, MemoryProvider};
-use crate::{ffi, MatmulLayout, MatmulWork, MatrixView, MatrixViewMut, WorkStats};
+use crate::{
+    activation::activation_elements_to_address_bytes, ffi, ActivationValue, MatmulLayout,
+    MatmulWork, MatrixView, MatrixViewMut, WorkStats,
+};
 mod memory;
 mod stats;
-use memory::{resolve_i8, resolve_scale, validate_work, write_i32};
+use memory::{resolve_activation, resolve_i8, resolve_scale, validate_work, write_i32};
 
 pub(super) const ACTIVATION_BASE: u64 = 0x1000_0000_0000_0000;
 pub(super) const WEIGHT_BASE: u64 = 0x2000_0000_0000_0000;
 pub(super) const SCALE_BASE: u64 = 0x3000_0000_0000_0000;
 pub(super) const OUTPUT_BASE: u64 = 0x4000_0000_0000_0000;
 const MATRIX_TIMEOUT_CYCLES: u64 = 10_000_000;
+
+#[cfg(test)]
+static PROVIDER_START_INTERCEPT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static PROVIDER_START_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static PROVIDER_BOUNDARY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Im2pSimulator {
     pub fn execute_matmul(
@@ -51,7 +63,10 @@ impl Im2pSimulator {
             weight_base: WEIGHT_BASE,
             scale_base: SCALE_BASE,
             output_base: OUTPUT_BASE,
-            activation_row_stride: work.activations.row_stride as u64,
+            activation_row_stride: activation_elements_to_address_bytes(
+                work.activations.row_stride,
+            )
+            .map_err(|_| Error::InvalidActivationStride)?,
             weight_row_stride: work.weights.row_stride as u64,
             scale_row_stride: scale.map_or(1, |view| view.row_stride) as u64,
             output_row_stride: (output.row_stride * size_of::<i32>()) as u64,
@@ -90,7 +105,7 @@ impl Im2pSimulator {
 
     pub(crate) fn execute_matmul_provider(
         &mut self,
-        activations: MatrixView<'_, i8>,
+        activations: MatrixView<'_, ActivationValue>,
         rows: usize,
         columns: usize,
         reduction: usize,
@@ -102,6 +117,7 @@ impl Im2pSimulator {
         layout: MatmulLayout,
         provider: MemoryProvider,
     ) -> Result<WorkStats, Error> {
+        crate::activation_validation::validate_activation_matrix(&activations)?;
         if rows == 0
             || columns == 0
             || reduction == 0
@@ -130,7 +146,8 @@ impl Im2pSimulator {
             weight_base: WEIGHT_BASE,
             scale_base: SCALE_BASE,
             output_base: OUTPUT_BASE,
-            activation_row_stride: activations.row_stride as u64,
+            activation_row_stride: activation_elements_to_address_bytes(activations.row_stride)
+                .map_err(|_| Error::InvalidActivationStride)?,
             weight_row_stride: weight_row_stride as u64,
             scale_row_stride: columns as u64,
             output_row_stride: (output_row_stride * size_of::<i32>()) as u64,
@@ -146,16 +163,16 @@ impl Im2pSimulator {
             accumulate_first_fragment: 0,
             vector_op: vector_op.encoding(),
         };
+        #[cfg(test)]
+        if PROVIDER_START_INTERCEPT.load(std::sync::atomic::Ordering::SeqCst) {
+            PROVIDER_START_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(Error::ProviderFailure);
+        }
         let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
         self.require_ready("start_matmul", started)?;
 
         for _ in 0..MATRIX_TIMEOUT_CYCLES {
-            self.service_i8_request(
-                ffi::im2p_activation_read_request,
-                ffi::im2p_stage_activation_read_response,
-                &activations,
-                ACTIVATION_BASE,
-            )?;
+            self.service_activation_request(&activations)?;
             self.service_provider_reads(
                 provider,
                 weight_row_stride,
@@ -191,12 +208,7 @@ impl Im2pSimulator {
     }
 
     fn service_matrix_reads(&mut self, work: &MatmulWork<'_>) -> Result<(), Error> {
-        self.service_i8_request(
-            ffi::im2p_activation_read_request,
-            ffi::im2p_stage_activation_read_response,
-            &work.activations,
-            ACTIVATION_BASE,
-        )?;
+        self.service_activation_request(&work.activations)?;
         self.service_i8_request(
             ffi::im2p_weight_read_request,
             ffi::im2p_stage_weight_read_response,
@@ -224,6 +236,34 @@ impl Im2pSimulator {
         } else if status != ffi::IM2P_REQUEST_ABSENT {
             return Err(Error::RtlNotReady {
                 operation: "scale_read_request",
+            });
+        }
+        Ok(())
+    }
+
+    fn service_activation_request(
+        &mut self,
+        view: &MatrixView<'_, ActivationValue>,
+    ) -> Result<(), Error> {
+        let mut request = ffi::ReadRequest::default();
+        // SAFETY: request is writable and handle remains valid.
+        let status =
+            unsafe { ffi::im2p_activation_read_request(self.handle.as_ptr(), &mut request) };
+        if status == ffi::IM2P_REQUEST_PRESENT {
+            let values = resolve_activation(view, ACTIVATION_BASE, request)?;
+            // SAFETY: values has request.element_count readable activation elements.
+            let accepted = unsafe {
+                ffi::im2p_stage_activation_read_response(
+                    self.handle.as_ptr(),
+                    request.tag,
+                    values.as_ptr().cast::<i8>(),
+                    request.element_count,
+                )
+            };
+            self.require_staged("activation_read_response", accepted)?;
+        } else if status != ffi::IM2P_REQUEST_ABSENT {
+            return Err(Error::RtlNotReady {
+                operation: "activation_read_request",
             });
         }
         Ok(())
@@ -383,5 +423,137 @@ impl Im2pSimulator {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod activation_boundary_tests {
+    use std::ffi::c_void;
+    use std::mem::ManuallyDrop;
+    use std::ptr::NonNull;
+    use std::sync::atomic::Ordering;
+
+    use super::{
+        Error, Im2pSimulator, MatmulLayout, MatrixView, MemoryProvider,
+        PROVIDER_BOUNDARY_TEST_LOCK, PROVIDER_START_ATTEMPTS, PROVIDER_START_INTERCEPT,
+    };
+    use crate::{parse_activation, ActivationValue, VectorOp, ACTIVATION_BITS};
+
+    fn selected_extrema() -> [ActivationValue; 2] {
+        let extrema = match ACTIVATION_BITS {
+            4 => [-8, 7],
+            8 => [-128, 127],
+            16 => [-32_768, 32_767],
+            _ => unreachable!("supported widths are compile-time selected"),
+        };
+        extrema.map(|value| parse_activation(value).expect("selected-width extrema"))
+    }
+
+    unsafe extern "C" fn read_provider(
+        _context: *mut c_void,
+        _row: usize,
+        _column: usize,
+        _count: usize,
+        _values: *mut i8,
+    ) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn write_provider(
+        _context: *mut c_void,
+        _block: usize,
+        _row: usize,
+        _column: usize,
+        _count: usize,
+        _values: *const i32,
+    ) -> i32 {
+        0
+    }
+
+    #[test]
+    fn production_activation_boundary_provider_rejects_malformed_a4_before_start() {
+        if ACTIVATION_BITS != 4 {
+            return;
+        }
+        let _guard = PROVIDER_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values: [ActivationValue; 2] = [-9, 8];
+        let activations = MatrixView::new(&values, 1, 2, 2).expect("shape-only view");
+        let mut simulator = ManuallyDrop::new(Im2pSimulator {
+            handle: NonNull::<u8>::dangling().cast(),
+            dim: 2,
+        });
+        let provider = MemoryProvider {
+            context: std::ptr::null_mut(),
+            read_weight: Some(read_provider),
+            read_scale: None,
+            write_output: Some(write_provider),
+        };
+        PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
+        PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = simulator.execute_matmul_provider(
+            activations,
+            1,
+            1,
+            2,
+            1,
+            1,
+            0,
+            VectorOp::Bypass,
+            0,
+            MatmulLayout {
+                tile_i_rows: 1,
+                tile_j_columns: 1,
+            },
+            provider,
+        );
+
+        PROVIDER_START_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::InvalidLayout));
+        assert_eq!(PROVIDER_START_ATTEMPTS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn production_activation_boundary_provider_accepts_selected_extrema_before_start() {
+        let _guard = PROVIDER_BOUNDARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values = selected_extrema();
+        let activations = MatrixView::new(&values, 1, 2, 2).expect("valid extrema view");
+        let mut simulator = ManuallyDrop::new(Im2pSimulator {
+            handle: NonNull::<u8>::dangling().cast(),
+            dim: 2,
+        });
+        let provider = MemoryProvider {
+            context: std::ptr::null_mut(),
+            read_weight: Some(read_provider),
+            read_scale: None,
+            write_output: Some(write_provider),
+        };
+        PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
+        PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);
+
+        let result = simulator.execute_matmul_provider(
+            activations,
+            1,
+            1,
+            2,
+            1,
+            1,
+            0,
+            VectorOp::Bypass,
+            0,
+            MatmulLayout {
+                tile_i_rows: 1,
+                tile_j_columns: 1,
+            },
+            provider,
+        );
+
+        PROVIDER_START_INTERCEPT.store(false, Ordering::SeqCst);
+        assert_eq!(result, Err(Error::ProviderFailure));
+        assert_eq!(PROVIDER_START_ATTEMPTS.load(Ordering::SeqCst), 1);
     }
 }

@@ -12,7 +12,8 @@ pub mod common;
 
 use common::{assert_matrix_eq, golden_output, k_fragments, KBlockScaleMatrix, Lcg, Shape};
 use im2p_sim::{
-    Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut, SimError, TileRequest, VectorOp,
+    parse_activation, ActivationValue, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut,
+    SimError, TileRequest, VectorOp,
 };
 
 /// Row-major matrix with an arbitrary row stride, so the API is handed
@@ -80,7 +81,30 @@ fn tail_shape(dim: usize) -> Shape {
 }
 
 /// Deterministic signed operand; `seed`/`bound` keep A and B distinct.
-fn operand(rows: usize, cols: usize, row_stride: usize, seed: u32, bound: i8) -> Strided<i8> {
+fn activation_operand(
+    rows: usize,
+    cols: usize,
+    row_stride: usize,
+    seed: u32,
+    bound: i8,
+) -> Strided<ActivationValue> {
+    let mut lcg = Lcg::new(seed);
+    Strided::from_fn(
+        rows,
+        cols,
+        row_stride,
+        ActivationValue::default(),
+        |_, _| parse_activation(i32::from(lcg.signed(-bound, bound))).expect("bounded activation"),
+    )
+}
+
+fn weight_operand(
+    rows: usize,
+    cols: usize,
+    row_stride: usize,
+    seed: u32,
+    bound: i8,
+) -> Strided<i8> {
     let mut lcg = Lcg::new(seed);
     Strided::from_fn(rows, cols, row_stride, i8::MIN, |_, _| {
         lcg.signed(-bound, bound)
@@ -113,8 +137,8 @@ fn run_full(
     context: u64,
 ) -> Result<(), SimError> {
     let dim = simulator.dim();
-    let a = operand(shape.m, shape.k, shape.k + pad.0, 0x5eed_1234, 7);
-    let b = operand(shape.k, shape.n, shape.n + pad.1, 0x0bad_c0de, 6);
+    let a = activation_operand(shape.m, shape.k, shape.k + pad.0, 0x5eed_1234, 7);
+    let b = weight_operand(shape.k, shape.n, shape.n + pad.1, 0x0bad_c0de, 6);
     let scales = scaled.map(|_| block_scales(shape, dim, shape.n + pad.2));
     let scales = scales.as_ref();
     let block = scales.map_or(shape.k, |matrix| matrix.block_size);
@@ -178,8 +202,8 @@ fn full_api_matches_low_level_tile_reference_on_small_case() -> Result<(), SimEr
     let mut simulator = Im2pSimulator::new()?;
     let dim = simulator.dim();
     let (m, n, k) = (3.min(dim), 4.min(dim), 5.min(dim));
-    let a = operand(m, k, k, 0x5eed_1234, 7);
-    let b = operand(k, n, n, 0x0bad_c0de, 6);
+    let a = activation_operand(m, k, k, 0x5eed_1234, 7);
+    let b = weight_operand(k, n, n, 0x0bad_c0de, 6);
 
     let mut reference = vec![0_i32; m * n];
     simulator.execute_tile(
