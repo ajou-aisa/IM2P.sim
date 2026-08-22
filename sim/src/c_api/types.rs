@@ -4,6 +4,9 @@ use std::rc::Rc;
 
 use crate::{ActivationValue, Im2pSimulator, StripedMatmul};
 
+mod v3;
+pub(super) use v3::{ActivationStripeV3, MatmulDescV3, StripeWorkDescV3};
+
 #[repr(C)]
 pub struct MatmulDesc {
     pub activations: *const ActivationValue,
@@ -57,7 +60,7 @@ pub struct ProviderC {
     pub context: *mut c_void,
     pub read_weight: Option<crate::simulator::ReadProvider>,
     pub read_scale: Option<crate::simulator::ReadProvider>,
-    pub write_output: Option<crate::simulator::WriteProvider>,
+    pub write_output: Option<crate::simulator::WriteProviderV2>,
 }
 
 #[repr(C)]
@@ -137,7 +140,7 @@ impl From<ProviderC> for crate::simulator::MemoryProvider {
             context: value.context,
             read_weight: value.read_weight,
             read_scale: value.read_scale,
-            write_output: value.write_output,
+            write_output: value.write_output.map(crate::simulator::WriteProvider::V2),
         }
     }
 }
@@ -241,6 +244,6 @@ pub struct StreamBox {
     pub output_stride: usize,
     pub columns: usize,
     pub reduction: usize,
-    pub v2: bool,
+    pub abi_version: u32,
     pub failed: bool,
 }

@@ -88,17 +88,17 @@ pub(super) fn resolve_scale(
     Ok(view.values[start..end].to_vec())
 }
 
-pub(super) fn write_i32(
+pub(super) fn write_raw_output(
     output: &mut MatrixViewMut<'_, i32>,
     base: u64,
     request: ffi::WriteRequest,
-    values: &[i32],
+    values: &[i64],
 ) -> Result<(), Error> {
     let byte_offset = request
         .address
         .checked_sub(base)
         .ok_or(Error::InvalidKRange)? as usize;
-    if byte_offset % size_of::<i32>() != 0 {
+    if !byte_offset.is_multiple_of(size_of::<i32>()) {
         return Err(Error::InvalidKRange);
     }
     let offset = byte_offset / size_of::<i32>();
@@ -108,7 +108,12 @@ pub(super) fn write_i32(
     if row >= output.rows || column + count > output.columns {
         return Err(Error::InvalidKRange);
     }
-    output.values[row * output.row_stride + column..][..count].copy_from_slice(&values[..count]);
+    for (destination, value) in output.values[row * output.row_stride + column..][..count]
+        .iter_mut()
+        .zip(values.iter().copied())
+    {
+        *destination = crate::matrix::saturating_i64_to_i32(value);
+    }
     Ok(())
 }
 

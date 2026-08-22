@@ -27,7 +27,7 @@ def add_file(digest: hashlib._Hash, category: str, root: Path, path: Path) -> No
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bits", type=int, choices=(4, 8, 16), required=True)
-    parser.add_argument("--dim", type=int, choices=(16, 32), required=True)
+    parser.add_argument("--dim", type=int, choices=(16, 32, 64), required=True)
     parser.add_argument("--gemmini-root", type=Path, required=True)
     parser.add_argument("--params-root", type=Path, required=True)
     parser.add_argument("--extra-input", type=Path)

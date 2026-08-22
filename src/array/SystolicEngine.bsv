@@ -70,7 +70,16 @@ interface SystolicEngineIfc#(
     method Action acknowledge;
 endinterface
 
-module mkSystolicEngine(SystolicEngineIfc#(
+module mkSystolicEngineWithArray#(
+    SystolicArrayIfc#(
+        arrayDim,
+        peLatency,
+        input_t,
+        weight_t,
+        product_t,
+        acc_t
+    ) systolicArray
+)(SystolicEngineIfc#(
     arrayDim,
     peLatency,
     input_t,
@@ -89,15 +98,6 @@ module mkSystolicEngine(SystolicEngineIfc#(
 );
     InputSkewIfc#(arrayDim, peLatency, input_t, acc_t) inputSkew <-
         mkInputSkew;
-
-    SystolicArrayIfc#(
-        arrayDim,
-        peLatency,
-        input_t,
-        weight_t,
-        product_t,
-        acc_t
-    ) systolicArray <- mkSystolicArray;
 
     ExecuteControllerIfc#(arrayDim) controller <- mkExecuteController;
 
@@ -248,6 +248,36 @@ module mkSystolicEngine(SystolicEngineIfc#(
         controller.acknowledge;
     endmethod
 
+endmodule
+
+module mkSystolicEngine(SystolicEngineIfc#(
+    arrayDim,
+    peLatency,
+    input_t,
+    weight_t,
+    product_t,
+    acc_t
+)) provisos (
+    Add#(1, arrayDimMinusOne, arrayDim),
+    Add#(1, peLatencyMinusOne, peLatency),
+    Bits#(input_t, inputBits),
+    Bits#(weight_t, weightBits),
+    Bits#(acc_t, accBits),
+    Multiplier#(input_t, weight_t, product_t),
+    ProductAccumulator#(product_t, acc_t),
+    AccumulatorArithmetic#(acc_t)
+);
+    SystolicArrayIfc#(
+        arrayDim,
+        peLatency,
+        input_t,
+        weight_t,
+        product_t,
+        acc_t
+    ) systolicArray <- mkSystolicArray;
+
+    let engine <- mkSystolicEngineWithArray(systolicArray);
+    return engine;
 endmodule
 
 endpackage

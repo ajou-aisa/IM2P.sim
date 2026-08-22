@@ -7,6 +7,7 @@ use crate::{Im2pSimulator, WorkStats};
 mod helpers;
 mod stream;
 mod types;
+mod v3;
 
 use helpers::{
     execute_full, execute_full_provider, parse_matmul_v2, status_for_error, write_extended_stats,
@@ -16,6 +17,7 @@ use types::{MatmulDesc, MatmulDescV1, MatmulDescV2, WorkStatsC, WorkStatsExtende
 
 const PROVIDER_VERSION_1: u32 = 1;
 const ABI_VERSION_2: u32 = 2;
+const ABI_VERSION_3: u32 = 3;
 const CONFIGURATION_MISMATCH: i32 = -7;
 
 fn configured_dim() -> u32 {
@@ -38,7 +40,7 @@ pub(super) fn configuration_matches(
 
 #[no_mangle]
 pub extern "C" fn im2p_sim_abi_version() -> u32 {
-    ABI_VERSION_2
+    ABI_VERSION_3
 }
 
 #[no_mangle]

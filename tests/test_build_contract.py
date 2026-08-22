@@ -12,8 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BITS = (4, 8, 16)
-DIMS = (16, 32)
-IDENTITY_RE = re.compile(r"a(?:4|8|16)-w8-d(?:16|32)")
+DIMS = (16, 32, 64)
+IDENTITY_RE = re.compile(r"a(?:4|8|16)-w8-d(?:16|32|64)")
 BUILD_DIR_TEXT = os.environ.get("IM2P_BUILD_CONTRACT_BUILD_DIR", "build")
 BUILD_DIR = Path(BUILD_DIR_TEXT)
 
@@ -114,9 +114,8 @@ def main() -> int:
             failures.append(
                 "A4 and A8 collide: generic Verilator paths have no width identity"
             )
-        elif a4_ids != {"a4-w8-d16", "a4-w8-d32"} or a8_ids != {
-            "a8-w8-d16",
-            "a8-w8-d32",
+        elif a4_ids != {f"a4-w8-d{dim}" for dim in DIMS} or a8_ids != {
+            f"a8-w8-d{dim}" for dim in DIMS
         }:
             failures.append(
                 f"generic width paths are not isolated: A4={a4_ids}, A8={a8_ids}"
@@ -135,6 +134,29 @@ def main() -> int:
                 failures.append(
                     f"{target} must use only {identity}; observed {sorted(identities)}"
                 )
+            normalized_output = result.stdout.replace('"', "")
+            obj_dir = artifact("verilator", identity, "obj_dir")
+            clean_command = f"rm -rf {obj_dir}"
+            create_command = f"mkdir -p {obj_dir}"
+            if (
+                clean_command not in normalized_output
+                or create_command not in normalized_output
+                or normalized_output.index(clean_command)
+                > normalized_output.index(create_command)
+            ):
+                failures.append(
+                    f"{target} must remove stale Verilator partitions before "
+                    f"creating {obj_dir}"
+                )
+            if dim == 64:
+                rtl_glob = (
+                    f"{artifact('rtl', identity, f'SynthInt{bits}x{dim}')}/*.v"
+                )
+                if rtl_glob not in normalized_output:
+                    failures.append(
+                        f"{target} must compile every generated hierarchy module; "
+                        f"missing {rtl_glob}"
+                    )
             observed[identity] = result.stdout
 
             sim_target = f"sim-test-int{bits}x{dim}"
@@ -173,6 +195,12 @@ def main() -> int:
                 )
             else:
                 missing = missing_paths(frontend.stdout, frontend_required)
+                expected_block_size = 64 if dim == 64 else 32
+                block_definition = (
+                    f"-DGGML_GEMMINI_BLOCK_SIZE={expected_block_size}"
+                )
+                if block_definition not in frontend.stdout:
+                    missing.append(block_definition)
                 if missing:
                     failures.append(f"frontend {identity} is missing {missing}")
 
@@ -202,7 +230,10 @@ def main() -> int:
             identity: set(IDENTITY_RE.findall(output))
             for identity, output in observed.items()
         }
-        if len({next(iter(paths)) for paths in path_sets.values() if paths}) != 6:
+        if (
+            len({next(iter(paths)) for paths in path_sets.values() if paths})
+            != len(BITS) * len(DIMS)
+        ):
             failures.append(f"artifact identities collide: {path_sets}")
 
     if failures:

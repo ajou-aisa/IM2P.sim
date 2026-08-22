@@ -60,7 +60,7 @@ Status from_c_status(int value, Route route, const char *operation,
                        "late IM2P stripe");
   case IM2P_CONFIGURATION_MISMATCH:
     return make_status(StatusCode::invalid_contract, route, native,
-                       "IM2P ABI v2 configuration mismatch");
+                       "IM2P ABI configuration mismatch");
   default:
     return make_status(StatusCode::execution_failure, route, native, operation);
   }
@@ -739,7 +739,7 @@ struct Run::Impl {
   }
 
   int write_output(size_t block, size_t row, size_t column, size_t count,
-                   const int32_t *values) noexcept {
+                   const int64_t *values) noexcept {
     if (!values || count == 0 || count > DIM || row >= scalars.i ||
         column > scalars.j || count > scalars.j - column ||
         block >= provider_block_count())
@@ -762,7 +762,9 @@ struct Run::Impl {
       if (lane >= DIM || slot.seen[lane] ||
           !cached_factor(block, column + n, weight))
         return IM2P_ERROR;
-      slot.sums[lane] += static_cast<double>(values[n]) * weight;
+      const double exact = static_cast<double>(values[n]);
+      const double activation = static_cast<double>(activation_scales[row]);
+      slot.sums[lane] += exact * weight * activation;
       slot.seen[lane] = true;
     }
     const size_t width = std::min<size_t>(DIM, scalars.j - tile_begin);
@@ -779,8 +781,7 @@ struct Run::Impl {
           scalars.col_stride_f_out ? scalars.col_stride_f_out : 1;
       for (size_t lane = 0; lane < width; ++lane)
         dst[row * row_stride + (tile_begin + lane) * col_stride] +=
-            static_cast<float>(slot.sums[lane] *
-                               static_cast<double>(activation_scales[row]));
+            static_cast<float>(slot.sums[lane]);
     }
     return IM2P_OK;
   }
@@ -803,7 +804,7 @@ struct Run::Impl {
   }
   static int provider_write_output(void *context, size_t block, size_t row,
                                    size_t column, size_t count,
-                                   const int32_t *values) {
+                                   const int64_t *values) {
     auto &x = *static_cast<Impl *>(context);
     const int result = x.write_output(block, row, column, count, values);
     if (result != IM2P_OK)
@@ -811,7 +812,7 @@ struct Run::Impl {
     return result;
   }
 
-  im2p_provider_t provider() noexcept {
+  im2p_provider_v3_t provider() noexcept {
     return {this, provider_read_weight, provider_read_scale,
             provider_write_output};
   }
@@ -854,12 +855,21 @@ struct Run::Impl {
     return d;
   }
 
-  im2p_matmul_desc_v2_t provider_full_descriptor() noexcept {
-    auto d = full_descriptor();
-    d.weights = nullptr;
-    d.output = nullptr;
+  im2p_matmul_desc_v3_t provider_full_descriptor() noexcept {
+    im2p_matmul_desc_v3_t d{};
+    d.abi_version = IM2P_ABI_VERSION_3;
+    d.activation_bits = scalars.activation_bits;
+    d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
+    d.dim = DIM;
+    d.activations = pointers.a;
+    d.m = scalars.i;
+    d.n = scalars.j;
+    d.k = scalars.k;
+    d.activation_row_stride_bytes = scalars.activation_row_stride_bytes;
     d.weight_row_stride = scalars.j;
     d.output_row_stride = scalars.j;
+    d.tile_i_rows = tile_i_rows;
+    d.tile_j_columns = tile_j_columns;
     d.block_size = provider_block_size();
     d.scale_total_k = scalars.k;
     d.scale_row_stride = scalars.j;
@@ -892,16 +902,25 @@ struct Run::Impl {
     return d;
   }
 
-  im2p_stripe_work_desc_v2_t provider_stripe_descriptor() noexcept {
-    auto d = stripe_descriptor();
-    d.weights = nullptr;
-    d.output = nullptr;
+  im2p_stripe_work_desc_v3_t provider_stripe_descriptor() noexcept {
+    im2p_stripe_work_desc_v3_t d{};
+    d.abi_version = IM2P_ABI_VERSION_3;
+    d.activation_bits = scalars.activation_bits;
+    d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
+    d.dim = DIM;
+    d.m = scalars.i;
+    d.n = scalars.j;
+    d.k = scalars.k;
     d.weight_row_stride = scalars.j;
     d.output_row_stride = scalars.j;
+    d.tile_i_rows = tile_i_rows;
+    d.tile_j_columns = tile_j_columns;
     d.block_size = provider_block_size();
     d.scale_total_k = scalars.k;
     d.scale_row_stride = scalars.j;
     d.scale_valid_columns = scalars.j;
+    const size_t rows = scalars.activation_rows_per_stripe;
+    d.stripe_count = (scalars.i + rows - 1) / rows;
     d.vector_op = provider_vector_op();
     d.provider = provider();
     return d;
@@ -933,7 +952,7 @@ struct Run::Impl {
       result = im2p_execute_matmul_extended_v2(sim.get(), &d, &stats);
     } else {
       auto d = provider_full_descriptor();
-      result = im2p_execute_matmul_extended_v2(sim.get(), &d, &stats);
+      result = im2p_execute_matmul_extended_v3(sim.get(), &d, &stats);
     }
     if (provider_failed)
       set_error(make_status(StatusCode::execution_failure, route, native,
@@ -948,8 +967,8 @@ struct Run::Impl {
     const size_t stride = scalars.activation_row_stride_bytes;
     if (!checked_mul(e.row_begin, stride, offset))
       return IM2P_ERROR;
-    im2p_activation_stripe_v2_t s{};
-    s.abi_version = IM2P_ABI_VERSION_2;
+    im2p_activation_stripe_v3_t s{};
+    s.abi_version = IM2P_ABI_VERSION_3;
     s.activation_bits = scalars.activation_bits;
     s.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
     s.dim = DIM;
@@ -959,7 +978,23 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
-    const int result = im2p_publish_stripe_v2(stream, &s);
+    int result = IM2P_ERROR;
+    if (route_policy(route) == RoutePolicy::legacy) {
+      im2p_activation_stripe_v2_t legacy{};
+      legacy.abi_version = IM2P_ABI_VERSION_2;
+      legacy.activation_bits = s.activation_bits;
+      legacy.activation_storage_bytes = s.activation_storage_bytes;
+      legacy.dim = s.dim;
+      legacy.stripe_id = s.stripe_id;
+      legacy.i_start = s.i_start;
+      legacy.rows = s.rows;
+      legacy.activations = s.activations;
+      legacy.activation_row_stride_bytes = s.activation_row_stride_bytes;
+      legacy.context = s.context;
+      result = im2p_publish_stripe_v2(stream, &legacy);
+    } else {
+      result = im2p_publish_stripe_v3(stream, &s);
+    }
     if (result == IM2P_OK) {
       std::lock_guard lock(mutex);
       in_flight.emplace(s.stripe_id, e);
@@ -1082,7 +1117,7 @@ struct Run::Impl {
         result = im2p_begin_striped_matmul_v2(sim.get(), &d, &raw);
       } else {
         auto d = provider_stripe_descriptor();
-        result = im2p_begin_striped_matmul_v2(sim.get(), &d, &raw);
+        result = im2p_begin_striped_matmul_v3(sim.get(), &d, &raw);
       }
       if (result != IM2P_OK)
         set_error(from_c_status(result, route, "failed to start IM2P stream",

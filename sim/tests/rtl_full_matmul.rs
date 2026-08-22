@@ -268,3 +268,90 @@ fn degenerate_row_and_column_extents_match_cpu() -> Result<(), SimError> {
     }
     Ok(())
 }
+
+#[test]
+fn full_arithmetic_wraps_at_signed_i64_width_before_final_output() -> Result<(), SimError> {
+    // Given contributions that overflow signed i64 in opposite directions.
+    let shape = Shape { m: 2, n: 1, k: 2 };
+    let activations = [
+        parse_activation(1).expect("one is valid at every configured width"),
+        parse_activation(1).expect("one is valid at every configured width"),
+        parse_activation(-2).expect("negative two is valid at every configured width"),
+        parse_activation(-2).expect("negative two is valid at every configured width"),
+    ];
+    let weights = [1_i8, 1];
+    let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 62);
+    let fragments = k_fragments(shape.k, scales.block_size, 16);
+
+    // When the independent golden accumulates with signed i64 wrapping.
+    let exact = golden_output(
+        &activations,
+        &weights,
+        shape,
+        0,
+        shape.n,
+        &fragments,
+        Some(&scales),
+        VectorOp::Shift,
+    );
+
+    // Then positive overflow wraps to i64::MIN and negative overflow wraps to zero.
+    assert_eq!(exact, [i64::MIN, 0]);
+    let mut raw = [i32::MAX; 2];
+    let work = MatmulWork {
+        activations: MatrixView::new(&activations, shape.m, shape.k, shape.k)?,
+        weights: MatrixView::new(&weights, shape.k, shape.n, shape.n)?,
+        scales: Some(scales.view(0, shape.n, 0x57_52_41_50)),
+        vector_op: VectorOp::Shift,
+    };
+    Im2pSimulator::new()?.execute_matmul(
+        &work,
+        &mut MatrixViewMut::new(&mut raw, shape.m, shape.n, shape.n)?,
+    )?;
+    assert_eq!(raw, [i32::MIN, 0]);
+    Ok(())
+}
+
+#[test]
+fn raw_full_output_saturates_positive_and_negative_i64_accumulators() -> Result<(), SimError> {
+    // Given two rows whose independent i64 contributions exceed opposite i32 limits.
+    let shape = Shape { m: 2, n: 1, k: 2 };
+    let activations = [
+        parse_activation(1).expect("one is valid at every configured width"),
+        parse_activation(1).expect("one is valid at every configured width"),
+        parse_activation(-2).expect("negative two is valid at every configured width"),
+        parse_activation(-2).expect("negative two is valid at every configured width"),
+    ];
+    let weights = [1_i8, 1];
+    let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 30);
+    let fragments = k_fragments(shape.k, scales.block_size, 16);
+    let exact = golden_output(
+        &activations,
+        &weights,
+        shape,
+        0,
+        shape.n,
+        &fragments,
+        Some(&scales),
+        VectorOp::Shift,
+    );
+    assert_eq!(exact, [2_147_483_648, -4_294_967_296]);
+    let mut raw = [0_i32; 2];
+    let work = MatmulWork {
+        activations: MatrixView::new(&activations, shape.m, shape.k, shape.k)?,
+        weights: MatrixView::new(&weights, shape.k, shape.n, shape.n)?,
+        scales: Some(scales.view(0, shape.n, 0x49_36_34)),
+        vector_op: VectorOp::Shift,
+    };
+
+    // When FULL writes its final raw V2-layout destination.
+    Im2pSimulator::new()?.execute_matmul(
+        &work,
+        &mut MatrixViewMut::new(&mut raw, shape.m, shape.n, shape.n)?,
+    )?;
+
+    // Then narrowing occurs once, at the final write, by saturation.
+    assert_eq!(raw, [i32::MAX, i32::MIN]);
+    println!("exact_i64={exact:?} raw_v2={raw:?}");
+    Ok(())
+}

@@ -67,7 +67,12 @@ instance VectorTransform#(
             end
 
             VectorMultiply: begin
-                Int#(scaledWidth) wideProduct = signedMul(partial, scale);
+                // Widen both operands before multiplication. Besides making the
+                // full signed width explicit, this avoids a Bluesim mixed
+                // scalar/WideData constructor ambiguity when accWidth is 64.
+                Int#(scaledWidth) widePartial = signExtend(partial);
+                Int#(scaledWidth) wideScale = signExtend(scale);
+                Int#(scaledWidth) wideProduct = widePartial * wideScale;
                 Bit#(accWidth) lowBits = truncate(pack(wideProduct));
                 return unpack(lowBits);
             end

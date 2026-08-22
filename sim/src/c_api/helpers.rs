@@ -89,7 +89,36 @@ pub(super) unsafe fn parse_matmul_v2(
     if provider.is_none() && (parsed.weights.is_null() || parsed.output.is_null()) {
         return Err(-1);
     }
+    if provider.is_some() {
+        validate_provider_rtl_fields(&parsed)?;
+    }
     Ok((parsed, provider))
+}
+
+pub(super) fn validate_provider_rtl_fields(desc: &MatmulDesc) -> Result<(), i32> {
+    let tile_i_rows = if desc.tile_i_rows == 0 {
+        super::configured_dim() as usize
+    } else {
+        desc.tile_i_rows
+    };
+    let tile_j_columns = if desc.tile_j_columns == 0 {
+        super::configured_dim() as usize
+    } else {
+        desc.tile_j_columns
+    };
+    crate::activation::activation_elements_to_address_bytes(desc.activation_row_stride)
+        .map_err(|_| crate::SimError::InvalidLayout)
+        .and_then(|_| crate::simulator::descriptor::u64_field(desc.weight_row_stride))
+        .and_then(|_| crate::simulator::descriptor::u64_field(desc.n))
+        .and_then(|_| crate::simulator::descriptor::output_row_stride_bytes(desc.output_row_stride))
+        .and_then(|_| crate::simulator::descriptor::u32_field(desc.m))
+        .and_then(|_| crate::simulator::descriptor::u32_field(desc.n))
+        .and_then(|_| crate::simulator::descriptor::u32_field(desc.k))
+        .and_then(|_| crate::simulator::descriptor::u32_field(tile_i_rows))
+        .and_then(|_| crate::simulator::descriptor::u32_field(tile_j_columns))
+        .and_then(|_| crate::simulator::descriptor::u32_field(desc.block_size.max(1)))
+        .map(|_| ())
+        .map_err(|_| -4)
 }
 
 fn provider_from_v2(provider: ProviderC) -> Result<Option<crate::simulator::MemoryProvider>, i32> {

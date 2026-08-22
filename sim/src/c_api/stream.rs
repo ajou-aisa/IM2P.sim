@@ -14,7 +14,7 @@ use super::{
         ActivationStripeC, ActivationStripeV2, PublishedStripe, StreamBox, StripeCompletionC,
         StripeWorkDescC, StripeWorkDescV1, StripeWorkDescV2, WorkStatsC, WorkStatsExtendedC,
     },
-    SimBox, CONFIGURATION_MISMATCH, PROVIDER_VERSION_1,
+    SimBox, ABI_VERSION_2, CONFIGURATION_MISMATCH, PROVIDER_VERSION_1,
 };
 
 #[no_mangle]
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_ex(
         }
         return CONFIGURATION_MISMATCH;
     }
-    begin_striped_matmul_value(sim, descriptor, output, None, false)
+    begin_striped_matmul_value(sim, descriptor, output, None, 0)
 }
 
 #[no_mangle]
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_v1_ex(
         &descriptor.legacy,
         output,
         Some(descriptor.provider.into()),
-        false,
+        0,
     )
 }
 
@@ -125,15 +125,15 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul_v2(
         work_context: desc.work_context,
     };
     let provider = any_provider.then(|| desc.provider.into());
-    begin_striped_matmul_value(sim, &parsed, output, provider, true)
+    begin_striped_matmul_value(sim, &parsed, output, provider, ABI_VERSION_2)
 }
 
-unsafe fn begin_striped_matmul_value(
+pub(super) unsafe fn begin_striped_matmul_value(
     sim: *mut SimBox,
     descriptor: *const StripeWorkDescC,
     output: *mut *mut StreamBox,
     provider: Option<crate::simulator::MemoryProvider>,
-    v2: bool,
+    abi_version: u32,
 ) -> i32 {
     let (Some(owner), Some(desc), Some(output)) =
         (sim.as_mut(), descriptor.as_ref(), output.as_mut())
@@ -228,6 +228,34 @@ unsafe fn begin_striped_matmul_value(
     {
         return status_for_error(crate::SimError::InvalidDimension);
     }
+    let scale_total_k = scale.map_or(desc.k, |view| view.total_k);
+    let scale_block_size = provider
+        .map(|_| desc.block_size)
+        .or_else(|| scale.map(|view| view.block_size))
+        .unwrap_or(desc.k);
+    let activation_stride_fits =
+        crate::activation::activation_elements_to_address_bytes(desc.k).is_ok();
+    let rtl_fields_fit = activation_stride_fits
+        && crate::simulator::descriptor::u64_field(desc.weight_row_stride)
+            .and_then(|_| {
+                crate::simulator::descriptor::u64_field(
+                    scale.map_or(desc.n, |view| view.row_stride),
+                )
+            })
+            .and_then(|_| {
+                crate::simulator::descriptor::output_row_stride_bytes(desc.output_row_stride)
+            })
+            .and_then(|_| crate::simulator::descriptor::u32_field(desc.m))
+            .and_then(|_| crate::simulator::descriptor::u32_field(desc.n))
+            .and_then(|_| crate::simulator::descriptor::u32_field(desc.k))
+            .and_then(|_| crate::simulator::descriptor::u32_field(tile_i_rows))
+            .and_then(|_| crate::simulator::descriptor::u32_field(tile_j_columns))
+            .and_then(|_| crate::simulator::descriptor::u32_field(scale_total_k))
+            .and_then(|_| crate::simulator::descriptor::u32_field(scale_block_size))
+            .is_ok();
+    if !rtl_fields_fit {
+        return status_for_error(crate::SimError::InvalidLayout);
+    }
     if provider.is_none() && op != crate::VectorOp::Bypass && scale.is_none() {
         return status_for_error(crate::SimError::MissingScales { operation: op });
     }
@@ -263,7 +291,7 @@ unsafe fn begin_striped_matmul_value(
                 output_stride: desc.output_row_stride,
                 columns: desc.n,
                 reduction: desc.k,
-                v2,
+                abi_version,
                 failed: false,
             }));
             0
@@ -393,7 +421,7 @@ pub unsafe extern "C" fn im2p_publish_stripe(
     let Some(stripe) = stripe.as_ref() else {
         return -1;
     };
-    if stream.v2 {
+    if stream.abi_version != 0 {
         return CONFIGURATION_MISMATCH;
     }
     if crate::ACTIVATION_BITS != 8 {
@@ -430,30 +458,67 @@ pub unsafe extern "C" fn im2p_publish_stripe_v2(
     stream: *mut StreamBox,
     stripe: *const ActivationStripeV2,
 ) -> i32 {
-    let (Some(stream), Some(stripe)) = (stream.as_mut(), stripe.as_ref()) else {
+    let Some(stripe) = stripe.as_ref() else {
         return -1;
     };
-    if !stream.v2
-        || !configuration_matches(
-            stripe.abi_version,
-            stripe.activation_bits,
-            stripe.activation_storage_bytes,
-            stripe.dim,
-        )
+    publish_versioned_stripe(
+        stream,
+        VersionedStripe {
+            identity: (
+                stripe.abi_version,
+                stripe.activation_bits,
+                stripe.activation_storage_bytes,
+                stripe.dim,
+            ),
+            expected_abi: ABI_VERSION_2,
+            stripe_id: stripe.stripe_id,
+            row_begin: stripe.i_start,
+            row_count: stripe.rows,
+            activations: stripe.activations,
+            row_stride_bytes: stripe.activation_row_stride_bytes,
+            context: stripe.context,
+        },
+    )
+}
+
+pub(super) struct VersionedStripe {
+    pub identity: (u32, u32, u32, u32),
+    pub expected_abi: u32,
+    pub stripe_id: u32,
+    pub row_begin: usize,
+    pub row_count: usize,
+    pub activations: *const std::ffi::c_void,
+    pub row_stride_bytes: usize,
+    pub context: u64,
+}
+
+pub(super) unsafe fn publish_versioned_stripe(
+    stream: *mut StreamBox,
+    stripe: VersionedStripe,
+) -> i32 {
+    let Some(stream) = stream.as_mut() else {
+        return -1;
+    };
+    let (abi_version, activation_bits, activation_storage_bytes, dim) = stripe.identity;
+    if stream.abi_version != stripe.expected_abi
+        || abi_version != stripe.expected_abi
+        || activation_bits != crate::ACTIVATION_BITS as u32
+        || activation_storage_bytes != crate::ACTIVATION_STORAGE_BYTES as u32
+        || dim != super::configured_dim()
     {
         return CONFIGURATION_MISMATCH;
     }
     if stripe.activations.is_null()
-        || (stripe.activations as usize) % align_of::<ActivationValue>() != 0
+        || !(stripe.activations as usize).is_multiple_of(align_of::<ActivationValue>())
     {
         return -4;
     }
-    let row_stride = match activation_bytes_to_elements(stripe.activation_row_stride_bytes) {
+    let row_stride = match activation_bytes_to_elements(stripe.row_stride_bytes) {
         Ok(value) => value,
         Err(_) => return -4,
     };
     let activation_len = match stripe
-        .rows
+        .row_count
         .checked_sub(1)
         .and_then(|rows| rows.checked_mul(row_stride))
         .and_then(|prefix| prefix.checked_add(stream.reduction))
@@ -464,13 +529,13 @@ pub unsafe extern "C" fn im2p_publish_stripe_v2(
         _ => return -4,
     };
     let values = std::slice::from_raw_parts(stripe.activations.cast(), activation_len);
-    if activation_view(values, stripe.rows, stream.reduction, row_stride).is_err() {
+    if activation_view(values, stripe.row_count, stream.reduction, row_stride).is_err() {
         return -4;
     }
     let metadata = ActivationStripe {
         stripe_id: stripe.stripe_id,
-        row_begin: stripe.i_start,
-        row_count: stripe.rows,
+        row_begin: stripe.row_begin,
+        row_count: stripe.row_count,
         stripe_context: stripe.context,
     };
     let Some(job) = stream.job.as_mut() else {
@@ -479,8 +544,8 @@ pub unsafe extern "C" fn im2p_publish_stripe_v2(
     match job.publish_stripe_layout(metadata, row_stride) {
         Ok(()) => {
             stream.stripes.push(PublishedStripe {
-                row_begin: stripe.i_start,
-                row_count: stripe.rows,
+                row_begin: stripe.row_begin,
+                row_count: stripe.row_count,
                 values: stripe.activations.cast(),
                 row_stride,
             });

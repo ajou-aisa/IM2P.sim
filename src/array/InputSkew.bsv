@@ -60,29 +60,19 @@ module mkInputSkew(InputSkewIfc#(
     Bits#(acc_t, accBits),
     AccumulatorArithmetic#(acc_t)
 );
-    // 최대 실제 지연은 (arrayDim-1)*peLatency다. 모든 boundary index에 동일한
-    // 정적 register vector를 만들고 필요한 prefix만 선택한다. 미사용 stage는
-    // synthesis 최적화 대상이다.
+    // 모든 boundary token은 같은 logical row에서 나오므로 row 전체를 한 번만
+    // 지연한다. Boundary별 scalar pipeline은 동일 row를 arrayDim번 복제하고
+    // scheduler write surface를 O(arrayDim^2)로 키운다.
     Vector#(
-        arrayDim,
-        Vector#(skewDepth, Reg#(Maybe#(input_t)))
-    ) activationDelay <- replicateM(replicateM(mkReg(tagged Invalid)));
-
-    Vector#(
-        arrayDim,
-        Vector#(skewDepth, Reg#(Maybe#(acc_t)))
-    ) partialDelay <- replicateM(replicateM(mkReg(tagged Invalid)));
+        skewDepth,
+        Reg#(Maybe#(Vector#(arrayDim, input_t)))
+    ) rowDelay <- replicateM(mkReg(tagged Invalid));
 
     method Action clear;
-        for (Integer boundaryIndex = 0;
-                boundaryIndex < valueOf(arrayDim);
-                boundaryIndex = boundaryIndex + 1) begin
-            for (Integer stage = 0;
-                    stage < valueOf(skewDepth);
-                    stage = stage + 1) begin
-                activationDelay[boundaryIndex][stage] <= tagged Invalid;
-                partialDelay[boundaryIndex][stage] <= tagged Invalid;
-            end
+        for (Integer stage = 0;
+                stage < valueOf(skewDepth);
+                stage = stage + 1) begin
+            rowDelay[stage] <= tagged Invalid;
         end
     endmethod
 
@@ -97,38 +87,30 @@ module mkInputSkew(InputSkewIfc#(
         for (Integer boundaryIndex = 0;
                 boundaryIndex < valueOf(arrayDim);
                 boundaryIndex = boundaryIndex + 1) begin
-            Maybe#(input_t) activationToken = tagged Invalid;
-            Maybe#(acc_t) partialToken = tagged Invalid;
-
-            if (isValid(activationRow)) begin
-                Vector#(arrayDim, input_t) row = fromMaybe(?, activationRow);
-                activationToken = tagged Valid row[boundaryIndex];
-                partialToken = tagged Valid accumulatorZero();
-            end
-
             Integer delayCycles = boundaryIndex * valueOf(peLatency);
-            if (delayCycles == 0) begin
-                skewedActivations[boundaryIndex] = activationToken;
-                skewedPartials[boundaryIndex] = partialToken;
+            Maybe#(Vector#(arrayDim, input_t)) delayedRow =
+                delayCycles == 0
+                    ? activationRow
+                    : rowDelay[delayCycles - 1];
+
+            if (isValid(delayedRow)) begin
+                Vector#(arrayDim, input_t) row = fromMaybe(?, delayedRow);
+                skewedActivations[boundaryIndex] =
+                    tagged Valid row[boundaryIndex];
+                skewedPartials[boundaryIndex] =
+                    tagged Valid accumulatorZero();
             end
             else begin
-                skewedActivations[boundaryIndex] =
-                    activationDelay[boundaryIndex][delayCycles - 1];
-                skewedPartials[boundaryIndex] =
-                    partialDelay[boundaryIndex][delayCycles - 1];
+                skewedActivations[boundaryIndex] = tagged Invalid;
+                skewedPartials[boundaryIndex] = tagged Invalid;
             end
+        end
 
-            activationDelay[boundaryIndex][0] <= activationToken;
-            partialDelay[boundaryIndex][0] <= partialToken;
-
-            for (Integer stage = 1;
-                    stage < valueOf(skewDepth);
-                    stage = stage + 1) begin
-                activationDelay[boundaryIndex][stage] <=
-                    activationDelay[boundaryIndex][stage - 1];
-                partialDelay[boundaryIndex][stage] <=
-                    partialDelay[boundaryIndex][stage - 1];
-            end
+        rowDelay[0] <= activationRow;
+        for (Integer stage = 1;
+                stage < valueOf(skewDepth);
+                stage = stage + 1) begin
+            rowDelay[stage] <= rowDelay[stage - 1];
         end
 
         return SkewedArrayInputs {

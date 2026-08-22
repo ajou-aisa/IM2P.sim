@@ -1,6 +1,13 @@
 # 선택적 Gemmini C++ 프런트엔드
 
-`frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 기존 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. C ABI, 통계 레이아웃, RTL, 수치 동작은 변경하지 않는다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
+`frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. ABI v3의 signed-64 provider transport를 사용하되 frozen ABI v2 layout과 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
+
+`im2p::gemmini`가 공개하는 frontend mode는 정확히 두 개다.
+
+- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 기존 8-bit RMD가 성공한 후 caller output을 한 번 publish한다.
+- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 기존 8-bit RMD가 성공하기 전까지 output은 frontend staging에만 있다.
+
+두 mode 외 제3 mode나 deferred execution mode는 없다.
 
 `im2p::gemmini`가 호출자에게 제공하는 인터페이스는 다음 세 작업으로 구성된다.
 
@@ -17,7 +24,9 @@
 - 완료된 stripe 백킹 스토리지 해제용 `poll_completed`
 - 스트림 완료 및 통계 수집용 `finish_stream`
 
-원시 ABI와 호환되는 `q8_h0`(`A[M,K]` INT8, `B[K,N]` INT8, 완전한 INT32 `C[M,N]`, 전치 없음, `repeating_bias`, `D` bias, activation 또는 float scaling 없음)과 `q8_0_unpacked_to_h1`, `q8_h1`, `q8_hp1`, `q8_channel`, `q8_channel_dense_sidecar`를 수치 실행 경로에서 지원한다. 전체 모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력 영역이다. 파이프라인 모드의 B에도 같은 규칙을 적용한다.
+현재 production ExSIA route는 A8/Q8만 지원한다. A4/Q4, A16/Q16, Q8 H2/HP2 및 mixed precision은 TODO이며 worker 시작 전에 fail closed한다. 이 format들을 큐에 defer하거나 raw route로 fallback하지 않는다.
+
+Generic frontend에서는 원시 ABI와 호환되는 `q8_h0`(`A[M,K]` INT8, `B[K,N]` INT8, 완전한 INT32 `C[M,N]`, 전치 없음, `repeating_bias`, `D` bias, activation 또는 float scaling 없음)과 `q8_0_unpacked_to_h1`, `q8_h1`, `q8_hp1`, `q8_channel`, `q8_channel_dense_sidecar`를 수치 실행 경로에서 지원한다. 전체 모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력 영역이다. 파이프라인 모드의 B에도 같은 규칙을 적용한다.
 
 A 행은 해당 stripe가 수락되기 전에 채울 수 있지만, 제출한 바이트는 이후 `fence`가 반환되거나 Run이 소멸할 때까지 유효하고 변경되지 않아야 한다. C는 Run이 차용하는 출력 영역이다. 이 영역은 유효해야 하며 Run만 단독으로 쓸 수 있어야 한다.
 
@@ -26,6 +35,8 @@ A 행은 해당 stripe가 수락되기 전에 채울 수 있지만, 제출한 �
 Channel route는 RTL `VectorBypass`에서 정수 dot product를 실행하고 channel scale을 host output에 한 번만 적용한다. H2/HP2 메타데이터는 internal/test route-contract 검사에 맞춰 보존하지만 public inspection API는 제공하지 않는다. `q8_h2`는 **Deprecated**이며 `q8_h2 is deprecated`, `q8_hp2`는 **Unsupported**이며 `q8_hp2 is unsupported`와 함께 `unsupported_route`를 반환한다.
 
 두 route 모두 worker를 시작하지 않으며 원시 `q8_h0`로 fallback하지도 않는다. 프런트엔드는 전체 operand의 전치, 언패킹, 역양자화, 복사를 수행하지 않는다.
+
+RTL Accumulator부터 bridge와 Rust provider service까지 output request는 signed 64-bit lane이다. ABI v3 provider callback은 그 값을 그대로 받는다. Raw output storage와 ABI v2 provider callback은 호환성을 위해 signed 32-bit이며, 해당 최종 경계에서만 saturation한다. Fragment, stripe, RMD staging 중간에는 32-bit narrowing이 없다.
 
 선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `q8_h1_block_count`, `q8_h1_rows`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
 
@@ -65,15 +76,18 @@ make check
 
 ```sh
 make gemmini-frontend-test
+make gemmini-frontend-test-sanitized  # ASan + UBSan lifecycle
+make gemmini-frontend-tsan-test       # producer/worker race audit
 # 또는 일반 check 의존성 그래프에 포함한다.
 make check ENABLE_GEMMINI_FRONTEND=1
 ```
 
-DIM16 full/stripe RTL golden 및 lookahead 검사는 다음 명령으로 실행한다.
+DIM16/DIM32/DIM64 full/stripe RTL golden 및 lookahead 검사는 다음 명령으로 실행한다.
 
 ```sh
 make gemmini-frontend-real-test
 make gemmini-frontend-real-test GEMMINI_FRONTEND_DIM=32
+make gemmini-frontend-real-test GEMMINI_FRONTEND_DIM=64
 ```
 
 인접하지 않은 layout에서는 `GEMMINI_ROOT`와 `GEMMINI_PARAMS_ROOT`를 재정의한다. public header의 forward-declaration test는 의도적으로 Gemmini include path 없이 컴파일한다.

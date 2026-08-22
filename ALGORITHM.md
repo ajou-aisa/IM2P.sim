@@ -552,7 +552,7 @@ O_{\mathrm{RC}}=RQ_W
 
 ---
 
-## 8. DIM16/DIM32 physical execution
+## 8. DIM16/DIM32/DIM64 physical execution
 
 Compaction과 row packing을 거친 logical GEMM dimension은 다음과 같다.
 
@@ -573,7 +573,7 @@ N_{\mathrm{tiles}}
 \left\lceil\frac{J}{D}\right\rceil.
 ]
 
-IM2P.sim의 현재 generated INT8 target은 (D=16) 또는 (D=32)다. Row packing은 active digit plane의 all-zero가 아닌 row 수와 관계없이 모든 (M) row를 유지하는 plane-wise row stacking과 다르다.
+IM2P.sim의 현재 generated INT8 target은 (D=16), (D=32), 또는 (D=64)다. Row packing은 active digit plane의 all-zero가 아닌 row 수와 관계없이 모든 (M) row를 유지하는 plane-wise row stacking과 다르다.
 
 Row packing에서는 서로 다른 digit plane의 active digit row를 같은 physical (M) tile에 배치할 수 있다. compaction은 다음 두 dimension을 줄인다.
 

@@ -13,7 +13,8 @@ function VectorOp operationFor(UInt#(3) index);
         0: return VectorBypass;
         1: return VectorMultiply;
         2: return VectorShift;
-        default: return VectorExternal;
+        3: return VectorExternal;
+        default: return VectorBypass;
     endcase
 endfunction
 
@@ -43,12 +44,21 @@ function Vector#(4, Int#(8)) scaleFor(UInt#(3) index);
     endcase
 endfunction
 
-function Vector#(4, Int#(32)) expectedFor(UInt#(3) index);
+function Vector#(4, Int#(64)) inputFor(UInt#(3) index);
+    return index == 4
+        ? vector4(2147483648, -2147483649, 2147483648, -2147483649)
+        : vector4(3, -4, 5, -6);
+endfunction
+
+function Vector#(4, Int#(64)) expectedFor(UInt#(3) index);
     case (index)
         0: return vector4(3, -4, 5, -6);
         1: return vector4(6, 12, 20, 30);
         2: return vector4(6, -2, 20, -2);
-        default: return vector4(3, -4, 5, -6);
+        3: return vector4(3, -4, 5, -6);
+        default: return vector4(
+            2147483648, -2147483649, 2147483648, -2147483649
+        );
     endcase
 endfunction
 
@@ -60,7 +70,7 @@ module mkTbVectorUnit(Empty);
         Int#(8),
         4,
         2,
-        Int#(32),
+        Int#(64),
         Int#(8)
     ) dut <- mkVectorUnit;
 
@@ -68,10 +78,10 @@ module mkTbVectorUnit(Empty);
     Reg#(UInt#(2)) groupIndex <- mkReg(0);
     Reg#(Bool) inFlight <- mkReg(False);
 
-    rule issue (!inFlight && executionIndex < 4 && dut.ready);
+    rule issue (!inFlight && executionIndex < 5 && dut.ready);
         dut.put(
             validsFor(executionIndex),
-            vector4(3, -4, 5, -6),
+            inputFor(executionIndex),
             scaleFor(executionIndex),
             operationFor(executionIndex)
         );
@@ -80,9 +90,9 @@ module mkTbVectorUnit(Empty);
     endrule
 
     rule checkGroup (inFlight && dut.resultValid);
-        VectorResult#(4, Int#(32)) transformed = dut.result;
+        VectorResult#(4, Int#(64)) transformed = dut.result;
         Vector#(4, Bool) inputValids = validsFor(executionIndex);
-        Vector#(4, Int#(32)) expected = expectedFor(executionIndex);
+        Vector#(4, Int#(64)) expected = expectedFor(executionIndex);
         Bool passed = True;
 
         for (Integer column = 0; column < 4; column = column + 1) begin
@@ -124,12 +134,12 @@ module mkTbVectorUnit(Empty);
         end
     endrule
 
-    rule finish (!inFlight && executionIndex == 4 && dut.ready);
+    rule finish (!inFlight && executionIndex == 5 && dut.ready);
         if (pack(VectorExternal) != 2'b11 || !vectorOpUsesScale(VectorExternal)) begin
             $display("VECTOR UNIT: FAIL external encoding/scale policy");
             $finish(1);
         end
-        $display("VECTOR UNIT: PASS");
+        $display("VECTOR UNIT: PASS boundaries=(2147483648,-2147483649)");
         $finish(0);
     endrule
 endmodule

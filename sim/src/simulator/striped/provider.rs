@@ -5,6 +5,8 @@ use crate::{
 
 use super::{Error, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE};
 
+type OutputRequest = (usize, usize, ffi::WriteRequest, Vec<i64>);
+
 impl StripedMatmul<'_> {
     pub(super) fn activation_request(
         &self,
@@ -56,14 +58,12 @@ impl StripedMatmul<'_> {
         )))
     }
 
-    pub(super) fn output_request(
-        &self,
-    ) -> Result<Option<(usize, usize, ffi::WriteRequest, Vec<i32>)>, Error> {
+    pub(super) fn output_request(&self) -> Result<Option<OutputRequest>, Error> {
         let mut request = ffi::WriteRequest::default();
-        let mut values = vec![0_i32; self.simulator.dim];
+        let mut values = vec![0_i64; self.simulator.dim];
         // SAFETY: request and DIM-lane destination remain writable.
         let status = unsafe {
-            ffi::im2p_output_write_request(
+            ffi::im2p_output_write_request_i64(
                 self.simulator.handle.as_ptr(),
                 &mut request,
                 values.as_mut_ptr(),
@@ -81,7 +81,7 @@ impl StripedMatmul<'_> {
             .address
             .checked_sub(OUTPUT_BASE)
             .ok_or(Error::InvalidKRange)? as usize;
-        if offset % size_of::<i32>() != 0 {
+        if !offset.is_multiple_of(size_of::<i32>()) {
             return Err(Error::InvalidKRange);
         }
         let element = offset / size_of::<i32>();
@@ -224,9 +224,9 @@ impl StripedMatmul<'_> {
             return Ok(());
         };
         let mut request = ffi::WriteRequest::default();
-        let mut values = vec![0_i32; self.simulator.dim];
+        let mut values = vec![0_i64; self.simulator.dim];
         let status = unsafe {
-            ffi::im2p_output_write_request(
+            ffi::im2p_output_write_request_i64(
                 self.simulator.handle.as_ptr(),
                 &mut request,
                 values.as_mut_ptr(),
@@ -339,7 +339,7 @@ fn decode_output_address(
     } else {
         (0, offset)
     };
-    if within % size_of::<i32>() != 0 {
+    if !within.is_multiple_of(size_of::<i32>()) {
         return Err(Error::InvalidKRange);
     }
     Ok((
@@ -351,7 +351,7 @@ fn decode_output_address(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_output_address;
+    use super::{decode_output_address, Error};
 
     #[test]
     fn external_output_address_decodes_block_row_and_column() {
@@ -365,6 +365,31 @@ mod tests {
         assert_eq!(
             decode_output_address(offset, rows, row_stride_bytes, false),
             Ok((0, 7, 3))
+        );
+    }
+
+    #[test]
+    fn output_addressing_retains_four_byte_lanes_and_rejects_bad_offsets() {
+        // Given the raw int32 layout's exact lane and row byte strides.
+        let row_stride_bytes = 3 * size_of::<i32>();
+
+        // When adjacent aligned lanes are decoded.
+        let columns = [0, 4, 8].map(|offset| {
+            decode_output_address(offset, 2, row_stride_bytes, false)
+                .expect("aligned address")
+                .2
+        });
+
+        // Then addresses advance by four bytes, while misalignment and overflow fail.
+        assert_eq!(columns, [0, 1, 2]);
+        println!("output_byte_offsets=[0, 4, 8] columns={columns:?}");
+        assert_eq!(
+            decode_output_address(2, 2, row_stride_bytes, false),
+            Err(Error::InvalidKRange)
+        );
+        assert_eq!(
+            decode_output_address(0, usize::MAX, row_stride_bytes, false),
+            Err(Error::InvalidKRange)
         );
     }
 }

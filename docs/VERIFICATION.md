@@ -20,12 +20,14 @@
 | `TbIM2PCoreActivationBuffer` | current/next K-fragment activation slot 격리 |
 | `TbIM2PCoreMatrix` | tagged A/W/C host traffic와 output acknowledgement |
 | `TbIM2PCoreMatrixScale` | tagged S demand/reuse/prefetch와 immutable snapshot |
+| `TbIM2PCoreOutputAddressing` | signed-64 provider lane과 raw/V2 signed-32 byte addressing 경계 |
 | `TbIM2PLookahead` | publish-triggered cross-stripe A/W preparation과 reuse |
 | `TbIM2PLookaheadScale` | nonresident lookahead W/S miss timing |
 | `TbIM2PCoreGrouped` | 4-column/2-lane routing과 scale alignment |
 | `TbFloatCore` | 동일 Core source의 FLOAT Bypass execution |
 | `TbSynthInt8x16` | DIM16 synthesis wrapper smoke |
 | `TbSynthInt8x32` | DIM32 synthesis wrapper smoke |
+| `TbSynthInt8x64` | DIM64 4×4 tile hierarchy와 15/16, 31/32, 47/48 seam smoke |
 
 `tests/TestVectorUtils.bsv`는 testbench에서 공유하는 고정 길이 Vector 생성 helper이며 synthesis top이 아니다.
 
@@ -49,6 +51,10 @@ make check
 - BoundedIndex weight-row interface
 - commit-before-issue 불변조건
 - C++20 reference self-test
+- frontend mode가 `FULL`/`PIPELINE` 두 개뿐인지 검사
+- signed-64 Accumulator/provider transport와 ABI v3 callback 검사
+- raw/ABI v2 final signed-32 saturation 경계 검사
+- A8/Q8 production 지원 및 Q4/Q16/H2/HP2/mixed precision TODO 문서 계약 검사
 
 ## 3. 전체 BSC/RTL 검증
 
@@ -82,6 +88,7 @@ Cargo는 `sim/tests/*.rs`를 자동으로 발견한다. 공통 CPU golden, scale
 ```bash
 make sim-test-int8x16
 make sim-test-int8x32
+make sim-test-int8x64
 ```
 
 각 target은 해당 DIM의 Verilog와 Verilated model을 다시 생성한 뒤 전체 test binary를 실행한다. 검증 범위는 다음과 같다.
@@ -124,6 +131,46 @@ Cargo auto-discovered integration tests:
 - `rtl_writeback`: prefix/tail/row-gutter guard 보존
 - `c_api_smoke.c`: blocking/cooperative C ABI, zero-budget 관찰, scheduler state별 정확한 `progress_stream(..., 1)` cycle delta
 
-`make sim-test-int8x16`과 `make sim-test-int8x32`는 각 DIM의 모든 Cargo integration binary를 실행한다. `make c-api-test`는 strict C11 header compile, static library link, 실제 C driver 실행까지 수행한다.
+`make sim-test-int8x16`, `make sim-test-int8x32`, `make sim-test-int8x64`는 각 DIM의 모든 Cargo integration binary를 실행한다. `make c-api-test`는 strict C11 header compile, static library link, 실제 C driver 실행까지 수행한다.
+
+## ExSIA frontend lifecycle 및 sanitizer
+
+Production ExSIA는 A8/Q8만 지원하며 public frontend state는 다음 두 개다.
+
+| mode | 검증할 lifecycle |
+|---|---|
+| `FULL` | post-fold event 수집, quantization 성공 뒤 NPU 시작, fence -> 8-bit RMD -> caller output publish |
+| `PIPELINE` | NPU 선시작, 각 folding commit 직후 post-fold immediate publication, producer/worker overlap, fence -> 8-bit RMD -> caller output publish |
+
+`PIPELINE`은 quantization 전체가 끝난 뒤 stripe를 batch publish하지 않는다. A4/Q4, A16/Q16, Q8 H2/HP2와 mixed precision은 TODO이며 worker 시작, deferred queue, fallback 없이 거부한다.
+
+Frontend lifecycle은 다음 target으로 검증한다.
+
+```bash
+make gemmini-frontend-test
+make gemmini-frontend-test-sanitized
+make gemmini-frontend-tsan-test
+```
+
+ASan+UBSan target은 ownership, producer/worker, 실패 및 teardown lifecycle을 실행한다. TSan target은 producer/worker 동시 lifecycle을 실행한다. Host/toolchain이 TSan runtime을 지원하지 않으면 compiler/runtime의 정확한 진단을 기록하고, mutex/condition-variable lifecycle 계약 테스트와 ASan+UBSan 전체 lifecycle 결과를 대체 race evidence로 함께 남긴다.
+
+## Signed output width 및 ABI 경계
+
+Production integer RTL의 partial, Accumulator, bridge output request와 Rust provider service는 signed 64-bit다. ABI v3 provider callback은 signed-64 lane을 그대로 받는다. Raw output과 frozen ABI v2 provider callback은 signed 32-bit이며 최종 write/callback 경계에서만 saturation한다. Stripe completion이나 quantization/RMD staging 전에는 narrowing하지 않는다.
+
+Frontend artifact는 DIM16/DIM32에서 activation block size 32, DIM64에서 64로
+고정한다. Llama configure도 같은 mapping을 요구하므로 동일 artifact identity가
+서로 다른 block-size ABI를 가리키지 않는다.
+
+관련 검증은 다음과 같다.
+
+```bash
+make c-api-layout-test
+make c-api-test IM2P_ACTIVATION_BITS=8 IM2P_DIM=16
+cargo test --manifest-path sim/Cargo.toml
+make bsv-test-one TOP=mkTbIM2PCoreOutputAddressing
+```
+
+`c-api-layout-test`는 ABI v2 layout freeze와 ABI v3 signed-64 callback type을 확인한다. Rust/RTL test는 양쪽 signed-32 범위를 넘는 누산이 provider까지 보존되고 raw/V2 최종 경계에서만 saturation하는지 확인한다.
 
 Architecture의 기준은 [architecture 문서](ARCHITECTURE.md)에 있으며, 코드 분석 순서는 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md)를 따른다.

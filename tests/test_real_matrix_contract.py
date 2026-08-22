@@ -45,10 +45,12 @@ def fingerprint(bits: int, dim: int, extra: Path) -> str:
 
 
 def execution_line(bits: int, dim: int, mode: str) -> str:
+    route = "q8_h1" if bits == 8 else "q8_h0"
+    stripes = 3 if mode == "stripe" else 0
     return (
-        f"REAL_EXECUTION bits={bits} dim={dim} mode={mode} PASS "
-        "M=1 N=1 K=2 activation_byte_stride=2 weight_origin=1 "
-        "output_origin=1 stripes=0\n"
+        f"REAL_EXECUTION bits={bits} dim={dim} route={route} mode={mode} PASS "
+        f"M=1 N=1 K=2 stripes={stripes} activation_reads=1 weight_reads=1 "
+        f"output_writes=1 completed={stripes} published={stripes}\n"
     )
 
 
@@ -64,22 +66,28 @@ def main() -> int:
         assert fingerprint(4, 16, fixture) != baseline, "content change was ignored"
         assert fingerprint(8, 16, fixture) != fingerprint(4, 16, fixture)
         assert fingerprint(4, 32, fixture) != fingerprint(4, 16, fixture)
+        assert fingerprint(4, 64, fixture) != fingerprint(4, 32, fixture)
 
         expected = [
-            execution_line(bits, dim, mode)
-            for bits in (4, 8, 16)
-            for dim in (16, 32)
+            execution_line(8, dim, mode)
+            for dim in (16, 32, 64)
             for mode in ("full", "stripe")
         ]
         valid = temp / "valid.log"
         valid.write_text("".join(expected), encoding="utf-8")
         assert run(str(VALIDATOR), str(valid)).returncode == 0
 
+        misleading = expected.copy()
+        misleading[0] = misleading[0].replace("activation_reads=1", "activation_reads=0")
+        wrong_route = expected.copy()
+        wrong_route[0] = wrong_route[0].replace("route=q8_h1", "route=q8_h0")
         malformed_logs = {
             "duplicate.log": expected + [expected[0]],
             "missing.log": expected[:-1],
             "extra.log": expected + [execution_line(4, 64, "full")],
             "malformed.log": expected + ["REAL_EXECUTION malformed\n"],
+            "misleading.log": misleading,
+            "wrong-route.log": wrong_route,
         }
         for name, lines in malformed_logs.items():
             path = temp / name

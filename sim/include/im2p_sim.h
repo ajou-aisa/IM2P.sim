@@ -1,6 +1,8 @@
 #ifndef IM2P_SIM_H
 #define IM2P_SIM_H
 
+/* allow: SIZE_OK - the public C ABI must remain one self-contained header. */
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,6 +35,7 @@ enum {
   IM2P_VECTOR_EXTERNAL = 3,
   IM2P_PROVIDER_VERSION_1 = 1,
   IM2P_ABI_VERSION_2 = 2,
+  IM2P_ABI_VERSION_3 = 3,
 };
 
 /*
@@ -184,6 +187,82 @@ typedef struct {
 } im2p_stripe_work_desc_v2_t;
 
 /*
+ * ABI v3 keeps raw output storage signed 32-bit while widening provider output
+ * request transport to signed 64-bit elements. All strides remain element
+ * counts unless suffixed `_bytes`. ABI v2 remains frozen and callable.
+ */
+typedef int (*im2p_write_output_v3_fn)(
+    void *context,
+    size_t block,
+    size_t row,
+    size_t column,
+    size_t count,
+    const int64_t *values
+);
+
+typedef struct {
+  void *context;
+  im2p_read_weight_fn read_weight;
+  im2p_read_scale_fn read_scale;
+  im2p_write_output_v3_fn write_output;
+} im2p_provider_v3_t;
+
+typedef struct {
+  uint32_t abi_version;
+  uint32_t activation_bits;
+  uint32_t activation_storage_bytes;
+  uint32_t dim;
+  const void *activations;
+  const int8_t *weights;
+  const int8_t *scales;
+  int32_t *output;
+  size_t m;
+  size_t n;
+  size_t k;
+  size_t activation_row_stride_bytes;
+  size_t weight_row_stride;
+  size_t output_row_stride;
+  size_t tile_i_rows;
+  size_t tile_j_columns;
+  size_t block_size;
+  size_t scale_total_k;
+  size_t scale_row_stride;
+  size_t scale_column_offset;
+  size_t scale_valid_columns;
+  size_t scale_values_len;
+  uint8_t vector_op;
+  uint64_t work_context;
+  im2p_provider_v3_t provider;
+} im2p_matmul_desc_v3_t;
+
+typedef struct {
+  uint32_t abi_version;
+  uint32_t activation_bits;
+  uint32_t activation_storage_bytes;
+  uint32_t dim;
+  const int8_t *weights;
+  const int8_t *scales;
+  int32_t *output;
+  size_t m;
+  size_t n;
+  size_t k;
+  size_t weight_row_stride;
+  size_t output_row_stride;
+  size_t tile_i_rows;
+  size_t tile_j_columns;
+  size_t block_size;
+  size_t scale_total_k;
+  size_t scale_row_stride;
+  size_t scale_column_offset;
+  size_t scale_valid_columns;
+  size_t scale_values_len;
+  size_t stripe_count;
+  uint8_t vector_op;
+  uint64_t work_context;
+  im2p_provider_v3_t provider;
+} im2p_stripe_work_desc_v3_t;
+
+/*
  * `activations` remains caller-owned and must remain readable until matching
  * completion is returned. A successful publish permits RTL reads on the next
  * logical cycle, so the pointer must remain valid through that completion.
@@ -210,6 +289,19 @@ typedef struct {
   size_t activation_row_stride_bytes;
   uint64_t context;
 } im2p_activation_stripe_v2_t;
+
+typedef struct {
+  uint32_t abi_version;
+  uint32_t activation_bits;
+  uint32_t activation_storage_bytes;
+  uint32_t dim;
+  uint32_t stripe_id;
+  size_t i_start;
+  size_t rows;
+  const void *activations;
+  size_t activation_row_stride_bytes;
+  uint64_t context;
+} im2p_activation_stripe_v3_t;
 
 typedef struct {
     uint32_t stripe_id;
@@ -302,6 +394,12 @@ int im2p_execute_matmul_v2(im2p_sim_t *sim,
 int im2p_execute_matmul_extended_v2(im2p_sim_t *sim,
                                     const im2p_matmul_desc_v2_t *descriptor,
                                     im2p_work_stats_extended_t *stats);
+int im2p_execute_matmul_v3(im2p_sim_t *sim,
+                           const im2p_matmul_desc_v3_t *descriptor,
+                           im2p_work_stats_t *stats);
+int im2p_execute_matmul_extended_v3(im2p_sim_t *sim,
+                                    const im2p_matmul_desc_v3_t *descriptor,
+                                    im2p_work_stats_extended_t *stats);
 /* The returned stream remains valid if `sim` is destroyed. */
 im2p_stream_t *im2p_begin_striped_matmul(
     im2p_sim_t *sim,
@@ -320,12 +418,17 @@ int im2p_begin_striped_matmul_v1_ex(
 int im2p_begin_striped_matmul_v2(im2p_sim_t *sim,
                                  const im2p_stripe_work_desc_v2_t *descriptor,
                                  im2p_stream_t **stream);
+int im2p_begin_striped_matmul_v3(im2p_sim_t *sim,
+                                 const im2p_stripe_work_desc_v3_t *descriptor,
+                                 im2p_stream_t **stream);
 int im2p_publish_stripe(
     im2p_stream_t *stream,
     const im2p_activation_stripe_t *stripe
 );
 int im2p_publish_stripe_v2(im2p_stream_t *stream,
                            const im2p_activation_stripe_v2_t *stripe);
+int im2p_publish_stripe_v3(im2p_stream_t *stream,
+                           const im2p_activation_stripe_v3_t *stripe);
 /*
  * Advances exactly cycle_budget logical RTL clock periods. A zero budget only
  * observes host-visible state; it does not evaluate a clock edge.

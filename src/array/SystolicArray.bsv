@@ -54,6 +54,10 @@ interface SystolicArrayIfc#(
         Vector#(arrayDim, Maybe#(acc_t)) partialInputs
     );
 
+    // 각 row의 마지막 PE가 전달한 activation이다. Flat array에서는 외부에서
+    // 사용하지 않지만, tiled array에서는 오른쪽 tile의 west input이 된다.
+    method Vector#(arrayDim, Maybe#(input_t)) activationOutputs;
+
     // 각 column의 마지막 PE가 출력한 현재 K tile의 complete dot-product 결과다.
     // 전체 GEMM의 K가 arrayDim보다 크면 이 값은 full GEMM 관점의 partial sum이며,
     // 후속 execution이 Accumulator에 추가로 누산된다. Column별 systolic 지연은
@@ -257,6 +261,17 @@ module mkSystolicArray(SystolicArrayIfc#(
                 processingElements[row][column].step(activation, partial);
             end
         end
+    endmethod
+
+    method Vector#(arrayDim, Maybe#(input_t)) activationOutputs;
+        Vector#(arrayDim, Maybe#(input_t)) outputs = newVector;
+        for (Integer row = 0;
+                row < valueOf(arrayDim);
+                row = row + 1) begin
+            outputs[row] =
+                processingElements[row][valueOf(arrayDim) - 1].activationOut;
+        end
+        return outputs;
     endmethod
 
     method Vector#(arrayDim, Maybe#(acc_t)) partialSums;

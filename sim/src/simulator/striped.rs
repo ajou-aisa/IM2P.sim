@@ -221,14 +221,32 @@ impl StripedMatmul<'_> {
     }
 
     pub fn take_output_row(&self, row: usize) -> Result<Vec<i32>, Error> {
+        self.take_output_row_i64(row).map(|values| {
+            values
+                .into_iter()
+                .map(crate::matrix::saturating_i64_to_i32)
+                .collect()
+        })
+    }
+
+    pub fn take_output_row_i64(&self, row: usize) -> Result<Vec<i64>, Error> {
         let (expected_row, column, _, _) = self.output_request()?.ok_or(Error::NoPendingOutput)?;
         if row != expected_row {
             return Err(Error::NoPendingOutput);
         }
-        self.take_output_region(row, column)
+        self.take_output_region_i64(row, column)
     }
 
     pub fn take_output_region(&self, row: usize, column: usize) -> Result<Vec<i32>, Error> {
+        self.take_output_region_i64(row, column).map(|values| {
+            values
+                .into_iter()
+                .map(crate::matrix::saturating_i64_to_i32)
+                .collect()
+        })
+    }
+
+    pub fn take_output_region_i64(&self, row: usize, column: usize) -> Result<Vec<i64>, Error> {
         let (expected_row, expected_column, request, values) =
             self.output_request()?.ok_or(Error::NoPendingOutput)?;
         if row != expected_row || column != expected_column {

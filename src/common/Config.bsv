@@ -25,7 +25,7 @@ typedef 16 DefaultVectorLanes;
 typedef 8  DefaultInputWidth;
 typedef 8  DefaultWeightWidth;
 typedef 16 DefaultProductWidth;
-typedef 32 DefaultAccumulatorWidth;
+typedef 64 DefaultAccumulatorWidth;
 typedef 8  DefaultScaleWidth;
 
 typedef 256 DefaultAccumulatorRows;

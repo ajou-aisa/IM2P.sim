@@ -25,7 +25,10 @@ fn main() {
         "IM2P_ACTIVATION_BITS must be one of 4, 8, or 16"
     );
     let dim = env::var("IM2P_DIM").unwrap_or_else(|_| "16".to_string());
-    assert!(dim == "16" || dim == "32", "IM2P_DIM must be 16 or 32");
+    assert!(
+        matches!(dim.as_str(), "16" | "32" | "64"),
+        "IM2P_DIM must be 16, 32, or 64"
+    );
     let root = env::var_os("IM2P_REPO_ROOT")
         .map(PathBuf::from)
         .or_else(|| {

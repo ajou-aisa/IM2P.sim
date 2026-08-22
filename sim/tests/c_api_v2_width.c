@@ -32,7 +32,7 @@ int main(void) {
     static const int8_t weights[6] = {1, -1, 2, -2, 3, -3};
     int32_t output[4] = {91, 92, 93, 94};
 
-    if (im2p_sim_abi_version() != IM2P_ABI_VERSION_2
+    if (im2p_sim_abi_version() != IM2P_ABI_VERSION_3
             || im2p_sim_activation_bits() != IM2P_TEST_ACTIVATION_BITS
             || im2p_sim_activation_storage_bytes() != IM2P_TEST_STORAGE_BYTES
             || im2p_sim_dim() != IM2P_TEST_DIM) {

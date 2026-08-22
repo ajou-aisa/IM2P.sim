@@ -1,3 +1,4 @@
+pub(crate) mod descriptor;
 mod matmul;
 mod rtl;
 mod striped;
@@ -31,8 +32,16 @@ impl VectorOp {
 
 pub(crate) type ReadProvider =
     unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
-pub(crate) type WriteProvider =
+pub(crate) type WriteProviderV2 =
     unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i32) -> i32;
+pub(crate) type WriteProviderV3 =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i64) -> i32;
+
+#[derive(Clone, Copy)]
+pub(crate) enum WriteProvider {
+    V2(WriteProviderV2),
+    V3(WriteProviderV3),
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct MemoryProvider {
@@ -66,18 +75,41 @@ impl MemoryProvider {
         block: usize,
         row: usize,
         column: usize,
-        values: &[i32],
+        values: &[i64],
     ) -> Result<(), Error> {
         let callback = self.write_output.ok_or(Error::ProviderFailure)?;
-        let status = unsafe {
-            callback(
-                self.context,
-                block,
-                row,
-                column,
-                values.len(),
-                values.as_ptr(),
-            )
+        let status = match callback {
+            WriteProvider::V2(callback) => {
+                let narrowed = values
+                    .iter()
+                    .copied()
+                    .map(crate::matrix::saturating_i64_to_i32)
+                    .collect::<Vec<_>>();
+                // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the
+                // callback accepts this live context and readable narrowed slice for the call.
+                unsafe {
+                    callback(
+                        self.context,
+                        block,
+                        row,
+                        column,
+                        narrowed.len(),
+                        narrowed.as_ptr(),
+                    )
+                }
+            }
+            // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the callback
+            // accepts this live context and readable exact-width slice for the call.
+            WriteProvider::V3(callback) => unsafe {
+                callback(
+                    self.context,
+                    block,
+                    row,
+                    column,
+                    values.len(),
+                    values.as_ptr(),
+                )
+            },
         };
         if status == 0 {
             Ok(())
@@ -86,6 +118,7 @@ impl MemoryProvider {
         }
     }
 }
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     AllocationFailed,
@@ -291,8 +324,12 @@ impl Im2pSimulator {
         let compute_cycles = self.cycles() - compute_start;
         for row in 0..request.valid_m {
             let values = self.read_accumulator_row(row)?;
-            output[row * request.valid_n..(row + 1) * request.valid_n]
-                .copy_from_slice(&values[..request.valid_n]);
+            for (destination, value) in output[row * request.valid_n..(row + 1) * request.valid_n]
+                .iter_mut()
+                .zip(values)
+            {
+                *destination = crate::matrix::saturating_i64_to_i32(value);
+            }
         }
         self.acknowledge_execution()?;
         self.wait_idle()?;

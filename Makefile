@@ -15,12 +15,12 @@ YOSYS     ?= yosys
 IM2P_ACTIVATION_BITS ?= 8
 IM2P_DIM ?= 16
 IM2P_ALLOWED_ACTIVATION_BITS := 4 8 16
-IM2P_ALLOWED_DIMS := 16 32
+IM2P_ALLOWED_DIMS := 16 32 64
 ifeq ($(filter $(IM2P_ACTIVATION_BITS),$(IM2P_ALLOWED_ACTIVATION_BITS)),)
 $(error IM2P_ACTIVATION_BITS must be one of 4, 8, or 16 (got '$(IM2P_ACTIVATION_BITS)'))
 endif
 ifeq ($(filter $(IM2P_DIM),$(IM2P_ALLOWED_DIMS)),)
-$(error IM2P_DIM must be 16 or 32 (got '$(IM2P_DIM)'))
+$(error IM2P_DIM must be 16, 32, or 64 (got '$(IM2P_DIM)'))
 endif
 
 BUILD_DIR := build
@@ -37,11 +37,12 @@ GEMMINI_ROOT ?= $(abspath ../llama.cpp-gemmini)
 GEMMINI_PARAMS_ROOT ?= $(abspath ../RISC-V-DynDNN-gemmini-include/include)
 GEMMINI_FRONTEND_ACTIVATION_BITS ?= $(IM2P_ACTIVATION_BITS)
 GEMMINI_FRONTEND_DIM ?= $(IM2P_DIM)
+GEMMINI_FRONTEND_BLOCK_SIZE = $(if $(filter 64,$(GEMMINI_FRONTEND_DIM)),64,32)
 ifeq ($(filter $(GEMMINI_FRONTEND_ACTIVATION_BITS),$(IM2P_ALLOWED_ACTIVATION_BITS)),)
 $(error GEMMINI_FRONTEND_ACTIVATION_BITS must be one of 4, 8, or 16 (got '$(GEMMINI_FRONTEND_ACTIVATION_BITS)'))
 endif
 ifeq ($(filter $(GEMMINI_FRONTEND_DIM),$(IM2P_ALLOWED_DIMS)),)
-$(error GEMMINI_FRONTEND_DIM must be 16 or 32 (got '$(GEMMINI_FRONTEND_DIM)'))
+$(error GEMMINI_FRONTEND_DIM must be 16, 32, or 64 (got '$(GEMMINI_FRONTEND_DIM)'))
 endif
 GEMMINI_ARTIFACT_ID = a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w8-d$(GEMMINI_FRONTEND_DIM)
 GEMMINI_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(GEMMINI_ARTIFACT_ID))
@@ -81,12 +82,14 @@ BSV_TEST_TOPS := \
 	mkTbIM2PCoreActivationBuffer \
 	mkTbIM2PCoreMatrix \
 	mkTbIM2PCoreMultiwidth \
+	mkTbIM2PCoreOutputAddressing \
 	mkTbIM2PCoreMatrixScale \
 	mkTbIM2PCoreExternal \
 	mkTbIM2PCoreGrouped \
 	mkTbFloatCore \
 	mkTbSynthInt8x16 \
-	mkTbSynthInt8x32
+	mkTbSynthInt8x32 \
+	mkTbSynthInt8x64
 
 define run_bluesim
 	log="$(BUILD_DIR)/info/$$package.bluesim.log"; \
@@ -107,16 +110,18 @@ BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
                                       $(BSC_PREFIX)/lib/Verilog))
 VERILATOR_COMMON := --cc --Wno-fatal
 
-.PHONY: all check verify static-check cpp-test c-api-test gemmini-frontend \
+.PHONY: all check verify static-check cpp-test c-api-layout-test c-api-test gemmini-frontend \
         gemmini-frontend-test gemmini-frontend-test-sanitized \
         gemmini-frontend-asan-test gemmini-frontend-tsan-test \
-        gemmini-frontend-real-test gemmini-frontend-real-test-matrix \
-        gemmini-frontend-real-test-mismatch \
+        gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
+        gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
         bsv-test bsv-test-one rtl rtl-one \
         verilator-int4x16 verilator-int8x16 verilator-int16x16 \
         verilator-int4x32 verilator-int8x32 verilator-int16x32 verilator \
+        verilator-int4x64 verilator-int8x64 verilator-int16x64 \
         sim-test-int4x16 sim-test-int8x16 sim-test-int16x16 \
-        sim-test-int4x32 sim-test-int8x32 sim-test-int16x32 sim-test \
+        sim-test-int4x32 sim-test-int8x32 sim-test-int16x32 \
+        sim-test-int4x64 sim-test-int8x64 sim-test-int16x64 sim-test \
         verilator-lint yosys-stat clean help check-tools
 
 all: check
@@ -137,17 +142,18 @@ help:
 	  'make bsv-test-one TOP=mkTbPE - 지정한 testbench만 컴파일 및 실행' \
 	  'make rtl             - INT8/FP16/FP32 top의 Verilog 생성' \
 	  'make rtl-one TOP=mkSynthInt8 - 지정한 top의 Verilog만 생성' \
-	  'make verilator-int<bits>x<dim> - isolated 4/8/16-bit DIM16/32 model' \
-	  'make verilator IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32 models' \
+	  'make verilator-int<bits>x<dim> - isolated 4/8/16-bit DIM16/32/64 model' \
+	  'make verilator IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32/64 models' \
 	  'make sim-test-int<bits>x<dim> - matching isolated Rust RTL tests' \
-	  'make sim-test IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32 tests' \
+	  'make sim-test IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32/64 tests' \
 	  'make gemmini-frontend - optional Gemmini adapter static library' \
 	  'make gemmini-frontend-test - optional Gemmini adapter contract tests' \
 	  'make gemmini-frontend-test-sanitized - public ASan+UBSan lifecycle suite' \
 	  'make gemmini-frontend-asan-test - isolated ASan+UBSan frontend suite' \
 	  'make gemmini-frontend-tsan-test - isolated TSan frontend suite' \
-	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle' \
-	  'make gemmini-frontend-real-test-matrix - isolated A4/A8/A16 x DIM16/32 real matrix' \
+	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle (A8 uses q8_h1)' \
+	  'make gemmini-frontend-real-test-q8-h0 - maintained raw Q8 full/stripe RTL oracle' \
+	  'make gemmini-frontend-real-test-matrix - isolated A8 x DIM16/32/64 real matrix' \
 	  'make gemmini-frontend-real-test-mismatch - fail-closed A16 frontend/A8 simulator QA' \
 	  'make verilator-lint  - 생성 Verilog에 Verilator lint 적용' \
 	  'make yosys-stat      - 생성 Verilog에 Yosys generic synthesis/stat 적용' \
@@ -169,11 +175,27 @@ cpp-test: $(CPP_TOOL)
 
 C_API_BUILD_DIR = $(BUILD_DIR)/c-api/$(IM2P_ARTIFACT_ID)
 
-c-api-test: | $(BUILD_DIR)/bin
+c-api-layout-test: | $(BUILD_DIR)/bin
+	@mkdir -p $(C_API_BUILD_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
+		-Isim/include sim/tests/c_api_v3_layout.c \
+		-o $(C_API_BUILD_DIR)/im2p_c_api_v3_layout
+	$(CXX) -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+		-Isim/include sim/tests/c_api_v3_layout.cpp \
+		-o $(C_API_BUILD_DIR)/im2p_cpp_api_v3_layout
+	$(C_API_BUILD_DIR)/im2p_c_api_v3_layout
+	$(C_API_BUILD_DIR)/im2p_cpp_api_v3_layout
+
+c-api-test: c-api-layout-test | $(BUILD_DIR)/bin
 	@mkdir -p $(C_API_BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
 		-Isim/include -c sim/tests/c_api_smoke.c \
 		-o $(C_API_BUILD_DIR)/c_api_smoke.o
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
+		-DIM2P_TEST_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
+		-DIM2P_TEST_DIM=$(IM2P_DIM) \
+		-Isim/include -c sim/tests/c_api_v3_runtime.c \
+		-o $(C_API_BUILD_DIR)/c_api_v3_runtime.o
 	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
 		IM2P_DIM=$(IM2P_DIM) CARGO_TARGET_DIR=$(IM2P_CARGO_TARGET_DIR) cargo build \
 		--manifest-path sim/Cargo.toml --lib --release
@@ -181,7 +203,12 @@ c-api-test: | $(BUILD_DIR)/bin
 		$(C_API_BUILD_DIR)/c_api_smoke.o \
 		$(IM2P_CARGO_TARGET_DIR)/release/libim2p_sim.a \
 		-o $(C_API_BUILD_DIR)/im2p_c_api_smoke
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+		$(C_API_BUILD_DIR)/c_api_v3_runtime.o \
+		$(IM2P_CARGO_TARGET_DIR)/release/libim2p_sim.a \
+		-o $(C_API_BUILD_DIR)/im2p_c_api_v3_runtime
 	$(C_API_BUILD_DIR)/im2p_c_api_smoke
+	$(C_API_BUILD_DIR)/im2p_c_api_v3_runtime
 
 GEMMINI_DIM_CONFIG_DIR = $(BUILD_DIR)/generated/$(GEMMINI_ARTIFACT_ID)
 GEMMINI_DIM_CONFIG = $(GEMMINI_DIM_CONFIG_DIR)/gemmini_params.h
@@ -193,7 +220,8 @@ GEMMINI_FRONTEND_INCLUDES := \
 	-I$(GEMMINI_PARAMS_ROOT)
 GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM) \
-	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS)
+	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
+	-DGGML_GEMMINI_BLOCK_SIZE=$(GEMMINI_FRONTEND_BLOCK_SIZE)
 GEMMINI_FRONTEND_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend.o
 GEMMINI_FRONTEND_ARCHIVE = $(BUILD_DIR)/lib/$(GEMMINI_ARTIFACT_ID)/libim2p_gemmini_frontend.a
 GEMMINI_FRONTEND_TEST_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_testing.o
@@ -291,14 +319,18 @@ gemmini-frontend-real-test: gemmini-frontend-test verilator-int$(GEMMINI_FRONTEN
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test.log
 
+gemmini-frontend-real-test-q8-h0: gemmini-frontend-real-test
+	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_h0 2>&1 | \
+		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-h0.log
+
 REAL_MATRIX_ROOT ?= $(abspath $(BUILD_DIR)/real-matrix)
 REAL_MATRIX_RESULTS = $(REAL_MATRIX_ROOT)/results
-REAL_MATRIX_PAIRS := 4:16 8:16 16:16 4:32 8:32 16:32
+REAL_MATRIX_PAIRS := 8:16 8:32 8:64
 REAL_MATRIX_FINGERPRINT_FIXTURE_DIR ?=
 
-# Build and execute every pair in its own complete workspace. The repeated
-# orders exercise cached selection and process-level concurrency; only the
-# forward logs define the twelve distinct width/DIM/mode executions.
+# Build and execute each owned A8 pair in its own complete workspace. Forward,
+# reverse, and concurrent passes each validate six DIM/mode identities, for
+# eighteen real executions total. A4/A16 remain non-ExSIA and are not claimed.
 gemmini-frontend-real-test-matrix:
 	@set -euo pipefail; \
 	root='$(REAL_MATRIX_ROOT)'; results='$(REAL_MATRIX_RESULTS)'; \
@@ -351,7 +383,7 @@ gemmini-frontend-real-test-matrix:
 	  cmp "$$before" "$$after"; \
 	done; \
 	: > "$$results/reverse.log"; \
-	for pair in 16:32 8:32 4:32 16:16 8:16 4:16; do \
+	for pair in 8:64 8:32 8:16; do \
 	  bits="$${pair%%:*}"; dim="$${pair##*:}"; \
 	  run_pair "$$bits" "$$dim" 2>&1 | tee -a "$$results/reverse.log"; \
 	done; \
@@ -368,7 +400,7 @@ gemmini-frontend-real-test-matrix:
 	  $(PYTHON) scripts/validate_real_matrix_log.py \
 	    "$$results/concurrent-$${id}.log" --bits "$$bits" --dim "$$dim"; \
 	done; \
-	printf 'REAL_MATRIX PASS distinct_executions=12 forward=green reverse=green concurrent=green isolation=green root=%s\n' "$$root" | \
+	printf 'REAL_MATRIX PASS distinct_identities=6 total_executions=18 forward=green reverse=green concurrent=green isolation=green root=%s\n' "$$root" | \
 	  tee "$$results/summary.txt"
 
 REAL_MISMATCH_ROOT ?= $(abspath $(BUILD_DIR)/real-matrix-mismatch)
@@ -467,11 +499,12 @@ verilator-int$(1)x$(2):
 	  RTL_OUT="$$(BUILD_DIR)/rtl/a$(1)-w8-d$(2)/SynthInt$(1)x$(2)" \
 	  RTL_BSC_DIR="$$(BUILD_DIR)/bsc/a$(1)-w8-d$(2)" \
 	  RTL_INFO_DIR="$$(BUILD_DIR)/info/a$(1)-w8-d$(2)"
+	rm -rf "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir"
 	mkdir -p "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir"
 	$$(VERILATOR) $$(VERILATOR_COMMON) \
 	  --Mdir "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir" \
 	  --top-module mkSynthInt$(1)x$(2) --prefix VmkSynthInt$(1)x$(2) \
-	  "$$(BUILD_DIR)/rtl/a$(1)-w8-d$(2)/SynthInt$(1)x$(2)/mkSynthInt$(1)x$(2).v" \
+	  "$$(BUILD_DIR)/rtl/a$(1)-w8-d$(2)/SynthInt$(1)x$(2)"/*.v \
 	  "$$(BSC_VERILOG)/RegFile.v" "$$(BSC_VERILOG)/FIFO2.v"
 
 sim-test-int$(1)x$(2): verilator-int$(1)x$(2)
@@ -484,11 +517,11 @@ sim-test-int$(1)x$(2): verilator-int$(1)x$(2)
 	    tee "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)/sim-test.log"
 endef
 
-$(foreach bits,4 8 16,$(foreach dim,16 32,$(eval $(call define_sim_config,$(bits),$(dim)))))
+$(foreach bits,4 8 16,$(foreach dim,16 32 64,$(eval $(call define_sim_config,$(bits),$(dim)))))
 
-# Legacy aggregate entry points default to INT8 and select both dimensions.
-verilator: verilator-int$(IM2P_ACTIVATION_BITS)x16 verilator-int$(IM2P_ACTIVATION_BITS)x32
-sim-test: sim-test-int$(IM2P_ACTIVATION_BITS)x16 sim-test-int$(IM2P_ACTIVATION_BITS)x32
+# Legacy aggregate entry points default to INT8 and select every supported dimension.
+verilator: verilator-int$(IM2P_ACTIVATION_BITS)x16 verilator-int$(IM2P_ACTIVATION_BITS)x32 verilator-int$(IM2P_ACTIVATION_BITS)x64
+sim-test: sim-test-int$(IM2P_ACTIVATION_BITS)x16 sim-test-int$(IM2P_ACTIVATION_BITS)x32 sim-test-int$(IM2P_ACTIVATION_BITS)x64
 
 verilator-lint: rtl
 	@set -euo pipefail; \

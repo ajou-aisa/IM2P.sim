@@ -52,41 +52,50 @@ impl Im2pSimulator {
         ) {
             return Err((error, self));
         }
-        let start_cycle = self.cycles();
         let scale = descriptor.scale_matrix;
-        let rtl = ffi::MatmulDescriptor {
-            job_id: descriptor.work_context as u32,
-            mode: 1,
-            activation_base: ACTIVATION_BASE,
-            weight_base: WEIGHT_BASE,
-            scale_base: SCALE_BASE,
-            output_base: OUTPUT_BASE,
-            activation_row_stride: match activation_elements_to_address_bytes(descriptor.reduction)
-            {
-                Ok(bytes) => bytes,
-                Err(_) => return Err((Error::InvalidActivationStride, self)),
-            },
-            weight_row_stride: layout.weight_row_stride as u64,
-            scale_row_stride: if provider.is_some() {
-                descriptor.columns as u64
-            } else {
-                scale.map_or(1, |view| view.row_stride) as u64
-            },
-            output_row_stride: (layout.output_row_stride * size_of::<i32>()) as u64,
-            row_count: descriptor.rows as u32,
-            column_count: descriptor.columns as u32,
-            reduction_count: descriptor.reduction as u32,
-            tile_i_rows: layout.tile_i_rows as u32,
-            tile_j_columns: layout.tile_j_columns as u32,
-            k_origin: 0,
-            scale_total_k: scale.map_or(descriptor.reduction, |view| view.total_k) as u32,
-            scale_block_size: provider_block_size
-                .or_else(|| scale.map(|view| view.block_size))
-                .unwrap_or(descriptor.reduction) as u32,
-            scale_context: descriptor.work_context,
-            accumulate_first_fragment: 0,
-            vector_op: descriptor.vector_op.encoding(),
+        let checked = (|| {
+            Ok(ffi::MatmulDescriptor {
+                job_id: super::super::descriptor::job_id(descriptor.work_context),
+                mode: 1,
+                activation_base: ACTIVATION_BASE,
+                weight_base: WEIGHT_BASE,
+                scale_base: SCALE_BASE,
+                output_base: OUTPUT_BASE,
+                activation_row_stride: activation_elements_to_address_bytes(descriptor.reduction)
+                    .map_err(|_| Error::InvalidActivationStride)?,
+                weight_row_stride: super::super::descriptor::u64_field(layout.weight_row_stride)?,
+                scale_row_stride: super::super::descriptor::u64_field(if provider.is_some() {
+                    descriptor.columns
+                } else {
+                    scale.map_or(1, |view| view.row_stride)
+                })?,
+                output_row_stride: super::super::descriptor::output_row_stride_bytes(
+                    layout.output_row_stride,
+                )?,
+                row_count: super::super::descriptor::u32_field(descriptor.rows)?,
+                column_count: super::super::descriptor::u32_field(descriptor.columns)?,
+                reduction_count: super::super::descriptor::u32_field(descriptor.reduction)?,
+                tile_i_rows: super::super::descriptor::u32_field(layout.tile_i_rows)?,
+                tile_j_columns: super::super::descriptor::u32_field(layout.tile_j_columns)?,
+                k_origin: 0,
+                scale_total_k: super::super::descriptor::u32_field(
+                    scale.map_or(descriptor.reduction, |view| view.total_k),
+                )?,
+                scale_block_size: super::super::descriptor::u32_field(
+                    provider_block_size
+                        .or_else(|| scale.map(|view| view.block_size))
+                        .unwrap_or(descriptor.reduction),
+                )?,
+                scale_context: descriptor.work_context,
+                accumulate_first_fragment: 0,
+                vector_op: descriptor.vector_op.encoding(),
+            })
+        })();
+        let rtl = match checked {
+            Ok(rtl) => rtl,
+            Err(error) => return Err((error, self)),
         };
+        let start_cycle = self.cycles();
         let accepted = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &rtl) };
         if let Err(error) = self.require_ready("start_striped_matmul", accepted) {
             return Err((error, self));

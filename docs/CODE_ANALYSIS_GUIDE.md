@@ -327,7 +327,7 @@ Stripe:
 
 ### 3.13 Synthesis tops
 
-`synth/`의 DIM16/DIM32 top을 읽고 synthesis-time parameter가 어떻게 확정되는지 확인한다.
+`synth/`의 DIM16/DIM32/DIM64 top을 읽고 synthesis-time parameter가 어떻게 확정되는지 확인한다.
 
 - `DIM`
 - data type

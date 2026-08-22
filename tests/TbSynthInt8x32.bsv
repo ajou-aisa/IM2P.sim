@@ -38,8 +38,8 @@ function Vector#(32, Int#(8)) activationRow(UInt#(1) row);
 endfunction
 
 // Expected accumulator contents after multiplying by the identity matrix.
-function Vector#(32, Int#(32)) expectedRow(UInt#(1) row);
-    Vector#(32, Int#(32)) expected = replicate(0);
+function Vector#(32, Int#(DefaultAccumulatorWidth)) expectedRow(UInt#(1) row);
+    Vector#(32, Int#(DefaultAccumulatorWidth)) expected = replicate(0);
 
     if (row == 0) begin
         expected[0] = 5;
@@ -75,13 +75,13 @@ module mkTbSynthInt8x32(Empty);
         Int#(8),
         Int#(8),
         Int#(16),
-        Int#(32),
+        Int#(DefaultAccumulatorWidth),
         Int#(8)
     ) dut <- mkSynthInt8x32;
 
     Reg#(TbState) state <- mkReg(BeginWeights);
     Reg#(UInt#(5)) weightRow <- mkReg(0);
-    Reg#(Vector#(32, Int#(32))) observedRow0 <- mkRegU;
+    Reg#(Vector#(32, Int#(DefaultAccumulatorWidth))) observedRow0 <- mkRegU;
     Reg#(UInt#(12)) watchdog <- mkReg(0);
 
     // Prevent a deadlocked handshake from leaving simulation running forever.
@@ -145,7 +145,7 @@ module mkTbSynthInt8x32(Empty);
 
     // Read row 1 in the following cycle and compare both logical rows.
     rule checkResults (state == CheckRow0);
-        Vector#(32, Int#(32)) observedRow1 = dut.readAccumulatorRow(1);
+        Vector#(32, Int#(DefaultAccumulatorWidth)) observedRow1 = dut.readAccumulatorRow(1);
         Bool passed = observedRow0 == expectedRow(0)
             && observedRow1 == expectedRow(1);
 

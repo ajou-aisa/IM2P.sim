@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::WriteProvider;
 use super::{Error, Im2pSimulator, MemoryProvider};
 use crate::{
     activation::activation_elements_to_address_bytes, ffi, ActivationValue, MatmulLayout,
@@ -5,7 +7,7 @@ use crate::{
 };
 mod memory;
 mod stats;
-use memory::{resolve_activation, resolve_i8, resolve_scale, validate_work, write_i32};
+use memory::{resolve_activation, resolve_i8, resolve_scale, validate_work, write_raw_output};
 
 pub(super) const ACTIVATION_BASE: u64 = 0x1000_0000_0000_0000;
 pub(super) const WEIGHT_BASE: u64 = 0x2000_0000_0000_0000;
@@ -56,8 +58,24 @@ impl Im2pSimulator {
             return Err(Error::InvalidLayout);
         }
         let scale = work.scales;
+        let job_id = super::descriptor::job_id(scale.map_or(1, |view| view.context));
+        let weight_row_stride = super::descriptor::u64_field(work.weights.row_stride)?;
+        let scale_row_stride =
+            super::descriptor::u64_field(scale.map_or(1, |view| view.row_stride))?;
+        let output_row_stride = super::descriptor::output_row_stride_bytes(output.row_stride)?;
+        let row_count = super::descriptor::u32_field(work.activations.rows)?;
+        let column_count = super::descriptor::u32_field(work.weights.columns)?;
+        let reduction_count = super::descriptor::u32_field(work.activations.columns)?;
+        let tile_i_rows = super::descriptor::u32_field(layout.tile_i_rows)?;
+        let tile_j_columns = super::descriptor::u32_field(layout.tile_j_columns)?;
+        let scale_total_k = super::descriptor::u32_field(
+            scale.map_or(work.activations.columns, |view| view.total_k),
+        )?;
+        let scale_block_size = super::descriptor::u32_field(
+            scale.map_or(work.activations.columns, |view| view.block_size),
+        )?;
         let descriptor = ffi::MatmulDescriptor {
-            job_id: work.scales.map_or(1, |view| view.context as u32),
+            job_id,
             mode: 0,
             activation_base: ACTIVATION_BASE,
             weight_base: WEIGHT_BASE,
@@ -67,17 +85,17 @@ impl Im2pSimulator {
                 work.activations.row_stride,
             )
             .map_err(|_| Error::InvalidActivationStride)?,
-            weight_row_stride: work.weights.row_stride as u64,
-            scale_row_stride: scale.map_or(1, |view| view.row_stride) as u64,
-            output_row_stride: (output.row_stride * size_of::<i32>()) as u64,
-            row_count: work.activations.rows as u32,
-            column_count: work.weights.columns as u32,
-            reduction_count: work.activations.columns as u32,
-            tile_i_rows: layout.tile_i_rows as u32,
-            tile_j_columns: layout.tile_j_columns as u32,
+            weight_row_stride,
+            scale_row_stride,
+            output_row_stride,
+            row_count,
+            column_count,
+            reduction_count,
+            tile_i_rows,
+            tile_j_columns,
             k_origin: 0,
-            scale_total_k: scale.map_or(work.activations.columns, |view| view.total_k) as u32,
-            scale_block_size: scale.map_or(work.activations.columns, |view| view.block_size) as u32,
+            scale_total_k,
+            scale_block_size,
             scale_context: scale.map_or(0, |view| view.context),
             accumulate_first_fragment: 0,
             vector_op: work.vector_op.encoding(),
@@ -139,8 +157,18 @@ impl Im2pSimulator {
         {
             return Err(Error::InvalidLayout);
         }
+        let job_id = super::descriptor::job_id(work_context);
+        let rtl_weight_row_stride = super::descriptor::u64_field(weight_row_stride)?;
+        let rtl_scale_row_stride = super::descriptor::u64_field(columns)?;
+        let rtl_output_row_stride = super::descriptor::output_row_stride_bytes(output_row_stride)?;
+        let rtl_row_count = super::descriptor::u32_field(rows)?;
+        let rtl_column_count = super::descriptor::u32_field(columns)?;
+        let rtl_reduction_count = super::descriptor::u32_field(reduction)?;
+        let rtl_tile_i_rows = super::descriptor::u32_field(layout.tile_i_rows)?;
+        let rtl_tile_j_columns = super::descriptor::u32_field(layout.tile_j_columns)?;
+        let rtl_scale_block_size = super::descriptor::u32_field(block_size.max(1))?;
         let descriptor = ffi::MatmulDescriptor {
-            job_id: work_context as u32,
+            job_id,
             mode: 0,
             activation_base: ACTIVATION_BASE,
             weight_base: WEIGHT_BASE,
@@ -148,17 +176,17 @@ impl Im2pSimulator {
             output_base: OUTPUT_BASE,
             activation_row_stride: activation_elements_to_address_bytes(activations.row_stride)
                 .map_err(|_| Error::InvalidActivationStride)?,
-            weight_row_stride: weight_row_stride as u64,
-            scale_row_stride: columns as u64,
-            output_row_stride: (output_row_stride * size_of::<i32>()) as u64,
-            row_count: rows as u32,
-            column_count: columns as u32,
-            reduction_count: reduction as u32,
-            tile_i_rows: layout.tile_i_rows as u32,
-            tile_j_columns: layout.tile_j_columns as u32,
+            weight_row_stride: rtl_weight_row_stride,
+            scale_row_stride: rtl_scale_row_stride,
+            output_row_stride: rtl_output_row_stride,
+            row_count: rtl_row_count,
+            column_count: rtl_column_count,
+            reduction_count: rtl_reduction_count,
+            tile_i_rows: rtl_tile_i_rows,
+            tile_j_columns: rtl_tile_j_columns,
             k_origin: 0,
-            scale_total_k: reduction as u32,
-            scale_block_size: block_size.max(1) as u32,
+            scale_total_k: rtl_reduction_count,
+            scale_block_size: rtl_scale_block_size,
             scale_context: work_context,
             accumulate_first_fragment: 0,
             vector_op: vector_op.encoding(),
@@ -366,9 +394,13 @@ impl Im2pSimulator {
         vector_op: crate::VectorOp,
     ) -> Result<(), Error> {
         let mut request = ffi::WriteRequest::default();
-        let mut values = vec![0_i32; self.dim];
+        let mut values = vec![0_i64; self.dim];
         let status = unsafe {
-            ffi::im2p_output_write_request(self.handle.as_ptr(), &mut request, values.as_mut_ptr())
+            ffi::im2p_output_write_request_i64(
+                self.handle.as_ptr(),
+                &mut request,
+                values.as_mut_ptr(),
+            )
         };
         if status == ffi::IM2P_REQUEST_ABSENT {
             return Ok(());
@@ -389,7 +421,7 @@ impl Im2pSimulator {
         } else {
             (0, offset)
         };
-        if within % size_of::<i32>() != 0 {
+        if !within.is_multiple_of(size_of::<i32>()) {
             return Err(Error::InvalidKRange);
         }
         let row = within / row_stride;
@@ -406,13 +438,17 @@ impl Im2pSimulator {
 
     fn service_matrix_output(&mut self, output: &mut MatrixViewMut<'_, i32>) -> Result<(), Error> {
         let mut request = ffi::WriteRequest::default();
-        let mut values = vec![0_i32; self.dim];
+        let mut values = vec![0_i64; self.dim];
         // SAFETY: request and DIM-lane values buffer are writable.
         let status = unsafe {
-            ffi::im2p_output_write_request(self.handle.as_ptr(), &mut request, values.as_mut_ptr())
+            ffi::im2p_output_write_request_i64(
+                self.handle.as_ptr(),
+                &mut request,
+                values.as_mut_ptr(),
+            )
         };
         if status == ffi::IM2P_REQUEST_PRESENT {
-            write_i32(output, OUTPUT_BASE, request, &values)?;
+            write_raw_output(output, OUTPUT_BASE, request, &values)?;
             // SAFETY: host memory was updated before acknowledging the matching tag.
             let accepted =
                 unsafe { ffi::im2p_stage_output_write_response(self.handle.as_ptr(), request.tag) };
@@ -488,7 +524,7 @@ mod activation_boundary_tests {
             context: std::ptr::null_mut(),
             read_weight: Some(read_provider),
             read_scale: None,
-            write_output: Some(write_provider),
+            write_output: Some(super::WriteProvider::V2(write_provider)),
         };
         PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
         PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);
@@ -530,7 +566,7 @@ mod activation_boundary_tests {
             context: std::ptr::null_mut(),
             read_weight: Some(read_provider),
             read_scale: None,
-            write_output: Some(write_provider),
+            write_output: Some(super::WriteProvider::V2(write_provider)),
         };
         PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
         PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);

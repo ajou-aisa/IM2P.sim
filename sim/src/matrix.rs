@@ -64,6 +64,17 @@ pub struct MatmulWork<'a> {
     pub vector_op: VectorOp,
 }
 
+/// Narrows an exact accumulator only at an int32 output boundary.
+pub(crate) const fn saturating_i64_to_i32(value: i64) -> i32 {
+    if value > 2_147_483_647 {
+        i32::MAX
+    } else if value < -2_147_483_648 {
+        i32::MIN
+    } else {
+        value as i32
+    }
+}
+
 fn validate_layout(
     values_len: usize,
     rows: usize,
@@ -95,4 +106,26 @@ fn validate_layout(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::saturating_i64_to_i32;
+
+    #[test]
+    fn final_output_narrowing_saturates_both_i32_boundaries() {
+        // Given exact values immediately inside and outside the final i32 range.
+        let values = [
+            i64::from(i32::MIN) - 1,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+            i64::from(i32::MAX) + 1,
+        ];
+
+        // When the final output boundary narrows them.
+        let narrowed = values.map(saturating_i64_to_i32);
+
+        // Then only out-of-range values saturate.
+        assert_eq!(narrowed, [i32::MIN, i32::MIN, i32::MAX, i32::MAX]);
+    }
 }

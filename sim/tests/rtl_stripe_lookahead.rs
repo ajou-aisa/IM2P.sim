@@ -74,11 +74,11 @@ fn run(
     let j_tiles = shape.n.div_ceil(tile_j_columns) as u64;
     let scheduled_work = shape.m as u64 * k_fragment_count * j_tiles;
     // Bound cooperative service iterations by actual scheduled work. Each work
-    // item covers DIM-scale preload/wavefront/drain phases plus K host traffic;
-    // the final term covers fixed scheduler transitions. Host response pulses
-    // outside progress mean this is intentionally an iteration, not cycle, cap.
+    // item covers preload, wavefront, drain, publication, and host-service
+    // phases plus K traffic. Host response pulses outside progress mean this
+    // is intentionally an iteration, not cycle, cap.
     let iteration_limit = publish_cycles.iter().copied().max().unwrap_or(0)
-        + scheduled_work * (4 * dim as u64 + reduction as u64 + 32);
+        + scheduled_work * (16 * dim as u64 + 2 * reduction as u64 + 128);
     let mut next = 0;
     let mut written = 0;
     let mut prepared_ids = Vec::new();
@@ -161,7 +161,7 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
     let (_, repeated, _) = run(&[0, 13], false, 35, 2, false, Some(40))?;
     assert!(stats.current_stripe_completion_cycle > 100);
     assert_eq!(stats.lookahead_publish_cycle, 40);
-    assert!(stats.lookahead_publish_cycle <= stats.lookahead_first_activation_cycle);
+    assert!(stats.lookahead_publish_cycle < stats.lookahead_first_activation_cycle);
     assert!(stats.lookahead_publish_cycle <= stats.lookahead_first_weight_cycle);
     assert!(stats.lookahead_first_activation_cycle < stats.current_stripe_completion_cycle);
     assert!(stats.lookahead_first_weight_cycle < stats.current_stripe_completion_cycle);
@@ -257,16 +257,24 @@ fn only_one_immediate_stripe_is_prepared_and_weights_are_reused() -> Result<(), 
 
 #[test]
 fn scale_miss_is_requested_before_current_completion() -> Result<(), SimError> {
-    let (_, stats, _) = run(&[0, 300], false, 35, 2, true, None)?;
-    assert_eq!(stats.lookahead_scale_requests, 1);
-    assert!(stats.lookahead_scale_cycle > stats.lookahead_publish_cycle);
-    assert!(stats.lookahead_scale_cycle < stats.current_stripe_completion_cycle);
+    let dim = option_env!("IM2P_DIM")
+        .unwrap_or("16")
+        .parse::<usize>()
+        .expect("valid test dimension");
+    let reduction = (dim + 3).max(35);
+    let publish = if dim == 64 { 1500 } else { 300 };
+    let (_, stats, _) = run(&[0, publish], false, reduction, 2, true, None)?;
     println!(
-        "scale miss publish={} request={} complete={}",
+        "scale miss requests={} reuses={} publish={} request={} complete={}",
+        stats.lookahead_scale_requests,
+        stats.lookahead_scale_reuses,
         stats.lookahead_publish_cycle,
         stats.lookahead_scale_cycle,
         stats.current_stripe_completion_cycle
     );
+    assert_eq!(stats.lookahead_scale_requests, 1);
+    assert!(stats.lookahead_scale_cycle > stats.lookahead_publish_cycle);
+    assert!(stats.lookahead_scale_cycle < stats.current_stripe_completion_cycle);
     Ok(())
 }
 
@@ -276,17 +284,18 @@ fn partial_preparation_reuses_every_fetched_weight_row() -> Result<(), SimError>
     // counter. Batched response service commits W on the budgeted edge instead
     // of adding a second pulse edge, so publish late enough to leave a strict
     // nonzero subset of lookahead rows fetched before current completion.
-    let partial_publish = if option_env!("IM2P_DIM") == Some("32") {
-        535
-    } else {
-        380
-    };
-    let (_, partial, _) = run(&[0, partial_publish], false, 35, 2, false, None)?;
-    let (_, complete, _) = run(&[0, 13], false, 35, 2, false, None)?;
     let dim = option_env!("IM2P_DIM")
         .unwrap_or("16")
         .parse::<u64>()
         .expect("valid test dimension");
+    let reduction = usize::try_from((dim + 3).max(35)).expect("test reduction fits usize");
+    let partial_publish = match dim {
+        64 => 1020,
+        32 => 535,
+        _ => 380,
+    };
+    let (_, partial, _) = run(&[0, partial_publish], false, reduction, 2, false, None)?;
+    let (_, complete, _) = run(&[0, 13], false, reduction, 2, false, None)?;
     println!(
         "partial prefetch={} total={} full_total={} first_w={} complete={}",
         partial.lookahead_weight_requests,

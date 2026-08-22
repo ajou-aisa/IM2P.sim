@@ -17,21 +17,30 @@ using Top = VmkSynthInt4x16;
 #elif IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
 #include "VmkSynthInt4x32.h"
 using Top = VmkSynthInt4x32;
+#elif IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 64
+#include "VmkSynthInt4x64.h"
+using Top = VmkSynthInt4x64;
 #elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 16
 #include "VmkSynthInt8x16.h"
 using Top = VmkSynthInt8x16;
 #elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 32
 #include "VmkSynthInt8x32.h"
 using Top = VmkSynthInt8x32;
+#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 64
+#include "VmkSynthInt8x64.h"
+using Top = VmkSynthInt8x64;
 #elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
 #include "VmkSynthInt16x16.h"
 using Top = VmkSynthInt16x16;
 #elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
 #include "VmkSynthInt16x32.h"
 using Top = VmkSynthInt16x32;
+#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
+#include "VmkSynthInt16x64.h"
+using Top = VmkSynthInt16x64;
 #else
 #error                                                                         \
-    "IM2P_ACTIVATION_BITS/IM2P_DIM must select 4, 8, or 16 bits and DIM 16 or 32"
+    "IM2P_ACTIVATION_BITS/IM2P_DIM must select 4, 8, or 16 bits and DIM 16, 32, or 64"
 #endif
 
 constexpr uint32_t kDim = IM2P_DIM;
@@ -39,8 +48,8 @@ constexpr uint32_t kActivationBits = IM2P_ACTIVATION_BITS;
 constexpr uint32_t kActivationStorageBytes = kActivationBits == 16 ? 2 : 1;
 constexpr uint32_t kActivationWords = (kActivationBits * kDim + 31) / 32;
 constexpr uint32_t kByteLaneWords = (8 * kDim + 31) / 32;
-constexpr uint32_t kCommandWidth = kDim == 16 ? 16 : 17;
-constexpr uint32_t kAccumulatorWords = kDim;
+constexpr uint32_t kCommandRowBits = kDim == 16 ? 5 : kDim == 32 ? 6 : 7;
+constexpr uint32_t kAccumulatorWords = 2 * kDim;
 
 struct Simulator {
     VerilatedContext *context;
@@ -74,20 +83,36 @@ void set_bytes(VlWide<Words> &signal, const int8_t *values, size_t count) {
 }
 
 template <size_t Words>
-void set_i32_signal(VlWide<Words> &signal, const int32_t *values, size_t count) {
+void set_i64_signal(VlWide<Words> &signal, const int64_t *values, size_t count) {
+    static_assert(Words == kAccumulatorWords,
+                  "generated accumulator port must be 64 bits per lane");
     for (size_t index = 0; index < Words; ++index) {
         signal[index] = 0U;
     }
     for (size_t index = 0; index < count; ++index) {
-        signal[index] = static_cast<uint32_t>(values[index]);
+        uint64_t bits;
+        std::memcpy(&bits, &values[index], sizeof(bits));
+        signal[2 * index] = static_cast<uint32_t>(bits);
+        signal[2 * index + 1] = static_cast<uint32_t>(bits >> 32);
     }
 }
 
 template <size_t Words>
-void copy_wide(const VlWide<Words> &signal, int32_t *values, size_t count) {
+void copy_i64_signal(const VlWide<Words> &signal, int64_t *values,
+                     size_t count) {
+    static_assert(Words == kAccumulatorWords,
+                  "generated accumulator port must be 64 bits per lane");
     for (size_t index = 0; index < count; ++index) {
-        values[index] = static_cast<int32_t>(signal[index]);
+        const uint64_t bits = static_cast<uint64_t>(signal[2 * index]) |
+                              (static_cast<uint64_t>(signal[2 * index + 1])
+                               << 32);
+        std::memcpy(&values[index], &bits, sizeof(bits));
     }
+}
+
+int32_t narrow_i64(int64_t value) {
+    return static_cast<int32_t>(std::clamp(
+        value, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)));
 }
 
 template <size_t Words>
@@ -233,12 +258,10 @@ void pulse(Simulator *simulator, CData &enable) {
     clock_staged(simulator);
 }
 
-uint32_t command_bits(uint32_t base_row, uint32_t row_count, int accumulate, uint8_t op) {
-    const uint32_t row_bits = IM2P_DIM == 16 ? 5U : 6U;
-    return (base_row << (row_bits + 3U))
-        | (row_count << 3U)
-        | ((accumulate ? 1U : 0U) << 2U)
-        | (static_cast<uint32_t>(op) & 0x3U);
+uint32_t command_bits(uint32_t base_row, uint32_t row_count, int accumulate,
+                      uint8_t op) {
+  return (base_row << (kCommandRowBits + 3U)) | (row_count << 3U) |
+         ((accumulate ? 1U : 0U) << 2U) | (static_cast<uint32_t>(op) & 0x3U);
 }
 
 extern "C" im2p_handle_t im2p_create(void) {
@@ -579,10 +602,10 @@ extern "C" int im2p_acknowledge_execution(im2p_handle_t handle) {
     return 1;
 }
 
-extern "C" int im2p_write_accumulator_row(
+extern "C" int im2p_write_accumulator_row_i64(
     im2p_handle_t handle,
     uint32_t row,
-    const int32_t *values
+    const int64_t *values
 ) {
     if (handle == nullptr || values == nullptr) {
         return 0;
@@ -593,15 +616,29 @@ extern "C" int im2p_write_accumulator_row(
         return 0;
     }
     simulator->top->writeAccumulatorRow_row = row;
-    set_i32_signal(simulator->top->writeAccumulatorRow_values, values, kDim);
+    set_i64_signal(simulator->top->writeAccumulatorRow_values, values, kDim);
     pulse(simulator, simulator->top->EN_writeAccumulatorRow);
     return 1;
 }
 
-extern "C" int im2p_read_accumulator_row(
+extern "C" int im2p_write_accumulator_row(
     im2p_handle_t handle,
     uint32_t row,
-    int32_t *values
+    const int32_t *values
+) {
+    if (values == nullptr) {
+        return 0;
+    }
+    int64_t exact[kDim];
+    std::transform(values, values + kDim, exact,
+                   [](int32_t value) { return static_cast<int64_t>(value); });
+    return im2p_write_accumulator_row_i64(handle, row, exact);
+}
+
+extern "C" int im2p_read_accumulator_row_i64(
+    im2p_handle_t handle,
+    uint32_t row,
+    int64_t *values
 ) {
     if (handle == nullptr || values == nullptr) {
         return 0;
@@ -613,8 +650,24 @@ extern "C" int im2p_read_accumulator_row(
     }
     simulator->top->readAccumulatorRow_row = row;
     evaluate(simulator);
-    copy_wide(simulator->top->readAccumulatorRow, values, kDim);
+    copy_i64_signal(simulator->top->readAccumulatorRow, values, kDim);
     return 1;
+}
+
+extern "C" int im2p_read_accumulator_row(
+    im2p_handle_t handle,
+    uint32_t row,
+    int32_t *values
+) {
+    if (values == nullptr) {
+        return 0;
+    }
+    int64_t exact[kDim];
+    const int result = im2p_read_accumulator_row_i64(handle, row, exact);
+    if (result == 1) {
+        std::transform(exact, exact + kDim, values, narrow_i64);
+    }
+    return result;
 }
 
 extern "C" int im2p_start_matmul(
@@ -958,10 +1011,10 @@ extern "C" int im2p_put_scale_read_response(
     return 1;
 }
 
-extern "C" int im2p_output_write_request(
+extern "C" int im2p_output_write_request_i64(
     im2p_handle_t handle,
     im2p_write_request_t *request,
-    int32_t *values
+    int64_t *values
 ) {
     if (handle == nullptr || request == nullptr || values == nullptr) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
@@ -979,8 +1032,24 @@ extern "C" int im2p_output_write_request(
     request->tag = top->outputWriteRequestTag;
     request->address = top->outputWriteRequestAddress;
     request->element_count = top->outputWriteRequestElementCount;
-    copy_wide(top->outputWriteRequestValues, values, kDim);
+    copy_i64_signal(top->outputWriteRequestValues, values, kDim);
     return IM2P_REQUEST_PRESENT;
+}
+
+extern "C" int im2p_output_write_request(
+    im2p_handle_t handle,
+    im2p_write_request_t *request,
+    int32_t *values
+) {
+    if (values == nullptr) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    int64_t exact[kDim];
+    const int result = im2p_output_write_request_i64(handle, request, exact);
+    if (result == IM2P_REQUEST_PRESENT) {
+        std::transform(exact, exact + kDim, values, narrow_i64);
+    }
+    return result;
 }
 
 extern "C" int im2p_stage_output_write_response(
@@ -1149,6 +1218,35 @@ extern "C" uint32_t im2p_test_activation_enable_mask(im2p_handle_t handle) {
   auto *top = static_cast<Simulator *>(handle)->top;
   return (top->EN_putActivationRow ? 0x1U : 0U) |
          (top->EN_putActivationReadResponse ? 0x2U : 0U);
+}
+
+extern "C" int im2p_test_accumulator_words(
+    im2p_handle_t handle, const int64_t *values, uint32_t count,
+    uint32_t *words, uint32_t word_count) {
+  if (handle == nullptr || values == nullptr || words == nullptr ||
+      count > kDim || word_count != kAccumulatorWords) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *top = static_cast<Simulator *>(handle)->top;
+  set_i64_signal(top->writeAccumulatorRow_values, values, count);
+  copy_signal_words(top->writeAccumulatorRow_values, words, word_count);
+  return 1;
+}
+
+extern "C" int im2p_test_output_writeback(
+    im2p_handle_t handle, const uint32_t *words, uint32_t word_count,
+    int64_t *exact_values, int32_t *compatibility_values, uint32_t count) {
+  if (handle == nullptr || words == nullptr || exact_values == nullptr ||
+      compatibility_values == nullptr || word_count != kAccumulatorWords ||
+      count > kDim) {
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  auto *top = static_cast<Simulator *>(handle)->top;
+  std::copy_n(words, word_count, top->outputWriteRequestValues.data());
+  copy_i64_signal(top->outputWriteRequestValues, exact_values, count);
+  std::transform(exact_values, exact_values + count, compatibility_values,
+                 narrow_i64);
+  return 1;
 }
 #endif
 

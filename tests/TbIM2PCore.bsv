@@ -22,14 +22,15 @@ function Vector#(2, Int#(8)) scaleRowFor(
     return contextId == 12 ? vector2(8, 9) : row;
 endfunction
 
-function Vector#(2, Int#(32)) expectedFor(UInt#(3) executionIndex);
+function Vector#(2, Int#(64)) expectedFor(UInt#(3) executionIndex);
     case (executionIndex)
         0: return vector2(5, 6);
         1: return vector2(10, 18);
         2: return vector2(10, 18);
         3: return vector2(20, 30);
         4: return vector2(30, 42);
-        default: return vector2(40, 54);
+        5: return vector2(40, 54);
+        default: return vector2(2147483648, -2147483649);
     endcase
 endfunction
 
@@ -62,7 +63,7 @@ module mkTbIM2PCore(Empty);
         Int#(8),
         Int#(8),
         Int#(16),
-        Int#(32),
+        Int#(64),
         Int#(8)
     ) core <- mkIM2PCore;
 
@@ -145,6 +146,12 @@ module mkTbIM2PCore(Empty);
         else if (executionIndex == 5) begin
             core.configureScaling(2, 6, 12);
         end
+        else if (executionIndex == 6) begin
+            core.writeAccumulatorRow(
+                3,
+                vector2(2147483647, -2147483648)
+            );
+        end
         state <= TbStart;
     endrule
 
@@ -152,8 +159,8 @@ module mkTbIM2PCore(Empty);
         core.startExecution(ExecuteCmd {
             accumulatorBaseRow: 3,
             rowCount: 1,
-            accumulate: False,
-            vectorOp: executionIndex == 0
+            accumulate: executionIndex == 6,
+            vectorOp: executionIndex == 0 || executionIndex == 6
                 ? VectorBypass
                 : VectorMultiply
         }, kStartFor(executionIndex), 2);
@@ -161,7 +168,9 @@ module mkTbIM2PCore(Empty);
     endrule
 
     rule feedRow (state == TbFeed && core.activationReady);
-        core.putActivationRow(vector2(5, 6));
+        core.putActivationRow(
+            executionIndex == 6 ? vector2(1, -1) : vector2(5, 6)
+        );
         state <= TbWait;
     endrule
 
@@ -170,7 +179,7 @@ module mkTbIM2PCore(Empty);
     endrule
 
     rule checkExecution (state == TbCheck);
-        Vector#(2, Int#(32)) observed = core.readAccumulatorRow(3);
+        Vector#(2, Int#(64)) observed = core.readAccumulatorRow(3);
 
         if (observed != expectedFor(executionIndex)) begin
             $display(
@@ -178,6 +187,10 @@ module mkTbIM2PCore(Empty);
                 executionIndex, observed[0], observed[1]
             );
             $finish(1);
+        end
+        else if (executionIndex == 6) begin
+            $display("IM2P CORE: PASS boundaries=(2147483648,-2147483649)");
+            $finish(0);
         end
         else if (executionIndex == 5) begin
             Bool countersPassed = core.scaleDemandRequests == 2
@@ -202,8 +215,9 @@ module mkTbIM2PCore(Empty);
                 $finish(1);
             end
             else begin
-                $display("IM2P CORE: PASS");
-                $finish(0);
+                core.acknowledgeExecution;
+                executionIndex <= executionIndex + 1;
+                state <= TbConfigure;
             end
         end
         else begin

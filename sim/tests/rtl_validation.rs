@@ -233,7 +233,7 @@ fn invalid_tile_shape_is_rejected() -> Result<(), SimError> {
 #[test]
 fn accumulator_row_address_is_checked() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
-    let values = vec![0_i32; simulator.dim()];
+    let values = vec![0_i64; simulator.dim()];
     assert_eq!(
         simulator.write_accumulator_row(256, &values),
         Err(SimError::InvalidAccumulatorRow {

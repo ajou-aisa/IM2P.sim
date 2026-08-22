@@ -25,6 +25,10 @@ EXPECTED_SRC = {
     "array/PE.bsv",
     "array/InputSkew.bsv",
     "array/SystolicArray.bsv",
+    "array/SystolicArrayTiled.bsv",
+    "array/SystolicArrayInt4x64.bsv",
+    "array/SystolicArrayInt8x64.bsv",
+    "array/SystolicArrayInt16x64.bsv",
     "array/SystolicEngine.bsv",
     "vector/Scale.bsv",
     "vector/VectorUnit.bsv",
@@ -54,6 +58,7 @@ EXPECTED_TESTS = {
     "TbIM2PCoreMultiwidth.bsv",
     "TbIM2PCoreMatrixScale.bsv",
     "TbIM2PCoreExternal.bsv",
+    "TbIM2PCoreOutputAddressing.bsv",
     "TbIM2PLookahead.bsv",
     "TbIM2PLookaheadScale.bsv",
     "TbMatmulLookahead.bsv",
@@ -64,6 +69,7 @@ EXPECTED_TESTS = {
     "TbFloatCore.bsv",
     "TbSynthInt8x16.bsv",
     "TbSynthInt8x32.bsv",
+    "TbSynthInt8x64.bsv",
 }
 
 EXPECTED_SYNTH = {
@@ -74,8 +80,68 @@ EXPECTED_SYNTH = {
     "SynthInt4x32.bsv",
     "SynthInt8x32.bsv",
     "SynthInt16x32.bsv",
+    "SynthInt4x64.bsv",
+    "SynthInt8x64.bsv",
+    "SynthInt16x64.bsv",
     "SynthFp16.bsv",
     "SynthFp32.bsv",
+}
+
+INTEGER_SYNTH_TOPS = (
+    "SynthInt8.bsv",
+    "SynthInt4x16.bsv",
+    "SynthInt8x16.bsv",
+    "SynthInt16x16.bsv",
+    "SynthInt4x32.bsv",
+    "SynthInt8x32.bsv",
+    "SynthInt16x32.bsv",
+    "SynthInt4x64.bsv",
+    "SynthInt8x64.bsv",
+    "SynthInt16x64.bsv",
+)
+
+PUBLIC_FRONTEND_ROUTES = (
+    "q8_0_unpacked_to_h1",
+    "q8_h0",
+    "q8_h2",
+    "q8_h1",
+    "q8_hp1",
+    "q8_hp2",
+    "q8_channel",
+    "q8_channel_dense_sidecar",
+    "unknown",
+)
+
+PUBLIC_FRONTEND_ARTIFACTS = {
+    "block_q8_h1",
+    "block_q8_hp1",
+    "q8_0_unpacked_to_h1",
+    "q8_channel",
+    "q8_channel_dense_sidecar",
+    "q8_channel_row_base",
+    "q8_channel_row_count",
+    "q8_channel_row_stride",
+    "q8_h0",
+    "q8_h1",
+    "q8_h1_block_count",
+    "q8_h1_blocks",
+    "q8_h1_count",
+    "q8_h1_rows",
+    "q8_h2",
+    "q8_h2_block_count",
+    "q8_h2_blocks",
+    "q8_h2_blocks_per_row",
+    "q8_h2_count",
+    "q8_hp1",
+    "q8_hp1_block_count",
+    "q8_hp1_blocks",
+    "q8_hp1_blocks_per_row",
+    "q8_hp1_count",
+    "q8_hp2",
+    "q8_hp2_block_count",
+    "q8_hp2_blocks",
+    "q8_hp2_blocks_per_row",
+    "q8_hp2_count",
 }
 
 STANDARD_PACKAGES = {
@@ -204,6 +270,209 @@ def require_substrings(path: Path, required: tuple[str, ...]) -> None:
             fail(f"{path.relative_to(ROOT)} missing required concept: {token}")
 
 
+def require_regex(path: Path, pattern: str, concept: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    if re.search(pattern, text, flags=re.DOTALL) is None:
+        fail(f"{path.relative_to(ROOT)} missing required contract: {concept}")
+
+
+def check_integer_width_contracts() -> None:
+    config_path = SRC / "common/Config.bsv"
+    config = strip_comments(config_path.read_text(encoding="utf-8"))
+    accumulator_width = re.findall(
+        r"\btypedef\s+(\d+)\s+DefaultAccumulatorWidth\s*;", config
+    )
+    if accumulator_width != ["64"]:
+        fail(
+            "DefaultAccumulatorWidth must be exactly one signed-64 production "
+            f"definition, got {accumulator_width}"
+        )
+
+    for filename in INTEGER_SYNTH_TOPS:
+        path = SYNTH / filename
+        clean = strip_comments(path.read_text(encoding="utf-8"))
+        interface = re.search(
+            rf"\bmodule\s+mk{re.escape(path.stem)}\s*\(\s*"
+            r"IM2PCoreIfc#\((.*?)\)\s*\)\s*;",
+            clean,
+            flags=re.DOTALL,
+        )
+        if interface is None:
+            fail(f"integer synth interface declaration missing: synth/{filename}")
+        if interface.group(1).count("Int#(DefaultAccumulatorWidth)") != 1:
+            fail(
+                "integer synth accumulator/output-request lane must be signed "
+                f"DefaultAccumulatorWidth (64-bit): synth/{filename}"
+            )
+
+
+def check_frontend_and_output_contracts() -> None:
+    frontend_header = ROOT / "frontend/include/im2p_gemmini_frontend.hpp"
+    frontend_header_text = strip_comments(frontend_header.read_text(encoding="utf-8"))
+    mode_match = re.search(
+        r"enum class Mode\s*:\s*uint8_t\s*\{(.*?)\};",
+        frontend_header_text,
+        flags=re.DOTALL,
+    )
+    if mode_match is None:
+        fail("frontend Mode declaration missing")
+    modes = [
+        item.strip().split("=")[0].strip()
+        for item in mode_match.group(1).split(",")
+        if item.strip()
+    ]
+    if modes != ["full", "stripe_pipeline"]:
+        fail(f"frontend modes must be exactly full/stripe_pipeline, got {modes}")
+
+    route_match = re.search(
+        r"enum class Route\s*:\s*uint8_t\s*\{(.*?)\};",
+        frontend_header_text,
+        flags=re.DOTALL,
+    )
+    if route_match is None:
+        fail("public frontend Route declaration missing")
+    routes = tuple(
+        item.strip().split("=")[0].strip()
+        for item in route_match.group(1).split(",")
+        if item.strip()
+    )
+    if routes != PUBLIC_FRONTEND_ROUTES:
+        fail(
+            "public frontend routes must match the exact A8/Q8 allowlist, "
+            f"got {routes}"
+        )
+
+    frontend_source = ROOT / "frontend/src/im2p_gemmini_frontend.cpp"
+    frontend_artifact_text = frontend_header_text + "\n" + strip_comments(
+        frontend_source.read_text(encoding="utf-8")
+    )
+    artifacts = {
+        token.lower()
+        for token in re.findall(
+            r"\b(?:block_)?q(?:4|8|16)_[a-z0-9_]+\b",
+            frontend_artifact_text,
+            flags=re.IGNORECASE,
+        )
+    }
+    if artifacts != PUBLIC_FRONTEND_ARTIFACTS:
+        fail(
+            "public frontend artifacts must match the exact Q8 allowlist\n"
+            f"  missing={sorted(PUBLIC_FRONTEND_ARTIFACTS - artifacts)}\n"
+            f"  extra={sorted(artifacts - PUBLIC_FRONTEND_ARTIFACTS)}"
+        )
+    forbidden_precision = re.search(r"(?i)(?:q4_|q16_)", frontend_artifact_text)
+    if forbidden_precision:
+        fail(
+            "Q4/Q16 frontend route or artifact support is TODO, found "
+            f"{forbidden_precision.group(0)}"
+        )
+
+    simulator_path = ROOT / "sim/src/simulator.rs"
+    require_regex(
+        simulator_path,
+        r"type WriteProviderV2\s*=.*?\*const i32",
+        "ABI v2 signed-32 provider callback",
+    )
+    require_regex(
+        simulator_path,
+        r"type WriteProviderV3\s*=.*?\*const i64",
+        "ABI v3 signed-64 provider callback",
+    )
+    require_regex(
+        simulator_path,
+        r"pub fn write_output\(.*?values:\s*&\[i64\].*?"
+        r"WriteProvider::V2\(callback\).*?saturating_i64_to_i32.*?"
+        r"WriteProvider::V3\(callback\).*?values\.as_ptr\(\)",
+        "signed-64 provider transport with saturation only at the V2 boundary",
+    )
+
+    require_substrings(
+        ROOT / "sim/src/simulator/matmul/memory.rs",
+        ("values: &[i64]", "saturating_i64_to_i32"),
+    )
+    require_substrings(
+        ROOT / "sim/src/simulator/striped/provider.rs",
+        ("Vec<i64>", "im2p_output_write_request_i64"),
+    )
+
+    require_substrings(
+        ROOT / "sim/src/matrix.rs",
+        ("saturating_i64_to_i32", "i32::MIN", "i32::MAX"),
+    )
+    require_substrings(
+        ROOT / "sim/include/im2p_sim.h",
+        (
+            "const int64_t *values",
+            "ABI v3 keeps raw output storage signed 32-bit",
+            "ABI v2 remains frozen and callable",
+        ),
+    )
+
+    require_substrings(
+        frontend_source,
+        (
+            "q8_h2 is deprecated",
+            "q8_hp2 is unsupported",
+            "im2p_publish_stripe_v3",
+        ),
+    )
+
+    for path in (
+        ROOT / "README.md",
+        ROOT / "frontend/README.md",
+        ROOT / "docs/VERIFICATION.md",
+    ):
+        require_substrings(
+            path,
+            (
+                "FULL",
+                "PIPELINE",
+                "A8/Q8",
+                "Q4",
+                "Q16",
+                "H2",
+                "HP2",
+                "mixed precision",
+                "ABI v3",
+            ),
+        )
+
+
+def check_exsia_integration_contracts() -> None:
+    gemmini = ROOT.parent / "llama.cpp-gemmini/ggml/src/ggml-gemmini"
+    orchestration = gemmini / "ggml-gemmini.cpp"
+    adapter = gemmini / "ggml-gemmini-im2p.cpp"
+    exsia = gemmini / "quants/act/exsia/exsia.cpp"
+    if not all(path.is_file() for path in (orchestration, adapter, exsia)):
+        return
+
+    require_regex(
+        adapter,
+        r"Result gate_route\(.*?if \(weight_bits != 8\).*?"
+        r"if \(exsia\).*?activation_bits == 8.*?rmd_enabled.*?cpu_direct_rmd",
+        "ExSIA production A8/Q8-only fail-closed gate",
+    )
+    require_regex(
+        orchestration,
+        r"if \(full_requested\).*?install_sink\(\).*?quantize_activation\(src1, args\)"
+        r".*?full\.execution->finish\(quantize_ok\).*?"
+        r"if \(!pipeline_requested\).*?start_exsia_stripe_pipeline\(args\).*?"
+        r"install_sink\(\).*?quantize_activation\(src1, args\).*?"
+        r"started\.pipeline->finish\(quantize_ok\)",
+        "ExSIA FULL/PIPELINE lifecycle without a third production mode",
+    )
+    notify_after_fold = re.compile(
+        r"mark_folding_committed\(.*?\).*?notify_stripe_ready\(",
+        flags=re.DOTALL,
+    )
+    notify_count = len(notify_after_fold.findall(exsia.read_text(encoding="utf-8")))
+    if notify_count != 2:
+        fail(
+            "ExSIA sequential and local-pipeline paths must each publish "
+            f"immediately after folding commit, found {notify_count}"
+        )
+
+
 def main() -> None:
     stray_bsc_artifacts = sorted(
         path.relative_to(ROOT)
@@ -313,7 +582,7 @@ def main() -> None:
     generated_multiwidth_tops = {
         top
         for top in expected_synth_tops
-        if re.fullmatch(r"mkSynthInt(?:4|8|16)x(?:16|32)", top)
+        if re.fullmatch(r"mkSynthInt(?:4|8|16)x(?:16|32|64)", top)
     }
     for top in sorted(
         expected_test_tops | (expected_synth_tops - generated_multiwidth_tops)
@@ -323,13 +592,17 @@ def main() -> None:
     if "TOP=mkSynthInt$(1)x$(2)" not in makefile_text:
         fail("Makefile multiwidth top template missing")
     for top in sorted(generated_multiwidth_tops):
-        match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32)", top)
+        match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32|64)", top)
         assert match is not None
         target = f"verilator-int{match.group(1)}x{match.group(2)}"
         if target not in makefile_text:
             fail(f"Makefile explicit multiwidth target missing: {target}")
     if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):
         fail("Bluesim tests must compile dynamicAssert checks")
+
+    check_integer_width_contracts()
+    check_frontend_and_output_contracts()
+    check_exsia_integration_contracts()
 
     source_text = "\n".join(
         strip_comments(path.read_text(encoding="utf-8")) for path in SRC.rglob("*.bsv")

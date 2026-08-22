@@ -16,5 +16,10 @@ name = "verilator_activation_packing"
 path = "tests/verilator_activation_packing.rs"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "verilator_accumulator_transport"
+path = "tests/verilator_accumulator_transport.rs"
+required-features = ["test-hooks"]
+
 [build-dependencies]
 cc = "1"

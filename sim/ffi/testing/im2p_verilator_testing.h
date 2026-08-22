@@ -23,6 +23,21 @@ int im2p_test_drive_port(im2p_handle_t handle, uint32_t port,
 int im2p_test_copy_port_words(im2p_handle_t handle, uint32_t port,
                               uint32_t *words, uint32_t word_count);
 uint32_t im2p_test_activation_enable_mask(im2p_handle_t handle);
+int im2p_test_accumulator_words(
+    im2p_handle_t handle,
+    const int64_t *values,
+    uint32_t count,
+    uint32_t *words,
+    uint32_t word_count
+);
+int im2p_test_output_writeback(
+    im2p_handle_t handle,
+    const uint32_t *words,
+    uint32_t word_count,
+    int64_t *exact_values,
+    int32_t *compatibility_values,
+    uint32_t count
+);
 
 #ifdef __cplusplus
 }

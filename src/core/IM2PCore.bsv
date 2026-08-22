@@ -6,6 +6,7 @@ import Vector::*;
 import Types::*;
 import Arithmetic::*;
 import ExecuteCmd::*;
+import SystolicArray::*;
 import SystolicEngine::*;
 import VectorUnit::*;
 import Accumulator::*;
@@ -228,7 +229,16 @@ interface IM2PCoreIfc#(
     );
 endinterface
 
-module mkIM2PCore(IM2PCoreIfc#(
+module mkIM2PCoreWithArray#(
+    SystolicArrayIfc#(
+        arrayDim,
+        peLatency,
+        input_t,
+        weight_t,
+        product_t,
+        acc_t
+    ) systolicArray
+)(IM2PCoreIfc#(
     arrayDim,
     peLatency,
     vectorLanes,
@@ -279,7 +289,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         weight_t,
         product_t,
         acc_t
-    ) engine <- mkSystolicEngine;
+    ) engine <- mkSystolicEngineWithArray(systolicArray);
 
     VectorUnitIfc#(
         input_t,
@@ -1775,7 +1785,9 @@ module mkIM2PCore(IM2PCoreIfc#(
                 fromInteger(storageBytes(valueOf(inputBits))),
             weightElementBytes: fromInteger(valueOf(weightBits) / 8),
             scaleElementBytes: fromInteger(valueOf(scaleBits) / 8),
-            outputElementBytes: fromInteger(valueOf(accBits) / 8),
+            // Raw/V2 host output layout is signed int32 regardless of the
+            // wider internal accumulator/provider transport lane.
+            outputElementBytes: 4,
             vectorOp: vectorOp,
             workContext: scaleContext
         });
@@ -2401,6 +2413,63 @@ module mkIM2PCore(IM2PCoreIfc#(
         return accumulator.readRow(row);
     endmethod
 
+endmodule
+
+module mkIM2PCore(IM2PCoreIfc#(
+    arrayDim,
+    peLatency,
+    vectorLanes,
+    accRows,
+    input_t,
+    weight_t,
+    product_t,
+    acc_t,
+    scale_t
+)) provisos (
+    Mul#(vectorGroups, vectorLanes, arrayDim),
+    Add#(1, vectorGroupsMinusOne, vectorGroups),
+    Add#(1, vectorLanesMinusOne, vectorLanes),
+    Add#(1, arrayDimMinusOne, arrayDim),
+    Add#(1, peLatencyMinusOne, peLatency),
+    Add#(1, accRowsMinusOne, accRows),
+    Add#(arrayDim, freeAccumulatorRows, accRows),
+    Add#(TLog#(arrayDim), accumulatorAddressPadding, TLog#(accRows)),
+    Add#(
+        boundedCountPadding,
+        TLog#(arrayDim),
+        TLog#(TAdd#(arrayDim, 1))
+    ),
+    Add#(
+        TLog#(TAdd#(arrayDim, 1)),
+        kCountToPositionPadding,
+        32
+    ),
+    Add#(
+        TLog#(arrayDim),
+        indexToPositionPadding,
+        32
+    ),
+    Bits#(input_t, inputBits),
+    Bits#(weight_t, weightBits),
+    Bits#(acc_t, accBits),
+    Bits#(scale_t, scaleBits),
+    Multiplier#(input_t, weight_t, product_t),
+    ProductAccumulator#(product_t, acc_t),
+    AccumulatorArithmetic#(acc_t),
+    VectorScaleCapability#(input_t),
+    VectorTransform#(input_t, acc_t, scale_t)
+);
+    SystolicArrayIfc#(
+        arrayDim,
+        peLatency,
+        input_t,
+        weight_t,
+        product_t,
+        acc_t
+    ) systolicArray <- mkSystolicArray;
+
+    let core <- mkIM2PCoreWithArray(systolicArray);
+    return core;
 endmodule
 
 endpackage

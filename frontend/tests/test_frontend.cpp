@@ -43,6 +43,9 @@ bool fail_progress = false;
 bool fail_poll = false;
 bool fail_finish = false;
 bool throw_create = false;
+bool provider_force_callback_failure = false;
+std::vector<int64_t> provider_exact_values;
+std::vector<int64_t> provider_delivered_values;
 std::atomic<size_t> sim_created{0};
 std::atomic<size_t> sim_destroyed{0};
 std::atomic<size_t> stream_created{0};
@@ -58,8 +61,8 @@ std::thread::id owner;
 bool one_owner = true;
 im2p_matmul_desc_v2_t full_desc{};
 im2p_stripe_work_desc_v2_t work_desc{};
-im2p_matmul_desc_v2_t provider_full_desc{};
-im2p_stripe_work_desc_v2_t provider_work_desc{};
+im2p_matmul_desc_v3_t provider_full_desc{};
+im2p_stripe_work_desc_v3_t provider_work_desc{};
 size_t provider_full_count = 0;
 size_t provider_work_count = 0;
 std::vector<im2p_activation_stripe_v2_t> published;
@@ -84,6 +87,9 @@ void reset() {
   fail_poll = false;
   fail_finish = false;
   throw_create = false;
+  provider_force_callback_failure = false;
+  provider_exact_values.clear();
+  provider_delivered_values.clear();
   sim_created = 0;
   sim_destroyed = 0;
   stream_created = 0;
@@ -133,6 +139,37 @@ void multiply(const void *a, size_t sa, uint32_t bits, const int8_t *b,
       c[(row0 + i) * sc + j] = sum;
     }
 }
+
+template <class Descriptor>
+int provider_outputs(const Descriptor &d, size_t row0, size_t rows) {
+  const size_t blocks = (d.k + d.block_size - 1) / d.block_size;
+  std::array<int8_t, DIM> scratch{};
+  std::array<int64_t, DIM> exact{};
+  for (size_t block = 0; block < blocks; ++block) {
+    for (size_t row = row0; row < row0 + rows; ++row) {
+      for (size_t column = 0; column < d.n; column += DIM) {
+        const size_t count = std::min<size_t>(DIM, d.n - column);
+        if (d.provider.read_scale(d.provider.context, block, column, count,
+                                  scratch.data()) != IM2P_OK)
+          return IM2P_ERROR;
+        for (size_t lane = 0; lane < count; ++lane) {
+          const size_t index = (block * d.m + row) * d.n + column + lane;
+          exact[lane] = index < provider_exact_values.size()
+                            ? provider_exact_values[index]
+                            : 0;
+        }
+        provider_delivered_values.insert(provider_delivered_values.end(),
+                                         exact.begin(), exact.begin() + count);
+        const int status = d.provider.write_output(
+            d.provider.context, block, row, column, count,
+            provider_force_callback_failure ? nullptr : exact.data());
+        if (status != IM2P_OK)
+          return status;
+      }
+    }
+  }
+  return IM2P_OK;
+}
 } // namespace fake
 
 struct im2p_sim {};
@@ -154,7 +191,7 @@ void im2p_sim_destroy(im2p_sim_t *p) {
   ++fake::sim_destroyed;
   delete p;
 }
-uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION_2; }
+uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION_3; }
 uint32_t im2p_sim_activation_bits(void) {
   return IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
 }
@@ -170,7 +207,6 @@ int im2p_execute_matmul_extended_v2(im2p_sim_t *,
     return IM2P_ERROR;
   if (d->provider.context != nullptr) {
     std::lock_guard lock(fake::mutex);
-    fake::provider_full_desc = *d;
     ++fake::provider_full_count;
     fake::changed.notify_all();
     return IM2P_OK;
@@ -188,6 +224,23 @@ int im2p_execute_matmul_extended_v2(im2p_sim_t *,
     stats->base.completed_output_tiles = d->m * d->n;
   return IM2P_OK;
 }
+int im2p_execute_matmul_extended_v3(im2p_sim_t *,
+                                    const im2p_matmul_desc_v3_t *d,
+                                    im2p_work_stats_extended_t *stats) {
+  fake::abi_call();
+  if (fake::fail_full)
+    return IM2P_ERROR;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::provider_full_desc = *d;
+    ++fake::provider_full_count;
+    fake::changed.notify_all();
+  }
+  const int status = fake::provider_outputs(*d, 0, d->m);
+  if (status == IM2P_OK && stats)
+    stats->base.completed_output_tiles = d->m * d->n;
+  return status;
+}
 int im2p_begin_striped_matmul_v2(im2p_sim_t *,
                                  const im2p_stripe_work_desc_v2_t *d,
                                  im2p_stream_t **out) {
@@ -196,11 +249,24 @@ int im2p_begin_striped_matmul_v2(im2p_sim_t *,
   if (fake::fail_begin)
     return IM2P_ERROR;
   if (d->provider.context != nullptr) {
-    fake::provider_work_desc = *d;
     ++fake::provider_work_count;
   } else {
     fake::work_desc = *d;
   }
+  *out = new im2p_stream;
+  ++fake::stream_created;
+  fake::changed.notify_all();
+  return IM2P_OK;
+}
+int im2p_begin_striped_matmul_v3(im2p_sim_t *,
+                                 const im2p_stripe_work_desc_v3_t *d,
+                                 im2p_stream_t **out) {
+  fake::abi_call();
+  std::lock_guard lock(fake::mutex);
+  if (fake::fail_begin)
+    return IM2P_ERROR;
+  fake::provider_work_desc = *d;
+  ++fake::provider_work_count;
   *out = new im2p_stream;
   ++fake::stream_created;
   fake::changed.notify_all();
@@ -227,6 +293,30 @@ int im2p_publish_stripe_v2(im2p_stream_t *,
   fake::changed.notify_all();
   return IM2P_OK;
 }
+int im2p_publish_stripe_v3(im2p_stream_t *,
+                           const im2p_activation_stripe_v3_t *s) {
+  fake::abi_call();
+  std::unique_lock lock(fake::mutex);
+  ++fake::publish_attempts;
+  fake::publish_entered = true;
+  fake::changed.notify_all();
+  fake::changed.wait(lock, [] { return !fake::hold_publish; });
+  if (fake::fail_publish)
+    return IM2P_ERROR;
+  if (fake::raw_pressure_forever)
+    return IM2P_BACKPRESSURE;
+  if (fake::raw_pressure_once) {
+    fake::raw_pressure_once = false;
+    return IM2P_BACKPRESSURE;
+  }
+  fake::published.push_back({IM2P_ABI_VERSION_2, s->activation_bits,
+                             s->activation_storage_bytes, s->dim, s->stripe_id,
+                             s->i_start, s->rows, s->activations,
+                             s->activation_row_stride_bytes, s->context});
+  ++fake::publish_count;
+  fake::changed.notify_all();
+  return IM2P_OK;
+}
 int im2p_progress_stream(im2p_stream_t *stream, uint64_t) {
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
@@ -238,11 +328,17 @@ int im2p_progress_stream(im2p_stream_t *stream, uint64_t) {
          fake::progress_calls >= fake::required_progress_cycles &&
          stream->serviced < fake::published.size()) {
     const auto &s = fake::published[stream->serviced++];
-    fake::multiply(s.activations, s.activation_row_stride_bytes,
-                   s.activation_bits, fake::work_desc.weights,
-                   fake::work_desc.weight_row_stride, fake::work_desc.output,
-                   fake::work_desc.output_row_stride, s.rows, fake::work_desc.n,
-                   fake::work_desc.k, s.i_start);
+    if (fake::provider_work_count != 0) {
+      if (fake::provider_outputs(fake::provider_work_desc, s.i_start, s.rows) !=
+          IM2P_OK)
+        return IM2P_ERROR;
+    } else {
+      fake::multiply(s.activations, s.activation_row_stride_bytes,
+                     s.activation_bits, fake::work_desc.weights,
+                     fake::work_desc.weight_row_stride, fake::work_desc.output,
+                     fake::work_desc.output_row_stride, s.rows,
+                     fake::work_desc.n, fake::work_desc.k, s.i_start);
+    }
     stream->done.push_back({s.stripe_id, s.i_start, s.rows, s.context});
   }
   return IM2P_OK;
@@ -587,14 +683,14 @@ bool test_native_h1_provider_start_contract() {
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
   auto started = execute(&x);
-  if (!expect(started.status.ok(), "native H1 starts through provider v1"))
+  if (!expect(started.status.ok(), "native H1 starts through provider v3"))
     return false;
   const auto done = fence(*started.run);
   std::lock_guard lock(fake::mutex);
   const auto &d = fake::provider_full_desc;
   return expect(
       done.status.ok() && fake::provider_full_count == 1 &&
-          d.abi_version == IM2P_ABI_VERSION_2 &&
+          d.abi_version == IM2P_ABI_VERSION_3 &&
           d.activation_bits == IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
           d.weights == nullptr && d.output == nullptr && d.m == 1 && d.n == 2 &&
           d.k == 32 && d.weight_row_stride == 2 && d.output_row_stride == 2 &&
@@ -602,7 +698,191 @@ bool test_native_h1_provider_start_contract() {
           d.provider.context != nullptr && d.provider.read_weight != nullptr &&
           d.provider.read_scale != nullptr &&
           d.provider.write_output != nullptr,
-      "native H1 provider descriptor is exact");
+      "native H1 provider v3 descriptor is exact");
+}
+
+bool test_provider_int64_scaling_full_pipeline() {
+  constexpr size_t rows = 3;
+  constexpr size_t columns = 2;
+  constexpr size_t blocks_per_row = 2;
+  const std::vector<int64_t> exact = {
+      100,                  -200,
+      INT64_C(2147487743),  -INT64_C(2147495993),
+      -INT64_C(4294979641), INT64_C(4295011617),
+      300,                  400,
+      INT64_C(2147504127),  -INT64_C(4294987775),
+      INT64_C(4295000063),  -INT64_C(2147516415),
+  };
+  const std::array<double, 4> factors = {0.5, 0.75, 1.25, 1.5};
+  constexpr double activation_scale = 0.5;
+  std::array<float, rows * columns> oracle{};
+  for (size_t row = 0; row < rows; ++row) {
+    for (size_t column = 0; column < columns; ++column) {
+      long double sum = 0.0L;
+      for (size_t block = 0; block < blocks_per_row; ++block) {
+        const size_t index = (block * rows + row) * columns + column;
+        sum += static_cast<long double>(exact[index]) *
+               static_cast<long double>(factors[block * columns + column]) *
+               static_cast<long double>(activation_scale);
+      }
+      oracle[row * columns + column] = static_cast<float>(sum);
+    }
+  }
+
+  auto run = [&](Mode mode, bool force_callback_failure,
+                 std::array<float, rows * columns> &destination) {
+    fake::reset();
+    fake::provider_exact_values = exact;
+    fake::provider_force_callback_failure = force_callback_failure;
+    std::array<block_q8_h1, columns * blocks_per_row> weights{};
+    for (size_t column = 0; column < columns; ++column) {
+      weights[column * blocks_per_row].s_rf = column == 0 ? 0.25f : 0.125f;
+      weights[column * blocks_per_row].c_b = column == 0 ? 1 : 2;
+      weights[column * blocks_per_row].R = column == 0 ? 1 : 4;
+      weights[column * blocks_per_row + 1].s_rf = column == 0 ? 0.25f : 0.25f;
+      weights[column * blocks_per_row + 1].c_b = column == 0 ? 2 : 3;
+      weights[column * blocks_per_row + 1].R = 3;
+    }
+    ggml_gemmini_args_t args{};
+    args.I = rows;
+    args.J = columns;
+    args.K = 64;
+    if (!args.A.allocate(rows, args.K, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+      return false;
+    args.activation_rows_per_stripe = 1;
+    args.f_out = destination.data();
+    args.stride_f_out = columns;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+    args.q8_h1_blocks = weights.data();
+    args.q8_h1_block_count = weights.size();
+    args.q8_h1_rows = columns;
+    args.blocks_per_row = blocks_per_row;
+    args.act_quant.storage()
+        .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+        .scale = static_cast<float>(activation_scale);
+    auto started = execute(&args, mode, {64});
+    if (!started.status.ok())
+      return false;
+    if (mode == Mode::stripe_pipeline) {
+      // These frontend-only stripes deliberately have no residual handles;
+      // llama's integrated oracle below owns multi-stripe RMD application.
+      const auto first = submit_stripe(*started.run, event(0, 0, 1));
+      if (!first.ok())
+        return false;
+      if (!force_callback_failure) {
+        const auto second = submit_stripe(*started.run, event(1, 1, 2));
+        const auto third = submit_stripe(*started.run, event(2, 2, 3));
+        if (!second.ok() || !third.ok())
+          return false;
+      }
+    }
+    const auto done = fence(*started.run);
+    if (force_callback_failure)
+      return done.status.code == StatusCode::execution_failure;
+    std::vector<int64_t> delivered_oracle;
+    if (mode == Mode::full) {
+      delivered_oracle = exact;
+    } else {
+      for (size_t row = 0; row < rows; ++row)
+        for (size_t block = 0; block < blocks_per_row; ++block)
+          for (size_t column = 0; column < columns; ++column)
+            delivered_oracle.push_back(
+                exact[(block * rows + row) * columns + column]);
+    }
+    if (!done.status.ok() ||
+        fake::provider_delivered_values != delivered_oracle) {
+      std::fprintf(stderr,
+                   "cross-mode fence=%u delivered=%zu expected=%zu\n",
+                   static_cast<unsigned>(done.status.code),
+                   fake::provider_delivered_values.size(),
+                   delivered_oracle.size());
+      return false;
+    }
+    if (mode == Mode::full)
+      return fake::provider_full_count == 1 && fake::provider_work_count == 0 &&
+             fake::publish_count == 0;
+    if (destination != std::array<float, rows * columns>{92, 92, 92, 92, 92,
+                                                         92} ||
+        fake::provider_full_count != 0 || fake::provider_work_count != 1 ||
+        fake::publish_count != 3 || fake::finish_count != 1) {
+      std::fprintf(stderr,
+                   "cross-mode staged=%d full=%zu work=%zu publish=%zu finish=%zu\n",
+                   destination == std::array<float, rows * columns>{
+                                      92, 92, 92, 92, 92, 92},
+                   fake::provider_full_count, fake::provider_work_count,
+                   fake::publish_count, fake::finish_count);
+      return false;
+    }
+    if (!authorize_output_commit(*started.run, true).ok())
+      return false;
+    const auto committed = destination;
+    return authorize_output_commit(*started.run, true).ok() &&
+           destination == committed;
+  };
+
+  std::array<float, rows * columns> full = {91, 91, 91, 91, 91, 91};
+  std::array<float, rows * columns> pipeline = {92, 92, 92, 92, 92, 92};
+  if (!expect(run(Mode::full, false, full), "int64 provider FULL completes") ||
+      !expect(run(Mode::stripe_pipeline, false, pipeline),
+              "int64 provider pipeline completes") ||
+      !expect(full == oracle && pipeline == oracle,
+              "FULL/pipeline match long-double int64 scaling oracle"))
+    return false;
+
+  std::printf("INT64_QA positive_input=%lld negative_input=%lld "
+              "weight_scales=[0.25,0.125,0.25,0.25] "
+              "activation_scale=0.5 positive_result=%.9g "
+              "negative_result=%.9g\n",
+              static_cast<long long>(exact[2]),
+              static_cast<long long>(exact[3]), full[2], full[3]);
+
+  std::array<float, rows * columns> failed_full = {73, 73, 73, 73, 73, 73};
+  std::array<float, rows * columns> failed_pipeline = {74, 74, 74, 74, 74, 74};
+  if (!expect(run(Mode::full, true, failed_full) &&
+                  failed_full == std::array<float, rows * columns>{
+                                     73, 73, 73, 73, 73, 73},
+              "FULL callback failure preserves destination") ||
+      !expect(run(Mode::stripe_pipeline, true, failed_pipeline) &&
+                  failed_pipeline == std::array<float, rows * columns>{
+                                         74, 74, 74, 74, 74, 74},
+              "pipeline callback failure preserves destination"))
+    return false;
+
+  // A single-row request must retain the pipeline lifecycle and commit once.
+  fake::reset();
+  fake::provider_exact_values.assign(exact.begin(), exact.begin() + columns);
+  std::array<block_q8_h1, columns> one_row_weights{};
+  std::array<float, columns> one_row = {81, 81};
+  ggml_gemmini_args_t one_row_args{};
+  one_row_args.I = 1;
+  one_row_args.J = columns;
+  one_row_args.K = 32;
+  if (!one_row_args.A.allocate(1, one_row_args.K,
+                               IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  one_row_args.activation_rows_per_stripe = 1;
+  one_row_args.f_out = one_row.data();
+  one_row_args.stride_f_out = columns;
+  one_row_args.weight_format =
+      ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  one_row_args.q8_h1_blocks = one_row_weights.data();
+  one_row_args.q8_h1_block_count = one_row_weights.size();
+  one_row_args.q8_h1_rows = columns;
+  one_row_args.blocks_per_row = 1;
+  one_row_args.act_quant.storage()
+      .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+      .scale = 1.0f;
+  auto one = execute(&one_row_args, Mode::stripe_pipeline, {64});
+  if (!one.status.ok() || !submit_stripe(*one.run, event(0, 0, 1)).ok() ||
+      !fence(*one.run).status.ok())
+    return false;
+  return expect(fake::provider_full_count == 0 &&
+                    fake::provider_work_count == 1 &&
+                    fake::publish_count == 1 && fake::finish_count == 1 &&
+                    one_row == std::array<float, columns>{81, 81},
+                "one-row request remains one staged pipeline stripe") &&
+         expect(authorize_output_commit(*one.run, true).ok(),
+                "one-row pipeline commits exactly once");
 }
 
 bool test_rejected_routes_do_not_execute() {
@@ -852,7 +1132,9 @@ bool test_backpressure_runid_incomplete_and_concurrent() {
   std::thread producer(
       [&] { third_status = submit_stripe(*one.run, event(2, 2, 3, 4)); });
   if (!expect(RunTestAccess::wait_for_blocked_submit(*one.run, 1),
-              "third producer blocks on the fixed two-slot contract"))
+              "third producer blocks on the fixed two-slot contract") ||
+      !expect(RunTestAccess::inspect(*one.run).outstanding == 2,
+              "dequeue alone does not release either producer slot"))
     return false;
   {
     std::lock_guard lock(fake::mutex);
@@ -1469,7 +1751,10 @@ int main(int argc, char **argv) {
         : selected == "full_failure_matrix"   ? test_full_failure_matrix()
         : selected == "stripe_failure_matrix" ? test_stripe_failure_matrix()
         : selected == "invalid_reuse"         ? test_invalid_reuse_is_bounded()
-                                              : false;
+        : selected == "provider_int64_scaling" ||
+                  selected == "cross_mode_oracle"
+            ? test_provider_int64_scaling_full_pipeline()
+            : false;
     if (selected_ok)
       std::printf("IM2P Gemmini frontend case %s: PASS\n", argv[1]);
     else
@@ -1480,6 +1765,7 @@ int main(int argc, char **argv) {
     return 2;
   const bool ok =
       test_native_h1_provider_start_contract() &&
+      test_provider_int64_scaling_full_pipeline() &&
       test_rejected_routes_do_not_execute() &&
       test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&

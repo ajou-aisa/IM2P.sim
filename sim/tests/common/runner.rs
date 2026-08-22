@@ -4,7 +4,7 @@ use super::{golden_output, k_fragments, KBlockScaleMatrix, KFragment, Shape};
 
 pub struct RunResult {
     pub output: Vec<i32>,
-    pub expected: Vec<i32>,
+    pub expected: Vec<i64>,
     pub fragments: Vec<KFragment>,
     pub stats: Vec<TileStats>,
 }

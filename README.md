@@ -1,8 +1,8 @@
 # IM2P.sim
 
-Bluespec으로 작성한 **레지스터 기반 weight-stationary systolic NPU RTL 시뮬레이터**다. DIM16/DIM32 구성에서 address-driven matrix scheduling, K-block-aware fragmentation, VectorUnit scale path, Accumulator, 비동기 stripe publication, 다음 stripe 선행 준비를 검증한다.
+Bluespec으로 작성한 **레지스터 기반 weight-stationary systolic NPU RTL 시뮬레이터**다. DIM16/DIM32/DIM64 구성에서 address-driven matrix scheduling, K-block-aware fragmentation, VectorUnit scale path, Accumulator, 비동기 stripe publication, 다음 stripe 선행 준비를 검증한다.
 
-C++ harness가 Verilated RTL clock을 직접 구동하므로 측정 시간은 wall-clock이 아닌 RTL logical cycle이다. Gemmini의 WS 실행 방식은 참고하되 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC, ROB 등의 Gemmini generator/SoC 계층은 복제하지 않는다.
+C++ harness가 Verilated RTL clock을 직접 구동하므로 측정 시간은 wall-clock이 아닌 RTL logical cycle이다. Gemmini의 WS 실행 방식은 참고하되 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC, ROB 등의 Gemmini generator/SoC 계층은 복제하지 않는다. DIM64의 16×16 synthesis tile은 BSC scheduling hierarchy만 나누며 별도 Gemmini execution 계층이나 cycle을 추가하지 않는다.
 
 ```text
 IM2PCore
@@ -27,6 +27,7 @@ IM2PCore
 - INT에서는 runtime에 `VectorBypass`, `VectorMultiply`, `VectorShift`를 선택한다.
 - FLOAT는 같은 Core source와 datapath를 사용하되 transform policy는 Bypass만 제공한다.
 - INT의 scale 적용 여부나 Multiply/Shift 선택 때문에 RTL을 다시 합성하지 않는다.
+- 현재 production ExSIA 경로는 activation/weight가 모두 8-bit인 A8/Q8만 지원한다.
 
 FLOAT instance에는 실제 scale multiply/shift 구현이 없다. 최종 generated RTL에서 관련 연산기가 제거되는지는 `make rtl`과 synthesis report로 확인한다.
 
@@ -104,7 +105,7 @@ VectorShift
     scale <  0 : contribution = partial >> |scale|
 ```
 
-integer policy는 two's-complement wrap과 arithmetic right shift를 사용하며, rounding과 saturation은 적용하지 않는다.
+integer policy는 signed 64-bit accumulator/provider transport 안에서 two's-complement arithmetic과 arithmetic right shift를 사용한다. 중간 32-bit narrowing은 없으며 rounding도 적용하지 않는다. Raw output 또는 ABI v2 provider로 내보내는 최종 signed-32 경계에서만 한 번 saturation한다. ABI v3 provider는 signed-64 값을 그대로 받는다.
 
 ### Accumulator는 주소와 상태를 담당
 
@@ -193,6 +194,8 @@ src/
 │   ├── PE.bsv
 │   ├── InputSkew.bsv
 │   ├── SystolicArray.bsv
+│   ├── SystolicArrayTiled.bsv
+│   ├── SystolicArrayInt{4,8,16}x64.bsv
 │   └── SystolicEngine.bsv
 ├── vector/
 │   ├── Scale.bsv
@@ -211,7 +214,7 @@ src/
     └── IM2PCore.bsv
 sim/        Rust simulator와 raw C ABI
 frontend/   선택형 Gemmini-compatible C++ frontend
-synth/      DIM16/DIM32 synthesis top
+synth/      DIM16/DIM32/DIM64 synthesis top
 ```
 
 `tests/TestVectorUtils.bsv`는 BSV에 없는 `vec(...)` literal을 대신해 테스트용 2/3/4-element Vector helper만 제공한다. RTL source에는 포함하지 않는다.
@@ -275,7 +278,15 @@ make rtl-one TOP=mkSynthInt8
 
 ### High-level C++ API 사용법
 
-optional frontend는 read-only `llama.cpp-gemmini` checkout의 authoritative header로 build한다.
+optional frontend는 read-only `llama.cpp-gemmini` checkout의 authoritative header로 build한다. Public frontend mode는 정확히 `FULL`과 `PIPELINE` 두 개뿐이다.
+
+Frontend artifact의 canonical activation block size는 DIM16/DIM32에서 32,
+DIM64에서 64다. `a<bits>-w8-d<dim>` identity 하나가 항상 이 mapping을 뜻한다.
+
+- `FULL`: ExSIA가 모든 stripe의 quantization/folding을 완료하면서 post-fold event를 collector에 보존한다. Quantization 성공 뒤 full NPU work를 시작하고, fence 뒤 기존 8-bit RMD를 완료한 다음에만 caller output을 publish한다.
+- `PIPELINE`: NPU stream을 먼저 시작한다. 각 stripe의 folding commit 직후 생성된 event를 batch의 quantization 종료까지 미루지 않고 즉시 stream에 publish하여 CPU ExSIA와 NPU 실행을 겹친다. Fence와 기존 8-bit RMD가 모두 성공한 다음에만 staged output을 caller에게 publish한다.
+
+두 mode 모두 post-fold metadata와 activation backing을 fence까지 보존한다. 제3 frontend mode, post-quantization batch publish, RMD 이전 output publish는 계약에 없다.
 
 ```bash
 make gemmini-frontend \
@@ -330,7 +341,7 @@ FenceResult completed = fence(*started.run);
 
 Referenced input buffers는 `fence`가 반환되거나 `Run` destruction이 끝날 때까지 alive/immutable 상태여야 한다. output `C`도 같은 기간 alive/exclusively writable 상태여야 한다.
 
-numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 호출하지 않는다.
+numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 호출하지 않는다. 표는 generic frontend route 능력이며 ExSIA production 선택은 이 중 A8/Q8 조합으로 제한된다.
 
 | route | 상태 |
 |---|---|
@@ -341,6 +352,8 @@ numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/
 | `q8_hp2` | **Unsupported**; numerical fallback 없이 `q8_hp2 is unsupported` 반환 |
 
 Provider route는 요청된 logical fragment만 native storage에서 읽는다. 전체 weight tensor를 unpack, transpose, materialize하지 않는다. M/N tile, K fragment, block boundary, accumulate 결정은 계속 RTL scheduler가 담당한다.
+
+ExSIA production에서 A4/Q4와 A16/Q16 matched precision, Q8 H2/HP2, mixed precision은 TODO이며 fail closed한다. 이를 deferred work queue나 다른 format의 fallback으로 실행하지 않는다. Generic frontend의 `q8_h2` Deprecated 및 `q8_hp2` Unsupported 상태도 그대로 유지된다.
 
 ## 문서
 

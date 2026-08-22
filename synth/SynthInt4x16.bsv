@@ -12,7 +12,7 @@ module mkSynthInt4x16(IM2PCoreIfc#(
     Int#(4), // input width
     Int#(8), // weight width
     Int#(12), // product width
-    Int#(32), // output width
+    Int#(DefaultAccumulatorWidth), // accumulator/output-request width
     Int#(8) // scale width
 ));
     let core <- mkIM2PCore;

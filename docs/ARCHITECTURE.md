@@ -73,6 +73,12 @@ PE `(k,j)`에서 activation과 partial token이 같은 cycle에 만나게 한다
 
 Weight preload row는 `BoundedIndex#(arrayDim)`로 전달된다. 2의 거듭제곱 크기가 아닌 array에서도 잘못된 bit pattern을 검출할 수 있도록 마지막 유효 index인 `arrayDim-1`과 비교한다.
 
+DIM16/DIM32는 이 flat array를 그대로 사용한다. DIM64는 같은
+`SystolicArray` 16×16 instance를 4×4로 배치하고 concrete instance마다
+separate synthesis boundary를 유지한다. Tile east/south edge는 기존 마지막
+PE의 registered output이므로 경계에서 register나 FIFO를 추가하지 않으며
+weight load, dual-bank 전환, PE hop latency도 flat array와 같다.
+
 ## 3. SystolicEngine과 output tracking
 
 `SystolicEngine`은 `InputSkew`, `SystolicArray`, input/result FIFO, `ExecuteController`를 묶는다.
@@ -132,10 +138,10 @@ VectorShift    : shift(P, E)
 
 `VectorScaleCapability#(format_t)`는 format의 scale 지원 여부를 나타내며, `VectorTransform#(format_t, acc_t, scale_t)`는 실제 transform을 정의한다.
 
-- Signed INT: Bypass/Multiply/Shift
+- Signed INT: Bypass/Multiply/Shift. Production integer synthesis는 signed 64-bit partial, contribution, Accumulator state를 사용한다.
 - FLOAT: Bypass behavior only
 
-Accumulator 주소, 기존 state, `accumulate` 여부는 VectorUnit interface에 없다.
+Accumulator 주소, 기존 state, `accumulate` 여부는 VectorUnit interface에 없다. Integer provider request도 signed 64-bit lane을 유지한다. Raw signed-32 output과 frozen ABI v2 provider callback에서만 final saturation을 수행하며 ABI v3 provider callback은 signed-64 lane을 그대로 전달받는다.
 
 ## 6. Destination address and Accumulator
 
@@ -233,7 +239,7 @@ WorkScheduler:   K fragment, scale block, accumulate-first selection
 IM2PCore:        tagged A/W/S/C channels, buffer/bank readiness, execution
 ```
 
-Full-matrix mode는 descriptor의 전체 M/N 범위를 scheduler 내부에서 순차적으로 traversal하며 current work와 immediate lookahead 하나를 expose한다. Async mode는 publish된 stripe만 scheduling하며, 미공개 stripe 주소는 prefetch하지 않는다. Host publication 가능 여부와 RTL FIFO readiness는 별도 상태다.
+Full-matrix mode는 descriptor의 전체 M/N 범위를 scheduler 내부에서 순차적으로 traversal하며 current work와 immediate lookahead 하나를 expose한다. Async mode는 publish된 stripe만 scheduling하며, 미공개 stripe 주소는 prefetch하지 않는다. Host publication 가능 여부와 RTL FIFO readiness는 별도 상태다. C++ frontend가 공개하는 mode도 이 두 scheduler 의미에 대응하는 `FULL`과 `PIPELINE`뿐이며 제3 mode는 없다.
 
 각 host request에는 address, element count, tag가 있다. Provider는 address를 borrowed A/W/S/C view로 resolve하고 같은 tag로 응답한다. 최종 output row acknowledgement가 scheduler의 work/stripe completion보다 먼저 완료되어야 한다.
 
@@ -246,6 +252,8 @@ Provider는 같은 combinational state에서 ready인 A/W/S/C response를 함께
 ## 11. Publish-triggered lookahead
 
 Async `publishStripe`는 queue-only operation이 아니다. 승인된 stripe는 activation host memory를 RTL에서 사용할 수 있음을 알리는 event이며, current WS/RC execution이 계속되는 동안 Core가 즉시 다음 stripe의 첫 A/W/S fragment를 prepare할 수 있게 한다.
+
+Production ExSIA `PIPELINE`에서는 각 stripe의 folding commit 직후 post-fold event를 이 publication path에 전달한다. 전체 activation quantization 종료까지 event를 모아 batch publish하지 않는다. `FULL`은 post-fold event를 collector에 보존하되 전체 quantization 성공 뒤 full descriptor를 한 번 시작한다. 두 mode 모두 NPU output과 8-bit RMD를 frontend-owned staging에서 완료한 뒤에만 caller output을 publish한다.
 
 미공개 activation에는 A read를 발행하지 않는다. Full-matrix mode도 이 scheduler path를 사용하지만 A/W/S/C region 전체가 descriptor 제출 시점부터 available하므로 publication gate가 없다.
 
@@ -294,5 +302,7 @@ Host pointer dereference, CPU thread scheduling, sleep, 기타 wall-clock은 이
 이 timebase는 기능 RTL time만 나타낸다. On-core scale cache와 resident weight-bank state는 기능적으로 모델링하지만 host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, CPU execution, OS scheduling, clock frequency는 모델링하지 않는다.
 
 Host pointer access도 zero-time이다. 따라서 CPU와 NPU의 common time 비교나 physical ns/GHz/Fmax 또는 silicon 성능을 이 counter나 Verilator host runtime에서 도출할 수 없다.
+
+현재 production ExSIA format은 A8/Q8이다. A4/Q4, A16/Q16, Q8 H2/HP2와 mixed precision은 TODO이고 지원되는 route로 defer하거나 다른 format으로 fallback하지 않는다. ABI v3는 이 지원 범위를 넓히는 format ABI가 아니라 signed-64 provider output transport를 추가한 ABI이며, ABI v2 layout과 final signed-32 saturation 경계는 유지한다.
 
 코드 분석 순서와 작성 규칙은 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md), public simulator 계약은 [simulator 사용법](../sim/README.md)에서 확인한다.

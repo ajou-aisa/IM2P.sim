@@ -256,11 +256,12 @@ int main(void) {
     uint32_t configured_bits = im2p_sim_activation_bits();
     uint32_t configured_storage_bytes = im2p_sim_activation_storage_bytes();
     uint32_t configured_dim = im2p_sim_dim();
-    if (im2p_sim_abi_version() != IM2P_ABI_VERSION_2 ||
+    if (im2p_sim_abi_version() != IM2P_ABI_VERSION_3 ||
         (configured_bits != 4 && configured_bits != 8 &&
          configured_bits != 16) ||
         configured_storage_bytes != (configured_bits == 16 ? 2u : 1u) ||
-        (configured_dim != 16 && configured_dim != 32)) {
+        (configured_dim != 16 && configured_dim != 32 &&
+         configured_dim != 64)) {
       return 31;
     }
     if (configured_bits != 8 || configured_dim != 16) {

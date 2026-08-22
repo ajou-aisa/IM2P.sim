@@ -9,17 +9,17 @@ import Accumulator::*;
 
 // Column bank별 서로 다른 row address, valid mask, optional accumulation을 검증한다.
 module mkTbAccumulator(Empty);
-    AccumulatorIfc#(8, 4, Int#(32)) dut <- mkAccumulator;
+    AccumulatorIfc#(8, 4, Int#(64)) dut <- mkAccumulator;
     Reg#(UInt#(3)) state <- mkReg(0);
-    Reg#(Vector#(4, Int#(32))) observedRow0 <- mkRegU;
+    Reg#(Vector#(4, Int#(64))) observedRow0 <- mkRegU;
 
     rule initializeRow0 (state == 0);
-        dut.writeRow(0, vector4(10, 20, 30, 40));
+        dut.writeRow(0, vector4(2147483647, 20, 30, 40));
         state <= 1;
     endrule
 
     rule initializeRow2 (state == 1);
-        dut.writeRow(2, vector4(100, 200, 300, 400));
+        dut.writeRow(2, vector4(100, 200, -2147483648, 400));
         state <= 2;
     endrule
 
@@ -41,7 +41,7 @@ module mkTbAccumulator(Empty);
         dut.commit(
             valids,
             rowAddresses,
-            vector4(1, 99, -5, 99),
+            vector4(1, 99, -1, 99),
             True
         );
         state <= 3;
@@ -53,10 +53,10 @@ module mkTbAccumulator(Empty);
     endrule
 
     rule checkAccumulation (state == 4);
-        Vector#(4, Int#(32)) row2 = dut.readRow(2);
+        Vector#(4, Int#(64)) row2 = dut.readRow(2);
 
-        Bool passed = observedRow0 == vector4(11, 20, 30, 40)
-            && row2 == vector4(100, 200, 295, 400);
+        Bool passed = observedRow0 == vector4(2147483648, 20, 30, 40)
+            && row2 == vector4(100, 200, -2147483649, 400);
 
         if (!passed) begin
             $display(
@@ -81,7 +81,7 @@ module mkTbAccumulator(Empty);
     endrule
 
     rule checkReplacement (state == 6);
-        Vector#(4, Int#(32)) row1 = dut.readRow(1);
+        Vector#(4, Int#(64)) row1 = dut.readRow(1);
 
         if (row1 != vector4(7, 8, 9, 10)) begin
             $display(
@@ -91,7 +91,7 @@ module mkTbAccumulator(Empty);
             $finish(1);
         end
         else begin
-            $display("ACCUMULATOR: PASS");
+            $display("ACCUMULATOR: PASS boundaries=(2147483648,-2147483649)");
             $finish(0);
         end
     endrule

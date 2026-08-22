@@ -107,7 +107,7 @@ fn drive_activations(handle: &Handle, port: u32, values: &[i32], bits: u32) -> i
 fn verilator_activation_packing_signed_lanes_and_zero_tails() {
     let (bits, dim, storage_bytes) = configuration();
     assert!(matches!(bits, 4 | 8 | 16));
-    assert!(matches!(dim, 16 | 32));
+    assert!(matches!(dim, 16 | 32 | 64));
     assert_eq!(bits, im2p_sim::ACTIVATION_BITS as u32);
     assert_eq!(storage_bytes, im2p_sim::ACTIVATION_STORAGE_BYTES as u32);
     assert_eq!(storage_bytes, if bits == 16 { 2 } else { 1 });

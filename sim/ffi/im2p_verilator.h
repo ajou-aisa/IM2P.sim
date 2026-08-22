@@ -49,9 +49,9 @@ typedef struct {
 } im2p_read_request_t;
 
 /*
- * Pending C (output) write request. `values` receives exactly DIM int32
- * lanes copied out of the accumulator row the RTL is presenting; lanes at or
- * beyond `element_count` are RTL-side padding and carry no meaning.
+ * Pending C (output) write request. Exact bridge entry points copy DIM int64
+ * lanes from RTL; compatibility int32 entry points saturate only while
+ * narrowing. Lanes at or beyond `element_count` are RTL-side padding.
  */
 typedef struct {
     uint64_t tag;
@@ -225,6 +225,17 @@ int im2p_start_execution(
 );
 int im2p_put_activation_row(im2p_handle_t handle, const void *values);
 int im2p_acknowledge_execution(im2p_handle_t handle);
+int im2p_write_accumulator_row_i64(
+    im2p_handle_t handle,
+    uint32_t row,
+    const int64_t *values
+);
+int im2p_read_accumulator_row_i64(
+    im2p_handle_t handle,
+    uint32_t row,
+    int64_t *values
+);
+/* Compatibility surface for existing int32 callers. */
 int im2p_write_accumulator_row(
     im2p_handle_t handle,
     uint32_t row,
@@ -307,9 +318,15 @@ int im2p_put_scale_read_response(
 );
 
 /*
- * Copies the pending C write request, including exactly DIM int32 lanes into
- * `values`. `values` must have room for the build's DIM entries.
+ * Copies the pending C write request into exactly DIM lanes. The exact entry
+ * point preserves signed int64 values; the compatibility entry point clamps
+ * only when narrowing each lane to int32.
  */
+int im2p_output_write_request_i64(
+    im2p_handle_t handle,
+    im2p_write_request_t *request,
+    int64_t *values
+);
 int im2p_output_write_request(
     im2p_handle_t handle,
     im2p_write_request_t *request,
