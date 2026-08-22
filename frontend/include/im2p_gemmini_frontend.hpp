@@ -28,6 +28,12 @@ enum class Route : uint8_t {
   q8_hp2,
   q8_channel,
   q8_channel_dense_sidecar,
+  q4_h0,
+  q4_h1,
+  q4_hp1,
+  q16_h0,
+  q16_h1,
+  q16_hp1,
   unknown,
 };
 
@@ -53,8 +59,8 @@ struct Status {
 };
 
 struct Options {
-  // Conservative minimum number of one-logical-cycle progress iterations
-  // allowed without a matched completion. This is not a wall-clock timeout.
+  // Logical RTL cycles allowed without a completed K fragment or stripe.
+  // Runtime applies a 65536-cycle minimum; UINT64_MAX disables the watchdog.
   uint64_t max_stalled_cycles = 65536;
 };
 
@@ -115,6 +121,10 @@ struct PipelineOutputStage {
   float *data = nullptr;
   size_t element_count = 0;
 };
+
+[[nodiscard]] uint32_t compiled_activation_bits() noexcept;
+[[nodiscard]] uint32_t compiled_weight_bits() noexcept;
+[[nodiscard]] uint32_t compiled_dim() noexcept;
 
 [[nodiscard]] ExecuteResult execute(const ggml_gemmini_args_t *args,
                                     Mode mode = Mode::full,

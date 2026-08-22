@@ -26,6 +26,8 @@ EXPECTED_SRC = {
     "array/InputSkew.bsv",
     "array/SystolicArray.bsv",
     "array/SystolicArrayTiled.bsv",
+    "array/SystolicArrayA4W4D64.bsv",
+    "array/SystolicArrayA16W16D64.bsv",
     "array/SystolicArrayInt4x64.bsv",
     "array/SystolicArrayInt8x64.bsv",
     "array/SystolicArrayInt16x64.bsv",
@@ -83,6 +85,12 @@ EXPECTED_SYNTH = {
     "SynthInt4x64.bsv",
     "SynthInt8x64.bsv",
     "SynthInt16x64.bsv",
+    "SynthA4W4D16.bsv",
+    "SynthA4W4D32.bsv",
+    "SynthA4W4D64.bsv",
+    "SynthA16W16D16.bsv",
+    "SynthA16W16D32.bsv",
+    "SynthA16W16D64.bsv",
     "SynthFp16.bsv",
     "SynthFp32.bsv",
 }
@@ -98,7 +106,22 @@ INTEGER_SYNTH_TOPS = (
     "SynthInt4x64.bsv",
     "SynthInt8x64.bsv",
     "SynthInt16x64.bsv",
+    "SynthA4W4D16.bsv",
+    "SynthA4W4D32.bsv",
+    "SynthA4W4D64.bsv",
+    "SynthA16W16D16.bsv",
+    "SynthA16W16D32.bsv",
+    "SynthA16W16D64.bsv",
 )
+
+MATCHED_INTEGER_SYNTH_TYPES = {
+    "SynthA4W4D16.bsv": ("4", "4", "8"),
+    "SynthA4W4D32.bsv": ("4", "4", "8"),
+    "SynthA4W4D64.bsv": ("4", "4", "8"),
+    "SynthA16W16D16.bsv": ("16", "16", "32"),
+    "SynthA16W16D32.bsv": ("16", "16", "32"),
+    "SynthA16W16D64.bsv": ("16", "16", "32"),
+}
 
 PUBLIC_FRONTEND_ROUTES = (
     "q8_0_unpacked_to_h1",
@@ -109,11 +132,35 @@ PUBLIC_FRONTEND_ROUTES = (
     "q8_hp2",
     "q8_channel",
     "q8_channel_dense_sidecar",
+    "q4_h0",
+    "q4_h1",
+    "q4_hp1",
+    "q16_h0",
+    "q16_h1",
+    "q16_hp1",
     "unknown",
 )
 
 PUBLIC_FRONTEND_ARTIFACTS = {
     "block_q8_h1",
+    "block_q4_h0",
+    "block_q4_h1",
+    "block_q4_hp1",
+    "block_q16_h0",
+    "block_q16_h1",
+    "block_q16_hp1",
+    "q4_h0",
+    "q4_h0_blocks",
+    "q4_h1",
+    "q4_h1_blocks",
+    "q4_hp1",
+    "q4_hp1_blocks",
+    "q16_h0",
+    "q16_h0_blocks",
+    "q16_h1",
+    "q16_h1_blocks",
+    "q16_hp1",
+    "q16_hp1_blocks",
     "block_q8_hp1",
     "q8_0_unpacked_to_h1",
     "q8_channel",
@@ -305,6 +352,42 @@ def check_integer_width_contracts() -> None:
                 f"DefaultAccumulatorWidth (64-bit): synth/{filename}"
             )
 
+    for filename, expected_types in MATCHED_INTEGER_SYNTH_TYPES.items():
+        clean = strip_comments((SYNTH / filename).read_text(encoding="utf-8"))
+        interface = re.search(
+            rf"\bmodule\s+mk{Path(filename).stem}\s*\(\s*"
+            r"IM2PCoreIfc#\((.*?)\)\s*\)\s*;",
+            clean,
+            flags=re.DOTALL,
+        )
+        assert interface is not None
+        lane_types = tuple(
+            re.findall(r"Int#\((4|8|16|32)\)", interface.group(1))[:3]
+        )
+        if lane_types != expected_types:
+            fail(
+                f"matched integer lane types are wrong in synth/{filename}: "
+                f"expected {expected_types}, got {lane_types}"
+            )
+
+    for stem in ("A4W4", "A16W16"):
+        path = SRC / f"array/SystolicArray{stem}D64.bsv"
+        require_substrings(
+            path,
+            (
+                f"mkSystolicArrayTile{stem}D16",
+                "Vector#(\n        4,\n        Vector#(\n            4,",
+                "replicateM(replicateM(",
+                "mkSystolicArray64WithTiles(tiles)",
+            ),
+        )
+
+    core = strip_comments((SRC / "core/IM2PCore.bsv").read_text(encoding="utf-8"))
+    if "weightElementBytes: fromInteger(storageBytes(valueOf(weightBits)))" not in re.sub(
+        r"\s+", " ", core
+    ):
+        fail("weightElementBytes must use ceiling storage bytes")
+
 
 def check_frontend_and_output_contracts() -> None:
     frontend_header = ROOT / "frontend/include/im2p_gemmini_frontend.hpp"
@@ -360,30 +443,17 @@ def check_frontend_and_output_contracts() -> None:
             f"  missing={sorted(PUBLIC_FRONTEND_ARTIFACTS - artifacts)}\n"
             f"  extra={sorted(artifacts - PUBLIC_FRONTEND_ARTIFACTS)}"
         )
-    forbidden_precision = re.search(r"(?i)(?:q4_|q16_)", frontend_artifact_text)
-    if forbidden_precision:
-        fail(
-            "Q4/Q16 frontend route or artifact support is TODO, found "
-            f"{forbidden_precision.group(0)}"
-        )
-
     simulator_path = ROOT / "sim/src/simulator.rs"
     require_regex(
         simulator_path,
-        r"type WriteProviderV2\s*=.*?\*const i32",
-        "ABI v2 signed-32 provider callback",
-    )
-    require_regex(
-        simulator_path,
-        r"type WriteProviderV3\s*=.*?\*const i64",
-        "ABI v3 signed-64 provider callback",
+        r"type WriteProvider\s*=.*?\*const i64",
+        "canonical signed-64 provider callback",
     )
     require_regex(
         simulator_path,
         r"pub fn write_output\(.*?values:\s*&\[i64\].*?"
-        r"WriteProvider::V2\(callback\).*?saturating_i64_to_i32.*?"
-        r"WriteProvider::V3\(callback\).*?values\.as_ptr\(\)",
-        "signed-64 provider transport with saturation only at the V2 boundary",
+        r"callback\(.*?values\.as_ptr\(\)",
+        "signed-64 canonical provider transport",
     )
 
     require_substrings(
@@ -403,8 +473,11 @@ def check_frontend_and_output_contracts() -> None:
         ROOT / "sim/include/im2p_sim.h",
         (
             "const int64_t *values",
-            "ABI v3 keeps raw output storage signed 32-bit",
-            "ABI v2 remains frozen and callable",
+            "IM2P_ABI_VERSION = 4",
+            "im2p_stripe_work_desc_t",
+            "im2p_activation_stripe_t",
+            "im2p_begin_striped_matmul",
+            "im2p_publish_stripe",
         ),
     )
 
@@ -413,7 +486,8 @@ def check_frontend_and_output_contracts() -> None:
         (
             "q8_h2 is deprecated",
             "q8_hp2 is unsupported",
-            "im2p_publish_stripe_v3",
+            "im2p_publish_stripe",
+            "im2p_begin_striped_matmul",
         ),
     )
 
@@ -433,7 +507,7 @@ def check_frontend_and_output_contracts() -> None:
                 "H2",
                 "HP2",
                 "mixed precision",
-                "ABI v3",
+                "canonical ABI",
             ),
         )
 
@@ -448,9 +522,21 @@ def check_exsia_integration_contracts() -> None:
 
     require_regex(
         adapter,
-        r"Result gate_route\(.*?if \(weight_bits != 8\).*?"
-        r"if \(exsia\).*?activation_bits == 8.*?rmd_enabled.*?cpu_direct_rmd",
-        "ExSIA production A8/Q8-only fail-closed gate",
+        r"Result gate_route\(.*?"
+        r"if \(weight_bits != 4 && weight_bits != 8 && weight_bits != 16\).*?"
+        r"if \(exsia\).*?activation_bits == 8 && weight_bits == 8.*?"
+        r"rmd_enabled.*?cpu_direct_rmd.*?"
+        r"weight_bits == 8 \|\| activation_bits == weight_bits",
+        "matched Q4/Q16 non-ExSIA and A8/Q8-only ExSIA fail-closed gate",
+    )
+    require_substrings(
+        adapter,
+        ("run_stripe_pipeline", "Mode::stripe_pipeline",
+         "authorize_output_commit(*started.run, true)"),
+    )
+    require_substrings(
+        orchestration,
+        ("pipeline_requested", "run_stripe_pipeline(args)"),
     )
     require_regex(
         orchestration,
@@ -582,7 +668,10 @@ def main() -> None:
     generated_multiwidth_tops = {
         top
         for top in expected_synth_tops
-        if re.fullmatch(r"mkSynthInt(?:4|8|16)x(?:16|32|64)", top)
+        if re.fullmatch(
+            r"mkSynth(?:Int(?:4|8|16)x|A(?:4W4|16W16)D)(?:16|32|64)",
+            top,
+        )
     }
     for top in sorted(
         expected_test_tops | (expected_synth_tops - generated_multiwidth_tops)
@@ -592,9 +681,20 @@ def main() -> None:
     if "TOP=mkSynthInt$(1)x$(2)" not in makefile_text:
         fail("Makefile multiwidth top template missing")
     for top in sorted(generated_multiwidth_tops):
-        match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32|64)", top)
-        assert match is not None
-        target = f"verilator-int{match.group(1)}x{match.group(2)}"
+        legacy_match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32|64)", top)
+        matched_match = re.fullmatch(
+            r"mkSynthA(4|16)W(4|16)D(16|32|64)", top
+        )
+        if legacy_match is not None:
+            target = (
+                f"verilator-int{legacy_match.group(1)}x{legacy_match.group(2)}"
+            )
+        else:
+            assert matched_match is not None
+            target = (
+                f"verilator-a{matched_match.group(1)}-w{matched_match.group(2)}-"
+                f"d{matched_match.group(3)}"
+            )
         if target not in makefile_text:
             fail(f"Makefile explicit multiwidth target missing: {target}")
     if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):

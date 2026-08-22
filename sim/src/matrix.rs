@@ -1,4 +1,4 @@
-use crate::{ActivationValue, KBlockScaleMatrixView, SimError, VectorOp};
+use crate::{ActivationValue, KBlockScaleMatrixView, SimError, VectorOp, WeightValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatrixView<'a, T> {
@@ -59,7 +59,7 @@ pub struct MatmulLayout {
 #[derive(Debug)]
 pub struct MatmulWork<'a> {
     pub activations: MatrixView<'a, ActivationValue>,
-    pub weights: MatrixView<'a, i8>,
+    pub weights: MatrixView<'a, WeightValue>,
     pub scales: Option<KBlockScaleMatrixView<'a>>,
     pub vector_op: VectorOp,
 }

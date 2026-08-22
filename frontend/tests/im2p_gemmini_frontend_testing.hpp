@@ -47,6 +47,12 @@ struct RunTestAccess {
   };
 
   [[nodiscard]] static Snapshot inspect(const Run &) noexcept;
+  [[nodiscard]] static int read_selected_weight(
+      const ggml_gemmini_args_t &, size_t row, size_t column, size_t count,
+      void *out) noexcept;
+  [[nodiscard]] static bool weight_factor(const ggml_gemmini_args_t &,
+                                          size_t block, size_t column,
+                                          double &out) noexcept;
   [[nodiscard]] static bool wait_for_completion(Run &,
                                                 uint64_t target) noexcept;
   [[nodiscard]] static bool wait_for_closing(Run &) noexcept;

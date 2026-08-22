@@ -1,8 +1,8 @@
-use im2p_sim::{ActivationValue, KBlockScaleMatrixView, TileRequest, VectorOp};
+use im2p_sim::{ActivationValue, KBlockScaleMatrixView, TileRequest, VectorOp, WeightValue};
 
 pub fn valid_request<'a>(
     activations: &'a [ActivationValue],
-    weights: &'a [i8],
+    weights: &'a [WeightValue],
     matrix: Option<KBlockScaleMatrixView<'a>>,
     operation: VectorOp,
 ) -> TileRequest<'a> {

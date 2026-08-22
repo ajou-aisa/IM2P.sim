@@ -1,13 +1,15 @@
 #[cfg(test)]
-use super::WriteProvider;
+use super::ReadWeightProvider;
 use super::{Error, Im2pSimulator, MemoryProvider};
 use crate::{
-    activation::activation_elements_to_address_bytes, ffi, ActivationValue, MatmulLayout,
-    MatmulWork, MatrixView, MatrixViewMut, WorkStats,
+    activation::activation_elements_to_address_bytes,
+    ffi,
+    weight::{weight_byte_indices, weight_elements_to_address_bytes},
+    ActivationValue, MatmulLayout, MatmulWork, MatrixView, MatrixViewMut, WeightValue, WorkStats,
 };
 mod memory;
 mod stats;
-use memory::{resolve_activation, resolve_i8, resolve_scale, validate_work, write_raw_output};
+use memory::{resolve_activation, resolve_scale, resolve_weight, validate_work, write_raw_output};
 
 pub(super) const ACTIVATION_BASE: u64 = 0x1000_0000_0000_0000;
 pub(super) const WEIGHT_BASE: u64 = 0x2000_0000_0000_0000;
@@ -59,7 +61,8 @@ impl Im2pSimulator {
         }
         let scale = work.scales;
         let job_id = super::descriptor::job_id(scale.map_or(1, |view| view.context));
-        let weight_row_stride = super::descriptor::u64_field(work.weights.row_stride)?;
+        let weight_row_stride = weight_elements_to_address_bytes(work.weights.row_stride)
+            .map_err(|_| Error::InvalidWeightStride)?;
         let scale_row_stride =
             super::descriptor::u64_field(scale.map_or(1, |view| view.row_stride))?;
         let output_row_stride = super::descriptor::output_row_stride_bytes(output.row_stride)?;
@@ -158,7 +161,8 @@ impl Im2pSimulator {
             return Err(Error::InvalidLayout);
         }
         let job_id = super::descriptor::job_id(work_context);
-        let rtl_weight_row_stride = super::descriptor::u64_field(weight_row_stride)?;
+        let rtl_weight_row_stride = weight_elements_to_address_bytes(weight_row_stride)
+            .map_err(|_| Error::InvalidWeightStride)?;
         let rtl_scale_row_stride = super::descriptor::u64_field(columns)?;
         let rtl_output_row_stride = super::descriptor::output_row_stride_bytes(output_row_stride)?;
         let rtl_row_count = super::descriptor::u32_field(rows)?;
@@ -300,21 +304,26 @@ impl Im2pSimulator {
     fn service_i8_request(
         &mut self,
         getter: unsafe extern "C" fn(*mut std::ffi::c_void, *mut ffi::ReadRequest) -> i32,
-        responder: unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const i8, u32) -> i32,
-        view: &MatrixView<'_, i8>,
+        responder: unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            u64,
+            *const std::ffi::c_void,
+            u32,
+        ) -> i32,
+        view: &MatrixView<'_, WeightValue>,
         base: u64,
     ) -> Result<(), Error> {
         let mut request = ffi::ReadRequest::default();
         // SAFETY: request is writable and handle remains valid.
         let status = unsafe { getter(self.handle.as_ptr(), &mut request) };
         if status == ffi::IM2P_REQUEST_PRESENT {
-            let values = resolve_i8(view, base, request)?;
-            // SAFETY: values has request.element_count readable lanes.
+            let values = resolve_weight(view, base, request)?;
+            // SAFETY: values has request.element_count readable selected-width lanes.
             let accepted = unsafe {
                 responder(
                     self.handle.as_ptr(),
                     request.tag,
-                    values.as_ptr(),
+                    values.as_ptr().cast(),
                     request.element_count,
                 )
             };
@@ -337,19 +346,10 @@ impl Im2pSimulator {
     ) -> Result<(), Error> {
         let mut request = ffi::ReadRequest::default();
         type Getter = unsafe extern "C" fn(*mut std::ffi::c_void, *mut ffi::ReadRequest) -> i32;
-        type Responder = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const i8, u32) -> i32;
-        let (getter, responder, base) = if weight {
-            (
-                ffi::im2p_weight_read_request as Getter,
-                ffi::im2p_stage_weight_read_response as Responder,
-                WEIGHT_BASE,
-            )
+        let (getter, base) = if weight {
+            (ffi::im2p_weight_read_request as Getter, WEIGHT_BASE)
         } else {
-            (
-                ffi::im2p_scale_read_request as Getter,
-                ffi::im2p_stage_scale_read_response as Responder,
-                SCALE_BASE,
-            )
+            (ffi::im2p_scale_read_request as Getter, SCALE_BASE)
         };
         let status = unsafe { getter(self.handle.as_ptr(), &mut request) };
         if status == ffi::IM2P_REQUEST_ABSENT {
@@ -361,26 +361,39 @@ impl Im2pSimulator {
         let offset = request
             .address
             .checked_sub(base)
-            .ok_or(Error::InvalidKRange)? as usize;
-        let row = offset / row_stride;
-        let column = offset % row_stride;
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(Error::InvalidKRange)?;
+        let (row, column) = if weight {
+            weight_byte_indices(offset, row_stride).map_err(|_| Error::InvalidWeightStride)?
+        } else {
+            (offset / row_stride, offset % row_stride)
+        };
         let count = request.element_count as usize;
         if row >= row_limit || column + count > column_limit {
             return Err(Error::InvalidKRange);
         }
-        let mut values = vec![0_i8; count];
-        if weight {
+        let accepted = if weight {
+            let mut values = vec![WeightValue::default(); count];
             provider.read_weight(row, column, &mut values)?;
+            unsafe {
+                ffi::im2p_stage_weight_read_response(
+                    self.handle.as_ptr(),
+                    request.tag,
+                    values.as_ptr().cast(),
+                    request.element_count,
+                )
+            }
         } else {
+            let mut values = vec![0_i8; count];
             provider.read_scale(row, column, &mut values)?;
-        }
-        let accepted = unsafe {
-            responder(
-                self.handle.as_ptr(),
-                request.tag,
-                values.as_ptr(),
-                request.element_count,
-            )
+            unsafe {
+                ffi::im2p_stage_scale_read_response(
+                    self.handle.as_ptr(),
+                    request.tag,
+                    values.as_ptr(),
+                    request.element_count,
+                )
+            }
         };
         self.require_staged("provider_read_response", accepted)
     }
@@ -501,7 +514,7 @@ mod activation_boundary_tests {
         _row: usize,
         _column: usize,
         _count: usize,
-        _values: *const i32,
+        _values: *const i64,
     ) -> i32 {
         0
     }
@@ -522,9 +535,9 @@ mod activation_boundary_tests {
         });
         let provider = MemoryProvider {
             context: std::ptr::null_mut(),
-            read_weight: Some(read_provider),
+            read_weight: Some(super::ReadWeightProvider::I8(read_provider)),
             read_scale: None,
-            write_output: Some(super::WriteProvider::V2(write_provider)),
+            write_output: Some(write_provider),
         };
         PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
         PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);
@@ -564,9 +577,9 @@ mod activation_boundary_tests {
         });
         let provider = MemoryProvider {
             context: std::ptr::null_mut(),
-            read_weight: Some(read_provider),
+            read_weight: Some(super::ReadWeightProvider::I8(read_provider)),
             read_scale: None,
-            write_output: Some(super::WriteProvider::V2(write_provider)),
+            write_output: Some(write_provider),
         };
         PROVIDER_START_ATTEMPTS.store(0, Ordering::SeqCst);
         PROVIDER_START_INTERCEPT.store(true, Ordering::SeqCst);

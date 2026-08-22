@@ -2,15 +2,11 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
 
-use crate::{ActivationValue, Im2pSimulator, StripedMatmul};
+use crate::{ActivationValue, Im2pSimulator, StripedMatmul, WeightValue};
 
-mod v3;
-pub(super) use v3::{ActivationStripeV3, MatmulDescV3, StripeWorkDescV3};
-
-#[repr(C)]
 pub struct MatmulDesc {
     pub activations: *const ActivationValue,
-    pub weights: *const i8,
+    pub weights: *const WeightValue,
     pub scales: *const i8,
     pub output: *mut i32,
     pub m: usize,
@@ -31,9 +27,8 @@ pub struct MatmulDesc {
     pub work_context: u64,
 }
 
-#[repr(C)]
-pub struct StripeWorkDescC {
-    pub weights: *const i8,
+pub struct StripeWorkDesc {
+    pub weights: *const WeightValue,
     pub scales: *const i8,
     pub output: *mut i32,
     pub m: usize,
@@ -58,40 +53,47 @@ pub struct StripeWorkDescC {
 #[derive(Clone, Copy)]
 pub struct ProviderC {
     pub context: *mut c_void,
-    pub read_weight: Option<crate::simulator::ReadProvider>,
+    pub read_weight_i8: Option<crate::simulator::ReadWeightProviderI8>,
+    pub read_weight_i16: Option<crate::simulator::ReadWeightProviderI16>,
     pub read_scale: Option<crate::simulator::ReadProvider>,
-    pub write_output: Option<crate::simulator::WriteProviderV2>,
+    pub write_output: Option<crate::simulator::WriteProvider>,
+}
+
+impl ProviderC {
+    pub fn selected(self) -> crate::simulator::MemoryProvider {
+        let read_weight = if crate::WEIGHT_BITS == 16 {
+            self.read_weight_i16
+                .map(crate::simulator::ReadWeightProvider::I16)
+        } else {
+            self.read_weight_i8
+                .map(crate::simulator::ReadWeightProvider::I8)
+        };
+        crate::simulator::MemoryProvider {
+            context: self.context,
+            read_weight,
+            read_scale: self.read_scale,
+            write_output: self.write_output,
+        }
+    }
 }
 
 #[repr(C)]
-pub struct MatmulDescV1 {
-    pub version: u32,
-    pub legacy: MatmulDesc,
-    pub provider: ProviderC,
-}
-
-#[repr(C)]
-pub struct StripeWorkDescV1 {
-    pub version: u32,
-    pub legacy: StripeWorkDescC,
-    pub provider: ProviderC,
-}
-
-#[repr(C)]
-pub struct MatmulDescV2 {
+pub struct MatmulDescC {
     pub abi_version: u32,
     pub activation_bits: u32,
     pub activation_storage_bytes: u32,
+    pub weight_bits: u32,
+    pub weight_storage_bytes: u32,
     pub dim: u32,
     pub activations: *const c_void,
-    pub weights: *const i8,
+    pub weights: *const c_void,
     pub scales: *const i8,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
     pub k: usize,
     pub activation_row_stride_bytes: usize,
-    pub weight_row_stride: usize,
+    pub weight_row_stride_bytes: usize,
     pub output_row_stride: usize,
     pub tile_i_rows: usize,
     pub tile_j_columns: usize,
@@ -107,18 +109,20 @@ pub struct MatmulDescV2 {
 }
 
 #[repr(C)]
-pub struct StripeWorkDescV2 {
+pub struct StripeWorkDescC {
     pub abi_version: u32,
     pub activation_bits: u32,
     pub activation_storage_bytes: u32,
+    pub weight_bits: u32,
+    pub weight_storage_bytes: u32,
     pub dim: u32,
-    pub weights: *const i8,
+    pub weights: *const c_void,
     pub scales: *const i8,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
     pub k: usize,
-    pub weight_row_stride: usize,
+    pub weight_row_stride_bytes: usize,
     pub output_row_stride: usize,
     pub tile_i_rows: usize,
     pub tile_j_columns: usize,
@@ -134,32 +138,13 @@ pub struct StripeWorkDescV2 {
     pub provider: ProviderC,
 }
 
-impl From<ProviderC> for crate::simulator::MemoryProvider {
-    fn from(value: ProviderC) -> Self {
-        Self {
-            context: value.context,
-            read_weight: value.read_weight,
-            read_scale: value.read_scale,
-            write_output: value.write_output.map(crate::simulator::WriteProvider::V2),
-        }
-    }
-}
-
 #[repr(C)]
 pub struct ActivationStripeC {
-    pub stripe_id: u32,
-    pub i_start: usize,
-    pub rows: usize,
-    pub activations: *const ActivationValue,
-    pub activation_row_stride: usize,
-    pub context: u64,
-}
-
-#[repr(C)]
-pub struct ActivationStripeV2 {
     pub abi_version: u32,
     pub activation_bits: u32,
     pub activation_storage_bytes: u32,
+    pub weight_bits: u32,
+    pub weight_storage_bytes: u32,
     pub dim: u32,
     pub stripe_id: u32,
     pub i_start: usize,
@@ -244,6 +229,5 @@ pub struct StreamBox {
     pub output_stride: usize,
     pub columns: usize,
     pub reduction: usize,
-    pub abi_version: u32,
     pub failed: bool,
 }

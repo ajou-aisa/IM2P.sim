@@ -12,8 +12,8 @@ pub mod common;
 
 use common::{assert_matrix_eq, golden_output, k_fragments, KBlockScaleMatrix, Lcg, Shape};
 use im2p_sim::{
-    parse_activation, ActivationValue, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut,
-    SimError, TileRequest, VectorOp,
+    parse_activation, parse_weight, ActivationValue, Im2pSimulator, MatmulWork, MatrixView,
+    MatrixViewMut, SimError, TileRequest, VectorOp, WeightValue,
 };
 
 /// Row-major matrix with an arbitrary row stride, so the API is handed
@@ -104,10 +104,10 @@ fn weight_operand(
     row_stride: usize,
     seed: u32,
     bound: i8,
-) -> Strided<i8> {
+) -> Strided<WeightValue> {
     let mut lcg = Lcg::new(seed);
-    Strided::from_fn(rows, cols, row_stride, i8::MIN, |_, _| {
-        lcg.signed(-bound, bound)
+    Strided::from_fn(rows, cols, row_stride, WeightValue::default(), |_, _| {
+        parse_weight(i32::from(lcg.signed(-bound, bound))).expect("bounded weight")
     })
 }
 
@@ -279,7 +279,7 @@ fn full_arithmetic_wraps_at_signed_i64_width_before_final_output() -> Result<(),
         parse_activation(-2).expect("negative two is valid at every configured width"),
         parse_activation(-2).expect("negative two is valid at every configured width"),
     ];
-    let weights = [1_i8, 1];
+    let weights: [WeightValue; 2] = [1, 1];
     let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 62);
     let fragments = k_fragments(shape.k, scales.block_size, 16);
 
@@ -322,7 +322,7 @@ fn raw_full_output_saturates_positive_and_negative_i64_accumulators() -> Result<
         parse_activation(-2).expect("negative two is valid at every configured width"),
         parse_activation(-2).expect("negative two is valid at every configured width"),
     ];
-    let weights = [1_i8, 1];
+    let weights: [WeightValue; 2] = [1, 1];
     let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 30);
     let fragments = k_fragments(shape.k, scales.block_size, 16);
     let exact = golden_output(

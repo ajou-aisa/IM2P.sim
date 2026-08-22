@@ -1,4 +1,4 @@
-use im2p_sim::{parse_activation, ActivationValue};
+use im2p_sim::{parse_activation, parse_weight, ActivationValue, WeightValue};
 
 use super::Shape;
 
@@ -13,12 +13,13 @@ pub fn structured_activations(shape: Shape) -> Vec<ActivationValue> {
         .collect()
 }
 
-pub fn structured_weights(shape: Shape) -> Vec<i8> {
+pub fn structured_weights(shape: Shape) -> Vec<WeightValue> {
     (0..shape.k * shape.n)
         .map(|index| {
             let k = index / shape.n;
             let column = index % shape.n;
-            ((11 * k + 7 * column + 3) % 13) as i8 - 6
+            let value = ((11 * k + 7 * column + 3) % 13) as i32 - 6;
+            parse_weight(value).expect("structured weight is valid for every width")
         })
         .collect()
 }

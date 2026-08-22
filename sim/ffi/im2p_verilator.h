@@ -200,8 +200,10 @@ uint64_t im2p_work_completion_cycle(im2p_handle_t handle);
 uint32_t im2p_observed_response_mask(im2p_handle_t handle);
 uint32_t im2p_max_concurrent_responses(im2p_handle_t handle);
 uint32_t im2p_compiled_activation_bits(void);
+uint32_t im2p_compiled_weight_bits(void);
 uint32_t im2p_compiled_dim(void);
 uint32_t im2p_compiled_activation_storage_bytes(void);
+uint32_t im2p_compiled_weight_storage_bytes(void);
 
 int im2p_weights_ready(im2p_handle_t handle);
 int im2p_load_weight_ready(im2p_handle_t handle);
@@ -210,7 +212,7 @@ int im2p_execution_done(im2p_handle_t handle);
 int im2p_idle(im2p_handle_t handle);
 
 int im2p_begin_weight_load(im2p_handle_t handle);
-int im2p_load_weight_row(im2p_handle_t handle, uint32_t row, const int8_t *values);
+int im2p_load_weight_row(im2p_handle_t handle, uint32_t row, const void *values);
 int im2p_configure_scaling(im2p_handle_t handle, uint32_t block_size, uint32_t total_k, uint64_t context);
 int im2p_service_scale_request(im2p_handle_t handle, const im2p_scale_matrix_view_t *view);
 void im2p_scale_counters(im2p_handle_t handle, im2p_scale_counters_t *counters);
@@ -295,13 +297,13 @@ int im2p_put_activation_read_response(im2p_handle_t handle, uint64_t tag,
 int im2p_stage_weight_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const void *values,
     uint32_t count
 );
 int im2p_put_weight_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const void *values,
     uint32_t count
 );
 int im2p_stage_scale_read_response(

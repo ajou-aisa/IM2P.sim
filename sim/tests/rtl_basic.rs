@@ -1,13 +1,16 @@
 pub mod common;
 
 use common::{assert_matrix_eq, run_case, structured_activations, structured_weights, Case, Shape};
-use im2p_sim::{ActivationValue, Im2pSimulator, SimError, VectorOp};
+use im2p_sim::{
+    parse_activation, parse_weight, ActivationValue, Im2pSimulator, SimError, VectorOp,
+    WeightValue, WEIGHT_BITS,
+};
 
 fn run_bypass(
     simulator: &mut Im2pSimulator,
     shape: Shape,
     activations: &[ActivationValue],
-    weights: &[i8],
+    weights: &[WeightValue],
 ) -> Result<(), SimError> {
     let result = run_case(
         simulator,
@@ -47,6 +50,27 @@ fn bypass_signed_inputs_match_cpu() -> Result<(), SimError> {
     let activations = [-4, 3, -2, 1, 5, -6, 7, -8];
     let weights = [2, -3, 4, -5, 6, -7, 1, -2, 3, -4, 5, -6];
     run_bypass(&mut Im2pSimulator::new()?, shape, &activations, &weights)
+}
+
+#[test]
+fn selected_signed_weight_extrema_match_cpu() -> Result<(), SimError> {
+    let (minimum, maximum) = match WEIGHT_BITS {
+        4 => (-8, 7),
+        8 => (-128, 127),
+        16 => (-32_768, 32_767),
+        _ => unreachable!("supported compile-time weight width"),
+    };
+    let activations = [parse_activation(1).expect("one fits every activation width")];
+    let weights = [
+        parse_weight(minimum).expect("selected minimum weight"),
+        parse_weight(maximum).expect("selected maximum weight"),
+    ];
+    run_bypass(
+        &mut Im2pSimulator::new()?,
+        Shape { m: 1, n: 2, k: 1 },
+        &activations,
+        &weights,
+    )
 }
 
 #[test]

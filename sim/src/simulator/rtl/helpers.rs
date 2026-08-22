@@ -68,7 +68,11 @@ impl Im2pSimulator {
         })
     }
 
-    pub(super) fn require_i8_row(&self, name: &'static str, values: &[i8]) -> Result<(), Error> {
+    pub(super) fn require_weight_row(
+        &self,
+        name: &'static str,
+        values: &[crate::WeightValue],
+    ) -> Result<(), Error> {
         if values.len() != self.dim {
             return Err(Error::InvalidBufferLength {
                 name,

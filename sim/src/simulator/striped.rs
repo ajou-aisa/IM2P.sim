@@ -142,6 +142,10 @@ impl StripedMatmul<'_> {
         self.simulator.cycles().saturating_sub(self.start_cycle)
     }
 
+    pub fn progress_count(&self) -> u64 {
+        self.simulator.matrix_counters().fragments_completed
+    }
+
     pub fn pending_activation_row(&self) -> Option<usize> {
         self.activation_request()
             .ok()
@@ -346,7 +350,7 @@ mod activation_boundary_tests {
         extrema.map(|value| parse_activation(value).expect("selected-width extrema"))
     }
 
-    fn job<'a>(weights: &'a [i8]) -> ManuallyDrop<StripedMatmul<'a>> {
+    fn job<'a>(weights: &'a [crate::WeightValue]) -> ManuallyDrop<StripedMatmul<'a>> {
         ManuallyDrop::new(StripedMatmul {
             simulator: Im2pSimulator {
                 handle: NonNull::<u8>::dangling().cast(),
@@ -386,7 +390,7 @@ mod activation_boundary_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let values: [ActivationValue; 2] = [-9, 8];
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut job = job(&weights);
         SUPPLY_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
         ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
@@ -407,7 +411,7 @@ mod activation_boundary_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let values: [ActivationValue; 2] = [-9, 8];
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut job = job(&weights);
         STAGE_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
         ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
@@ -425,7 +429,7 @@ mod activation_boundary_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let values = selected_extrema();
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut job = job(&weights);
         SUPPLY_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
         ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);
@@ -443,7 +447,7 @@ mod activation_boundary_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let values = selected_extrema();
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut job = job(&weights);
         STAGE_REQUEST_ATTEMPTS.store(0, Ordering::SeqCst);
         ACTIVATION_REQUEST_INTERCEPT.store(true, Ordering::SeqCst);

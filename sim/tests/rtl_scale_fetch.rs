@@ -161,7 +161,7 @@ fn nonsequential_block_jump_uses_demand_fetch() -> Result<(), SimError> {
         (block * 3 + column + 1) as i8
     });
     let activations = vec![im2p_sim::parse_activation(1).expect("valid activation"); dim];
-    let weights = vec![1_i8; dim * 2];
+    let weights: Vec<im2p_sim::WeightValue> = vec![1; dim * 2];
     let mut output = vec![0_i32; 2];
     for (execution_index, block) in [0, 2].into_iter().enumerate() {
         let stats = simulator.execute_tile(

@@ -11,31 +11,49 @@
 
 #include "verilated.h"
 
-#if IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 16
+#if IM2P_WEIGHT_BITS == 4 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 16
+#include "VmkSynthA4W4D16.h"
+using Top = VmkSynthA4W4D16;
+#elif IM2P_WEIGHT_BITS == 4 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
+#include "VmkSynthA4W4D32.h"
+using Top = VmkSynthA4W4D32;
+#elif IM2P_WEIGHT_BITS == 4 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 64
+#include "VmkSynthA4W4D64.h"
+using Top = VmkSynthA4W4D64;
+#elif IM2P_WEIGHT_BITS == 16 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
+#include "VmkSynthA16W16D16.h"
+using Top = VmkSynthA16W16D16;
+#elif IM2P_WEIGHT_BITS == 16 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
+#include "VmkSynthA16W16D32.h"
+using Top = VmkSynthA16W16D32;
+#elif IM2P_WEIGHT_BITS == 16 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
+#include "VmkSynthA16W16D64.h"
+using Top = VmkSynthA16W16D64;
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 16
 #include "VmkSynthInt4x16.h"
 using Top = VmkSynthInt4x16;
-#elif IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
 #include "VmkSynthInt4x32.h"
 using Top = VmkSynthInt4x32;
-#elif IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 64
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 64
 #include "VmkSynthInt4x64.h"
 using Top = VmkSynthInt4x64;
-#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 16
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 16
 #include "VmkSynthInt8x16.h"
 using Top = VmkSynthInt8x16;
-#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 32
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 32
 #include "VmkSynthInt8x32.h"
 using Top = VmkSynthInt8x32;
-#elif IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 64
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 64
 #include "VmkSynthInt8x64.h"
 using Top = VmkSynthInt8x64;
-#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
 #include "VmkSynthInt16x16.h"
 using Top = VmkSynthInt16x16;
-#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
 #include "VmkSynthInt16x32.h"
 using Top = VmkSynthInt16x32;
-#elif IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
+#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
 #include "VmkSynthInt16x64.h"
 using Top = VmkSynthInt16x64;
 #else
@@ -45,8 +63,11 @@ using Top = VmkSynthInt16x64;
 
 constexpr uint32_t kDim = IM2P_DIM;
 constexpr uint32_t kActivationBits = IM2P_ACTIVATION_BITS;
+constexpr uint32_t kWeightBits = IM2P_WEIGHT_BITS;
 constexpr uint32_t kActivationStorageBytes = kActivationBits == 16 ? 2 : 1;
+constexpr uint32_t kWeightStorageBytes = kWeightBits == 16 ? 2 : 1;
 constexpr uint32_t kActivationWords = (kActivationBits * kDim + 31) / 32;
+constexpr uint32_t kWeightWords = (kWeightBits * kDim + 31) / 32;
 constexpr uint32_t kByteLaneWords = (8 * kDim + 31) / 32;
 constexpr uint32_t kCommandRowBits = kDim == 16 ? 5 : kDim == 32 ? 6 : 7;
 constexpr uint32_t kAccumulatorWords = 2 * kDim;
@@ -117,15 +138,35 @@ int32_t narrow_i64(int64_t value) {
 
 template <size_t Words>
 void set_i8_lanes(VlWide<Words> &signal, const int8_t *values, size_t count) {
-    for (size_t index = 0; index < Words; ++index) {
-        signal[index] = 0U;
-    }
+    for (size_t index = 0; index < Words; ++index) signal[index] = 0U;
     for (size_t index = 0; index < count; ++index) {
-        const auto value = static_cast<uint8_t>(values[index]);
-        const size_t word = index / 4;
-        const size_t shift = (index % 4) * 8;
-        signal[word] |= static_cast<uint32_t>(value) << shift;
+        const size_t bit = index * 8;
+        signal[bit / 32] |= static_cast<uint32_t>(static_cast<uint8_t>(values[index]))
+                            << (bit % 32);
     }
+}
+
+int32_t weight_value(const void *values, size_t index) {
+#if IM2P_WEIGHT_BITS == 16
+    int16_t value;
+    std::memcpy(&value, static_cast<const uint8_t *>(values) + index * sizeof(value), sizeof(value));
+    return value;
+#else
+    return static_cast<const int8_t *>(values)[index];
+#endif
+}
+
+bool valid_weight_values(const void *values, size_t count) {
+#if IM2P_WEIGHT_BITS == 4
+    for (size_t index = 0; index < count; ++index) {
+        const int32_t value = weight_value(values, index);
+        if (value < -8 || value > 7) return false;
+    }
+#else
+    (void)values;
+    (void)count;
+#endif
+    return true;
 }
 
 int32_t activation_value(const void *values, size_t index) {
@@ -172,6 +213,19 @@ template <size_t Words>
 void set_activation_lane(VlWide<Words> &signal, size_t word, size_t shift,
                          uint32_t value) {
   signal[word] |= value << shift;
+}
+
+template <typename Signal>
+bool set_weight_lanes(Signal &signal, const void *values, size_t count) {
+    if (!valid_weight_values(values, count)) return false;
+    clear_activation_signal(signal);
+    constexpr uint32_t mask = (1U << kWeightBits) - 1U;
+    for (size_t index = 0; index < count; ++index) {
+        const size_t bit = index * kWeightBits;
+        set_activation_lane(signal, bit / 32, bit % 32,
+                            static_cast<uint32_t>(weight_value(values, index)) & mask);
+    }
+    return true;
 }
 
 template <typename Signal>
@@ -385,10 +439,16 @@ extern "C" uint32_t im2p_compiled_activation_bits(void) {
   return kActivationBits;
 }
 
+extern "C" uint32_t im2p_compiled_weight_bits(void) { return kWeightBits; }
+
 extern "C" uint32_t im2p_compiled_dim(void) { return kDim; }
 
 extern "C" uint32_t im2p_compiled_activation_storage_bytes(void) {
   return kActivationStorageBytes;
+}
+
+extern "C" uint32_t im2p_compiled_weight_storage_bytes(void) {
+  return kWeightStorageBytes;
 }
 
 extern "C" int im2p_weights_ready(im2p_handle_t handle) {
@@ -434,7 +494,7 @@ extern "C" int im2p_begin_weight_load(im2p_handle_t handle) {
 extern "C" int im2p_load_weight_row(
     im2p_handle_t handle,
     uint32_t row,
-    const int8_t *values
+    const void *values
 ) {
     if (handle == nullptr || values == nullptr) {
         return 0;
@@ -445,7 +505,9 @@ extern "C" int im2p_load_weight_row(
         return 0;
     }
     simulator->top->loadWeightRow_row = row;
-    set_bytes(simulator->top->loadWeightRow_weights, values, kDim);
+    if (!set_weight_lanes(simulator->top->loadWeightRow_weights, values, kDim)) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     pulse(simulator, simulator->top->EN_loadWeightRow);
     return 1;
 }
@@ -916,7 +978,7 @@ extern "C" int im2p_put_activation_read_response(im2p_handle_t handle,
 extern "C" int im2p_stage_weight_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const void *values,
     uint32_t count
 ) {
     if (handle == nullptr || values == nullptr || count > kDim) {
@@ -929,7 +991,9 @@ extern "C" int im2p_stage_weight_read_response(
     if (!top->weightReadRequestValid || !top->RDY_weightReadRequestTag
         || tag != top->weightReadRequestTag) return IM2P_REQUEST_IDENTITY_MISMATCH;
     top->putWeightReadResponse_tag = tag;
-    set_i8_lanes(top->putWeightReadResponse_values, values, count);
+    if (!set_weight_lanes(top->putWeightReadResponse_values, values, count)) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     top->EN_putWeightReadResponse = 1;
     simulator->staged_response_mask |= 0x2;
     evaluate(simulator);
@@ -939,7 +1003,7 @@ extern "C" int im2p_stage_weight_read_response(
 extern "C" int im2p_put_weight_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const void *values,
     uint32_t count
 ) {
     if (handle == nullptr || values == nullptr || count > kDim) {
@@ -957,7 +1021,9 @@ extern "C" int im2p_put_weight_read_response(
         return IM2P_REQUEST_IDENTITY_MISMATCH;
     }
     top->putWeightReadResponse_tag = tag;
-    set_i8_lanes(top->putWeightReadResponse_values, values, count);
+    if (!set_weight_lanes(top->putWeightReadResponse_values, values, count)) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     pulse(simulator, top->EN_putWeightReadResponse);
     return 1;
 }
@@ -1165,8 +1231,9 @@ extern "C" int im2p_test_drive_port(im2p_handle_t handle, uint32_t port,
     top->EN_putActivationReadResponse = 1;
     return 1;
   case IM2P_TEST_PORT_WEIGHT_RESPONSE:
-    set_i8_lanes(top->putWeightReadResponse_values,
-                 static_cast<const int8_t *>(values), count);
+    if (!set_weight_lanes(top->putWeightReadResponse_values, values, count)) {
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     top->EN_putWeightReadResponse = 1;
     return 1;
   case IM2P_TEST_PORT_SCALE_RESPONSE:
@@ -1197,7 +1264,7 @@ extern "C" int im2p_test_copy_port_words(im2p_handle_t handle, uint32_t port,
     copy_signal_words(top->putActivationReadResponse_values, words, word_count);
     return 1;
   case IM2P_TEST_PORT_WEIGHT_RESPONSE:
-    if (word_count != kByteLaneWords)
+    if (word_count != kWeightWords)
       return IM2P_REQUEST_INVALID_ARGUMENT;
     copy_signal_words(top->putWeightReadResponse_values, words, word_count);
     return 1;

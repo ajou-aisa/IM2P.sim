@@ -36,7 +36,7 @@ pub enum VectorOp {
 #[derive(Debug)]
 pub struct TileRequest<'a> {
     pub activations: &'a [ActivationValue],
-    pub weights: &'a [i8],
+    pub weights: &'a [WeightValue],
     pub scale_matrix: Option<KBlockScaleMatrixView<'a>>,
     pub valid_m: usize,
     pub valid_n: usize,
@@ -52,6 +52,8 @@ mod activation;
 mod activation_validation;
 #[path = "../../src/matrix.rs"]
 mod matrix;
+#[path = "../../src/weight.rs"]
+mod weight;
 
 pub use activation::{
     activation_bytes_to_elements, activation_elements_to_bytes, activation_view,
@@ -59,6 +61,11 @@ pub use activation::{
     ActivationMatrixView, ActivationValue, ACTIVATION_BITS, ACTIVATION_STORAGE_BYTES,
 };
 pub use matrix::{MatmulLayout, MatmulWork, MatrixView, MatrixViewMut};
+pub use weight::{
+    parse_weight, validate_weight_values, weight_bytes_to_elements, weight_elements_to_bytes,
+    weight_to_i32, weight_view, WeightError, WeightMatrixView, WeightValue, WEIGHT_BITS,
+    WEIGHT_STORAGE_BYTES,
+};
 
 pub fn validate_work_boundary(
     work: &MatmulWork<'_>,

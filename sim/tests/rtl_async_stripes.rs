@@ -6,7 +6,7 @@ use common::{
 };
 use im2p_sim::{
     ActivationStripe, ActivationValue, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut,
-    SimError, StripeWorkDesc, VectorOp,
+    SimError, StripeWorkDesc, VectorOp, WeightValue,
 };
 const CYCLE_BUDGET: u64 = 1;
 const MAX_ITERATIONS: usize = 100_000;
@@ -16,7 +16,7 @@ const BACKPRESSURE_STRIPE_COUNT: usize = 5;
 fn cpu_golden(
     shape: Shape,
     activations: &[ActivationValue],
-    weights: &[i8],
+    weights: &[WeightValue],
     dim: usize,
 ) -> Vec<i64> {
     golden_output(
@@ -64,7 +64,7 @@ fn stripe(i: usize) -> ActivationStripe {
         stripe_context: i as u64 + 1,
     }
 }
-fn work_desc<'a>(s: Shape, w: &'a [i8]) -> StripeWorkDesc<'a> {
+fn work_desc<'a>(s: Shape, w: &'a [WeightValue]) -> StripeWorkDesc<'a> {
     StripeWorkDesc {
         weights: w,
         scale_matrix: None,
@@ -263,7 +263,7 @@ fn striped_output_preserves_positive_and_negative_i64_accumulators() -> Result<(
         im2p_sim::parse_activation(-2).expect("negative two is valid at every configured width"),
         im2p_sim::parse_activation(-2).expect("negative two is valid at every configured width"),
     ];
-    let weights = [1_i8, 1];
+    let weights: [WeightValue; 2] = [1, 1];
     let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 30);
     let descriptor = StripeWorkDesc {
         weights: &weights,
@@ -318,7 +318,7 @@ fn full_and_striped_share_exact_i64_oracle_before_v2_saturation() -> Result<(), 
         im2p_sim::parse_activation(-2).unwrap(),
         im2p_sim::parse_activation(-2).unwrap(),
     ];
-    let weights = [1_i8, -1, 1, 1];
+    let weights: [WeightValue; 4] = [1, -1, 1, 1];
     let scales = KBlockScaleMatrix::from_fn(shape.k, 1, shape.n, |_, _| 30);
     let fragments = k_fragments(shape.k, scales.block_size, 16);
     let oracle = golden_output(

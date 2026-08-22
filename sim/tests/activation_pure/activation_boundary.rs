@@ -1,7 +1,8 @@
 use im2p_sim::{
     parse_activation, validate_provider_boundary, validate_stage_boundary,
     validate_supply_boundary, validate_tile_boundary, validate_work_boundary, ActivationValue,
-    MatmulWork, MatrixView, MatrixViewMut, SimError, TileRequest, VectorOp, ACTIVATION_BITS,
+    MatmulWork, MatrixView, MatrixViewMut, SimError, TileRequest, VectorOp, WeightValue,
+    ACTIVATION_BITS,
 };
 
 #[test]
@@ -11,7 +12,7 @@ fn matmul_work_rejects_direct_matrix_view_a4_range_bypass() -> Result<(), SimErr
     }
 
     let activations: [ActivationValue; 2] = [-9, 8];
-    let weights = [1_i8, 1];
+    let weights = [WeightValue::default(); 2];
     let mut output = [0_i32];
     let work = MatmulWork {
         activations: MatrixView::new(&activations, 1, 2, 2)?,
@@ -34,7 +35,7 @@ fn tile_request_rejects_direct_slice_a4_range_bypass() {
     }
 
     let activations: [ActivationValue; 2] = [-9, 8];
-    let weights = [1_i8, 1];
+    let weights = [WeightValue::default(); 2];
     let request = TileRequest {
         activations: &activations,
         weights: &weights,

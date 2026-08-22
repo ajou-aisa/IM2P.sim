@@ -5,6 +5,7 @@
 #include "quants/act/exsia/exsia.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -179,7 +180,7 @@ struct RealCase {
   }
 };
 
-bool run_legacy(Mode mode) {
+[[maybe_unused]] bool run_legacy(Mode mode) {
   RealCase test;
   if (!test.verify_layout_contract())
     return false;
@@ -312,7 +313,7 @@ struct ProviderCase {
   }
 };
 
-bool run_provider(Mode mode) {
+[[maybe_unused]] bool run_provider(Mode mode) {
   ProviderCase test;
   auto started = execute(&test.args, mode, Options{1000000});
   if (!started.status.ok()) {
@@ -371,6 +372,253 @@ bool run_provider(Mode mode) {
   return true;
 }
 
+#if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
+enum class MatchedFormat { h0, h1, hp1 };
+
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+using NativeH0 = block_q4_h0;
+using NativeH1 = block_q4_h1;
+using NativeHp1 = block_q4_hp1;
+#else
+using NativeH0 = block_q16_h0;
+using NativeH1 = block_q16_h1;
+using NativeHp1 = block_q16_hp1;
+#endif
+
+const char *matched_format_name(MatchedFormat format) {
+  switch (format) {
+  case MatchedFormat::h0: return GGML_GEMMINI_WEIGHT_BITS == 4 ? "q4_h0" : "q16_h0";
+  case MatchedFormat::h1: return GGML_GEMMINI_WEIGHT_BITS == 4 ? "q4_h1" : "q16_h1";
+  case MatchedFormat::hp1: return GGML_GEMMINI_WEIGHT_BITS == 4 ? "q4_hp1" : "q16_hp1";
+  }
+  return "unknown";
+}
+
+struct MatchedProviderCase {
+  const size_t m = DIM + 3;
+  const size_t n = DIM + 5;
+  const size_t k = 2 * size_t{32};
+  const size_t blocks = k / 32;
+  MatchedFormat format;
+  ggml::gemmini::quants::act::QuantizedActivationBuffer activations;
+  std::vector<NativeH0> h0;
+  std::vector<NativeH1> h1;
+  std::vector<NativeHp1> hp1;
+  std::vector<float> output;
+  std::vector<float> expected;
+  ggml_gemmini_args_t args{};
+
+  explicit MatchedProviderCase(MatchedFormat requested)
+      : format(requested), h0(n * blocks), h1(n * blocks), hp1(n * blocks),
+        output(m * n, 17.0f), expected(m * n, 0.0f) {
+    if (!activations.allocate(m, k, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+      std::abort();
+    for (size_t i = 0; i < m; ++i)
+      for (size_t x = 0; x < k; ++x)
+        if (!activations.set(i, x,
+                             static_cast<int32_t>((i * 7 + x * 3) % 11) - 5))
+          std::abort();
+
+    for (size_t j = 0; j < n; ++j) {
+      for (size_t block = 0; block < blocks; ++block) {
+        const size_t index = j * blocks + block;
+        h0[index].d = block == 0 ? ggml_half{0x3400} : ggml_half{0x3800};
+        h1[index].s_rf = block == 0 ? 0.125f : 0.25f;
+        h1[index].c_b = static_cast<uint8_t>(block + 1);
+        h1[index].R = 1;
+        hp1[index].channel_scale = 0.25f;
+        hp1[index].m = static_cast<int16_t>(block);
+        for (size_t lane = 0; lane < 32; ++lane) {
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+          const int8_t code = static_cast<int8_t>((block * 3 + lane + j * 5) % 16) - 8;
+          const uint8_t nibble = static_cast<uint8_t>(code + 8);
+          auto set_nibble = [lane, nibble](uint8_t *qs) {
+            uint8_t &byte = qs[lane % 16];
+            byte = lane < 16 ? static_cast<uint8_t>((byte & 0xf0) | nibble)
+                             : static_cast<uint8_t>((byte & 0x0f) | (nibble << 4));
+          };
+          set_nibble(h0[index].qs);
+          set_nibble(h1[index].qs);
+          set_nibble(hp1[index].qs);
+#else
+          const int16_t code = static_cast<int16_t>(
+              static_cast<int>((block * 19 + lane * 7 + j * 5) % 47) - 23);
+          h0[index].qs[lane] = code;
+          h1[index].qs[lane] = code;
+          hp1[index].qs[lane] = code;
+#endif
+        }
+      }
+    }
+
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = 0; j < n; ++j) {
+        double sum = 0.0;
+        for (size_t x = 0; x < k; ++x) {
+          const size_t block = x / 32;
+          const size_t index = j * blocks + block;
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+          const uint8_t byte = format == MatchedFormat::h0
+              ? h0[index].qs[(x % 32) % 16]
+              : format == MatchedFormat::h1
+                  ? h1[index].qs[(x % 32) % 16]
+                  : hp1[index].qs[(x % 32) % 16];
+          const size_t lane = x % 32;
+          const int code = int(lane < 16 ? byte & 0x0f : byte >> 4) - 8;
+#else
+          const size_t lane = x % 32;
+          const int code = format == MatchedFormat::h0 ? h0[index].qs[lane]
+                           : format == MatchedFormat::h1 ? h1[index].qs[lane]
+                                                        : hp1[index].qs[lane];
+#endif
+          const double factor = format == MatchedFormat::h0
+              ? (block == 0 ? 0.25 : 0.5)
+              : format == MatchedFormat::h1
+                  ? static_cast<double>(h1[index].s_rf) *
+                        static_cast<double>(h1[index].c_b + h1[index].R)
+                  : std::ldexp(static_cast<double>(hp1[index].channel_scale),
+                               hp1[index].m);
+          sum += static_cast<double>(activations.get(i, x)) * code * factor * 0.5;
+        }
+        expected[i * n + j] = static_cast<float>(sum);
+      }
+    }
+
+    args.I = m;
+    args.J = n;
+    args.K = k;
+    args.A = activations;
+    args.f_out = output.data();
+    args.stride_f_out = n;
+    args.native_block_count = n * blocks;
+    args.native_blocks_per_row = blocks;
+    switch (format) {
+    case MatchedFormat::h0:
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q4_h0;
+      args.q4_h0_blocks = h0.data();
+#else
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h0;
+      args.q16_h0_blocks = h0.data();
+#endif
+      break;
+    case MatchedFormat::h1:
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q4_h1;
+      args.q4_h1_blocks = h1.data();
+#else
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h1;
+      args.q16_h1_blocks = h1.data();
+#endif
+      break;
+    case MatchedFormat::hp1:
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q4_hp1;
+      args.q4_hp1_blocks = hp1.data();
+#else
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_hp1;
+      args.q16_hp1_blocks = hp1.data();
+#endif
+      break;
+    }
+    args.act_quant.storage()
+        .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+        .scale = 0.5f;
+  }
+};
+
+bool run_matched_provider(MatchedFormat format, Mode mode) {
+  MatchedProviderCase test(format);
+  if (!test.args.has_native_matched_width_contract()) {
+    std::fprintf(stderr, "invalid native fixture route=%s\n",
+                 matched_format_name(format));
+    return false;
+  }
+  test.args.activation_rows_per_stripe = (test.m + 2) / 3;
+  auto started = execute(&test.args, mode, Options{1000000});
+  if (!started.status.ok()) {
+    std::fprintf(stderr, "matched execute failed route=%s mode=%s: %s\n",
+                 matched_format_name(format),
+                 mode == Mode::full ? "full" : "stripe",
+                 started.status.message);
+    return false;
+  }
+  size_t submitted = 0;
+  if (mode == Mode::stripe_pipeline) {
+    for (size_t row = 0; row < test.m;
+         row += test.args.activation_rows_per_stripe, ++submitted) {
+      const auto status = submit_stripe(
+          *started.run,
+          stripe(submitted, row,
+                 std::min(test.m,
+                          row + test.args.activation_rows_per_stripe)));
+      if (!status.ok()) {
+        std::fprintf(stderr, "matched stripe failed route=%s stripe=%zu: %s\n",
+                     matched_format_name(format), submitted, status.message);
+        return false;
+      }
+    }
+  }
+  const auto done = fence(*started.run);
+  const bool staged = mode == Mode::stripe_pipeline &&
+                      std::all_of(test.output.begin(), test.output.end(),
+                                  [](float value) { return value == 17.0f; });
+  if (mode == Mode::stripe_pipeline &&
+      (!staged || !authorize_output_commit(*started.run, true).ok())) {
+    std::fprintf(stderr, "matched pipeline authorization failed route=%s\n",
+                 matched_format_name(format));
+    return false;
+  }
+  if (!done.status.ok() || test.output != test.expected ||
+      done.stats.base.activation_read_requests == 0 ||
+      done.stats.base.weight_read_requests == 0 ||
+      done.stats.base.scale_read_requests == 0 ||
+      done.stats.base.output_write_requests == 0 ||
+      (mode == Mode::stripe_pipeline &&
+       (done.stats.base.completed_stripes != submitted ||
+        done.stats.base.stripes_published != submitted))) {
+    std::fprintf(stderr,
+                 "matched verification failed route=%s mode=%s status=%s reads=%llu/%llu/%llu writes=%llu\n",
+                 matched_format_name(format),
+                 mode == Mode::full ? "full" : "stripe", done.status.message,
+                 static_cast<unsigned long long>(done.stats.base.activation_read_requests),
+                 static_cast<unsigned long long>(done.stats.base.weight_read_requests),
+                 static_cast<unsigned long long>(done.stats.base.scale_read_requests),
+                 static_cast<unsigned long long>(done.stats.base.output_write_requests));
+    return false;
+  }
+  std::printf("REAL_EXECUTION activation_bits=%d weight_bits=%d dim=%d route=%s mode=%s PASS M=%zu N=%zu K=%zu blocks=%zu stripes=%zu\n",
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, GGML_GEMMINI_WEIGHT_BITS,
+              DIM, matched_format_name(format),
+              mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
+              test.blocks, submitted);
+  return true;
+}
+#endif
+
+bool verify_compiled_identity() {
+  const uint32_t expected_activation_storage =
+      (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS + 7) / 8;
+  const uint32_t expected_weight_storage = (GGML_GEMMINI_WEIGHT_BITS + 7) / 8;
+  const bool valid =
+        im2p_sim_abi_version() == IM2P_ABI_VERSION &&
+      im2p_sim_activation_bits() == IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
+      im2p_sim_activation_storage_bytes() == expected_activation_storage &&
+      im2p_sim_weight_bits() == GGML_GEMMINI_WEIGHT_BITS &&
+      im2p_sim_weight_storage_bytes() == expected_weight_storage &&
+      im2p_sim_dim() == DIM;
+  if (!valid) {
+    std::fprintf(stderr,
+                 "identity mismatch frontend=A%d/W%d/D%d simulator=ABI%u/A%u(%u)/W%u(%u)/D%u\n",
+                 IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+                 GGML_GEMMINI_WEIGHT_BITS, DIM, im2p_sim_abi_version(),
+                 im2p_sim_activation_bits(), im2p_sim_activation_storage_bytes(),
+                 im2p_sim_weight_bits(), im2p_sim_weight_storage_bytes(),
+                 im2p_sim_dim());
+  }
+  return valid;
+}
+
 bool expect_configuration_mismatch() {
   RealCase test;
   const auto before = test.output_storage;
@@ -403,6 +651,27 @@ int main(int argc, char **argv) {
   if (argc == 2 &&
       std::string_view(argv[1]) == "--expect-configuration-mismatch")
     return expect_configuration_mismatch() ? 0 : 3;
+  if (!verify_compiled_identity())
+    return 2;
+#if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
+  if (argc != 1) {
+    std::fprintf(stderr, "matched-width real test takes no route override\n");
+    return 64;
+  }
+  const bool passed =
+      run_matched_provider(MatchedFormat::h0, Mode::full) &&
+      run_matched_provider(MatchedFormat::h0, Mode::stripe_pipeline) &&
+      run_matched_provider(MatchedFormat::h1, Mode::full) &&
+      run_matched_provider(MatchedFormat::h1, Mode::stripe_pipeline) &&
+      run_matched_provider(MatchedFormat::hp1, Mode::full) &&
+      run_matched_provider(MatchedFormat::hp1, Mode::stripe_pipeline);
+  if (!passed)
+    return 1;
+  std::printf("IM2P Gemmini frontend real RTL A%d/W%d/D%d matched routes: PASS\n",
+              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+              GGML_GEMMINI_WEIGHT_BITS, DIM);
+  return 0;
+#else
   bool provider = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 8;
   if (argc == 3 && std::string_view(argv[1]) == "--route") {
     if (std::string_view(argv[2]) == "q8_h0")
@@ -429,4 +698,5 @@ int main(int argc, char **argv) {
               IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM,
               provider ? "q8_h1" : "q8_h0");
   return 0;
+#endif
 }

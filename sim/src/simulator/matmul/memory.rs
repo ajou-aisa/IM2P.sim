@@ -1,6 +1,6 @@
 use crate::{
-    activation::activation_byte_indices, ffi, ActivationValue, MatmulWork, MatrixView,
-    MatrixViewMut,
+    activation::activation_byte_indices, ffi, weight::weight_byte_indices, ActivationValue,
+    MatmulWork, MatrixView, MatrixViewMut, WeightValue,
 };
 
 use super::{Error, SCALE_BASE};
@@ -10,6 +10,11 @@ pub(super) fn validate_work(
     output: &MatrixViewMut<'_, i32>,
 ) -> Result<(), Error> {
     crate::activation_validation::validate_work_activations(work)?;
+    for row in 0..work.weights.rows {
+        let start = row * work.weights.row_stride;
+        crate::validate_weight_values(&work.weights.values[start..start + work.weights.columns])
+            .map_err(|_| Error::InvalidLayout)?;
+    }
     let m = work.activations.rows;
     let k = work.activations.columns;
     let n = work.weights.columns;
@@ -46,17 +51,18 @@ pub(super) fn resolve_activation(
     Ok(view.values[row * view.row_stride + column..][..count].to_vec())
 }
 
-pub(super) fn resolve_i8(
-    view: &MatrixView<'_, i8>,
+pub(super) fn resolve_weight(
+    view: &MatrixView<'_, WeightValue>,
     base: u64,
     request: ffi::ReadRequest,
-) -> Result<Vec<i8>, Error> {
+) -> Result<Vec<WeightValue>, Error> {
     let offset = request
         .address
         .checked_sub(base)
-        .ok_or(Error::InvalidKRange)? as usize;
-    let row = offset / view.row_stride;
-    let column = offset % view.row_stride;
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(Error::InvalidKRange)?;
+    let (row, column) =
+        weight_byte_indices(offset, view.row_stride).map_err(|_| Error::InvalidWeightStride)?;
     let count = request.element_count as usize;
     if row >= view.rows || column + count > view.columns {
         return Err(Error::InvalidKRange);
@@ -119,7 +125,7 @@ pub(super) fn write_raw_output(
 
 #[cfg(test)]
 mod activation_boundary_tests {
-    use super::{resolve_activation, validate_work, Error};
+    use super::{resolve_activation, resolve_weight, validate_work, Error};
     use crate::{
         ffi, parse_activation, ActivationValue, MatmulWork, MatrixView, MatrixViewMut, VectorOp,
         ACTIVATION_BITS, ACTIVATION_STORAGE_BYTES,
@@ -156,6 +162,32 @@ mod activation_boundary_tests {
     }
 
     #[test]
+    fn selected_weight_byte_addressing_uses_storage_width() {
+        let values = [crate::WeightValue::default(); 10];
+        let view = MatrixView::new(&values, 2, 3, 5).expect("strided weight view");
+        let request = ffi::ReadRequest {
+            address: BASE + (6 * crate::WEIGHT_STORAGE_BYTES) as u64,
+            element_count: 2,
+            tag: 10,
+        };
+        assert_eq!(
+            resolve_weight(&view, BASE, request),
+            Ok(vec![values[6], values[7]])
+        );
+
+        if crate::WEIGHT_STORAGE_BYTES == 2 {
+            let misaligned = ffi::ReadRequest {
+                address: BASE + 1,
+                ..request
+            };
+            assert_eq!(
+                resolve_weight(&view, BASE, misaligned),
+                Err(Error::InvalidWeightStride)
+            );
+        }
+    }
+
+    #[test]
     fn odd_a16_activation_byte_address_is_rejected_before_response() {
         if ACTIVATION_BITS != 16 {
             return;
@@ -180,7 +212,7 @@ mod activation_boundary_tests {
             return;
         }
         let activations: [ActivationValue; 2] = [-9, 8];
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut output = [0_i32];
         let work = MatmulWork {
             activations: MatrixView::new(&activations, 1, 2, 2).expect("shape-only view"),
@@ -196,7 +228,7 @@ mod activation_boundary_tests {
     #[test]
     fn production_activation_boundary_validate_work_accepts_selected_extrema() {
         let activations = selected_extrema();
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let mut output = [0_i32];
         let work = MatmulWork {
             activations: MatrixView::new(&activations, 1, 2, 2).expect("valid activations"),

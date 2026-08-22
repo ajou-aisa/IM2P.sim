@@ -11,8 +11,10 @@ unsafe extern "C" {
     fn im2p_destroy(handle: *mut c_void);
     fn im2p_reset(handle: *mut c_void);
     fn im2p_compiled_activation_bits() -> u32;
+    fn im2p_compiled_weight_bits() -> u32;
     fn im2p_compiled_dim() -> u32;
     fn im2p_compiled_activation_storage_bytes() -> u32;
+    fn im2p_compiled_weight_storage_bytes() -> u32;
     fn im2p_test_drive_port(
         handle: *mut c_void,
         port: u32,
@@ -46,13 +48,15 @@ impl Drop for Handle {
     }
 }
 
-fn configuration() -> (u32, u32, u32) {
+fn configuration() -> (u32, u32, u32, u32, u32) {
     // SAFETY: compile-configuration queries have no pointer arguments.
     unsafe {
         (
             im2p_compiled_activation_bits(),
+            im2p_compiled_weight_bits(),
             im2p_compiled_dim(),
             im2p_compiled_activation_storage_bytes(),
+            im2p_compiled_weight_storage_bytes(),
         )
     }
 }
@@ -105,7 +109,7 @@ fn drive_activations(handle: &Handle, port: u32, values: &[i32], bits: u32) -> i
 
 #[test]
 fn verilator_activation_packing_signed_lanes_and_zero_tails() {
-    let (bits, dim, storage_bytes) = configuration();
+    let (bits, _, dim, storage_bytes, _) = configuration();
     assert!(matches!(bits, 4 | 8 | 16));
     assert!(matches!(dim, 16 | 32 | 64));
     assert_eq!(bits, im2p_sim::ACTIVATION_BITS as u32);
@@ -142,41 +146,74 @@ fn verilator_activation_packing_signed_lanes_and_zero_tails() {
 }
 
 #[test]
-fn verilator_activation_packing_preserves_i8_weight_and_scale_lanes() {
-    let (_, dim, _) = configuration();
-    let values = [-128_i8, -1, 0, 127, 0x12, 0x34];
-    let expected = expected_words(
-        &values
+fn verilator_weight_and_scale_packing_match_their_independent_widths() {
+    let (_, weight_bits, dim, _, weight_storage) = configuration();
+    assert_eq!(weight_bits, im2p_sim::WEIGHT_BITS as u32);
+    assert_eq!(weight_storage, im2p_sim::WEIGHT_STORAGE_BYTES as u32);
+    let values: Vec<i32> = match weight_bits {
+        4 => vec![-8, -1, 0, 7, 1, -2, 3, -1, 7],
+        8 => vec![-128, -1, 0, 127, 0x12, 0x34],
+        16 => vec![-32768, -1, 0, 32767, 1],
+        _ => unreachable!(),
+    };
+    let expected = expected_words(&values, weight_bits, dim);
+    let handle = Handle::new();
+    let status = if weight_bits == 16 {
+        let stored = values.iter().map(|&value| value as i16).collect::<Vec<_>>();
+        unsafe {
+            im2p_test_drive_port(
+                handle.0,
+                PORT_WEIGHT_RESPONSE,
+                stored.as_ptr().cast(),
+                stored.len() as u32,
+            )
+        }
+    } else {
+        let stored = values.iter().map(|&value| value as i8).collect::<Vec<_>>();
+        unsafe {
+            im2p_test_drive_port(
+                handle.0,
+                PORT_WEIGHT_RESPONSE,
+                stored.as_ptr().cast(),
+                stored.len() as u32,
+            )
+        }
+    };
+    assert_eq!(status, 1);
+    assert_eq!(
+        capture(&handle, PORT_WEIGHT_RESPONSE, expected.len()),
+        expected
+    );
+
+    let scales = [-128_i8, -1, 0, 127, 0x12, 0x34];
+    let scale_expected = expected_words(
+        &scales
             .iter()
             .map(|&value| i32::from(value))
             .collect::<Vec<_>>(),
         8,
         dim,
     );
-    let handle = Handle::new();
-
-    for port in [PORT_WEIGHT_RESPONSE, PORT_SCALE_RESPONSE] {
-        // SAFETY: values remains live for the synchronous call.
-        assert_eq!(
-            unsafe {
-                im2p_test_drive_port(
-                    handle.0,
-                    port,
-                    values.as_ptr().cast::<c_void>(),
-                    values.len() as u32,
-                )
-            },
-            1
-        );
-        assert_eq!(capture(&handle, port, expected.len()), expected);
-    }
-
-    println!("unchanged i8 weight/scale ports dim={dim} packed={expected:08x?}");
+    assert_eq!(
+        unsafe {
+            im2p_test_drive_port(
+                handle.0,
+                PORT_SCALE_RESPONSE,
+                scales.as_ptr().cast(),
+                scales.len() as u32,
+            )
+        },
+        1
+    );
+    assert_eq!(
+        capture(&handle, PORT_SCALE_RESPONSE, scale_expected.len()),
+        scale_expected
+    );
 }
 
 #[test]
 fn rejects_out_of_range_a4_before_port_enable() {
-    let (bits, _, _) = configuration();
+    let (bits, _, _, _, _) = configuration();
     if bits != 4 {
         return;
     }

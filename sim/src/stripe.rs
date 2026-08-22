@@ -1,4 +1,4 @@
-use crate::{KBlockScaleMatrixView, VectorOp};
+use crate::{KBlockScaleMatrixView, VectorOp, WeightValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActivationStripe {
@@ -26,7 +26,7 @@ pub struct StripeLayout {
 
 #[derive(Debug)]
 pub struct StripeWorkDesc<'a> {
-    pub weights: &'a [i8],
+    pub weights: &'a [WeightValue],
     pub scale_matrix: Option<KBlockScaleMatrixView<'a>>,
     pub rows: usize,
     pub columns: usize,

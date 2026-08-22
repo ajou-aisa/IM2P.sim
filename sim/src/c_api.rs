@@ -1,23 +1,26 @@
 use std::cell::RefCell;
+use std::mem::align_of;
 use std::ptr;
 use std::rc::Rc;
 
-use crate::{Im2pSimulator, WorkStats};
+use crate::{
+    activation_bytes_to_elements, weight_bytes_to_elements, ActivationValue, Im2pSimulator,
+    WeightValue, WorkStats,
+};
 
+mod contract;
 mod helpers;
 mod stream;
 mod types;
-mod v3;
 
+use contract::{provider_requested, require_identity, selected_weight_callback, Identity};
 use helpers::{
-    execute_full, execute_full_provider, parse_matmul_v2, status_for_error, write_extended_stats,
-    write_stats,
+    execute_full, execute_full_provider, status_for_error, validate_provider_rtl_fields,
+    write_extended_stats, write_stats,
 };
-use types::{MatmulDesc, MatmulDescV1, MatmulDescV2, WorkStatsC, WorkStatsExtendedC};
+use types::{MatmulDesc, MatmulDescC, WorkStatsC, WorkStatsExtendedC};
 
-const PROVIDER_VERSION_1: u32 = 1;
-const ABI_VERSION_2: u32 = 2;
-const ABI_VERSION_3: u32 = 3;
+const ABI_VERSION: u32 = 4;
 const CONFIGURATION_MISMATCH: i32 = -7;
 
 fn configured_dim() -> u32 {
@@ -26,21 +29,9 @@ fn configured_dim() -> u32 {
         .unwrap_or(16)
 }
 
-pub(super) fn configuration_matches(
-    abi_version: u32,
-    activation_bits: u32,
-    activation_storage_bytes: u32,
-    dim: u32,
-) -> bool {
-    abi_version == ABI_VERSION_2
-        && activation_bits == crate::ACTIVATION_BITS as u32
-        && activation_storage_bytes == crate::ACTIVATION_STORAGE_BYTES as u32
-        && dim == configured_dim()
-}
-
 #[no_mangle]
 pub extern "C" fn im2p_sim_abi_version() -> u32 {
-    ABI_VERSION_3
+    ABI_VERSION
 }
 
 #[no_mangle]
@@ -51,6 +42,16 @@ pub extern "C" fn im2p_sim_activation_bits() -> u32 {
 #[no_mangle]
 pub extern "C" fn im2p_sim_activation_storage_bytes() -> u32 {
     crate::ACTIVATION_STORAGE_BYTES as u32
+}
+
+#[no_mangle]
+pub extern "C" fn im2p_sim_weight_bits() -> u32 {
+    crate::WEIGHT_BITS as u32
+}
+
+#[no_mangle]
+pub extern "C" fn im2p_sim_weight_storage_bytes() -> u32 {
+    crate::WEIGHT_STORAGE_BYTES as u32
 }
 
 #[no_mangle]
@@ -83,7 +84,7 @@ pub unsafe extern "C" fn im2p_sim_destroy(sim: *mut SimBox) {
 #[no_mangle]
 pub unsafe extern "C" fn im2p_execute_matmul(
     sim: *mut SimBox,
-    descriptor: *const MatmulDesc,
+    descriptor: *const MatmulDescC,
     stats: *mut WorkStatsC,
 ) -> i32 {
     match execute_matmul_value(sim, descriptor) {
@@ -98,7 +99,7 @@ pub unsafe extern "C" fn im2p_execute_matmul(
 #[no_mangle]
 pub unsafe extern "C" fn im2p_execute_matmul_extended(
     sim: *mut SimBox,
-    descriptor: *const MatmulDesc,
+    descriptor: *const MatmulDescC,
     stats: *mut WorkStatsExtendedC,
 ) -> i32 {
     match execute_matmul_value(sim, descriptor) {
@@ -110,106 +111,59 @@ pub unsafe extern "C" fn im2p_execute_matmul_extended(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn im2p_execute_matmul_ex(
+unsafe fn execute_matmul_value(
     sim: *mut SimBox,
-    descriptor: *const MatmulDescV1,
-    stats: *mut WorkStatsC,
-) -> i32 {
-    if crate::ACTIVATION_BITS != 8 {
-        return CONFIGURATION_MISMATCH;
-    }
-    let (Some(owner), Some(desc)) = (sim.as_mut(), descriptor.as_ref()) else {
-        return -1;
-    };
-    if desc.version != PROVIDER_VERSION_1 {
-        return -4;
-    }
-    let mut state = owner.simulator.borrow_mut();
-    let Some(simulator) = state.as_mut() else {
-        return -3;
-    };
-    match execute_full_provider(simulator, &desc.legacy, desc.provider.into()) {
-        Ok(value) => {
-            write_stats(stats, value);
-            0
-        }
-        Err(error) => {
-            simulator.reset();
-            status_for_error(error)
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn im2p_execute_matmul_extended_ex(
-    sim: *mut SimBox,
-    descriptor: *const MatmulDescV1,
-    stats: *mut WorkStatsExtendedC,
-) -> i32 {
-    if crate::ACTIVATION_BITS != 8 {
-        return CONFIGURATION_MISMATCH;
-    }
-    let (Some(owner), Some(desc)) = (sim.as_mut(), descriptor.as_ref()) else {
-        return -1;
-    };
-    if desc.version != PROVIDER_VERSION_1 {
-        return -4;
-    }
-    let mut state = owner.simulator.borrow_mut();
-    let Some(simulator) = state.as_mut() else {
-        return -3;
-    };
-    match execute_full_provider(simulator, &desc.legacy, desc.provider.into()) {
-        Ok(value) => {
-            write_extended_stats(stats, value);
-            0
-        }
-        Err(error) => {
-            simulator.reset();
-            status_for_error(error)
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn im2p_execute_matmul_v2(
-    sim: *mut SimBox,
-    descriptor: *const MatmulDescV2,
-    stats: *mut WorkStatsC,
-) -> i32 {
-    match execute_matmul_v2_value(sim, descriptor) {
-        Ok(value) => {
-            write_stats(stats, value);
-            0
-        }
-        Err(status) => status,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn im2p_execute_matmul_extended_v2(
-    sim: *mut SimBox,
-    descriptor: *const MatmulDescV2,
-    stats: *mut WorkStatsExtendedC,
-) -> i32 {
-    match execute_matmul_v2_value(sim, descriptor) {
-        Ok(value) => {
-            write_extended_stats(stats, value);
-            0
-        }
-        Err(status) => status,
-    }
-}
-
-unsafe fn execute_matmul_v2_value(
-    sim: *mut SimBox,
-    descriptor: *const MatmulDescV2,
+    descriptor: *const MatmulDescC,
 ) -> Result<WorkStats, i32> {
     let Some(desc) = descriptor.as_ref() else {
-        return Err(-1);
+        return Err(-4);
     };
-    let (parsed, provider) = parse_matmul_v2(desc)?;
+    require_identity(Identity::from_matmul(desc))?;
+    if desc.activations.is_null()
+        || !(desc.activations as usize).is_multiple_of(align_of::<ActivationValue>())
+        || (!desc.weights.is_null()
+            && !(desc.weights as usize).is_multiple_of(align_of::<WeightValue>()))
+    {
+        return Err(-4);
+    }
+    let activation_row_stride =
+        activation_bytes_to_elements(desc.activation_row_stride_bytes).map_err(|_| -4)?;
+    let weight_row_stride =
+        weight_bytes_to_elements(desc.weight_row_stride_bytes).map_err(|_| -4)?;
+    let parsed = MatmulDesc {
+        activations: desc.activations.cast(),
+        weights: desc.weights.cast(),
+        scales: desc.scales,
+        output: desc.output,
+        m: desc.m,
+        n: desc.n,
+        k: desc.k,
+        activation_row_stride,
+        weight_row_stride,
+        output_row_stride: desc.output_row_stride,
+        tile_i_rows: desc.tile_i_rows,
+        tile_j_columns: desc.tile_j_columns,
+        block_size: desc.block_size,
+        scale_total_k: desc.scale_total_k,
+        scale_row_stride: desc.scale_row_stride,
+        scale_column_offset: desc.scale_column_offset,
+        scale_valid_columns: desc.scale_valid_columns,
+        scale_values_len: desc.scale_values_len,
+        vector_op: desc.vector_op,
+        work_context: desc.work_context,
+    };
+    let any_provider = provider_requested(desc.provider);
+    if any_provider
+        && (!selected_weight_callback(desc.provider) || desc.provider.write_output.is_none())
+    {
+        return Err(-4);
+    }
+    if !any_provider && (parsed.weights.is_null() || parsed.output.is_null()) {
+        return Err(-1);
+    }
+    if any_provider {
+        validate_provider_rtl_fields(&parsed)?;
+    }
     let Some(owner) = sim.as_mut() else {
         return Err(-1);
     };
@@ -217,32 +171,13 @@ unsafe fn execute_matmul_v2_value(
     let Some(simulator) = state.as_mut() else {
         return Err(-3);
     };
-    let result = match provider {
-        Some(provider) => execute_full_provider(simulator, &parsed, provider),
-        None => execute_full(simulator, &parsed),
+    let result = if any_provider {
+        execute_full_provider(simulator, &parsed, desc.provider.selected())
+    } else {
+        execute_full(simulator, &parsed)
     };
     result.map_err(|error| {
         simulator.reset();
         status_for_error(error)
     })
-}
-
-unsafe fn execute_matmul_value(
-    sim: *mut SimBox,
-    descriptor: *const MatmulDesc,
-) -> Result<WorkStats, i32> {
-    if crate::ACTIVATION_BITS != 8 {
-        return Err(CONFIGURATION_MISMATCH);
-    }
-    let Some(desc) = descriptor.as_ref() else {
-        return Err(-1);
-    };
-    let Some(owner) = sim.as_mut() else {
-        return Err(-1);
-    };
-    let mut state = owner.simulator.borrow_mut();
-    let Some(simulator) = state.as_mut() else {
-        return Err(-3);
-    };
-    execute_full(simulator, desc).map_err(status_for_error)
 }

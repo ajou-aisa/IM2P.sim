@@ -52,6 +52,7 @@ std::atomic<size_t> stream_created{0};
 std::atomic<size_t> stream_destroyed{0};
 bool hold_publish = false;
 bool publish_entered = false;
+size_t forward_progress_period = 0;
 size_t required_progress_cycles = 1;
 size_t progress_calls = 0;
 size_t publish_attempts = 0;
@@ -59,13 +60,11 @@ size_t publish_count = 0;
 size_t finish_count = 0;
 std::thread::id owner;
 bool one_owner = true;
-im2p_matmul_desc_v2_t full_desc{};
-im2p_stripe_work_desc_v2_t work_desc{};
-im2p_matmul_desc_v3_t provider_full_desc{};
-im2p_stripe_work_desc_v3_t provider_work_desc{};
+im2p_matmul_desc_t full_desc{};
+im2p_stripe_work_desc_t work_desc{};
 size_t provider_full_count = 0;
 size_t provider_work_count = 0;
-std::vector<im2p_activation_stripe_v2_t> published;
+std::vector<im2p_activation_stripe_t> published;
 
 void abi_call() {
   const auto here = std::this_thread::get_id();
@@ -96,6 +95,7 @@ void reset() {
   stream_destroyed = 0;
   hold_publish = false;
   publish_entered = false;
+  forward_progress_period = 0;
   required_progress_cycles = 1;
   progress_calls = 0;
   publish_attempts = 0;
@@ -105,8 +105,6 @@ void reset() {
   one_owner = true;
   full_desc = {};
   work_desc = {};
-  provider_full_desc = {};
-  provider_work_desc = {};
   provider_full_count = 0;
   provider_work_count = 0;
   published.clear();
@@ -176,6 +174,7 @@ struct im2p_sim {};
 struct im2p_stream {
   std::deque<im2p_stripe_completion_t> done;
   size_t serviced = 0;
+  uint64_t progress_count = 0;
 };
 
 extern "C" {
@@ -191,48 +190,43 @@ void im2p_sim_destroy(im2p_sim_t *p) {
   ++fake::sim_destroyed;
   delete p;
 }
-uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION_3; }
+uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION; }
 uint32_t im2p_sim_activation_bits(void) {
   return IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
 }
 uint32_t im2p_sim_activation_storage_bytes(void) {
   return (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS + 7) / 8;
 }
+uint32_t im2p_sim_weight_bits(void) { return GGML_GEMMINI_WEIGHT_BITS; }
+uint32_t im2p_sim_weight_storage_bytes(void) {
+  return (GGML_GEMMINI_WEIGHT_BITS + 7) / 8;
+}
 uint32_t im2p_sim_dim(void) { return DIM; }
-int im2p_execute_matmul_extended_v2(im2p_sim_t *,
-                                    const im2p_matmul_desc_v2_t *d,
-                                    im2p_work_stats_extended_t *stats) {
+int im2p_execute_matmul_extended(im2p_sim_t *,
+                                 const im2p_matmul_desc_t *d,
+                                 im2p_work_stats_extended_t *stats) {
   fake::abi_call();
   if (fake::fail_full)
     return IM2P_ERROR;
-  if (d->provider.context != nullptr) {
-    std::lock_guard lock(fake::mutex);
-    ++fake::provider_full_count;
+  if (d->provider.context == nullptr) {
+    std::unique_lock lock(fake::mutex);
+    fake::full_desc = *d;
+    fake::full_entered = true;
     fake::changed.notify_all();
+    fake::changed.wait(lock, [] { return !fake::hold_full; });
+    lock.unlock();
+    fake::multiply(
+        d->activations, d->activation_row_stride_bytes, d->activation_bits,
+        static_cast<const int8_t *>(d->weights),
+        d->weight_row_stride_bytes / d->weight_storage_bytes, d->output,
+        d->output_row_stride, d->m, d->n, d->k);
+    if (stats)
+      stats->base.completed_output_tiles = d->m * d->n;
     return IM2P_OK;
   }
-  std::unique_lock lock(fake::mutex);
-  fake::full_desc = *d;
-  fake::full_entered = true;
-  fake::changed.notify_all();
-  fake::changed.wait(lock, [] { return !fake::hold_full; });
-  lock.unlock();
-  fake::multiply(d->activations, d->activation_row_stride_bytes,
-                 d->activation_bits, d->weights, d->weight_row_stride,
-                 d->output, d->output_row_stride, d->m, d->n, d->k);
-  if (stats)
-    stats->base.completed_output_tiles = d->m * d->n;
-  return IM2P_OK;
-}
-int im2p_execute_matmul_extended_v3(im2p_sim_t *,
-                                    const im2p_matmul_desc_v3_t *d,
-                                    im2p_work_stats_extended_t *stats) {
-  fake::abi_call();
-  if (fake::fail_full)
-    return IM2P_ERROR;
   {
     std::lock_guard lock(fake::mutex);
-    fake::provider_full_desc = *d;
+    fake::full_desc = *d;
     ++fake::provider_full_count;
     fake::changed.notify_all();
   }
@@ -241,39 +235,23 @@ int im2p_execute_matmul_extended_v3(im2p_sim_t *,
     stats->base.completed_output_tiles = d->m * d->n;
   return status;
 }
-int im2p_begin_striped_matmul_v2(im2p_sim_t *,
-                                 const im2p_stripe_work_desc_v2_t *d,
-                                 im2p_stream_t **out) {
+int im2p_begin_striped_matmul(im2p_sim_t *,
+                              const im2p_stripe_work_desc_t *d,
+                              im2p_stream_t **out) {
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
   if (fake::fail_begin)
     return IM2P_ERROR;
-  if (d->provider.context != nullptr) {
+  fake::work_desc = *d;
+  if (d->provider.context != nullptr)
     ++fake::provider_work_count;
-  } else {
-    fake::work_desc = *d;
-  }
   *out = new im2p_stream;
   ++fake::stream_created;
   fake::changed.notify_all();
   return IM2P_OK;
 }
-int im2p_begin_striped_matmul_v3(im2p_sim_t *,
-                                 const im2p_stripe_work_desc_v3_t *d,
-                                 im2p_stream_t **out) {
-  fake::abi_call();
-  std::lock_guard lock(fake::mutex);
-  if (fake::fail_begin)
-    return IM2P_ERROR;
-  fake::provider_work_desc = *d;
-  ++fake::provider_work_count;
-  *out = new im2p_stream;
-  ++fake::stream_created;
-  fake::changed.notify_all();
-  return IM2P_OK;
-}
-int im2p_publish_stripe_v2(im2p_stream_t *,
-                           const im2p_activation_stripe_v2_t *s) {
+int im2p_publish_stripe(im2p_stream_t *,
+                        const im2p_activation_stripe_t *s) {
   fake::abi_call();
   std::unique_lock lock(fake::mutex);
   ++fake::publish_attempts;
@@ -293,55 +271,40 @@ int im2p_publish_stripe_v2(im2p_stream_t *,
   fake::changed.notify_all();
   return IM2P_OK;
 }
-int im2p_publish_stripe_v3(im2p_stream_t *,
-                           const im2p_activation_stripe_v3_t *s) {
-  fake::abi_call();
-  std::unique_lock lock(fake::mutex);
-  ++fake::publish_attempts;
-  fake::publish_entered = true;
-  fake::changed.notify_all();
-  fake::changed.wait(lock, [] { return !fake::hold_publish; });
-  if (fake::fail_publish)
-    return IM2P_ERROR;
-  if (fake::raw_pressure_forever)
-    return IM2P_BACKPRESSURE;
-  if (fake::raw_pressure_once) {
-    fake::raw_pressure_once = false;
-    return IM2P_BACKPRESSURE;
-  }
-  fake::published.push_back({IM2P_ABI_VERSION_2, s->activation_bits,
-                             s->activation_storage_bytes, s->dim, s->stripe_id,
-                             s->i_start, s->rows, s->activations,
-                             s->activation_row_stride_bytes, s->context});
-  ++fake::publish_count;
-  fake::changed.notify_all();
-  return IM2P_OK;
-}
 int im2p_progress_stream(im2p_stream_t *stream, uint64_t) {
   fake::abi_call();
   std::lock_guard lock(fake::mutex);
   if (fake::fail_progress)
     return IM2P_ERROR;
   ++fake::progress_calls;
+  if (fake::forward_progress_period != 0 &&
+      fake::progress_calls % fake::forward_progress_period == 0)
+    ++stream->progress_count;
   fake::changed.notify_all();
   while (fake::allow_completion &&
          fake::progress_calls >= fake::required_progress_cycles &&
          stream->serviced < fake::published.size()) {
     const auto &s = fake::published[stream->serviced++];
     if (fake::provider_work_count != 0) {
-      if (fake::provider_outputs(fake::provider_work_desc, s.i_start, s.rows) !=
-          IM2P_OK)
+      const int status =
+          fake::provider_outputs(fake::work_desc, s.i_start, s.rows);
+      if (status != IM2P_OK)
         return IM2P_ERROR;
     } else {
       fake::multiply(s.activations, s.activation_row_stride_bytes,
-                     s.activation_bits, fake::work_desc.weights,
-                     fake::work_desc.weight_row_stride, fake::work_desc.output,
-                     fake::work_desc.output_row_stride, s.rows,
-                     fake::work_desc.n, fake::work_desc.k, s.i_start);
+                     s.activation_bits,
+                     static_cast<const int8_t *>(fake::work_desc.weights),
+                     fake::work_desc.weight_row_stride_bytes /
+                         fake::work_desc.weight_storage_bytes,
+                     fake::work_desc.output, fake::work_desc.output_row_stride,
+                     s.rows, fake::work_desc.n, fake::work_desc.k, s.i_start);
     }
     stream->done.push_back({s.stripe_id, s.i_start, s.rows, s.context});
   }
   return IM2P_OK;
+}
+uint64_t im2p_stream_progress_count(const im2p_stream_t *stream) {
+  return stream ? stream->progress_count : 0;
 }
 int im2p_poll_completed(im2p_stream_t *stream, im2p_stripe_completion_t *out) {
   fake::abi_call();
@@ -661,6 +624,184 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
   x.weight_channel_scale_count = 2;
   return check(x, Route::q8_channel_dense_sidecar);
 }
+bool test_native_q4_q16_provider_golden() {
+  auto base = [] {
+    ggml_gemmini_args_t args{};
+    args.I = 1;
+    args.J = 1;
+    args.K = 32;
+    args.native_block_count = 1;
+    args.native_blocks_per_row = 1;
+    return args;
+  };
+
+  block_q4_h0 q4_h0{};
+  block_q4_h1 q4_h1{};
+  block_q4_hp1 q4_hp1{};
+  q4_h0.d = 0x3c00; // IEEE binary16 1.0
+  q4_h1.s_rf = 0.125f;
+  q4_h1.c_b = 2;
+  q4_h1.R = 6;
+  q4_hp1.channel_scale = 0.25f;
+  q4_hp1.m = 2;
+  q4_h0.qs[15] = q4_h1.qs[15] = q4_hp1.qs[15] = 0x00;
+  q4_h0.qs[0] = q4_h1.qs[0] = q4_hp1.qs[0] = 0xf0;
+
+  auto check_q4 = [&](auto format, auto member, const auto *block,
+                      const char *message) {
+    auto args = base();
+    args.weight_format = format;
+    args.*member = block;
+    std::array<int8_t, 1> lane15{}, lane16{};
+    double factor = 0.0;
+    return expect(args.has_native_matched_width_contract(), message) &&
+           expect(RunTestAccess::read_selected_weight(
+                      args, 15, 0, 1, lane15.data()) == IM2P_OK &&
+                      RunTestAccess::read_selected_weight(
+                          args, 16, 0, 1, lane16.data()) == IM2P_OK &&
+                      lane15[0] == -8 && lane16[0] == 7,
+                  "Q4 split-half lanes 15/16 decode as signed -8..7") &&
+           expect(RunTestAccess::weight_factor(args, 0, 0, factor) &&
+                      factor == 1.0,
+                  "Q4 provider applies the exact per-block factor");
+  };
+  if (!check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_h0,
+                &ggml_gemmini_args_t::q4_h0_blocks, &q4_h0,
+                "Q4_H0 native contract") ||
+      !check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_h1,
+                &ggml_gemmini_args_t::q4_h1_blocks, &q4_h1,
+                "Q4_H1 native contract") ||
+      !check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_hp1,
+                &ggml_gemmini_args_t::q4_hp1_blocks, &q4_hp1,
+                "Q4_HP1 native contract"))
+    return false;
+
+  block_q16_h0 q16_h0{};
+  block_q16_h1 q16_h1{};
+  block_q16_hp1 q16_hp1{};
+  q16_h0.d = 0x3c00;
+  q16_h1.s_rf = 0.125f;
+  q16_h1.c_b = 2;
+  q16_h1.R = 6;
+  q16_hp1.channel_scale = 0.25f;
+  q16_hp1.m = 2;
+  q16_h0.qs[15] = q16_h1.qs[15] = q16_hp1.qs[15] = INT16_MIN;
+  q16_h0.qs[16] = q16_h1.qs[16] = q16_hp1.qs[16] = INT16_MAX;
+  auto check_q16 = [&](auto format, auto member, const auto *block,
+                       const char *message) {
+    auto args = base();
+    args.weight_format = format;
+    args.*member = block;
+    std::array<int16_t, 1> lane15{}, lane16{};
+    double factor = 0.0;
+    return expect(args.has_native_matched_width_contract(), message) &&
+           expect(RunTestAccess::read_selected_weight(
+                      args, 15, 0, 1, lane15.data()) == IM2P_OK &&
+                      RunTestAccess::read_selected_weight(
+                          args, 16, 0, 1, lane16.data()) == IM2P_OK &&
+                      lane15[0] == INT16_MIN && lane16[0] == INT16_MAX,
+                  "Q16 provider preserves signed int16 codes") &&
+           expect(RunTestAccess::weight_factor(args, 0, 0, factor) &&
+                      factor == 1.0,
+                  "Q16 provider applies the exact per-block factor");
+  };
+  if (!check_q16(ggml_gemmini_args_t::im2p_weight_format_t::q16_h0,
+                   &ggml_gemmini_args_t::q16_h0_blocks, &q16_h0,
+                   "Q16_H0 native contract") ||
+      !check_q16(ggml_gemmini_args_t::im2p_weight_format_t::q16_h1,
+                   &ggml_gemmini_args_t::q16_h1_blocks, &q16_h1,
+                   "Q16_H1 native contract") ||
+      !check_q16(ggml_gemmini_args_t::im2p_weight_format_t::q16_hp1,
+                   &ggml_gemmini_args_t::q16_hp1_blocks, &q16_hp1,
+                   "Q16_HP1 native contract"))
+    return false;
+
+#if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
+  fake::reset();
+  fake::provider_exact_values = {3};
+  float output = 91.0f;
+  auto args = base();
+  if (!args.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  args.f_out = &output;
+  args.stride_f_out = 1;
+  args.act_quant.storage()
+      .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+      .scale = 0.5f;
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q4_h0;
+  args.q4_h0_blocks = &q4_h0;
+#else
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h0;
+  args.q16_h0_blocks = &q16_h0;
+#endif
+  auto started = execute(&args, Mode::full);
+  if (!expect(started.status.ok(), "matched native route starts") ||
+      !expect(fence(*started.run).status.ok(),
+              "matched native FULL route fences"))
+    return false;
+  const auto &descriptor = fake::full_desc;
+  if (!expect(descriptor.abi_version == IM2P_ABI_VERSION &&
+                  descriptor.activation_bits == GGML_GEMMINI_WEIGHT_BITS &&
+                  descriptor.weight_bits == GGML_GEMMINI_WEIGHT_BITS &&
+                  descriptor.weight_storage_bytes ==
+                      (GGML_GEMMINI_WEIGHT_BITS + 7) / 8 &&
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+                  descriptor.provider.read_weight_i8 != nullptr &&
+                  descriptor.provider.read_weight_i16 == nullptr &&
+#else
+                  descriptor.provider.read_weight_i8 == nullptr &&
+                  descriptor.provider.read_weight_i16 != nullptr &&
+#endif
+                  descriptor.provider.read_scale != nullptr &&
+                  descriptor.provider.write_output != nullptr,
+              "matched native FULL descriptor carries exact widths") ||
+      !expect(output == 1.5f,
+              "host reducer applies activation and block factors"))
+    return false;
+
+  fake::reset();
+  fake::provider_exact_values = {3};
+  output = 91.0f;
+  args.activation_rows_per_stripe = 1;
+  args.act_quant.storage().emplace<exsia::Meta>();
+  auto pipeline = execute(&args, Mode::stripe_pipeline);
+  if (!expect(pipeline.status.ok(),
+              "matched native route starts PIPELINE") ||
+      !expect(submit_stripe(*pipeline.run, event(0, 0, 1), {true, -1}).ok(),
+              "matched native stripe publishes") ||
+      !expect(fence(*pipeline.run).status.ok(),
+              "matched native PIPELINE fences"))
+    return false;
+  const auto &striped = fake::work_desc;
+  if (!expect(striped.abi_version == IM2P_ABI_VERSION &&
+                  striped.activation_bits == GGML_GEMMINI_WEIGHT_BITS &&
+                  striped.weight_bits == GGML_GEMMINI_WEIGHT_BITS &&
+                  striped.weight_storage_bytes ==
+                      (GGML_GEMMINI_WEIGHT_BITS + 7) / 8 &&
+                  striped.weight_row_stride_bytes ==
+                      (GGML_GEMMINI_WEIGHT_BITS + 7) / 8 &&
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+                  striped.provider.read_weight_i8 != nullptr &&
+                  striped.provider.read_weight_i16 == nullptr &&
+#else
+                  striped.provider.read_weight_i8 == nullptr &&
+                  striped.provider.read_weight_i16 != nullptr &&
+#endif
+                  striped.provider.read_scale != nullptr &&
+                  striped.provider.write_output != nullptr &&
+                  fake::provider_work_count == 1 && fake::publish_count == 1,
+              "matched native PIPELINE descriptor carries exact widths") ||
+      !expect(output == 91.0f,
+              "matched PIPELINE output remains staged before authorization") ||
+      !expect(authorize_output_commit(*pipeline.run, true).ok() &&
+                  output == 1.5f,
+              "matched PIPELINE commits after authorization"))
+    return false;
+#endif
+  return true;
+}
+
 bool test_native_h1_provider_start_contract() {
   fake::reset();
   float out[2]{};
@@ -683,22 +824,25 @@ bool test_native_h1_provider_start_contract() {
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
   auto started = execute(&x);
-  if (!expect(started.status.ok(), "native H1 starts through provider v3"))
+  if (!expect(started.status.ok(), "native H1 starts through provider"))
     return false;
   const auto done = fence(*started.run);
   std::lock_guard lock(fake::mutex);
-  const auto &d = fake::provider_full_desc;
+  const auto &d = fake::full_desc;
   return expect(
       done.status.ok() && fake::provider_full_count == 1 &&
-          d.abi_version == IM2P_ABI_VERSION_3 &&
+          d.abi_version == IM2P_ABI_VERSION &&
           d.activation_bits == IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
           d.weights == nullptr && d.output == nullptr && d.m == 1 && d.n == 2 &&
-          d.k == 32 && d.weight_row_stride == 2 && d.output_row_stride == 2 &&
+          d.k == 32 && d.weight_row_stride_bytes == 2 &&
+          d.output_row_stride == 2 &&
           d.block_size == 32 && d.vector_op == IM2P_VECTOR_EXTERNAL &&
-          d.provider.context != nullptr && d.provider.read_weight != nullptr &&
+          d.provider.context != nullptr &&
+          d.provider.read_weight_i8 != nullptr &&
+          d.provider.read_weight_i16 == nullptr &&
           d.provider.read_scale != nullptr &&
           d.provider.write_output != nullptr,
-      "native H1 provider v3 descriptor is exact");
+      "native H1 provider descriptor is exact");
 }
 
 bool test_provider_int64_scaling_full_pipeline() {
@@ -1725,8 +1869,59 @@ bool test_logical_stall_bound() {
   auto run = execute(&args, Mode::stripe_pipeline, {8});
   if (!run.status.ok() || !submit_stripe(*run.run, event(0, 0, 1)).ok())
     return false;
-  return expect(fence(*run.run).status.code == StatusCode::execution_failure,
-                "deterministic logical stall limit");
+  const auto done = fence(*run.run);
+  return expect(done.status.code == StatusCode::execution_failure,
+                "deterministic logical stall limit") &&
+         expect(fake::progress_calls == 65537,
+                "small stalled work retains the 65536-cycle floor");
+}
+
+bool test_forward_progress_is_not_stall() {
+  fake::reset();
+  fake::forward_progress_period = 32'768;
+  fake::required_progress_cycles = 1'000'000;
+  std::vector<int8_t> activation = {1, 2, 3};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> output(2);
+  auto args = raw_args(activation, weights, output, 1);
+  auto run = execute(&args, Mode::stripe_pipeline);
+  if (!run.status.ok() ||
+      !submit_stripe(*run.run, event(0, 0, 1)).ok())
+    return false;
+  const auto done = fence(*run.run);
+  return expect(done.status.ok() &&
+                    authorize_output_commit(*run.run, true).ok(),
+                "forward progress is not mistaken for a logical stall") &&
+         expect(fake::progress_calls == fake::required_progress_cycles,
+                "completion follows one million progressing cycles");
+}
+
+bool test_max_stall_limit_disables_watchdog() {
+  fake::reset();
+  fake::required_progress_cycles = 70'000;
+  std::vector<int8_t> activation = {1, 2, 3};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> output(2);
+  auto args = raw_args(activation, weights, output, 1);
+  auto run = execute(&args, Mode::stripe_pipeline,
+                     {std::numeric_limits<uint64_t>::max()});
+  if (!run.status.ok() ||
+      !submit_stripe(*run.run, event(0, 0, 1)).ok())
+    return false;
+  const auto done = fence(*run.run);
+  return expect(done.status.ok(),
+                "UINT64_MAX disables the logical stall watchdog") &&
+         expect(fake::progress_calls == fake::required_progress_cycles,
+                "disabled watchdog permits completion beyond ordinary limit");
+}
+
+bool test_compiled_identity() {
+  return expect(compiled_activation_bits() ==
+                    IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+                "frontend reports its activation width") &&
+         expect(compiled_weight_bits() == GGML_GEMMINI_WEIGHT_BITS,
+                "frontend reports its weight width") &&
+         expect(compiled_dim() == DIM, "frontend reports its RTL DIM");
 }
 } // namespace
 
@@ -1751,6 +1946,12 @@ int main(int argc, char **argv) {
         : selected == "full_failure_matrix"   ? test_full_failure_matrix()
         : selected == "stripe_failure_matrix" ? test_stripe_failure_matrix()
         : selected == "invalid_reuse"         ? test_invalid_reuse_is_bounded()
+        : selected == "forward_progress_watchdog"
+            ? test_forward_progress_is_not_stall()
+        : selected == "disabled_progress_watchdog"
+            ? test_max_stall_limit_disables_watchdog()
+        : selected == "native_q4_q16_provider"
+            ? test_native_q4_q16_provider_golden()
         : selected == "provider_int64_scaling" ||
                   selected == "cross_mode_oracle"
             ? test_provider_int64_scaling_full_pipeline()
@@ -1763,8 +1964,11 @@ int main(int argc, char **argv) {
   }
   if (argc != 1)
     return 2;
-  const bool ok =
-      test_native_h1_provider_start_contract() &&
+  const bool ok = GGML_GEMMINI_WEIGHT_BITS != 8
+      ? (test_compiled_identity() && test_native_q4_q16_provider_golden())
+      : (test_compiled_identity() &&
+         test_native_q4_q16_provider_golden() &&
+         test_native_h1_provider_start_contract() &&
       test_provider_int64_scaling_full_pipeline() &&
       test_rejected_routes_do_not_execute() &&
       test_mode_and_raw_scale_contract() &&
@@ -1783,7 +1987,10 @@ int main(int argc, char **argv) {
       test_rmd_commit_authorization_ordering() &&
       test_blocked_producer_failure_is_transactional() &&
       test_full_failure_matrix() && test_stripe_failure_matrix() &&
-      test_invalid_reuse_is_bounded() && test_logical_stall_bound();
+      test_invalid_reuse_is_bounded() &&
+      test_forward_progress_is_not_stall() &&
+      test_max_stall_limit_disables_watchdog() &&
+      test_logical_stall_bound());
   if (ok)
     std::puts("IM2P Gemmini frontend: PASS");
   return ok ? 0 : 1;

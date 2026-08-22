@@ -1,6 +1,7 @@
 #include "im2p_gemmini_frontend.hpp"
 
 #include "ggml-gemmini-args.h"
+#include "ggml-gemmini-config.hpp"
 #include "quants/act/exsia/exsia.hpp"
 #include "quants/common/weight_route.hpp"
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
@@ -66,6 +67,24 @@ Status from_c_status(int value, Route route, const char *operation,
   }
 }
 
+float fp16_to_fp32(ggml_half value) noexcept {
+  const uint16_t bits = static_cast<uint16_t>(value);
+  const bool negative = (bits & 0x8000u) != 0;
+  const uint16_t exponent = (bits >> 10) & 0x1fu;
+  const uint16_t mantissa = bits & 0x03ffu;
+  float result = 0.0f;
+  if (exponent == 0) {
+    result = std::ldexp(static_cast<float>(mantissa), -24);
+  } else if (exponent == 0x1f) {
+    result = mantissa == 0 ? std::numeric_limits<float>::infinity()
+                           : std::numeric_limits<float>::quiet_NaN();
+  } else {
+    result = std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
+                        static_cast<int>(exponent) - 15);
+  }
+  return negative ? -result : result;
+}
+
 bool checked_mul(size_t left, size_t right, size_t &result) noexcept {
   if (right != 0 && left > std::numeric_limits<size_t>::max() / right)
     return false;
@@ -103,6 +122,18 @@ Route classify_format(const ggml_gemmini_args_t &args) noexcept {
     return Route::q8_channel;
   case F::q8_channel_dense_sidecar:
     return Route::q8_channel_dense_sidecar;
+  case F::q4_h0:
+    return Route::q4_h0;
+  case F::q4_h1:
+    return Route::q4_h1;
+  case F::q4_hp1:
+    return Route::q4_hp1;
+  case F::q16_h0:
+    return Route::q16_h0;
+  case F::q16_h1:
+    return Route::q16_h1;
+  case F::q16_hp1:
+    return Route::q16_hp1;
   }
   return Route::unknown;
 }
@@ -122,6 +153,13 @@ bool native_contract(const ggml_gemmini_args_t &args, Route route) noexcept {
            args.has_q8_channel_direct_read_contract();
   case Route::q8_channel_dense_sidecar:
     return false;
+  case Route::q4_h0:
+  case Route::q4_h1:
+  case Route::q4_hp1:
+  case Route::q16_h0:
+  case Route::q16_h1:
+  case Route::q16_hp1:
+    return args.has_native_matched_width_contract();
   default:
     return false;
   }
@@ -135,6 +173,31 @@ enum class RoutePolicy : uint8_t {
   unknown
 };
 
+uint8_t route_weight_bits(Route route) noexcept {
+  switch (route) {
+  case Route::q4_h0:
+  case Route::q4_h1:
+  case Route::q4_hp1:
+    return 4;
+  case Route::q16_h0:
+  case Route::q16_h1:
+  case Route::q16_hp1:
+    return 16;
+  case Route::q8_0_unpacked_to_h1:
+  case Route::q8_h0:
+  case Route::q8_h2:
+  case Route::q8_h1:
+  case Route::q8_hp1:
+  case Route::q8_hp2:
+  case Route::q8_channel:
+  case Route::q8_channel_dense_sidecar:
+    return 8;
+  case Route::unknown:
+    return 0;
+  }
+  return 0;
+}
+
 RoutePolicy route_policy(Route route) noexcept {
   switch (route) {
   case Route::q8_h0:
@@ -144,6 +207,12 @@ RoutePolicy route_policy(Route route) noexcept {
   case Route::q8_hp1:
   case Route::q8_channel:
   case Route::q8_channel_dense_sidecar:
+  case Route::q4_h0:
+  case Route::q4_h1:
+  case Route::q4_hp1:
+  case Route::q16_h0:
+  case Route::q16_h1:
+  case Route::q16_hp1:
     return RoutePolicy::provider;
   case Route::q8_h2:
     return RoutePolicy::deprecated;
@@ -157,7 +226,8 @@ RoutePolicy route_policy(Route route) noexcept {
 
 bool provider_route_contract(const ggml_gemmini_args_t &a,
                              Route route) noexcept {
-  if (a.I == 0 || a.J == 0 || a.K == 0 || a.A.raw_data() == nullptr ||
+  if (route_weight_bits(route) != GGML_GEMMINI_WEIGHT_BITS ||
+      a.I == 0 || a.J == 0 || a.K == 0 || a.A.raw_data() == nullptr ||
       a.f_out == nullptr || a.A.row_stride_bytes < a.K * ((a.A.bits + 7) / 8) ||
       a.transpose_A || a.D != nullptr || a.repeating_bias || a.low_D ||
       a.weight_i8_scale_active || a.act != 0 ||
@@ -184,6 +254,14 @@ bool provider_route_contract(const ggml_gemmini_args_t &a,
            a.has_q8_channel_direct_read_contract();
   case Route::q8_channel_dense_sidecar:
     return a.has_q8_channel_dense_sidecar_contract();
+  case Route::q4_h0:
+  case Route::q4_h1:
+  case Route::q4_hp1:
+    return a.A.bits == 4 && a.has_native_matched_width_contract();
+  case Route::q16_h0:
+  case Route::q16_h1:
+  case Route::q16_hp1:
+    return a.A.bits == 16 && a.has_native_matched_width_contract();
   default:
     return false;
   }
@@ -257,6 +335,7 @@ struct ScalarSnapshot {
   size_t q8_h2_count = 0, q8_h2_blocks_per_row = 0;
   size_t q8_hp1_count = 0, q8_hp1_blocks_per_row = 0;
   size_t q8_hp2_count = 0, q8_hp2_blocks_per_row = 0;
+  size_t native_block_count = 0, native_blocks_per_row = 0;
   size_t channel_scale_count = 0, channel_row_stride = 0, channel_row_count = 0;
   size_t col_stride_f_out = 0, stride_f_out = 0;
   ggml_gemmini_args_t::im2p_weight_format_t weight_format{};
@@ -278,6 +357,8 @@ struct PointerSnapshot {
   const void *channel_scales = nullptr, *channel_rows = nullptr;
   const void *q8_h1 = nullptr, *q8_h2 = nullptr, *q8_hp1 = nullptr,
              *q8_hp2 = nullptr;
+  const void *q4_h0 = nullptr, *q4_h1 = nullptr, *q4_hp1 = nullptr,
+             *q16_h0 = nullptr, *q16_h1 = nullptr, *q16_hp1 = nullptr;
   const void *c_b = nullptr, *s_rf = nullptr, *r = nullptr,
              *s_rf_stripe = nullptr, *r_stripe = nullptr;
   const void *f_out = nullptr, *model_arch = nullptr, *stripe_sink = nullptr,
@@ -311,6 +392,8 @@ ScalarSnapshot snapshot_scalars(const ggml_gemmini_args_t &a) noexcept {
           a.q8_hp1_blocks_per_row,
           a.q8_hp2_block_count,
           a.q8_hp2_blocks_per_row,
+          a.native_block_count,
+          a.native_blocks_per_row,
           a.weight_channel_scale_count,
           a.q8_channel_row_stride,
           a.q8_channel_row_count,
@@ -333,6 +416,8 @@ ScalarSnapshot snapshot_scalars(const ggml_gemmini_args_t &a) noexcept {
           a.A.row_stride_bytes};
 }
 
+constexpr uint64_t minimum_stall_cycles = 65536;
+
 PointerSnapshot snapshot_pointers(const ggml_gemmini_args_t &a) noexcept {
   return {a.A.raw_data(),
           a.B,
@@ -348,6 +433,12 @@ PointerSnapshot snapshot_pointers(const ggml_gemmini_args_t &a) noexcept {
           a.q8_h2_blocks,
           a.q8_hp1_blocks,
           a.q8_hp2_blocks,
+          a.q4_h0_blocks,
+          a.q4_h1_blocks,
+          a.q4_hp1_blocks,
+          a.q16_h0_blocks,
+          a.q16_h1_blocks,
+          a.q16_hp1_blocks,
           a.c_b,
           a.s_rf,
           a.R,
@@ -375,7 +466,11 @@ struct Run::Impl {
        Options requested_options)
       : scalars(snapshot_scalars(*source)),
         pointers(snapshot_pointers(*source)), mode(requested_mode),
-        options(requested_options), route(classify_format(*source)),
+        options(requested_options),
+        stall_cycle_limit(
+            std::max(requested_options.max_stalled_cycles,
+                     minimum_stall_cycles)),
+        route(classify_format(*source)),
         native(native_contract(*source, route)),
         final_status(
             make_status(StatusCode::success, route, native, "success")),
@@ -387,6 +482,7 @@ struct Run::Impl {
   PointerSnapshot pointers;
   Mode mode;
   Options options;
+  uint64_t stall_cycle_limit;
   Route route;
   bool native;
   mutable std::mutex mutex;
@@ -404,6 +500,7 @@ struct Run::Impl {
   std::shared_ptr<std::vector<uint16_t>> residual_owner;
   std::shared_ptr<std::vector<block_q8_h1>> h1_owner;
   std::shared_ptr<std::vector<block_q8_hp1>> hp1_owner;
+  std::shared_ptr<std::vector<uint8_t>> native_weight_owner;
   std::shared_ptr<std::vector<int32_t>> integer_output_stage;
   std::shared_ptr<std::vector<float>> float_output_stage;
   void *integer_output_destination = nullptr;
@@ -528,6 +625,42 @@ struct Run::Impl {
         pointers.channel_scales = scale_owner->data();
         break;
       }
+      case Route::q4_h0:
+      case Route::q4_h1:
+      case Route::q4_hp1:
+      case Route::q16_h0:
+      case Route::q16_h1:
+      case Route::q16_hp1: {
+        const void *source = nullptr;
+        size_t block_bytes = 0;
+        switch (route) {
+        case Route::q4_h0: source = pointers.q4_h0; block_bytes = sizeof(block_q4_h0); break;
+        case Route::q4_h1: source = pointers.q4_h1; block_bytes = sizeof(block_q4_h1); break;
+        case Route::q4_hp1: source = pointers.q4_hp1; block_bytes = sizeof(block_q4_hp1); break;
+        case Route::q16_h0: source = pointers.q16_h0; block_bytes = sizeof(block_q16_h0); break;
+        case Route::q16_h1: source = pointers.q16_h1; block_bytes = sizeof(block_q16_h1); break;
+        case Route::q16_hp1: source = pointers.q16_hp1; block_bytes = sizeof(block_q16_hp1); break;
+        default: break;
+        }
+        size_t byte_count = 0;
+        if (!source || !checked_mul(scalars.native_block_count, block_bytes,
+                                    byte_count))
+          return false;
+        const auto *bytes = static_cast<const uint8_t *>(source);
+        native_weight_owner = std::make_shared<std::vector<uint8_t>>(
+            bytes, bytes + byte_count);
+        void *owned = native_weight_owner->data();
+        switch (route) {
+        case Route::q4_h0: pointers.q4_h0 = owned; break;
+        case Route::q4_h1: pointers.q4_h1 = owned; break;
+        case Route::q4_hp1: pointers.q4_hp1 = owned; break;
+        case Route::q16_h0: pointers.q16_h0 = owned; break;
+        case Route::q16_h1: pointers.q16_h1 = owned; break;
+        case Route::q16_hp1: pointers.q16_hp1 = owned; break;
+        default: break;
+        }
+        break;
+      }
       default:
         return false;
       }
@@ -596,6 +729,12 @@ struct Run::Impl {
     case Route::q8_0_unpacked_to_h1:
     case Route::q8_h1:
     case Route::q8_hp1:
+    case Route::q4_h0:
+    case Route::q4_h1:
+    case Route::q4_hp1:
+    case Route::q16_h0:
+    case Route::q16_h1:
+    case Route::q16_hp1:
       return 32;
     default:
       return scalars.k;
@@ -663,6 +802,44 @@ struct Run::Impl {
     case Route::q8_channel_dense_sidecar:
       value = static_cast<const float *>(pointers.channel_scales)[column];
       break;
+    case Route::q4_h0: {
+      const auto &b = static_cast<const block_q4_h0 *>(pointers.q4_h0)
+          [column * scalars.native_blocks_per_row + block];
+      value = fp16_to_fp32(b.d);
+      break;
+    }
+    case Route::q4_h1: {
+      const auto &b = static_cast<const block_q4_h1 *>(pointers.q4_h1)
+          [column * scalars.native_blocks_per_row + block];
+      value = static_cast<double>(b.s_rf) *
+              static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
+      break;
+    }
+    case Route::q4_hp1: {
+      const auto &b = static_cast<const block_q4_hp1 *>(pointers.q4_hp1)
+          [column * scalars.native_blocks_per_row + block];
+      value = b.m == INT16_MIN ? 0.0 : std::ldexp(double(b.channel_scale), int(b.m));
+      break;
+    }
+    case Route::q16_h0: {
+      const auto &b = static_cast<const block_q16_h0 *>(pointers.q16_h0)
+          [column * scalars.native_blocks_per_row + block];
+      value = fp16_to_fp32(b.d);
+      break;
+    }
+    case Route::q16_h1: {
+      const auto &b = static_cast<const block_q16_h1 *>(pointers.q16_h1)
+          [column * scalars.native_blocks_per_row + block];
+      value = static_cast<double>(b.s_rf) *
+              static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
+      break;
+    }
+    case Route::q16_hp1: {
+      const auto &b = static_cast<const block_q16_hp1 *>(pointers.q16_hp1)
+          [column * scalars.native_blocks_per_row + block];
+      value = b.m == INT16_MIN ? 0.0 : std::ldexp(double(b.channel_scale), int(b.m));
+      break;
+    }
     default:
       return false;
     }
@@ -706,6 +883,45 @@ struct Run::Impl {
       }
     }
     return IM2P_OK;
+  }
+
+  int read_selected_weight(size_t row, size_t column, size_t count,
+                           void *out) noexcept {
+    if (!out || count == 0 || count > DIM || row >= scalars.k ||
+        column > scalars.j || count > scalars.j - column)
+      return IM2P_ERROR;
+    const size_t block = row / 32;
+    const size_t lane = row % 32;
+    if (route == Route::q4_h0 || route == Route::q4_h1 ||
+        route == Route::q4_hp1) {
+      auto *values = static_cast<int8_t *>(out);
+      for (size_t n = 0; n < count; ++n) {
+        const size_t index = (column + n) * scalars.native_blocks_per_row + block;
+        const uint8_t *qs = route == Route::q4_h0
+            ? static_cast<const block_q4_h0 *>(pointers.q4_h0)[index].qs
+            : route == Route::q4_h1
+                ? static_cast<const block_q4_h1 *>(pointers.q4_h1)[index].qs
+                : static_cast<const block_q4_hp1 *>(pointers.q4_hp1)[index].qs;
+        const uint8_t byte = qs[lane % 16];
+        const uint8_t nibble = lane < 16 ? byte & 0x0f : byte >> 4;
+        values[n] = static_cast<int8_t>(nibble) - 8;
+      }
+      return IM2P_OK;
+    }
+    if (route == Route::q16_h0 || route == Route::q16_h1 ||
+        route == Route::q16_hp1) {
+      auto *values = static_cast<int16_t *>(out);
+      for (size_t n = 0; n < count; ++n) {
+        const size_t index = (column + n) * scalars.native_blocks_per_row + block;
+        values[n] = route == Route::q16_h0
+            ? static_cast<const block_q16_h0 *>(pointers.q16_h0)[index].qs[lane]
+            : route == Route::q16_h1
+                ? static_cast<const block_q16_h1 *>(pointers.q16_h1)[index].qs[lane]
+                : static_cast<const block_q16_hp1 *>(pointers.q16_hp1)[index].qs[lane];
+      }
+      return IM2P_OK;
+    }
+    return read_weight(row, column, count, static_cast<int8_t *>(out));
   }
 
   int read_scale(size_t block, size_t column, size_t count,
@@ -786,10 +1002,20 @@ struct Run::Impl {
     return IM2P_OK;
   }
 
-  static int provider_read_weight(void *context, size_t row, size_t column,
-                                  size_t count, int8_t *out) {
+  static int provider_read_weight_i8(void *context, size_t row,
+                                     size_t column, size_t count,
+                                     int8_t *out) {
     auto &x = *static_cast<Impl *>(context);
-    const int result = x.read_weight(row, column, count, out);
+    const int result = x.read_selected_weight(row, column, count, out);
+    if (result != IM2P_OK)
+      x.provider_failed = true;
+    return result;
+  }
+  static int provider_read_weight_i16(void *context, size_t row,
+                                      size_t column, size_t count,
+                                      int16_t *out) {
+    auto &x = *static_cast<Impl *>(context);
+    const int result = x.read_selected_weight(row, column, count, out);
     if (result != IM2P_OK)
       x.provider_failed = true;
     return result;
@@ -812,9 +1038,14 @@ struct Run::Impl {
     return result;
   }
 
-  im2p_provider_v3_t provider() noexcept {
-    return {this, provider_read_weight, provider_read_scale,
+  im2p_provider_t provider() noexcept {
+#if GGML_GEMMINI_WEIGHT_BITS == 16
+    return {this, nullptr, provider_read_weight_i16, provider_read_scale,
             provider_write_output};
+#else
+    return {this, provider_read_weight_i8, nullptr, provider_read_scale,
+            provider_write_output};
+#endif
   }
 
   void set_error(Status value) noexcept {
@@ -832,97 +1063,77 @@ struct Run::Impl {
     changed.notify_all();
   }
 
-  im2p_matmul_desc_v2_t full_descriptor() noexcept {
-    im2p_matmul_desc_v2_t d{};
-    d.abi_version = IM2P_ABI_VERSION_2;
+  im2p_matmul_desc_t full_descriptor() noexcept {
+    im2p_matmul_desc_t d{};
+    d.abi_version = IM2P_ABI_VERSION;
     d.activation_bits = scalars.activation_bits;
     d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
-    d.dim = DIM;
-    d.activations = pointers.a;
-    d.weights = static_cast<const int8_t *>(pointers.b);
-    d.output = static_cast<int32_t *>(const_cast<void *>(pointers.c));
-    d.m = scalars.i;
-    d.n = scalars.j;
-    d.k = scalars.k;
-    d.activation_row_stride_bytes = scalars.activation_row_stride_bytes;
-    d.weight_row_stride = scalars.sb == 0 ? scalars.j : scalars.sb;
-    d.output_row_stride = scalars.sc == 0 ? scalars.j : scalars.sc;
-    d.tile_i_rows = tile_i_rows;
-    d.tile_j_columns = tile_j_columns;
-    d.block_size =
-        scalars.block_size == 0 ? GGML_GEMMINI_BLOCK_SIZE : scalars.block_size;
-    d.vector_op = IM2P_VECTOR_BYPASS;
-    return d;
-  }
-
-  im2p_matmul_desc_v3_t provider_full_descriptor() noexcept {
-    im2p_matmul_desc_v3_t d{};
-    d.abi_version = IM2P_ABI_VERSION_3;
-    d.activation_bits = scalars.activation_bits;
-    d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
+    d.weight_bits = route_weight_bits(route);
+    d.weight_storage_bytes = (d.weight_bits + 7) / 8;
     d.dim = DIM;
     d.activations = pointers.a;
     d.m = scalars.i;
     d.n = scalars.j;
     d.k = scalars.k;
     d.activation_row_stride_bytes = scalars.activation_row_stride_bytes;
-    d.weight_row_stride = scalars.j;
-    d.output_row_stride = scalars.j;
     d.tile_i_rows = tile_i_rows;
     d.tile_j_columns = tile_j_columns;
-    d.block_size = provider_block_size();
-    d.scale_total_k = scalars.k;
-    d.scale_row_stride = scalars.j;
-    d.scale_valid_columns = scalars.j;
-    d.vector_op = provider_vector_op();
-    d.provider = provider();
+    if (route_policy(route) == RoutePolicy::legacy) {
+      d.weights = pointers.b;
+      d.output = static_cast<int32_t *>(const_cast<void *>(pointers.c));
+      const size_t stride = scalars.sb == 0 ? scalars.j : scalars.sb;
+      d.weight_row_stride_bytes = stride * d.weight_storage_bytes;
+      d.output_row_stride = scalars.sc == 0 ? scalars.j : scalars.sc;
+      d.block_size = scalars.block_size == 0 ? GGML_GEMMINI_BLOCK_SIZE
+                                              : scalars.block_size;
+      d.vector_op = IM2P_VECTOR_BYPASS;
+    } else {
+      d.weight_row_stride_bytes = scalars.j * d.weight_storage_bytes;
+      d.output_row_stride = scalars.j;
+      d.block_size = provider_block_size();
+      d.scale_total_k = scalars.k;
+      d.scale_row_stride = scalars.j;
+      d.scale_valid_columns = scalars.j;
+      d.vector_op = provider_vector_op();
+      d.provider = provider();
+    }
     return d;
   }
 
-  im2p_stripe_work_desc_v2_t stripe_descriptor() const noexcept {
-    im2p_stripe_work_desc_v2_t d{};
-    d.abi_version = IM2P_ABI_VERSION_2;
+  im2p_stripe_work_desc_t stripe_descriptor() noexcept {
+    im2p_stripe_work_desc_t d{};
+    d.abi_version = IM2P_ABI_VERSION;
     d.activation_bits = scalars.activation_bits;
     d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
-    d.dim = DIM;
-    d.weights = static_cast<const int8_t *>(pointers.b);
-    d.output = static_cast<int32_t *>(const_cast<void *>(pointers.c));
-    d.m = scalars.i;
-    d.n = scalars.j;
-    d.k = scalars.k;
-    d.weight_row_stride = scalars.sb == 0 ? scalars.j : scalars.sb;
-    d.output_row_stride = scalars.sc == 0 ? scalars.j : scalars.sc;
-    d.tile_i_rows = tile_i_rows;
-    d.tile_j_columns = tile_j_columns;
-    d.block_size =
-        scalars.block_size == 0 ? GGML_GEMMINI_BLOCK_SIZE : scalars.block_size;
-    d.vector_op = IM2P_VECTOR_BYPASS;
-    const size_t rows = scalars.activation_rows_per_stripe;
-    d.stripe_count = (scalars.i + rows - 1) / rows;
-    return d;
-  }
-
-  im2p_stripe_work_desc_v3_t provider_stripe_descriptor() noexcept {
-    im2p_stripe_work_desc_v3_t d{};
-    d.abi_version = IM2P_ABI_VERSION_3;
-    d.activation_bits = scalars.activation_bits;
-    d.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
+    d.weight_bits = route_weight_bits(route);
+    d.weight_storage_bytes = (d.weight_bits + 7) / 8;
     d.dim = DIM;
     d.m = scalars.i;
     d.n = scalars.j;
     d.k = scalars.k;
-    d.weight_row_stride = scalars.j;
-    d.output_row_stride = scalars.j;
     d.tile_i_rows = tile_i_rows;
     d.tile_j_columns = tile_j_columns;
-    d.block_size = provider_block_size();
-    d.scale_total_k = scalars.k;
-    d.scale_row_stride = scalars.j;
-    d.scale_valid_columns = scalars.j;
     const size_t rows = scalars.activation_rows_per_stripe;
     d.stripe_count = (scalars.i + rows - 1) / rows;
-    d.vector_op = provider_vector_op();
-    d.provider = provider();
+    if (route_policy(route) == RoutePolicy::legacy) {
+      d.weights = pointers.b;
+      d.output = static_cast<int32_t *>(const_cast<void *>(pointers.c));
+      const size_t stride = scalars.sb == 0 ? scalars.j : scalars.sb;
+      d.weight_row_stride_bytes = stride * d.weight_storage_bytes;
+      d.output_row_stride = scalars.sc == 0 ? scalars.j : scalars.sc;
+      d.block_size = scalars.block_size == 0 ? GGML_GEMMINI_BLOCK_SIZE
+                                              : scalars.block_size;
+      d.vector_op = IM2P_VECTOR_BYPASS;
+    } else {
+      d.weight_row_stride_bytes = scalars.j * d.weight_storage_bytes;
+      d.output_row_stride = scalars.j;
+      d.block_size = provider_block_size();
+      d.scale_total_k = scalars.k;
+      d.scale_row_stride = scalars.j;
+      d.scale_valid_columns = scalars.j;
+      d.vector_op = provider_vector_op();
+      d.provider = provider();
+    }
     return d;
   }
 
@@ -946,14 +1157,8 @@ struct Run::Impl {
                             "failed to create IM2P simulator"));
       return;
     }
-    int result = IM2P_ERROR;
-    if (route_policy(route) == RoutePolicy::legacy) {
-      const auto d = full_descriptor();
-      result = im2p_execute_matmul_extended_v2(sim.get(), &d, &stats);
-    } else {
-      auto d = provider_full_descriptor();
-      result = im2p_execute_matmul_extended_v3(sim.get(), &d, &stats);
-    }
+    auto d = full_descriptor();
+    const int result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
     if (provider_failed)
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -967,10 +1172,12 @@ struct Run::Impl {
     const size_t stride = scalars.activation_row_stride_bytes;
     if (!checked_mul(e.row_begin, stride, offset))
       return IM2P_ERROR;
-    im2p_activation_stripe_v3_t s{};
-    s.abi_version = IM2P_ABI_VERSION_3;
+    im2p_activation_stripe_t s{};
+    s.abi_version = IM2P_ABI_VERSION;
     s.activation_bits = scalars.activation_bits;
     s.activation_storage_bytes = (scalars.activation_bits + 7) / 8;
+    s.weight_bits = route_weight_bits(route);
+    s.weight_storage_bytes = (s.weight_bits + 7) / 8;
     s.dim = DIM;
     s.stripe_id = static_cast<uint32_t>(e.stripe_id);
     s.i_start = e.row_begin;
@@ -978,23 +1185,7 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
-    int result = IM2P_ERROR;
-    if (route_policy(route) == RoutePolicy::legacy) {
-      im2p_activation_stripe_v2_t legacy{};
-      legacy.abi_version = IM2P_ABI_VERSION_2;
-      legacy.activation_bits = s.activation_bits;
-      legacy.activation_storage_bytes = s.activation_storage_bytes;
-      legacy.dim = s.dim;
-      legacy.stripe_id = s.stripe_id;
-      legacy.i_start = s.i_start;
-      legacy.rows = s.rows;
-      legacy.activations = s.activations;
-      legacy.activation_row_stride_bytes = s.activation_row_stride_bytes;
-      legacy.context = s.context;
-      result = im2p_publish_stripe_v2(stream, &legacy);
-    } else {
-      result = im2p_publish_stripe_v3(stream, &s);
-    }
+    const int result = im2p_publish_stripe(stream, &s);
     if (result == IM2P_OK) {
       std::lock_guard lock(mutex);
       in_flight.emplace(s.stripe_id, e);
@@ -1067,7 +1258,8 @@ struct Run::Impl {
   }
 
   bool progress(im2p_stream_t *stream, uint64_t &stalled,
-                uint64_t &observed_generation, const char *message) {
+                uint64_t &observed_generation, uint64_t &observed_progress,
+                const char *message) {
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
     {
       std::unique_lock lock(mutex);
@@ -1090,16 +1282,20 @@ struct Run::Impl {
           make_status(StatusCode::execution_failure, route, false, message));
       return false;
     }
+    const uint64_t progress_count = im2p_stream_progress_count(stream);
     {
       std::lock_guard lock(mutex);
-      if (completion_generation != observed_generation) {
+      if (completion_generation != observed_generation ||
+          progress_count != observed_progress) {
         observed_generation = completion_generation;
+        observed_progress = progress_count;
         stalled = 0;
-      } else {
+      } else if (stalled != std::numeric_limits<uint64_t>::max()) {
         ++stalled;
       }
     }
-    if (stalled > std::max<uint64_t>(options.max_stalled_cycles, 65536)) {
+    if (stall_cycle_limit != std::numeric_limits<uint64_t>::max() &&
+        stalled > stall_cycle_limit) {
       set_error(make_status(StatusCode::execution_failure, route, false,
                             "IM2P stream exceeded logical stall bound"));
       return false;
@@ -1111,14 +1307,8 @@ struct Run::Impl {
     std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
     im2p_stream_t *raw = nullptr;
     if (sim) {
-      int result = IM2P_ERROR;
-      if (route_policy(route) == RoutePolicy::legacy) {
-        const auto d = stripe_descriptor();
-        result = im2p_begin_striped_matmul_v2(sim.get(), &d, &raw);
-      } else {
-        auto d = provider_stripe_descriptor();
-        result = im2p_begin_striped_matmul_v3(sim.get(), &d, &raw);
-      }
+      auto d = stripe_descriptor();
+      const int result = im2p_begin_striped_matmul(sim.get(), &d, &raw);
       if (result != IM2P_OK)
         set_error(from_c_status(result, route, "failed to start IM2P stream",
                                 native));
@@ -1135,6 +1325,7 @@ struct Run::Impl {
       return;
     uint64_t stalled = 0;
     uint64_t observed_generation = 0;
+    uint64_t observed_progress = im2p_stream_progress_count(stream.get());
     for (;;) {
       DenseEvent event{};
       bool have = false;
@@ -1174,6 +1365,7 @@ struct Run::Impl {
             break;
           }
           if (!progress(stream.get(), stalled, observed_generation,
+                        observed_progress,
                         "IM2P progress failed during raw retry"))
             break;
         }
@@ -1196,6 +1388,7 @@ struct Run::Impl {
       if (complete)
         break;
       if (!progress(stream.get(), stalled, observed_generation,
+                    observed_progress,
                     "IM2P stream progress failed"))
         break;
     }
@@ -1224,6 +1417,18 @@ Run::Run(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 Run::~Run() noexcept {
   if (impl_)
     (void)fence(*this);
+}
+
+uint32_t compiled_activation_bits() noexcept {
+  return IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
+}
+
+uint32_t compiled_weight_bits() noexcept {
+  return GGML_GEMMINI_WEIGHT_BITS;
+}
+
+uint32_t compiled_dim() noexcept {
+  return DIM;
 }
 
 ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
@@ -1568,6 +1773,20 @@ Status authorize_output_commit(Run &run, bool rmd_succeeded) noexcept {
 }
 
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
+int RunTestAccess::read_selected_weight(const ggml_gemmini_args_t &args,
+                                        size_t row, size_t column,
+                                        size_t count, void *out) noexcept {
+  Run::Impl impl(&args, Mode::full, {});
+  return impl.read_selected_weight(row, column, count, out);
+}
+
+bool RunTestAccess::weight_factor(const ggml_gemmini_args_t &args,
+                                  size_t block, size_t column,
+                                  double &out) noexcept {
+  Run::Impl impl(&args, Mode::full, {});
+  return impl.factor(block, column, out);
+}
+
 RunTestAccess::Snapshot RunTestAccess::inspect(const Run &run) noexcept {
   const auto &x = *run.impl_;
   std::lock_guard lock(x.mutex);

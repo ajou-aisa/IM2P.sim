@@ -141,7 +141,7 @@ VectorShift    : shift(P, E)
 - Signed INT: Bypass/Multiply/Shift. Production integer synthesis는 signed 64-bit partial, contribution, Accumulator state를 사용한다.
 - FLOAT: Bypass behavior only
 
-Accumulator 주소, 기존 state, `accumulate` 여부는 VectorUnit interface에 없다. Integer provider request도 signed 64-bit lane을 유지한다. Raw signed-32 output과 frozen ABI v2 provider callback에서만 final saturation을 수행하며 ABI v3 provider callback은 signed-64 lane을 그대로 전달받는다.
+Accumulator 주소, 기존 state, `accumulate` 여부는 VectorUnit interface에 없다. Integer provider request도 signed 64-bit lane을 유지한다. 단일 canonical ABI의 provider callback은 signed-64 lane을 그대로 받고 raw signed-32 output 경계에서만 final saturation을 수행한다.
 
 ## 6. Destination address and Accumulator
 
@@ -253,7 +253,7 @@ Provider는 같은 combinational state에서 ready인 A/W/S/C response를 함께
 
 Async `publishStripe`는 queue-only operation이 아니다. 승인된 stripe는 activation host memory를 RTL에서 사용할 수 있음을 알리는 event이며, current WS/RC execution이 계속되는 동안 Core가 즉시 다음 stripe의 첫 A/W/S fragment를 prepare할 수 있게 한다.
 
-Production ExSIA `PIPELINE`에서는 각 stripe의 folding commit 직후 post-fold event를 이 publication path에 전달한다. 전체 activation quantization 종료까지 event를 모아 batch publish하지 않는다. `FULL`은 post-fold event를 collector에 보존하되 전체 quantization 성공 뒤 full descriptor를 한 번 시작한다. 두 mode 모두 NPU output과 8-bit RMD를 frontend-owned staging에서 완료한 뒤에만 caller output을 publish한다.
+Production ExSIA `PIPELINE`에서는 각 stripe의 folding commit 직후 post-fold event를 이 publication path에 전달한다. 전체 activation quantization 종료까지 event를 모아 batch publish하지 않는다. `FULL`은 post-fold event를 collector에 보존하되 전체 quantization 성공 뒤 full descriptor를 한 번 시작한다. 두 mode 모두 NPU output과 기존 8-bit cpu-direct RMD를 frontend-owned staging에서 완료한 뒤에만 caller output을 publish한다.
 
 미공개 activation에는 A read를 발행하지 않는다. Full-matrix mode도 이 scheduler path를 사용하지만 A/W/S/C region 전체가 descriptor 제출 시점부터 available하므로 publication gate가 없다.
 
@@ -303,6 +303,10 @@ Host pointer dereference, CPU thread scheduling, sleep, 기타 wall-clock은 이
 
 Host pointer access도 zero-time이다. 따라서 CPU와 NPU의 common time 비교나 physical ns/GHz/Fmax 또는 silicon 성능을 이 counter나 Verilator host runtime에서 도출할 수 없다.
 
-현재 production ExSIA format은 A8/Q8이다. A4/Q4, A16/Q16, Q8 H2/HP2와 mixed precision은 TODO이고 지원되는 route로 defer하거나 다른 format으로 fallback하지 않는다. ABI v3는 이 지원 범위를 넓히는 format ABI가 아니라 signed-64 provider output transport를 추가한 ABI이며, ABI v2 layout과 final signed-32 saturation 경계는 유지한다.
+Production ExSIA format은 A8/Q8이다. Non-RMD matched A4/Q4와 A16/Q16은
+FULL/PIPELINE 모두 단일 canonical ABI의 typed weight provider를 사용한다.
+Matched ExSIA의 RMD scale integration, Q8 H2/HP2와 unsupported mixed
+precision은 TODO이며 다른 format으로 fallback하지 않는다. Raw output의
+final signed-32 saturation 경계는 유지한다.
 
 코드 분석 순서와 작성 규칙은 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md), public simulator 계약은 [simulator 사용법](../sim/README.md)에서 확인한다.

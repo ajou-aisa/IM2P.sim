@@ -252,7 +252,7 @@ fn bad_response_identity_is_rejected_by_ffi() {
 #[test]
 fn invalid_scale_layouts_are_rejected_by_full_and_striped_apis() -> Result<(), SimError> {
     let activations = [im2p_sim::parse_activation(1).expect("valid activation")];
-    let weights = [1_i8];
+    let weights: [im2p_sim::WeightValue; 1] = [1];
     let scales = [1_i8; 4];
     let invalid_views = [
         KBlockScaleMatrixView {

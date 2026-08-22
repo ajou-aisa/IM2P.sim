@@ -1,11 +1,11 @@
 # 선택적 Gemmini C++ 프런트엔드
 
-`frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. ABI v3의 signed-64 provider transport를 사용하되 frozen ABI v2 layout과 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
+`frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. 모든 route는 activation/weight width와 storage identity를 포함하는 단일 canonical ABI를 사용한다. Typed provider transport는 W4/W8/W16을 구분하고 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
 
 `im2p::gemmini`가 공개하는 frontend mode는 정확히 두 개다.
 
-- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 기존 8-bit RMD가 성공한 후 caller output을 한 번 publish한다.
-- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 기존 8-bit RMD가 성공하기 전까지 output은 frontend staging에만 있다.
+- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 기존 8-bit cpu-direct RMD가 성공한 후 caller output을 한 번 publish한다.
+- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 기존 8-bit cpu-direct RMD가 성공하기 전까지 output은 frontend staging에만 있다.
 
 두 mode 외 제3 mode나 deferred execution mode는 없다.
 
@@ -24,9 +24,17 @@
 - 완료된 stripe 백킹 스토리지 해제용 `poll_completed`
 - 스트림 완료 및 통계 수집용 `finish_stream`
 
-현재 production ExSIA route는 A8/Q8만 지원한다. A4/Q4, A16/Q16, Q8 H2/HP2 및 mixed precision은 TODO이며 worker 시작 전에 fail closed한다. 이 format들을 큐에 defer하거나 raw route로 fallback하지 않는다.
+Production ExSIA route는 A8/Q8만 지원한다. Non-RMD A4/W4의
+Q4_0/Q4_H1/Q4_HP1과 A16/W16의 Q16_0/Q16_H1/Q16_HP1은 FULL/PIPELINE 모두
+같은 typed provider ABI를 사용한다. Matched ExSIA RMD scale integration, Q8 H2/HP2와
+unsupported mixed precision은 worker 시작 전에 fail closed하며 다른 route로
+fallback하지 않는다.
 
-Generic frontend에서는 원시 ABI와 호환되는 `q8_h0`(`A[M,K]` INT8, `B[K,N]` INT8, 완전한 INT32 `C[M,N]`, 전치 없음, `repeating_bias`, `D` bias, activation 또는 float scaling 없음)과 `q8_0_unpacked_to_h1`, `q8_h1`, `q8_hp1`, `q8_channel`, `q8_channel_dense_sidecar`를 수치 실행 경로에서 지원한다. 전체 모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력 영역이다. 파이프라인 모드의 B에도 같은 규칙을 적용한다.
+Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_h1`, `q4_hp1`,
+`q16_h0`, `q16_h1`, `q16_hp1`을 수치 실행 경로에서 지원한다. Matched route는
+FULL/PIPELINE 모두 packed GGUF block에서 요청된 lane만 decode한다. 전체
+모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력
+영역이다.
 
 A 행은 해당 stripe가 수락되기 전에 채울 수 있지만, 제출한 바이트는 이후 `fence`가 반환되거나 Run이 소멸할 때까지 유효하고 변경되지 않아야 한다. C는 Run이 차용하는 출력 영역이다. 이 영역은 유효해야 하며 Run만 단독으로 쓸 수 있어야 한다.
 
@@ -36,7 +44,7 @@ Channel route는 RTL `VectorBypass`에서 정수 dot product를 실행하고 cha
 
 두 route 모두 worker를 시작하지 않으며 원시 `q8_h0`로 fallback하지도 않는다. 프런트엔드는 전체 operand의 전치, 언패킹, 역양자화, 복사를 수행하지 않는다.
 
-RTL Accumulator부터 bridge와 Rust provider service까지 output request는 signed 64-bit lane이다. ABI v3 provider callback은 그 값을 그대로 받는다. Raw output storage와 ABI v2 provider callback은 호환성을 위해 signed 32-bit이며, 해당 최종 경계에서만 saturation한다. Fragment, stripe, RMD staging 중간에는 32-bit narrowing이 없다.
+RTL Accumulator부터 bridge와 Rust provider service까지 output request는 signed 64-bit lane이다. 단일 canonical ABI의 provider callback은 그 값을 그대로 받는다. Raw output storage는 signed 32-bit이며, 해당 최종 경계에서만 saturation한다. Fragment, stripe, RMD staging 중간에는 32-bit narrowing이 없다.
 
 선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `q8_h1_block_count`, `q8_h1_rows`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
 
@@ -52,9 +60,9 @@ K 실행은 `K`와 `block_size_k`로 결정한다.
 
 이때 동일한 밀집 이벤트 메타데이터를 유지하고 RTL logical cycle 하나를 진행한 뒤 완료를 poll하고 재시도한다. RTL logical cycle 하나는 상승 에지 하나를 포함하는 완전한 RTL clock period 하나다. `im2p_progress_stream(stream, 1)`는 동시에 준비된 A/W/S/C 응답을 포함해 scheduler가 어떤 상태이든 정확히 그 주기 하나를 진행한다.
 
-원시 작업이 flight 상태로 남아 있는 동안 worker는 대기하지 않는다. 논리 완료가 계속 부족하면 보수적인 논리 한도인 최소 65536 사이클 또는 그보다 큰 설정값 `Options::max_stalled_cycles`에 도달했을 때 종료한다. 이 한도는 검증된 M=1,N=64,K=4096 RTL 실행을 포괄한다.
+원시 작업이 flight 상태로 남아 있는 동안 worker는 대기하지 않는다. RTL K fragment 완료와 stripe 완료가 모두 멈추면 `Options::max_stalled_cycles`와 최소 65536 사이클 중 큰 한도를 초과했을 때 종료한다. `UINT64_MAX`는 watchdog을 비활성화한다.
 
-watchdog은 worker의 단조 증가하는 matched completion 카운터가 진행될 때만 재설정한다. 호출자가 큐 점유율을 바꿔도 이러한 진행을 숨길 수 없다. `max_stalled_cycles`는 matched completion 없이 worker가 진행하는 반복 횟수를 제한하며 각 `progress` 호출은 정확히 논리 사이클 하나를 진행한다.
+watchdog은 RTL의 완료된 K fragment 카운터가 바뀌거나 matched stripe completion이 관찰될 때 재설정한다. K fragment는 최대 `DIM` reduction 원소로 제한되므로 큰 K 작업도 stripe 전체가 끝나기 전에 진행을 노출한다. 64-bit fragment 카운터는 wrap될 수 있으므로 대소가 아니라 변화 여부를 비교한다. 호출자가 큐 점유율을 바꿔도 이러한 진행을 숨길 수 없다. `max_stalled_cycles`는 내부 완료 진행 없이 worker가 수행하는 반복 횟수를 제한하며 각 `progress` 호출은 정확히 논리 사이클 하나를 진행한다.
 
 경과한 호스트 시간은 제한하지 않는다. 스케줄링에는 wall-clock sleep이 관여하지 않는다. 제출된 stripe나 원시 작업이 없으면 worker는 condition variable에서 기다리며 RTL 클록을 진행하지 않는다.
 

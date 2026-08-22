@@ -1,6 +1,8 @@
 use crate::{
     activation::{activation_byte_indices, activation_elements_to_address_bytes},
-    ffi, StripeCompletion,
+    ffi,
+    weight::weight_byte_indices,
+    StripeCompletion, WeightValue,
 };
 
 use super::{Error, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE, WEIGHT_BASE};
@@ -104,7 +106,7 @@ impl StripedMatmul<'_> {
         let status =
             unsafe { ffi::im2p_weight_read_request(self.simulator.handle.as_ptr(), &mut request) };
         let Some((row, column, request)) =
-            decode_request(status, request, WEIGHT_BASE, self.layout.weight_row_stride)?
+            decode_weight_request(status, request, WEIGHT_BASE, self.layout.weight_row_stride)?
         else {
             return Ok(());
         };
@@ -113,13 +115,13 @@ impl StripedMatmul<'_> {
             return Err(Error::InvalidKRange);
         }
         if let Some(provider) = self.provider {
-            let mut values = vec![0_i8; count];
+            let mut values = vec![WeightValue::default(); count];
             provider.read_weight(row, column, &mut values)?;
             let accepted = unsafe {
                 ffi::im2p_stage_weight_read_response(
                     self.simulator.handle.as_ptr(),
                     request.tag,
-                    values.as_ptr(),
+                    values.as_ptr().cast(),
                     request.element_count,
                 )
             };
@@ -133,7 +135,7 @@ impl StripedMatmul<'_> {
             ffi::im2p_stage_weight_read_response(
                 self.simulator.handle.as_ptr(),
                 request.tag,
-                self.descriptor.weights[start..].as_ptr(),
+                self.descriptor.weights[start..].as_ptr().cast(),
                 request.element_count,
             )
         };
@@ -303,7 +305,7 @@ impl StripedMatmul<'_> {
     }
 }
 
-fn decode_request(
+fn decode_weight_request(
     status: i32,
     request: ffi::ReadRequest,
     base: u64,
@@ -320,8 +322,11 @@ fn decode_request(
     let offset = request
         .address
         .checked_sub(base)
-        .ok_or(Error::InvalidKRange)? as usize;
-    Ok(Some((offset / row_stride, offset % row_stride, request)))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(Error::InvalidKRange)?;
+    let (row, column) =
+        weight_byte_indices(offset, row_stride).map_err(|_| Error::InvalidWeightStride)?;
+    Ok(Some((row, column, request)))
 }
 
 fn decode_output_address(

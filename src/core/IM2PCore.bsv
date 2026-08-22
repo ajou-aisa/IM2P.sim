@@ -1783,7 +1783,8 @@ module mkIM2PCoreWithArray#(
             blockSize: scaleBlockSize,
             activationElementBytes:
                 fromInteger(storageBytes(valueOf(inputBits))),
-            weightElementBytes: fromInteger(valueOf(weightBits) / 8),
+            weightElementBytes:
+                fromInteger(storageBytes(valueOf(weightBits))),
             scaleElementBytes: fromInteger(valueOf(scaleBits) / 8),
             // Raw/V2 host output layout is signed int32 regardless of the
             // wider internal accumulator/provider transport lane.

@@ -1,18 +1,12 @@
-use std::{
-    mem::{align_of, size_of},
-    ptr, slice,
-};
+use std::{mem::size_of, ptr, slice};
 
 use crate::{
-    activation_bytes_to_elements, activation_view, validate_activation_values, ActivationError,
-    ActivationValue, Im2pSimulator, KBlockScaleMatrixView, MatmulLayout, MatmulWork, MatrixView,
-    MatrixViewMut, VectorOp, WorkStats,
+    activation_view, validate_activation_values, ActivationError, ActivationValue, Im2pSimulator,
+    KBlockScaleMatrixView, MatmulLayout, MatmulWork, MatrixViewMut, VectorOp, WorkStats,
+    WEIGHT_STORAGE_BYTES,
 };
 
-use super::{
-    configuration_matches,
-    types::{MatmulDesc, MatmulDescV2, ProviderC, StreamBox, WorkStatsC, WorkStatsExtendedC},
-};
+use super::types::{MatmulDesc, StreamBox, WorkStatsC, WorkStatsExtendedC};
 
 pub(super) fn status_for_error(error: crate::SimError) -> i32 {
     use crate::SimError::*;
@@ -44,57 +38,6 @@ pub(super) fn status_for_error(error: crate::SimError) -> i32 {
     }
 }
 
-pub(super) unsafe fn parse_matmul_v2(
-    desc: &MatmulDescV2,
-) -> Result<(MatmulDesc, Option<crate::simulator::MemoryProvider>), i32> {
-    if !configuration_matches(
-        desc.abi_version,
-        desc.activation_bits,
-        desc.activation_storage_bytes,
-        desc.dim,
-    ) {
-        return Err(-7);
-    }
-    if desc.activations.is_null()
-        || (desc.activations as usize) % align_of::<ActivationValue>() != 0
-    {
-        return Err(-4);
-    }
-    let activation_row_stride =
-        activation_bytes_to_elements(desc.activation_row_stride_bytes).map_err(|_| -4)?;
-    let parsed = MatmulDesc {
-        activations: desc.activations.cast(),
-        weights: desc.weights,
-        scales: desc.scales,
-        output: desc.output,
-        m: desc.m,
-        n: desc.n,
-        k: desc.k,
-        activation_row_stride,
-        weight_row_stride: desc.weight_row_stride,
-        output_row_stride: desc.output_row_stride,
-        tile_i_rows: desc.tile_i_rows,
-        tile_j_columns: desc.tile_j_columns,
-        block_size: desc.block_size,
-        scale_total_k: desc.scale_total_k,
-        scale_row_stride: desc.scale_row_stride,
-        scale_column_offset: desc.scale_column_offset,
-        scale_valid_columns: desc.scale_valid_columns,
-        scale_values_len: desc.scale_values_len,
-        vector_op: desc.vector_op,
-        work_context: desc.work_context,
-    };
-    validate_activation_desc(&parsed).map_err(status_for_error)?;
-    let provider = provider_from_v2(desc.provider)?;
-    if provider.is_none() && (parsed.weights.is_null() || parsed.output.is_null()) {
-        return Err(-1);
-    }
-    if provider.is_some() {
-        validate_provider_rtl_fields(&parsed)?;
-    }
-    Ok((parsed, provider))
-}
-
 pub(super) fn validate_provider_rtl_fields(desc: &MatmulDesc) -> Result<(), i32> {
     let tile_i_rows = if desc.tile_i_rows == 0 {
         super::configured_dim() as usize
@@ -108,7 +51,10 @@ pub(super) fn validate_provider_rtl_fields(desc: &MatmulDesc) -> Result<(), i32>
     };
     crate::activation::activation_elements_to_address_bytes(desc.activation_row_stride)
         .map_err(|_| crate::SimError::InvalidLayout)
-        .and_then(|_| crate::simulator::descriptor::u64_field(desc.weight_row_stride))
+        .and_then(|_| {
+            crate::weight::weight_elements_to_address_bytes(desc.weight_row_stride)
+                .map_err(|_| crate::SimError::InvalidWeightStride)
+        })
         .and_then(|_| crate::simulator::descriptor::u64_field(desc.n))
         .and_then(|_| crate::simulator::descriptor::output_row_stride_bytes(desc.output_row_stride))
         .and_then(|_| crate::simulator::descriptor::u32_field(desc.m))
@@ -121,30 +67,13 @@ pub(super) fn validate_provider_rtl_fields(desc: &MatmulDesc) -> Result<(), i32>
         .map_err(|_| -4)
 }
 
-fn provider_from_v2(provider: ProviderC) -> Result<Option<crate::simulator::MemoryProvider>, i32> {
-    let any = provider.read_weight.is_some()
-        || provider.read_scale.is_some()
-        || provider.write_output.is_some();
-    if !any {
-        return Ok(None);
+fn weight_error(error: crate::WeightError) -> crate::SimError {
+    match error {
+        crate::WeightError::InvalidLayout(error) => error,
+        crate::WeightError::ValueOutOfRange { .. }
+        | crate::WeightError::ByteCountOverflow { .. }
+        | crate::WeightError::MisalignedByteCount { .. } => crate::SimError::InvalidLayout,
     }
-    if provider.read_weight.is_none() || provider.write_output.is_none() {
-        return Err(-4);
-    }
-    Ok(Some(provider.into()))
-}
-
-unsafe fn validate_activation_desc(desc: &MatmulDesc) -> Result<(), crate::SimError> {
-    let activation_len = matrix_len(
-        desc.m,
-        desc.k,
-        desc.activation_row_stride,
-        size_of::<ActivationValue>(),
-    )?;
-    let activations = slice::from_raw_parts(desc.activations, activation_len);
-    activation_view(activations, desc.m, desc.k, desc.activation_row_stride)
-        .map(|_| ())
-        .map_err(activation_error)
 }
 
 fn activation_error(error: ActivationError) -> crate::SimError {
@@ -170,7 +99,7 @@ pub(super) unsafe fn execute_full(
         desc.activation_row_stride,
         size_of::<ActivationValue>(),
     )?;
-    let weight_len = matrix_len(desc.k, desc.n, desc.weight_row_stride, 1)?;
+    let weight_len = matrix_len(desc.k, desc.n, desc.weight_row_stride, WEIGHT_STORAGE_BYTES)?;
     let output_len = matrix_len(desc.m, desc.n, desc.output_row_stride, size_of::<i32>())?;
     let activations = slice::from_raw_parts(desc.activations, activation_len);
     let weights = slice::from_raw_parts(desc.weights, weight_len);
@@ -178,7 +107,8 @@ pub(super) unsafe fn execute_full(
     let work = MatmulWork {
         activations: activation_view(activations, desc.m, desc.k, desc.activation_row_stride)
             .map_err(activation_error)?,
-        weights: MatrixView::new(weights, desc.k, desc.n, desc.weight_row_stride)?,
+        weights: crate::weight_view(weights, desc.k, desc.n, desc.weight_row_stride)
+            .map_err(weight_error)?,
         scales: scale_view(
             desc.scales,
             desc.scale_values_len,
@@ -381,110 +311,6 @@ pub(super) fn write_stats(output: *mut WorkStatsC, value: WorkStats) {
     };
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{ffi::c_void, ptr};
-
-    use super::{parse_matmul_v2, status_for_error};
-    use crate::c_api::{
-        configured_dim,
-        types::{MatmulDescV2, ProviderC},
-        ABI_VERSION_2,
-    };
-    use crate::{ActivationValue, SimError, ACTIVATION_BITS, ACTIVATION_STORAGE_BYTES};
-
-    fn v2_descriptor(
-        activations: &[ActivationValue],
-        weights: &[i8],
-        output: &mut [i32],
-    ) -> MatmulDescV2 {
-        MatmulDescV2 {
-            abi_version: ABI_VERSION_2,
-            activation_bits: ACTIVATION_BITS as u32,
-            activation_storage_bytes: ACTIVATION_STORAGE_BYTES as u32,
-            dim: configured_dim(),
-            activations: activations.as_ptr().cast::<c_void>(),
-            weights: weights.as_ptr(),
-            scales: ptr::null(),
-            output: output.as_mut_ptr(),
-            m: 2,
-            n: 2,
-            k: 3,
-            activation_row_stride_bytes: 4 * ACTIVATION_STORAGE_BYTES,
-            weight_row_stride: 2,
-            output_row_stride: 2,
-            tile_i_rows: 1,
-            tile_j_columns: 1,
-            block_size: 3,
-            scale_total_k: 0,
-            scale_row_stride: 0,
-            scale_column_offset: 0,
-            scale_valid_columns: 0,
-            scale_values_len: 0,
-            vector_op: 0,
-            work_context: 1,
-            provider: ProviderC {
-                context: ptr::null_mut(),
-                read_weight: None,
-                read_scale: None,
-                write_output: None,
-            },
-        }
-    }
-
-    #[test]
-    fn v2_parser_checks_identity_before_pointers_and_converts_byte_stride() {
-        let activations = [ActivationValue::default(); 8];
-        let weights = [0i8; 6];
-        let mut output = [0i32; 4];
-        let mut desc = v2_descriptor(&activations, &weights, &mut output);
-
-        let (parsed, provider) = unsafe { parse_matmul_v2(&desc) }.unwrap();
-        assert_eq!(parsed.activation_row_stride, 4);
-        assert!(provider.is_none());
-
-        for field in 0..4 {
-            let saved = [
-                desc.abi_version,
-                desc.activation_bits,
-                desc.activation_storage_bytes,
-                desc.dim,
-            ];
-            match field {
-                0 => desc.abi_version += 1,
-                1 => desc.activation_bits = if ACTIVATION_BITS == 4 { 8 } else { 4 },
-                2 => desc.activation_storage_bytes += 1,
-                3 => desc.dim = if configured_dim() == 16 { 32 } else { 16 },
-                _ => unreachable!(),
-            }
-            desc.activations = ptr::null();
-            assert!(matches!(unsafe { parse_matmul_v2(&desc) }, Err(-7)));
-            desc.abi_version = saved[0];
-            desc.activation_bits = saved[1];
-            desc.activation_storage_bytes = saved[2];
-            desc.dim = saved[3];
-            desc.activations = activations.as_ptr().cast();
-        }
-
-        if ACTIVATION_STORAGE_BYTES == 2 {
-            desc.activation_row_stride_bytes = 7;
-            assert!(matches!(unsafe { parse_matmul_v2(&desc) }, Err(-4)));
-        }
-    }
-
-    #[test]
-    fn c_status_preserves_contract_ownership_and_runtime_classes() {
-        assert_eq!(status_for_error(SimError::InvalidDimension), -4);
-        assert_eq!(status_for_error(SimError::UnfinishedStream), -3);
-        assert_eq!(
-            status_for_error(SimError::RtlNotReady {
-                operation: "runtime",
-            }),
-            -1
-        );
-    }
-}
-
 pub(super) fn write_extended_stats(output: *mut WorkStatsExtendedC, value: WorkStats) {
     let Some(output) = (unsafe { output.as_mut() }) else {
         return;
@@ -508,4 +334,22 @@ pub(super) fn write_extended_stats(output: *mut WorkStatsExtendedC, value: WorkS
         lookahead_ready_cycle: value.lookahead_ready_cycle,
         lookahead_start_cycle: value.lookahead_start_cycle,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_for_error;
+    use crate::SimError;
+
+    #[test]
+    fn c_status_preserves_contract_ownership_and_runtime_classes() {
+        assert_eq!(status_for_error(SimError::InvalidDimension), -4);
+        assert_eq!(status_for_error(SimError::UnfinishedStream), -3);
+        assert_eq!(
+            status_for_error(SimError::RtlNotReady {
+                operation: "runtime",
+            }),
+            -1
+        );
+    }
 }

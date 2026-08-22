@@ -7,7 +7,7 @@ pub(crate) mod validation;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use crate::{ffi, ActivationValue, ScaleFetchStats, TileStats};
+use crate::{ffi, ActivationValue, ScaleFetchStats, TileStats, WeightValue};
 use rtl::StartExecution;
 pub use striped::StripedMatmul;
 
@@ -32,29 +32,56 @@ impl VectorOp {
 
 pub(crate) type ReadProvider =
     unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
-pub(crate) type WriteProviderV2 =
-    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i32) -> i32;
-pub(crate) type WriteProviderV3 =
-    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i64) -> i32;
+pub(crate) type ReadWeightProviderI8 =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
+pub(crate) type ReadWeightProviderI16 =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i16) -> i32;
 
 #[derive(Clone, Copy)]
-pub(crate) enum WriteProvider {
-    V2(WriteProviderV2),
-    V3(WriteProviderV3),
+pub(crate) enum ReadWeightProvider {
+    I8(ReadWeightProviderI8),
+    I16(ReadWeightProviderI16),
 }
+pub(crate) type WriteProvider =
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i64) -> i32;
 
 #[derive(Clone, Copy)]
 pub(crate) struct MemoryProvider {
     pub context: *mut c_void,
-    pub read_weight: Option<ReadProvider>,
+    pub read_weight: Option<ReadWeightProvider>,
     pub read_scale: Option<ReadProvider>,
     pub write_output: Option<WriteProvider>,
 }
 
 impl MemoryProvider {
-    pub fn read_weight(self, row: usize, column: usize, values: &mut [i8]) -> Result<(), Error> {
+    pub fn read_weight(
+        self,
+        row: usize,
+        column: usize,
+        values: &mut [WeightValue],
+    ) -> Result<(), Error> {
         let callback = self.read_weight.ok_or(Error::ProviderFailure)?;
-        if unsafe { callback(self.context, row, column, values.len(), values.as_mut_ptr()) } == 0 {
+        let status = match callback {
+            ReadWeightProvider::I8(callback) => unsafe {
+                callback(
+                    self.context,
+                    row,
+                    column,
+                    values.len(),
+                    values.as_mut_ptr().cast(),
+                )
+            },
+            ReadWeightProvider::I16(callback) => unsafe {
+                callback(
+                    self.context,
+                    row,
+                    column,
+                    values.len(),
+                    values.as_mut_ptr().cast(),
+                )
+            },
+        };
+        if status == 0 {
             Ok(())
         } else {
             Err(Error::ProviderFailure)
@@ -78,38 +105,17 @@ impl MemoryProvider {
         values: &[i64],
     ) -> Result<(), Error> {
         let callback = self.write_output.ok_or(Error::ProviderFailure)?;
-        let status = match callback {
-            WriteProvider::V2(callback) => {
-                let narrowed = values
-                    .iter()
-                    .copied()
-                    .map(crate::matrix::saturating_i64_to_i32)
-                    .collect::<Vec<_>>();
-                // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the
-                // callback accepts this live context and readable narrowed slice for the call.
-                unsafe {
-                    callback(
-                        self.context,
-                        block,
-                        row,
-                        column,
-                        narrowed.len(),
-                        narrowed.as_ptr(),
-                    )
-                }
-            }
-            // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the callback
-            // accepts this live context and readable exact-width slice for the call.
-            WriteProvider::V3(callback) => unsafe {
-                callback(
-                    self.context,
-                    block,
-                    row,
-                    column,
-                    values.len(),
-                    values.as_ptr(),
-                )
-            },
+        // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the callback
+        // accepts this live context and readable exact-width slice for the call.
+        let status = unsafe {
+            callback(
+                self.context,
+                block,
+                row,
+                column,
+                values.len(),
+                values.as_ptr(),
+            )
         };
         if status == 0 {
             Ok(())
@@ -202,7 +208,7 @@ pub struct KBlockScaleMatrixView<'a> {
 #[derive(Debug)]
 pub struct TileRequest<'a> {
     pub activations: &'a [ActivationValue],
-    pub weights: &'a [i8],
+    pub weights: &'a [WeightValue],
     pub scale_matrix: Option<KBlockScaleMatrixView<'a>>,
     pub valid_m: usize,
     pub valid_n: usize,
@@ -288,7 +294,7 @@ impl Im2pSimulator {
         let weight_start = self.cycles();
         self.begin_weight_load()?;
         for row in 0..self.dim {
-            let mut values = vec![0_i8; self.dim];
+            let mut values = vec![WeightValue::default(); self.dim];
             if row < request.valid_k {
                 let source = &request.weights[row * request.valid_n..(row + 1) * request.valid_n];
                 values[..request.valid_n].copy_from_slice(source);

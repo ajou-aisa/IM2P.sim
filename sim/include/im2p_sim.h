@@ -33,66 +33,20 @@ enum {
   IM2P_VECTOR_MULTIPLY = 1,
   IM2P_VECTOR_SHIFT = 2,
   IM2P_VECTOR_EXTERNAL = 3,
-  IM2P_PROVIDER_VERSION_1 = 1,
-  IM2P_ABI_VERSION_2 = 2,
-  IM2P_ABI_VERSION_3 = 3,
+  IM2P_ABI_VERSION = 4,
 };
 
 /*
- * Full-matrix pointers are borrowed for im2p_execute_matmul only. Input and
- * scale regions must remain readable and output region writable for that call.
+ * The public ABI uses the selected activation/weight artifact identity.
+ * A4/W4 values occupy one signed byte each; A16/W16 values occupy int16_t.
+ * Activation and weight strides are bytes. Raw output storage remains signed
+ * 32-bit; provider output transport preserves signed 64-bit accumulator lanes.
  */
-typedef struct {
-    const int8_t *activations;
-    const int8_t *weights;
-    const int8_t *scales;
-    int32_t *output;
-    size_t m;
-    size_t n;
-    size_t k;
-    size_t activation_row_stride;
-    size_t weight_row_stride;
-    size_t output_row_stride;
-    size_t tile_i_rows;
-    size_t tile_j_columns;
-    size_t block_size;
-    size_t scale_total_k;
-    size_t scale_row_stride;
-    size_t scale_column_offset;
-    size_t scale_valid_columns;
-    size_t scale_values_len;
-    uint8_t vector_op;
-    uint64_t work_context;
-} im2p_matmul_desc_t;
-
-/*
- * Striped weights/scales/output remain borrowed until im2p_finish_stream or
- * im2p_destroy_stream. Row strides are in elements; padding is permitted.
- */
-typedef struct {
-    const int8_t *weights;
-    const int8_t *scales;
-    int32_t *output;
-    size_t m;
-    size_t n;
-    size_t k;
-    size_t weight_row_stride;
-    size_t output_row_stride;
-    size_t tile_i_rows;
-    size_t tile_j_columns;
-    size_t block_size;
-    size_t scale_total_k;
-    size_t scale_row_stride;
-    size_t scale_column_offset;
-    size_t scale_valid_columns;
-    size_t scale_values_len;
-    size_t stripe_count;
-    uint8_t vector_op;
-    uint64_t work_context;
-} im2p_stripe_work_desc_t;
-
-typedef int (*im2p_read_weight_fn)(
+typedef int (*im2p_read_weight_i8_fn)(
     void *context, size_t row, size_t column, size_t count, int8_t *out
+);
+typedef int (*im2p_read_weight_i16_fn)(
+    void *context, size_t row, size_t column, size_t count, int16_t *out
 );
 typedef int (*im2p_read_scale_fn)(
     void *context, size_t row, size_t column, size_t count, int8_t *out
@@ -103,124 +57,33 @@ typedef int (*im2p_write_output_fn)(
     size_t row,
     size_t column,
     size_t count,
-    const int32_t *values
-);
-
-typedef struct {
-    void *context;
-    im2p_read_weight_fn read_weight;
-    im2p_read_scale_fn read_scale;
-    im2p_write_output_fn write_output;
-} im2p_provider_t;
-
-/* Version 1 embeds the complete legacy descriptor without changing its ABI. */
-typedef struct {
-    uint32_t version;
-    im2p_matmul_desc_t legacy;
-    im2p_provider_t provider;
-} im2p_matmul_desc_v1_t;
-
-typedef struct {
-    uint32_t version;
-    im2p_stripe_work_desc_t legacy;
-    im2p_provider_t provider;
-} im2p_stripe_work_desc_v1_t;
-
-/*
- * ABI v2 is tied to the library's build-time activation width and array DIM.
- * Activation strides are bytes; weight and output strides remain elements.
- * A4 values occupy one signed byte each (they are not nibble-packed).
- */
-typedef struct {
-  uint32_t abi_version;
-  uint32_t activation_bits;
-  uint32_t activation_storage_bytes;
-  uint32_t dim;
-  const void *activations;
-  const int8_t *weights;
-  const int8_t *scales;
-  int32_t *output;
-  size_t m;
-  size_t n;
-  size_t k;
-  size_t activation_row_stride_bytes;
-  size_t weight_row_stride;
-  size_t output_row_stride;
-  size_t tile_i_rows;
-  size_t tile_j_columns;
-  size_t block_size;
-  size_t scale_total_k;
-  size_t scale_row_stride;
-  size_t scale_column_offset;
-  size_t scale_valid_columns;
-  size_t scale_values_len;
-  uint8_t vector_op;
-  uint64_t work_context;
-  im2p_provider_t provider;
-} im2p_matmul_desc_v2_t;
-
-typedef struct {
-  uint32_t abi_version;
-  uint32_t activation_bits;
-  uint32_t activation_storage_bytes;
-  uint32_t dim;
-  const int8_t *weights;
-  const int8_t *scales;
-  int32_t *output;
-  size_t m;
-  size_t n;
-  size_t k;
-  size_t weight_row_stride;
-  size_t output_row_stride;
-  size_t tile_i_rows;
-  size_t tile_j_columns;
-  size_t block_size;
-  size_t scale_total_k;
-  size_t scale_row_stride;
-  size_t scale_column_offset;
-  size_t scale_valid_columns;
-  size_t scale_values_len;
-  size_t stripe_count;
-  uint8_t vector_op;
-  uint64_t work_context;
-  im2p_provider_t provider;
-} im2p_stripe_work_desc_v2_t;
-
-/*
- * ABI v3 keeps raw output storage signed 32-bit while widening provider output
- * request transport to signed 64-bit elements. All strides remain element
- * counts unless suffixed `_bytes`. ABI v2 remains frozen and callable.
- */
-typedef int (*im2p_write_output_v3_fn)(
-    void *context,
-    size_t block,
-    size_t row,
-    size_t column,
-    size_t count,
     const int64_t *values
 );
 
 typedef struct {
   void *context;
-  im2p_read_weight_fn read_weight;
+  im2p_read_weight_i8_fn read_weight_i8;
+  im2p_read_weight_i16_fn read_weight_i16;
   im2p_read_scale_fn read_scale;
-  im2p_write_output_v3_fn write_output;
-} im2p_provider_v3_t;
+  im2p_write_output_fn write_output;
+} im2p_provider_t;
 
 typedef struct {
   uint32_t abi_version;
   uint32_t activation_bits;
   uint32_t activation_storage_bytes;
+  uint32_t weight_bits;
+  uint32_t weight_storage_bytes;
   uint32_t dim;
   const void *activations;
-  const int8_t *weights;
+  const void *weights;
   const int8_t *scales;
   int32_t *output;
   size_t m;
   size_t n;
   size_t k;
   size_t activation_row_stride_bytes;
-  size_t weight_row_stride;
+  size_t weight_row_stride_bytes;
   size_t output_row_stride;
   size_t tile_i_rows;
   size_t tile_j_columns;
@@ -232,21 +95,23 @@ typedef struct {
   size_t scale_values_len;
   uint8_t vector_op;
   uint64_t work_context;
-  im2p_provider_v3_t provider;
-} im2p_matmul_desc_v3_t;
+  im2p_provider_t provider;
+} im2p_matmul_desc_t;
 
 typedef struct {
   uint32_t abi_version;
   uint32_t activation_bits;
   uint32_t activation_storage_bytes;
+  uint32_t weight_bits;
+  uint32_t weight_storage_bytes;
   uint32_t dim;
-  const int8_t *weights;
+  const void *weights;
   const int8_t *scales;
   int32_t *output;
   size_t m;
   size_t n;
   size_t k;
-  size_t weight_row_stride;
+  size_t weight_row_stride_bytes;
   size_t output_row_stride;
   size_t tile_i_rows;
   size_t tile_j_columns;
@@ -259,8 +124,8 @@ typedef struct {
   size_t stripe_count;
   uint8_t vector_op;
   uint64_t work_context;
-  im2p_provider_v3_t provider;
-} im2p_stripe_work_desc_v3_t;
+  im2p_provider_t provider;
+} im2p_stripe_work_desc_t;
 
 /*
  * `activations` remains caller-owned and must remain readable until matching
@@ -269,39 +134,19 @@ typedef struct {
  * Published stripes must be contiguous and ordered.
  */
 typedef struct {
-    uint32_t stripe_id;
-    size_t i_start;
-    size_t rows;
-    const int8_t *activations;
-    size_t activation_row_stride;
-    uint64_t context;
+  uint32_t abi_version;
+  uint32_t activation_bits;
+  uint32_t activation_storage_bytes;
+  uint32_t weight_bits;
+  uint32_t weight_storage_bytes;
+  uint32_t dim;
+  uint32_t stripe_id;
+  size_t i_start;
+  size_t rows;
+  const void *activations;
+  size_t activation_row_stride_bytes;
+  uint64_t context;
 } im2p_activation_stripe_t;
-
-typedef struct {
-  uint32_t abi_version;
-  uint32_t activation_bits;
-  uint32_t activation_storage_bytes;
-  uint32_t dim;
-  uint32_t stripe_id;
-  size_t i_start;
-  size_t rows;
-  const void *activations;
-  size_t activation_row_stride_bytes;
-  uint64_t context;
-} im2p_activation_stripe_v2_t;
-
-typedef struct {
-  uint32_t abi_version;
-  uint32_t activation_bits;
-  uint32_t activation_storage_bytes;
-  uint32_t dim;
-  uint32_t stripe_id;
-  size_t i_start;
-  size_t rows;
-  const void *activations;
-  size_t activation_row_stride_bytes;
-  uint64_t context;
-} im2p_activation_stripe_v3_t;
 
 typedef struct {
     uint32_t stripe_id;
@@ -340,10 +185,7 @@ typedef struct {
     uint64_t weight_bank_activations;
 } im2p_work_stats_t;
 
-/*
- * Versioned extension. Legacy entry points write exactly im2p_work_stats_t;
- * use the *_extended entry points to request lookahead telemetry.
- */
+/* Extended entry points add lookahead telemetry to the base statistics. */
 typedef struct {
     im2p_work_stats_t base;
     uint64_t cross_stripe_overlap_cycles;
@@ -367,6 +209,8 @@ void im2p_sim_destroy(im2p_sim_t *sim);
 uint32_t im2p_sim_abi_version(void);
 uint32_t im2p_sim_activation_bits(void);
 uint32_t im2p_sim_activation_storage_bytes(void);
+uint32_t im2p_sim_weight_bits(void);
+uint32_t im2p_sim_weight_storage_bytes(void);
 uint32_t im2p_sim_dim(void);
 int im2p_execute_matmul(
     im2p_sim_t *sim,
@@ -378,63 +222,27 @@ int im2p_execute_matmul_extended(
     const im2p_matmul_desc_t *descriptor,
     im2p_work_stats_extended_t *stats
 );
-int im2p_execute_matmul_ex(
-    im2p_sim_t *sim,
-    const im2p_matmul_desc_v1_t *descriptor,
-    im2p_work_stats_t *stats
-);
-int im2p_execute_matmul_extended_ex(
-    im2p_sim_t *sim,
-    const im2p_matmul_desc_v1_t *descriptor,
-    im2p_work_stats_extended_t *stats
-);
-int im2p_execute_matmul_v2(im2p_sim_t *sim,
-                           const im2p_matmul_desc_v2_t *descriptor,
-                           im2p_work_stats_t *stats);
-int im2p_execute_matmul_extended_v2(im2p_sim_t *sim,
-                                    const im2p_matmul_desc_v2_t *descriptor,
-                                    im2p_work_stats_extended_t *stats);
-int im2p_execute_matmul_v3(im2p_sim_t *sim,
-                           const im2p_matmul_desc_v3_t *descriptor,
-                           im2p_work_stats_t *stats);
-int im2p_execute_matmul_extended_v3(im2p_sim_t *sim,
-                                    const im2p_matmul_desc_v3_t *descriptor,
-                                    im2p_work_stats_extended_t *stats);
 /* The returned stream remains valid if `sim` is destroyed. */
-im2p_stream_t *im2p_begin_striped_matmul(
-    im2p_sim_t *sim,
-    const im2p_stripe_work_desc_t *descriptor
-);
-int im2p_begin_striped_matmul_ex(
+int im2p_begin_striped_matmul(
     im2p_sim_t *sim,
     const im2p_stripe_work_desc_t *descriptor,
     im2p_stream_t **stream
 );
-int im2p_begin_striped_matmul_v1_ex(
-    im2p_sim_t *sim,
-    const im2p_stripe_work_desc_v1_t *descriptor,
-    im2p_stream_t **stream
-);
-int im2p_begin_striped_matmul_v2(im2p_sim_t *sim,
-                                 const im2p_stripe_work_desc_v2_t *descriptor,
-                                 im2p_stream_t **stream);
-int im2p_begin_striped_matmul_v3(im2p_sim_t *sim,
-                                 const im2p_stripe_work_desc_v3_t *descriptor,
-                                 im2p_stream_t **stream);
 int im2p_publish_stripe(
     im2p_stream_t *stream,
     const im2p_activation_stripe_t *stripe
 );
-int im2p_publish_stripe_v2(im2p_stream_t *stream,
-                           const im2p_activation_stripe_v2_t *stripe);
-int im2p_publish_stripe_v3(im2p_stream_t *stream,
-                           const im2p_activation_stripe_v3_t *stripe);
 /*
  * Advances exactly cycle_budget logical RTL clock periods. A zero budget only
  * observes host-visible state; it does not evaluate a clock edge.
  */
 int im2p_progress_stream(im2p_stream_t *stream, uint64_t cycle_budget);
 uint64_t im2p_stream_cycle_count(const im2p_stream_t *stream);
+/*
+ * Returns completed RTL K fragments for this stream. The count wraps at
+ * UINT64_MAX; compare for change rather than ordering.
+ */
+uint64_t im2p_stream_progress_count(const im2p_stream_t *stream);
 int im2p_poll_completed(
     im2p_stream_t *stream,
     im2p_stripe_completion_t *completion

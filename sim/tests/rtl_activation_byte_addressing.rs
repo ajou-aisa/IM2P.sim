@@ -1,8 +1,9 @@
 pub mod common;
 
 use im2p_sim::{
-    activation_to_i32, parse_activation, ActivationStripe, ActivationValue, Im2pSimulator,
-    MatmulWork, MatrixView, MatrixViewMut, SimError, StripeWorkDesc, VectorOp,
+    activation_to_i32, parse_activation, weight_to_i32, ActivationStripe, ActivationValue,
+    Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut, SimError, StripeWorkDesc, VectorOp,
+    WeightValue,
 };
 
 const M: usize = 3;
@@ -15,7 +16,7 @@ fn activation(value: i32) -> ActivationValue {
     parse_activation(value).expect("test activation fits every selected width")
 }
 
-fn operands() -> (Vec<ActivationValue>, Vec<i8>) {
+fn operands() -> (Vec<ActivationValue>, Vec<WeightValue>) {
     let logical = [[-7, 2, 5], [6, -3, 1], [4, 7, -2]];
     let mut activations = vec![activation(0); M * A_STRIDE];
     for row in 0..M {
@@ -27,13 +28,13 @@ fn operands() -> (Vec<ActivationValue>, Vec<i8>) {
     (activations, vec![3, -2, -4, 5, 6, 1])
 }
 
-fn oracle(activations: &[ActivationValue], weights: &[i8]) -> Vec<i32> {
+fn oracle(activations: &[ActivationValue], weights: &[WeightValue]) -> Vec<i32> {
     let mut output = vec![0_i32; M * N];
     for row in 0..M {
         for column in 0..N {
             let sum = (0..K).fold(0_i64, |sum, k| {
                 sum + i64::from(activation_to_i32(activations[row * A_STRIDE + k]))
-                    * i64::from(weights[k * N + column])
+                    * i64::from(weight_to_i32(weights[k * N + column]))
             });
             output[row * N + column] = i32::try_from(sum).expect("small independent oracle");
         }
@@ -41,7 +42,10 @@ fn oracle(activations: &[ActivationValue], weights: &[i8]) -> Vec<i32> {
     output
 }
 
-fn run_full(activations: &[ActivationValue], weights: &[i8]) -> Result<Vec<i32>, SimError> {
+fn run_full(
+    activations: &[ActivationValue],
+    weights: &[WeightValue],
+) -> Result<Vec<i32>, SimError> {
     let mut output = vec![i32::MIN; M * N];
     let work = MatmulWork {
         activations: MatrixView::new(activations, M, K, A_STRIDE)?,
@@ -53,7 +57,10 @@ fn run_full(activations: &[ActivationValue], weights: &[i8]) -> Result<Vec<i32>,
     Ok(output)
 }
 
-fn run_striped(activations: &[ActivationValue], weights: &[i8]) -> Result<Vec<i32>, SimError> {
+fn run_striped(
+    activations: &[ActivationValue],
+    weights: &[WeightValue],
+) -> Result<Vec<i32>, SimError> {
     let descriptor = StripeWorkDesc {
         weights,
         scale_matrix: None,

@@ -13,11 +13,16 @@ VERILATOR ?= verilator
 YOSYS     ?= yosys
 
 IM2P_ACTIVATION_BITS ?= 8
+IM2P_WEIGHT_BITS ?= 8
 IM2P_DIM ?= 16
 IM2P_ALLOWED_ACTIVATION_BITS := 4 8 16
+IM2P_ALLOWED_WEIGHT_BITS := 4 8 16
 IM2P_ALLOWED_DIMS := 16 32 64
 ifeq ($(filter $(IM2P_ACTIVATION_BITS),$(IM2P_ALLOWED_ACTIVATION_BITS)),)
 $(error IM2P_ACTIVATION_BITS must be one of 4, 8, or 16 (got '$(IM2P_ACTIVATION_BITS)'))
+endif
+ifeq ($(filter $(IM2P_WEIGHT_BITS),$(IM2P_ALLOWED_WEIGHT_BITS)),)
+$(error IM2P_WEIGHT_BITS must be one of 4, 8, or 16 (got '$(IM2P_WEIGHT_BITS)'))
 endif
 ifeq ($(filter $(IM2P_DIM),$(IM2P_ALLOWED_DIMS)),)
 $(error IM2P_DIM must be 16, 32, or 64 (got '$(IM2P_DIM)'))
@@ -25,7 +30,7 @@ endif
 
 BUILD_DIR := build
 ROOT_DIR  := $(CURDIR)
-IM2P_ARTIFACT_ID = a$(IM2P_ACTIVATION_BITS)-w8-d$(IM2P_DIM)
+IM2P_ARTIFACT_ID = a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d$(IM2P_DIM)
 IM2P_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(IM2P_ARTIFACT_ID))
 IM2P_RESULTS_DIR = $(BUILD_DIR)/results/$(IM2P_ARTIFACT_ID)
 CARGO_TEST_FILTER ?=
@@ -36,17 +41,22 @@ ENABLE_GEMMINI_FRONTEND ?= 0
 GEMMINI_ROOT ?= $(abspath ../llama.cpp-gemmini)
 GEMMINI_PARAMS_ROOT ?= $(abspath ../RISC-V-DynDNN-gemmini-include/include)
 GEMMINI_FRONTEND_ACTIVATION_BITS ?= $(IM2P_ACTIVATION_BITS)
+GEMMINI_FRONTEND_WEIGHT_BITS ?= $(IM2P_WEIGHT_BITS)
 GEMMINI_FRONTEND_DIM ?= $(IM2P_DIM)
-GEMMINI_FRONTEND_BLOCK_SIZE = $(if $(filter 64,$(GEMMINI_FRONTEND_DIM)),64,32)
+GEMMINI_FRONTEND_BLOCK_SIZE = $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),$(if $(filter 64,$(GEMMINI_FRONTEND_DIM)),64,32),32)
 ifeq ($(filter $(GEMMINI_FRONTEND_ACTIVATION_BITS),$(IM2P_ALLOWED_ACTIVATION_BITS)),)
 $(error GEMMINI_FRONTEND_ACTIVATION_BITS must be one of 4, 8, or 16 (got '$(GEMMINI_FRONTEND_ACTIVATION_BITS)'))
+endif
+ifeq ($(filter $(GEMMINI_FRONTEND_WEIGHT_BITS),$(IM2P_ALLOWED_WEIGHT_BITS)),)
+$(error GEMMINI_FRONTEND_WEIGHT_BITS must be one of 4, 8, or 16 (got '$(GEMMINI_FRONTEND_WEIGHT_BITS)'))
 endif
 ifeq ($(filter $(GEMMINI_FRONTEND_DIM),$(IM2P_ALLOWED_DIMS)),)
 $(error GEMMINI_FRONTEND_DIM must be 16, 32, or 64 (got '$(GEMMINI_FRONTEND_DIM)'))
 endif
-GEMMINI_ARTIFACT_ID = a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w8-d$(GEMMINI_FRONTEND_DIM)
+GEMMINI_ARTIFACT_ID = a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM)
 GEMMINI_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(GEMMINI_ARTIFACT_ID))
 GEMMINI_RESULTS_DIR = $(BUILD_DIR)/results/$(GEMMINI_ARTIFACT_ID)
+GEMMINI_VERILATOR_TARGET = $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),verilator-int$(GEMMINI_FRONTEND_ACTIVATION_BITS)x$(GEMMINI_FRONTEND_DIM),verilator-a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM))
 BSC_PATH  := +:src/common:src/io:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
 BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
              -info-dir $(BUILD_DIR)/info
@@ -119,9 +129,13 @@ VERILATOR_COMMON := --cc --Wno-fatal
         verilator-int4x16 verilator-int8x16 verilator-int16x16 \
         verilator-int4x32 verilator-int8x32 verilator-int16x32 verilator \
         verilator-int4x64 verilator-int8x64 verilator-int16x64 \
+        verilator-a4-w4-d16 verilator-a4-w4-d32 verilator-a4-w4-d64 \
+        verilator-a16-w16-d16 verilator-a16-w16-d32 verilator-a16-w16-d64 \
         sim-test-int4x16 sim-test-int8x16 sim-test-int16x16 \
         sim-test-int4x32 sim-test-int8x32 sim-test-int16x32 \
-        sim-test-int4x64 sim-test-int8x64 sim-test-int16x64 sim-test \
+        sim-test-int4x64 sim-test-int8x64 sim-test-int16x64 \
+        sim-test-a4-w4-d16 sim-test-a4-w4-d32 sim-test-a4-w4-d64 \
+        sim-test-a16-w16-d16 sim-test-a16-w16-d32 sim-test-a16-w16-d64 sim-test \
         verilator-lint yosys-stat clean help check-tools
 
 all: check
@@ -178,37 +192,31 @@ C_API_BUILD_DIR = $(BUILD_DIR)/c-api/$(IM2P_ARTIFACT_ID)
 c-api-layout-test: | $(BUILD_DIR)/bin
 	@mkdir -p $(C_API_BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
-		-Isim/include sim/tests/c_api_v3_layout.c \
-		-o $(C_API_BUILD_DIR)/im2p_c_api_v3_layout
+		-Isim/include sim/tests/c_api_layout.c \
+		-o $(C_API_BUILD_DIR)/im2p_c_api_layout
 	$(CXX) -std=c++20 -Wall -Wextra -Wpedantic -Werror \
-		-Isim/include sim/tests/c_api_v3_layout.cpp \
-		-o $(C_API_BUILD_DIR)/im2p_cpp_api_v3_layout
-	$(C_API_BUILD_DIR)/im2p_c_api_v3_layout
-	$(C_API_BUILD_DIR)/im2p_cpp_api_v3_layout
+		-Isim/include sim/tests/c_api_layout.cpp \
+		-o $(C_API_BUILD_DIR)/im2p_cpp_api_layout
+	$(C_API_BUILD_DIR)/im2p_c_api_layout
+	$(C_API_BUILD_DIR)/im2p_cpp_api_layout
 
 c-api-test: c-api-layout-test | $(BUILD_DIR)/bin
 	@mkdir -p $(C_API_BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
-		-Isim/include -c sim/tests/c_api_smoke.c \
-		-o $(C_API_BUILD_DIR)/c_api_smoke.o
-	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
 		-DIM2P_TEST_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
+		-DIM2P_TEST_WEIGHT_BITS=$(IM2P_WEIGHT_BITS) \
 		-DIM2P_TEST_DIM=$(IM2P_DIM) \
-		-Isim/include -c sim/tests/c_api_v3_runtime.c \
-		-o $(C_API_BUILD_DIR)/c_api_v3_runtime.o
+		-Isim/include -c sim/tests/c_api_runtime.c \
+		-o $(C_API_BUILD_DIR)/c_api_runtime.o
 	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
-		IM2P_DIM=$(IM2P_DIM) CARGO_TARGET_DIR=$(IM2P_CARGO_TARGET_DIR) cargo build \
+		IM2P_WEIGHT_BITS=$(IM2P_WEIGHT_BITS) IM2P_DIM=$(IM2P_DIM) \
+		CARGO_TARGET_DIR=$(IM2P_CARGO_TARGET_DIR) cargo build \
 		--manifest-path sim/Cargo.toml --lib --release
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
-		$(C_API_BUILD_DIR)/c_api_smoke.o \
+		$(C_API_BUILD_DIR)/c_api_runtime.o \
 		$(IM2P_CARGO_TARGET_DIR)/release/libim2p_sim.a \
-		-o $(C_API_BUILD_DIR)/im2p_c_api_smoke
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
-		$(C_API_BUILD_DIR)/c_api_v3_runtime.o \
-		$(IM2P_CARGO_TARGET_DIR)/release/libim2p_sim.a \
-		-o $(C_API_BUILD_DIR)/im2p_c_api_v3_runtime
-	$(C_API_BUILD_DIR)/im2p_c_api_smoke
-	$(C_API_BUILD_DIR)/im2p_c_api_v3_runtime
+		-o $(C_API_BUILD_DIR)/im2p_c_api_runtime
+	$(C_API_BUILD_DIR)/im2p_c_api_runtime
 
 GEMMINI_DIM_CONFIG_DIR = $(BUILD_DIR)/generated/$(GEMMINI_ARTIFACT_ID)
 GEMMINI_DIM_CONFIG = $(GEMMINI_DIM_CONFIG_DIR)/gemmini_params.h
@@ -221,6 +229,7 @@ GEMMINI_FRONTEND_INCLUDES := \
 GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM) \
 	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
+	-DGGML_GEMMINI_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
 	-DGGML_GEMMINI_BLOCK_SIZE=$(GEMMINI_FRONTEND_BLOCK_SIZE)
 GEMMINI_FRONTEND_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend.o
 GEMMINI_FRONTEND_ARCHIVE = $(BUILD_DIR)/lib/$(GEMMINI_ARTIFACT_ID)/libim2p_gemmini_frontend.a
@@ -307,8 +316,9 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 	TSAN_OPTIONS=halt_on_error=1 $(GEMMINI_FRONTEND_TSAN_TEST) \
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
 
-gemmini-frontend-real-test: gemmini-frontend-test verilator-int$(GEMMINI_FRONTEND_ACTIVATION_BITS)x$(GEMMINI_FRONTEND_DIM) | $(BUILD_DIR)/bin
+gemmini-frontend-real-test: gemmini-frontend-test $(GEMMINI_VERILATOR_TARGET) | $(BUILD_DIR)/bin
 	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
+		IM2P_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
 		IM2P_DIM=$(GEMMINI_FRONTEND_DIM) CARGO_TARGET_DIR=$(GEMMINI_CARGO_TARGET_DIR) cargo build \
 		--manifest-path sim/Cargo.toml --lib --release
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
@@ -330,7 +340,8 @@ REAL_MATRIX_FINGERPRINT_FIXTURE_DIR ?=
 
 # Build and execute each owned A8 pair in its own complete workspace. Forward,
 # reverse, and concurrent passes each validate six DIM/mode identities, for
-# eighteen real executions total. A4/A16 remain non-ExSIA and are not claimed.
+# eighteen real executions total. Matched A4/A16 use their per-artifact real
+# target and remain outside this legacy W8 matrix.
 gemmini-frontend-real-test-matrix:
 	@set -euo pipefail; \
 	root='$(REAL_MATRIX_ROOT)'; results='$(REAL_MATRIX_RESULTS)'; \
@@ -354,8 +365,9 @@ gemmini-frontend-real-test-matrix:
 	  if test ! -x "$$binary" || test "$$cached" != "$$fingerprint"; then \
 	    printf 'REAL_MATRIX_CACHE id=%s state=rebuild fingerprint=%s\n' "$$id" "$$fingerprint"; \
 	    $(MAKE) --no-print-directory BUILD_DIR="$$root/$$id" \
-	      IM2P_ACTIVATION_BITS="$$bits" IM2P_DIM="$$dim" \
-	      GEMMINI_FRONTEND_ACTIVATION_BITS="$$bits" GEMMINI_FRONTEND_DIM="$$dim" \
+	      IM2P_ACTIVATION_BITS="$$bits" IM2P_WEIGHT_BITS=8 IM2P_DIM="$$dim" \
+	      GEMMINI_FRONTEND_ACTIVATION_BITS="$$bits" \
+	      GEMMINI_FRONTEND_WEIGHT_BITS=8 GEMMINI_FRONTEND_DIM="$$dim" \
 	      gemmini-frontend-real-test; \
 	    printf '%s\n' "$$fingerprint" > "$$fingerprint_file.tmp"; \
 	    mv "$$fingerprint_file.tmp" "$$fingerprint_file"; \
@@ -411,13 +423,15 @@ gemmini-frontend-real-test-mismatch:
 	a8='$(REAL_MATRIX_ROOT)/a8-w8-d32'; \
 	if test ! -f "$$a16/lib/a16-w8-d32/libim2p_gemmini_frontend_testing.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a16" \
-	    IM2P_ACTIVATION_BITS=16 IM2P_DIM=32 \
-	    GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_DIM=32 gemmini-frontend; \
+	    IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 \
+	    GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_WEIGHT_BITS=8 \
+	    GEMMINI_FRONTEND_DIM=32 gemmini-frontend; \
 	fi; \
 	if test ! -f "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a8" \
-	    IM2P_ACTIVATION_BITS=8 IM2P_DIM=32 verilator-int8x32; \
-	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_ACTIVATION_BITS=8 IM2P_DIM=32 \
+	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 verilator-int8x32; \
+	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 \
+	    IM2P_DIM=32 \
 	    CARGO_TARGET_DIR="$$a8/cargo/a8-w8-d32" cargo build \
 	    --manifest-path sim/Cargo.toml --lib --release; \
 	fi; \
@@ -425,6 +439,7 @@ gemmini-frontend-real-test-mismatch:
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	  -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=32 \
 	  -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=16 \
+	  -DGGML_GEMMINI_WEIGHT_BITS=8 \
 	  -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 	  -Ifrontend/include -Isim/include -I"$$a16/generated/a16-w8-d32" \
 	  -I'$(GEMMINI_ROOT)/ggml/src/ggml-gemmini' \
@@ -510,7 +525,8 @@ verilator-int$(1)x$(2):
 sim-test-int$(1)x$(2): verilator-int$(1)x$(2)
 	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)"
 	@set -o pipefail; \
-	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_ACTIVATION_BITS=$(1) IM2P_DIM=$(2) \
+	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_ACTIVATION_BITS=$(1) \
+	  IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2) \
 	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w8-d$(2))" \
 	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \
 	    $$(CARGO_TEST_FILTER) -- --nocapture 2>&1 | \
@@ -519,9 +535,41 @@ endef
 
 $(foreach bits,4 8 16,$(foreach dim,16 32 64,$(eval $(call define_sim_config,$(bits),$(dim)))))
 
-# Legacy aggregate entry points default to INT8 and select every supported dimension.
+define define_matched_sim_config
+verilator-a$(1)-w$(1)-d$(2):
+	$$(MAKE) rtl-one TOP=mkSynthA$(1)W$(1)D$(2) \
+	  RTL_OUT="$$(BUILD_DIR)/rtl/a$(1)-w$(1)-d$(2)/SynthA$(1)W$(1)D$(2)" \
+	  RTL_BSC_DIR="$$(BUILD_DIR)/bsc/a$(1)-w$(1)-d$(2)" \
+	  RTL_INFO_DIR="$$(BUILD_DIR)/info/a$(1)-w$(1)-d$(2)"
+	rm -rf "$$(BUILD_DIR)/verilator/a$(1)-w$(1)-d$(2)/obj_dir"
+	mkdir -p "$$(BUILD_DIR)/verilator/a$(1)-w$(1)-d$(2)/obj_dir"
+	$$(VERILATOR) $$(VERILATOR_COMMON) \
+	  --Mdir "$$(BUILD_DIR)/verilator/a$(1)-w$(1)-d$(2)/obj_dir" \
+	  --top-module mkSynthA$(1)W$(1)D$(2) --prefix VmkSynthA$(1)W$(1)D$(2) \
+	  "$$(BUILD_DIR)/rtl/a$(1)-w$(1)-d$(2)/SynthA$(1)W$(1)D$(2)"/*.v \
+	  "$$(BSC_VERILOG)/RegFile.v" "$$(BSC_VERILOG)/FIFO2.v"
+
+sim-test-a$(1)-w$(1)-d$(2): verilator-a$(1)-w$(1)-d$(2)
+	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)"
+	@set -o pipefail; \
+	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_ACTIVATION_BITS=$(1) \
+	  IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2) \
+	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w$(1)-d$(2))" \
+	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \
+	    $$(CARGO_TEST_FILTER) -- --nocapture 2>&1 | \
+	    tee "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)/sim-test.log"
+endef
+
+$(foreach bits,4 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))
+
+# Legacy aggregate entry points default to INT8/W8 and select every supported dimension.
+ifeq ($(IM2P_WEIGHT_BITS),8)
 verilator: verilator-int$(IM2P_ACTIVATION_BITS)x16 verilator-int$(IM2P_ACTIVATION_BITS)x32 verilator-int$(IM2P_ACTIVATION_BITS)x64
 sim-test: sim-test-int$(IM2P_ACTIVATION_BITS)x16 sim-test-int$(IM2P_ACTIVATION_BITS)x32 sim-test-int$(IM2P_ACTIVATION_BITS)x64
+else
+verilator: verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d16 verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d32 verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d64
+sim-test: sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d16 sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d32 sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d64
+endif
 
 verilator-lint: rtl
 	@set -euo pipefail; \

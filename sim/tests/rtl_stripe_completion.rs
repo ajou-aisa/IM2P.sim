@@ -3,14 +3,14 @@ pub mod common;
 use common::{structured_activations, structured_weights, Shape};
 use im2p_sim::{
     ActivationStripe, ActivationValue, Im2pSimulator, SimError, StripeWorkDesc, StripedMatmul,
-    VectorOp,
+    VectorOp, WeightValue,
 };
 
 const ROWS_PER_STRIPE: usize = 2;
 const STRIPES: usize = 4;
 const MAX_STEPS: usize = 100_000;
 
-fn descriptor<'a>(shape: Shape, weights: &'a [i8]) -> StripeWorkDesc<'a> {
+fn descriptor<'a>(shape: Shape, weights: &'a [WeightValue]) -> StripeWorkDesc<'a> {
     StripeWorkDesc {
         weights,
         scale_matrix: None,

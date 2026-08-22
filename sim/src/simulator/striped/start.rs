@@ -1,4 +1,7 @@
-use crate::{activation::activation_elements_to_address_bytes, ffi, StripeLayout, StripeWorkDesc};
+use crate::{
+    activation::activation_elements_to_address_bytes, ffi,
+    weight::weight_elements_to_address_bytes, StripeLayout, StripeWorkDesc,
+};
 
 use super::{
     Error, Im2pSimulator, MemoryProvider, StripedMatmul, ACTIVATION_BASE, OUTPUT_BASE, SCALE_BASE,
@@ -63,7 +66,8 @@ impl Im2pSimulator {
                 output_base: OUTPUT_BASE,
                 activation_row_stride: activation_elements_to_address_bytes(descriptor.reduction)
                     .map_err(|_| Error::InvalidActivationStride)?,
-                weight_row_stride: super::super::descriptor::u64_field(layout.weight_row_stride)?,
+                weight_row_stride: weight_elements_to_address_bytes(layout.weight_row_stride)
+                    .map_err(|_| Error::InvalidWeightStride)?,
                 scale_row_stride: super::super::descriptor::u64_field(if provider.is_some() {
                     descriptor.columns
                 } else {
@@ -162,6 +166,13 @@ fn validate_descriptor(
             expected,
             actual: descriptor.weights.len(),
         });
+    }
+    if !provider {
+        for row in 0..descriptor.reduction {
+            let start = row * layout.weight_row_stride;
+            crate::validate_weight_values(&descriptor.weights[start..start + descriptor.columns])
+                .map_err(|_| Error::InvalidLayout)?;
+        }
     }
     if !provider
         && descriptor.vector_op != super::super::VectorOp::Bypass

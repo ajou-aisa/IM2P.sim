@@ -24,6 +24,15 @@ fn main() {
         matches!(activation_bits.as_str(), "4" | "8" | "16"),
         "IM2P_ACTIVATION_BITS must be one of 4, 8, or 16"
     );
+    let weight_bits = env::var("IM2P_WEIGHT_BITS").unwrap_or_else(|_| "8".to_string());
+    assert!(
+        matches!(weight_bits.as_str(), "4" | "8" | "16"),
+        "IM2P_WEIGHT_BITS must be one of 4, 8, or 16"
+    );
+    assert!(
+        weight_bits == "8" || weight_bits == activation_bits,
+        "W4 and W16 require matched activation and weight widths"
+    );
     let dim = env::var("IM2P_DIM").unwrap_or_else(|_| "16".to_string());
     assert!(
         matches!(dim.as_str(), "16" | "32" | "64"),
@@ -37,7 +46,7 @@ fn main() {
                 .map(Path::to_path_buf)
         })
         .expect("repository root must be discoverable");
-    let artifact_id = format!("a{activation_bits}-w8-d{dim}");
+    let artifact_id = format!("a{activation_bits}-w{weight_bits}-d{dim}");
     let obj_dir = root
         .join("build/verilator")
         .join(artifact_id)
@@ -45,16 +54,20 @@ fn main() {
     let verilator = verilator_root();
 
     println!("cargo:rerun-if-env-changed=IM2P_ACTIVATION_BITS");
+    println!("cargo:rerun-if-env-changed=IM2P_WEIGHT_BITS");
     println!("cargo:rerun-if-env-changed=IM2P_DIM");
     println!("cargo:rerun-if-env-changed=IM2P_REPO_ROOT");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.cpp");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.h");
     println!("cargo:rerun-if-changed=ffi/testing/im2p_verilator_testing.h");
+    let top = if weight_bits == "8" {
+        format!("VmkSynthInt{activation_bits}x{dim}")
+    } else {
+        format!("VmkSynthA{activation_bits}W{weight_bits}D{dim}")
+    };
     println!(
         "cargo:rerun-if-changed={}",
-        obj_dir
-            .join(format!("VmkSynthInt{activation_bits}x{dim}.h"))
-            .display()
+        obj_dir.join(format!("{top}.h")).display()
     );
 
     let mut build = cc::Build::new();
@@ -64,6 +77,7 @@ fn main() {
         .include(&obj_dir)
         .include(verilator.join("include"))
         .define("IM2P_ACTIVATION_BITS", Some(activation_bits.as_str()))
+        .define("IM2P_WEIGHT_BITS", Some(weight_bits.as_str()))
         .define("IM2P_DIM", Some(dim.as_str()))
         .warnings(false)
         .cpp_link_stdlib("c++")

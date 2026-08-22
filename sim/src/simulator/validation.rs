@@ -157,7 +157,7 @@ mod activation_boundary_tests {
             return;
         }
         let activations: [ActivationValue; 2] = [-9, 8];
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let request = TileRequest {
             activations: &activations,
             weights: &weights,
@@ -176,7 +176,7 @@ mod activation_boundary_tests {
     #[test]
     fn production_activation_boundary_validate_tile_accepts_selected_extrema() {
         let activations = selected_extrema();
-        let weights = [1_i8, 1];
+        let weights = [crate::WeightValue::default(); 2];
         let request = TileRequest {
             activations: &activations,
             weights: &weights,

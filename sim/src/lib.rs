@@ -6,6 +6,7 @@ mod matrix;
 mod simulator;
 mod stats;
 mod stripe;
+mod weight;
 
 pub use activation::{
     activation_bytes_to_elements, activation_elements_to_bytes, activation_to_i32, activation_view,
@@ -18,3 +19,8 @@ pub use simulator::{
 };
 pub use stats::{ScaleFetchStats, TileStats, WorkStats};
 pub use stripe::{ActivationStripe, StripeCompletion, StripeLayout, StripeWorkDesc};
+pub use weight::{
+    parse_weight, validate_weight_values, weight_bytes_to_elements, weight_elements_to_bytes,
+    weight_to_i32, weight_view, WeightError, WeightMatrixView, WeightValue, WEIGHT_BITS,
+    WEIGHT_STORAGE_BYTES,
+};

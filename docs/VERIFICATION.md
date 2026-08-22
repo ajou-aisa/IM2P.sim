@@ -52,9 +52,9 @@ make check
 - commit-before-issue 불변조건
 - C++20 reference self-test
 - frontend mode가 `FULL`/`PIPELINE` 두 개뿐인지 검사
-- signed-64 Accumulator/provider transport와 ABI v3 callback 검사
-- raw/ABI v2 final signed-32 saturation 경계 검사
-- A8/Q8 production 지원 및 Q4/Q16/H2/HP2/mixed precision TODO 문서 계약 검사
+- signed-64 Accumulator/provider transport와 canonical callback 검사
+- raw output final signed-32 saturation 경계 검사
+- non-RMD matched A4/Q4·A16/Q16 FULL/PIPELINE, production A8/Q8 ExSIA 및 RMD TODO 계약 검사
 
 ## 3. 전체 BSC/RTL 검증
 
@@ -135,14 +135,17 @@ Cargo auto-discovered integration tests:
 
 ## ExSIA frontend lifecycle 및 sanitizer
 
-Production ExSIA는 A8/Q8만 지원하며 public frontend state는 다음 두 개다.
+Production ExSIA는 A8/Q8을 지원하며 public frontend state는 다음 두 개다.
 
 | mode | 검증할 lifecycle |
 |---|---|
-| `FULL` | post-fold event 수집, quantization 성공 뒤 NPU 시작, fence -> 8-bit RMD -> caller output publish |
-| `PIPELINE` | NPU 선시작, 각 folding commit 직후 post-fold immediate publication, producer/worker overlap, fence -> 8-bit RMD -> caller output publish |
+| `FULL` | post-fold event 수집, quantization 성공 뒤 NPU 시작, fence -> 8-bit cpu-direct RMD -> caller output publish |
+| `PIPELINE` | NPU 선시작, 각 folding commit 직후 post-fold immediate publication, producer/worker overlap, fence -> 8-bit cpu-direct RMD -> caller output publish |
 
-`PIPELINE`은 quantization 전체가 끝난 뒤 stripe를 batch publish하지 않는다. A4/Q4, A16/Q16, Q8 H2/HP2와 mixed precision은 TODO이며 worker 시작, deferred queue, fallback 없이 거부한다.
+`PIPELINE`은 quantization 전체가 끝난 뒤 stripe를 batch publish하지 않는다.
+Non-RMD A4/Q4와 A16/Q16도 canonical typed stripe provider로 같은 native stream
+lifecycle을 사용한다. Matched ExSIA RMD scale integration, Q8 H2/HP2와
+mixed precision은 worker 시작, deferred queue, fallback 없이 거부한다.
 
 Frontend lifecycle은 다음 target으로 검증한다.
 
@@ -156,21 +159,27 @@ ASan+UBSan target은 ownership, producer/worker, 실패 및 teardown lifecycle�
 
 ## Signed output width 및 ABI 경계
 
-Production integer RTL의 partial, Accumulator, bridge output request와 Rust provider service는 signed 64-bit다. ABI v3 provider callback은 signed-64 lane을 그대로 받는다. Raw output과 frozen ABI v2 provider callback은 signed 32-bit이며 최종 write/callback 경계에서만 saturation한다. Stripe completion이나 quantization/RMD staging 전에는 narrowing하지 않는다.
+Production integer RTL의 partial, Accumulator, bridge output request와 Rust provider service는 signed 64-bit다. 단일 canonical ABI의 provider callback은 signed-64 lane을 그대로 받는다. Raw output은 signed 32-bit이며 최종 write 경계에서만 saturation한다. Stripe completion이나 quantization/RMD staging 전에는 narrowing하지 않는다.
 
-Frontend artifact는 DIM16/DIM32에서 activation block size 32, DIM64에서 64로
-고정한다. Llama configure도 같은 mapping을 요구하므로 동일 artifact identity가
-서로 다른 block-size ABI를 가리키지 않는다.
+W8 frontend artifact는 DIM16/DIM32에서 block size 32, DIM64에서 64를
+사용한다. Matched W4/W16 artifact는 GGUF block layout 때문에 모든 DIM에서
+32를 사용한다. Llama configure도 `a<activation>-w<weight>-d<dim>` identity와
+같은 mapping을 요구한다.
 
 관련 검증은 다음과 같다.
 
 ```bash
 make c-api-layout-test
 make c-api-test IM2P_ACTIVATION_BITS=8 IM2P_DIM=16
+make gemmini-frontend-real-test IM2P_ACTIVATION_BITS=4 IM2P_WEIGHT_BITS=4 IM2P_DIM=16
+make gemmini-frontend-real-test IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=16 IM2P_DIM=16
 cargo test --manifest-path sim/Cargo.toml
 make bsv-test-one TOP=mkTbIM2PCoreOutputAddressing
 ```
 
-`c-api-layout-test`는 ABI v2 layout freeze와 ABI v3 signed-64 callback type을 확인한다. Rust/RTL test는 양쪽 signed-32 범위를 넘는 누산이 provider까지 보존되고 raw/V2 최종 경계에서만 saturation하는지 확인한다.
+`c-api-layout-test`는 단일 canonical ABI의 FULL/PIPELINE activation/weight
+identity 및 typed i8/i16 callback을 확인한다. Rust/RTL test는 signed-32
+범위를 넘는 누산이 provider까지 보존되고 raw output 최종 경계에서만
+saturation하는지 확인한다.
 
 Architecture의 기준은 [architecture 문서](ARCHITECTURE.md)에 있으며, 코드 분석 순서는 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md)를 따른다.

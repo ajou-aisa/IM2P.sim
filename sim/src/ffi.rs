@@ -163,7 +163,7 @@ unsafe extern "C" {
     pub fn im2p_execution_done(handle: *mut c_void) -> i32;
     pub fn im2p_idle(handle: *mut c_void) -> i32;
     pub fn im2p_begin_weight_load(handle: *mut c_void) -> i32;
-    pub fn im2p_load_weight_row(handle: *mut c_void, row: u32, values: *const i8) -> i32;
+    pub fn im2p_load_weight_row(handle: *mut c_void, row: u32, values: *const c_void) -> i32;
     pub fn im2p_configure_scaling(
         handle: *mut c_void,
         block_size: u32,
@@ -217,7 +217,7 @@ unsafe extern "C" {
     pub fn im2p_stage_weight_read_response(
         handle: *mut c_void,
         tag: u64,
-        values: *const i8,
+        values: *const c_void,
         count: u32,
     ) -> i32;
     pub fn im2p_stage_scale_read_response(

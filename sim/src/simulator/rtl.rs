@@ -1,4 +1,4 @@
-use crate::{ffi, ActivationValue};
+use crate::{ffi, ActivationValue, WeightValue};
 
 use super::{Error, Im2pSimulator, KBlockScaleMatrixView, VectorOp};
 
@@ -50,12 +50,17 @@ impl Im2pSimulator {
         })
     }
 
-    pub(super) fn load_weight_row(&mut self, row: usize, values: &[i8]) -> Result<(), Error> {
-        self.require_i8_row("weights", values)?;
+    pub(super) fn load_weight_row(
+        &mut self,
+        row: usize,
+        values: &[WeightValue],
+    ) -> Result<(), Error> {
+        self.require_weight_row("weights", values)?;
+        crate::validate_weight_values(values).map_err(|_| Error::InvalidLayout)?;
         let row = u32::try_from(row).map_err(|_| Error::InvalidKRange)?;
-        // SAFETY: values contains exactly DIM readable i8 elements for this call.
+        // SAFETY: values contains exactly DIM readable selected-width weight elements.
         let ready =
-            unsafe { ffi::im2p_load_weight_row(self.handle.as_ptr(), row, values.as_ptr()) };
+            unsafe { ffi::im2p_load_weight_row(self.handle.as_ptr(), row, values.as_ptr().cast()) };
         self.require_ready("load_weight_row", ready)
     }
 
