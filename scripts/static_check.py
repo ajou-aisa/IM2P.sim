@@ -213,6 +213,19 @@ PACKAGE_RE = re.compile(r"\bpackage\s+(\w+)\s*;")
 IMPORT_RE = re.compile(r"\bimport\s+(\w+)::\*\s*;")
 MODULE_RE = re.compile(r"\bmodule\b.*?\bendmodule\b", re.DOTALL)
 VEC_CALL_RE = re.compile(r"\bvec\s*\(")
+CPP_NON_CODE_RE = re.compile(
+    r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+    re.DOTALL,
+)
+EXSIA_LIFECYCLE_RE = re.compile(
+    r"if \(full_requested\).*?install_sink\(\).*?"
+    r"(?<![.\w:>])quantize_activation\(\).*?"
+    r"full\.execution->finish\(quantize_ok\).*?"
+    r"if \(!pipeline_requested\).*?start_exsia_stripe_pipeline\(args\).*?"
+    r"install_sink\(\).*?(?<![.\w:>])quantize_activation\(\).*?"
+    r"started\.pipeline->finish\(quantize_ok\)",
+    re.DOTALL,
+)
 
 
 def relative_files(directory: Path) -> set[str]:
@@ -344,6 +357,15 @@ def require_regex(path: Path, pattern: str, concept: str) -> None:
     text = path.read_text(encoding="utf-8")
     if re.search(pattern, text, flags=re.DOTALL) is None:
         fail(f"{display_path(path)} missing required contract: {concept}")
+
+
+def require_exsia_lifecycle_contract(path: Path) -> None:
+    code = CPP_NON_CODE_RE.sub("", path.read_text(encoding="utf-8"))
+    if EXSIA_LIFECYCLE_RE.search(code) is None:
+        fail(
+            f"{display_path(path)} missing required contract: "
+            "ExSIA FULL/PIPELINE lifecycle without a third production mode"
+        )
 
 
 def check_integer_width_contracts() -> None:
@@ -627,15 +649,7 @@ def check_exsia_integration_contracts() -> None:
         orchestration,
         ("pipeline_requested", "run_stripe_pipeline(args)"),
     )
-    require_regex(
-        orchestration,
-        r"if \(full_requested\).*?install_sink\(\).*?quantize_activation\(\)"
-        r".*?full\.execution->finish\(quantize_ok\).*?"
-        r"if \(!pipeline_requested\).*?start_exsia_stripe_pipeline\(args\).*?"
-        r"install_sink\(\).*?quantize_activation\(\).*?"
-        r"started\.pipeline->finish\(quantize_ok\)",
-        "ExSIA FULL/PIPELINE lifecycle without a third production mode",
-    )
+    require_exsia_lifecycle_contract(orchestration)
     notify_after_fold = re.compile(
         r"mark_folding_committed\(.*?\).*?notify_stripe_ready\(",
         flags=re.DOTALL,
