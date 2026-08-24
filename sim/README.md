@@ -168,7 +168,9 @@ C에서 `tile_i_rows` 또는 `tile_j_columns`가 0이면 simulator dimension을 
 
 striped W/C에도 같은 contract를 적용하며, publish한 각 stripe의 A stride는 K 이상이어야 한다. simulator의 소유권을 owner에서 가져온 뒤 하위 계층이 begin을 거부하면 recovery 경로가 오류와 simulator를 모두 반환한다. 오류 상태를 반환하기 전에 C owner를 복원하므로, 같은 handle은 이후 begin, execution, finish, destruction에도 유효하다.
 
-stream에서는 W/S/C 포인터와 각 stride가 `im2p_finish_stream` 또는 `im2p_destroy_stream`을 호출할 때까지 유효해야 한다. 성공한 `im2p_publish_stripe`는 다음 논리 사이클부터 RTL read를 허용한다. 따라서 A 포인터와 activation stride는 `im2p_poll_completed`가 일치하는 completion을 반환할 때까지 유효해야 한다.
+stream에서는 W/S/C 포인터와 각 stride가 `im2p_finish_stream` 또는 `im2p_destroy_stream`을 호출할 때까지 유효해야 한다. 성공한 `im2p_publish_stripe`는 다음 논리 사이클부터 RTL read를 허용한다. 따라서 A 포인터와 activation stride는 `im2p_poll_completed` 또는 `im2p_poll_completed_extended`가 일치하는 completion을 반환할 때까지 유효해야 한다.
+
+ABI v4의 `im2p_stripe_completion_t` layout과 `im2p_poll_completed` 동작은 그대로 고정된다. `im2p_stripe_completion_extended_t`는 offset 0에 이 legacy 값을 `base`로 두고 같은 ordered completion에 raw `publish_cycle`, `completion_cycle`, `publish_to_completion_cycles`를 추가한다. 두 poll 함수는 하나의 canonical queue pop을 공유하는 대체 view이므로 성공한 호출 하나가 completion 하나를 소비하며, 같은 record를 두 API로 중복 반환하지 않는다. Duration은 host에서 `completion_cycle - publish_cycle`의 unsigned 64-bit wrapping subtraction으로 계산한다. Raw endpoint의 0도 유효하며 순서 검사, saturation, `+1`은 적용하지 않는다.
 
 브리지는 descriptor를 복사하지만 서비스를 위해 차용한 영역을 보관한다. 호출자는 수명이 끝나기 전에 이 영역을 이동하거나 해제하거나 호환되지 않는 방식으로 변경해서는 안 된다. stream은 simulator의 공유 소유권을 유지하므로 원래 `im2p_sim_t` handle을 파괴해도 진행 중인 stream은 무효화되지 않는다.
 

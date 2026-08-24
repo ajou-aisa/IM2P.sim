@@ -162,6 +162,36 @@ pub struct StripeCompletionC {
     pub context: u64,
 }
 
+impl From<crate::StripeCompletion> for StripeCompletionC {
+    fn from(completion: crate::StripeCompletion) -> Self {
+        Self {
+            stripe_id: completion.stripe_id,
+            i_start: completion.row_begin,
+            rows: completion.row_count,
+            context: completion.stripe_context,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct StripeCompletionExtendedC {
+    pub base: StripeCompletionC,
+    pub publish_cycle: u64,
+    pub completion_cycle: u64,
+    pub publish_to_completion_cycles: u64,
+}
+
+impl From<crate::StripeCompletion> for StripeCompletionExtendedC {
+    fn from(completion: crate::StripeCompletion) -> Self {
+        Self {
+            base: completion.into(),
+            publish_cycle: completion.publish_cycle,
+            completion_cycle: completion.completion_cycle,
+            publish_to_completion_cycles: completion.publish_to_completion_cycles(),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Default)]
 pub struct WorkStatsC {

@@ -294,6 +294,8 @@ impl StripedMatmul<'_> {
             row_begin: completion.row_begin as usize,
             row_count: completion.row_count as usize,
             stripe_context: published.stripe.stripe_context,
+            publish_cycle: completion.publish_cycle,
+            completion_cycle: completion.completion_cycle,
         });
         self.outstanding_stripes -= 1;
         // SAFETY: completion getter established acknowledgement readiness.

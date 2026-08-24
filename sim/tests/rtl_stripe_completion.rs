@@ -2,8 +2,8 @@ pub mod common;
 
 use common::{structured_activations, structured_weights, Shape};
 use im2p_sim::{
-    ActivationStripe, ActivationValue, Im2pSimulator, SimError, StripeWorkDesc, StripedMatmul,
-    VectorOp, WeightValue,
+    ActivationStripe, ActivationValue, Im2pSimulator, SimError, StripeCompletion, StripeWorkDesc,
+    StripedMatmul, VectorOp, WeightValue,
 };
 
 const ROWS_PER_STRIPE: usize = 2;
@@ -52,6 +52,80 @@ fn service(
     Ok(output_row)
 }
 
+fn completion_trace(row_counts: &[usize]) -> Result<Vec<StripeCompletion>, SimError> {
+    let shape = Shape {
+        m: row_counts.iter().sum(),
+        n: 3,
+        k: 4,
+    };
+    let activations = structured_activations(shape);
+    let weights = structured_weights(shape);
+    let mut job = Im2pSimulator::new()?.begin_striped_matmul(&descriptor(shape, &weights))?;
+    let stripe_ends = row_counts
+        .iter()
+        .scan(0, |end, &count| {
+            *end += count;
+            Some(*end)
+        })
+        .collect::<Vec<_>>();
+    let mut accepted_publish_cycles = Vec::with_capacity(row_counts.len());
+    let mut final_response_cycles = vec![None; row_counts.len()];
+    let mut completed = Vec::with_capacity(row_counts.len());
+    let mut next_publish = 0;
+
+    for _ in 0..MAX_STEPS {
+        while next_publish < row_counts.len() && job.npu_ready() {
+            let row_begin = stripe_ends[next_publish] - row_counts[next_publish];
+            let publish_cycle = job.cycles();
+            job.publish_stripe(ActivationStripe {
+                stripe_id: next_publish as u32,
+                row_begin,
+                row_count: row_counts[next_publish],
+                stripe_context: 700 + next_publish as u64,
+            })?;
+            accepted_publish_cycles.push(publish_cycle);
+            next_publish += 1;
+        }
+        if let Some(row) = job.pending_activation_row() {
+            let start = row * shape.k;
+            job.supply_activation_row(row, &activations[start..][..shape.k])?;
+        }
+        if let Some(row) = job.pending_output_row() {
+            let _ = job.take_output_row(row)?;
+            if let Some(stripe_index) = stripe_ends.iter().position(|&end| end == row + 1) {
+                final_response_cycles[stripe_index] = Some(job.cycles());
+            }
+            job.acknowledge_output_row(row)?;
+        }
+        job.progress(1)?;
+        while let Some(event) = job.poll_completed() {
+            let index = completed.len();
+            assert_eq!(event.stripe_id, index as u32);
+            assert_eq!(event.row_begin, stripe_ends[index] - row_counts[index]);
+            assert_eq!(event.row_count, row_counts[index]);
+            assert_eq!(event.stripe_context, 700 + index as u64);
+            assert_eq!(event.publish_cycle, accepted_publish_cycles[index]);
+            assert_eq!(
+                event.completion_cycle,
+                final_response_cycles[index].unwrap()
+            );
+            assert_eq!(
+                event.publish_to_completion_cycles(),
+                event.completion_cycle.wrapping_sub(event.publish_cycle)
+            );
+            completed.push(event);
+        }
+        if completed.len() == row_counts.len() {
+            break;
+        }
+    }
+
+    assert_eq!(next_publish, row_counts.len());
+    assert_eq!(completed.len(), row_counts.len());
+    job.finish()?;
+    Ok(completed)
+}
+
 #[test]
 fn completion_waits_for_final_output_acknowledgement() -> Result<(), SimError> {
     let shape = Shape { m: 8, n: 3, k: 4 };
@@ -81,6 +155,61 @@ fn completion_waits_for_final_output_acknowledgement() -> Result<(), SimError> {
         }
     }
     panic!("completion not observed after final C acknowledgement");
+}
+
+#[test]
+fn raw_endpoints_match_accepted_edges_for_tail_final_and_single_stripes() -> Result<(), SimError> {
+    // Given a four-stripe stream with a one-row final tail and a single-stripe stream.
+    let first = completion_trace(&[2, 2, 2, 1])?;
+    let repeated = completion_trace(&[2, 2, 2, 1])?;
+    let single = completion_trace(&[1])?;
+
+    // When every accepted publication and final output response is observed twice.
+    assert_eq!(first, repeated);
+
+    // Then the raw endpoints are deterministic, ordered, and use wrapping no-+1 algebra.
+    assert_eq!(first.len(), 4);
+    assert_eq!(first[3].row_count, 1);
+    assert_eq!(single.len(), 1);
+    for event in first.iter().chain(&single) {
+        println!(
+            "STRIPE_COMPLETION stripe_id={} row_begin={} row_count={} context={} publish_cycle={} completion_cycle={} publish_to_completion_cycles={} algebra=completion-publish(mod2^64)",
+            event.stripe_id,
+            event.row_begin,
+            event.row_count,
+            event.stripe_context,
+            event.publish_cycle,
+            event.completion_cycle,
+            event.publish_to_completion_cycles()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn publish_to_completion_cycles_preserves_zero_and_wrap() {
+    // Given zero endpoints and an interval crossing UINT64_MAX.
+    let zero = StripeCompletion {
+        stripe_id: 0,
+        row_begin: 0,
+        row_count: 1,
+        stripe_context: 9,
+        publish_cycle: 0,
+        completion_cycle: 0,
+    };
+    let wrapped = StripeCompletion {
+        publish_cycle: u64::MAX - 2,
+        completion_cycle: 3,
+        ..zero
+    };
+
+    // When duration is computed outside RTL.
+    let zero_duration = zero.publish_to_completion_cycles();
+    let wrapped_duration = wrapped.publish_to_completion_cycles();
+
+    // Then zero remains valid and wrapping subtraction yields six without saturation or +1.
+    assert_eq!(zero_duration, 0);
+    assert_eq!(wrapped_duration, 6);
 }
 
 #[test]

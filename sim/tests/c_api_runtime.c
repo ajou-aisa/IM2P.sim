@@ -1,6 +1,8 @@
 #include "im2p_sim.h"
 
+#include <inttypes.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifndef IM2P_TEST_ACTIVATION_BITS
@@ -156,6 +158,38 @@ static int finish_striped(im2p_stream_t *stream) {
          stats.base.stripes_published == 1;
 }
 
+static int finish_striped_extended(im2p_stream_t *stream) {
+  im2p_stripe_completion_extended_t completion = {0};
+  int completed = 0;
+  for (size_t cycle = 0; cycle < 10000 && !completed; ++cycle) {
+    if (im2p_progress_stream(stream, 1) != IM2P_OK) return 0;
+    const int status = im2p_poll_completed_extended(stream, &completion);
+    if (status < 0) return 0;
+    completed = status == 1;
+  }
+  im2p_work_stats_extended_t stats = {0};
+  const int valid =
+      completed && completion.base.stripe_id == 0 &&
+      completion.base.i_start == 0 && completion.base.rows == 1 &&
+      completion.base.context == 17 &&
+      completion.publish_to_completion_cycles ==
+          completion.completion_cycle - completion.publish_cycle &&
+      im2p_finish_stream_extended(stream, &stats) == IM2P_OK &&
+      stats.base.completed_stripes == 1;
+  if (valid) {
+    printf("C_API_EXTENDED stripe_id=%" PRIu32
+           " i_start=%zu rows=%zu context=%" PRIu64
+           " publish_cycle=%" PRIu64 " completion_cycle=%" PRIu64
+           " publish_to_completion_cycles=%" PRIu64
+           " algebra=completion-publish(mod2^64)\n",
+           completion.base.stripe_id, completion.base.i_start,
+           completion.base.rows, completion.base.context,
+           completion.publish_cycle, completion.completion_cycle,
+           completion.publish_to_completion_cycles);
+  }
+  return valid;
+}
+
 static int finish_progress_striped(im2p_stream_t *stream) {
   im2p_stripe_completion_t completion = {0};
   uint64_t progress_count = im2p_stream_progress_count(stream);
@@ -276,6 +310,7 @@ static int test_error_and_ownership_contracts(im2p_sim_t *sim) {
       im2p_publish_stripe(NULL, NULL) != IM2P_INVALID_LAYOUT ||
       im2p_progress_stream(NULL, 1) != IM2P_ERROR ||
       im2p_poll_completed(NULL, NULL) != IM2P_ERROR ||
+      im2p_poll_completed_extended(NULL, NULL) != IM2P_ERROR ||
       im2p_finish_stream(NULL, NULL) != IM2P_ERROR) return 23;
 
   im2p_stripe_work_desc_t unfinished = striped_descriptor();
@@ -450,7 +485,8 @@ int main(void) {
   stream = NULL;
   if (im2p_begin_striped_matmul(sim, &provider_striped, &stream) != IM2P_OK ||
       stream == NULL || im2p_publish_stripe(stream, &stripe) != IM2P_OK ||
-      !finish_striped(stream) || callback_count == 0 || callback_output != 6) {
+      !finish_striped_extended(stream) || callback_count == 0 ||
+      callback_output != 6) {
     im2p_destroy_stream(stream);
     return 8;
   }

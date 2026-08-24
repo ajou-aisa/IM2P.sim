@@ -14,6 +14,14 @@ pub struct StripeCompletion {
     pub row_begin: usize,
     pub row_count: usize,
     pub stripe_context: u64,
+    pub publish_cycle: u64,
+    pub completion_cycle: u64,
+}
+
+impl StripeCompletion {
+    pub const fn publish_to_completion_cycles(&self) -> u64 {
+        self.completion_cycle.wrapping_sub(self.publish_cycle)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,8 +11,8 @@ use super::{
         scale_view, service_stream, status_for_error, vector_op, write_extended_stats, write_stats,
     },
     types::{
-        ActivationStripeC, PublishedStripe, StreamBox, StripeCompletionC, StripeWorkDesc,
-        StripeWorkDescC, WorkStatsC, WorkStatsExtendedC,
+        ActivationStripeC, PublishedStripe, StreamBox, StripeCompletionC,
+        StripeCompletionExtendedC, StripeWorkDesc, StripeWorkDescC, WorkStatsC, WorkStatsExtendedC,
     },
     SimBox,
 };
@@ -472,29 +472,41 @@ pub unsafe extern "C" fn im2p_stream_progress_count(stream: *const StreamBox) ->
         .map_or(0, |job| job.progress_count())
 }
 
+fn pop_completed(stream: &mut StreamBox) -> Option<crate::StripeCompletion> {
+    let done = stream.job.as_mut()?.poll_completed()?;
+    stream
+        .stripes
+        .retain(|stripe| stripe.row_begin != done.row_begin || stripe.row_count != done.row_count);
+    Some(done)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn im2p_poll_completed(
     stream: *mut StreamBox,
     completion: *mut StripeCompletionC,
 ) -> i32 {
-    let Some(stream) = stream.as_mut() else {
+    let (Some(stream), Some(output)) = (stream.as_mut(), completion.as_mut()) else {
         return -1;
     };
-    let Some(output) = completion.as_mut() else {
-        return -1;
-    };
-    let Some(done) = stream.job.as_mut().and_then(|job| job.poll_completed()) else {
+    let Some(done) = pop_completed(stream) else {
         return 0;
     };
-    stream
-        .stripes
-        .retain(|stripe| stripe.row_begin != done.row_begin || stripe.row_count != done.row_count);
-    *output = StripeCompletionC {
-        stripe_id: done.stripe_id,
-        i_start: done.row_begin,
-        rows: done.row_count,
-        context: done.stripe_context,
+    *output = done.into();
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_poll_completed_extended(
+    stream: *mut StreamBox,
+    completion: *mut StripeCompletionExtendedC,
+) -> i32 {
+    let (Some(stream), Some(output)) = (stream.as_mut(), completion.as_mut()) else {
+        return -1;
     };
+    let Some(done) = pop_completed(stream) else {
+        return 0;
+    };
+    *output = done.into();
     1
 }
 

@@ -1155,13 +1155,17 @@ extern "C" int im2p_stripe_completion(
         || !top->RDY_stripeCompletionId
         || !top->RDY_stripeCompletionRowBegin
         || !top->RDY_stripeCompletionRowCount
-        || !top->RDY_stripeCompletionContext) {
+        || !top->RDY_stripeCompletionContext
+        || !top->RDY_stripeCompletionPublishCycle
+        || !top->RDY_stripeCompletionCompletionCycle) {
         return IM2P_REQUEST_ABSENT;
     }
     completion->stripe_id = top->stripeCompletionId;
     completion->row_begin = top->stripeCompletionRowBegin;
     completion->row_count = top->stripeCompletionRowCount;
     completion->stripe_context = top->stripeCompletionContext;
+    completion->publish_cycle = top->stripeCompletionPublishCycle;
+    completion->completion_cycle = top->stripeCompletionCompletionCycle;
     return IM2P_REQUEST_PRESENT;
 }
 

@@ -32,6 +32,39 @@ _Static_assert(sizeof(im2p_stripe_work_desc_t) == 216,
                "stripe descriptor size changed");
 _Static_assert(sizeof(im2p_activation_stripe_t) == 72,
                "activation stripe layout changed");
+_Static_assert(sizeof(im2p_stripe_completion_t) == 32,
+               "legacy completion size changed");
+_Static_assert(offsetof(im2p_stripe_completion_t, stripe_id) == 0,
+               "legacy completion stripe offset changed");
+_Static_assert(offsetof(im2p_stripe_completion_t, i_start) == 8,
+               "legacy completion row offset changed");
+_Static_assert(offsetof(im2p_stripe_completion_t, rows) == 16,
+               "legacy completion count offset changed");
+_Static_assert(offsetof(im2p_stripe_completion_t, context) == 24,
+               "legacy completion context offset changed");
+_Static_assert(offsetof(im2p_stripe_completion_extended_t, base) == 0,
+               "extended completion base must start at offset zero");
+_Static_assert(offsetof(im2p_stripe_completion_extended_t, publish_cycle) == 32,
+               "extended completion publish offset changed");
+_Static_assert(offsetof(im2p_stripe_completion_extended_t, completion_cycle) == 40,
+               "extended completion endpoint offset changed");
+_Static_assert(
+    offsetof(im2p_stripe_completion_extended_t,
+             publish_to_completion_cycles) == 48,
+    "extended completion duration offset changed");
+_Static_assert(sizeof(im2p_stripe_completion_extended_t) == 56,
+               "extended completion size changed");
+
+typedef int (*poll_completed_fn)(im2p_stream_t *,
+                                 im2p_stripe_completion_t *);
+typedef int (*poll_completed_extended_fn)(
+    im2p_stream_t *, im2p_stripe_completion_extended_t *);
+_Static_assert(
+    _Generic(&im2p_poll_completed, poll_completed_fn: 1, default: 0),
+    "legacy poll signature changed");
+_Static_assert(_Generic(&im2p_poll_completed_extended,
+                        poll_completed_extended_fn: 1, default: 0),
+               "extended poll signature changed");
 
 static int typed_i8(void *context, size_t row, size_t column, size_t count,
                     int8_t *out) {

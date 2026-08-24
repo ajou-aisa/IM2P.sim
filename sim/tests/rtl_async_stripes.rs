@@ -89,22 +89,71 @@ fn tick(job: &mut im2p_sim::StripedMatmul, mem: &mut HostMemory) -> Result<(), S
 }
 #[test]
 fn stripe_queue_applies_finite_backpressure() -> Result<(), SimError> {
+    // Given a stream that can publish more stripes than the RTL queue holds.
     let sh = Shape { m: 10, n: 3, k: 4 };
     let weights = structured_weights(sh);
+    let mut mem = HostMemory::new(sh, structured_activations(sh));
     let mut job = Im2pSimulator::new()?.begin_striped_matmul(&work_desc(sh, &weights))?;
-    let mut n = 0;
-    for i in 0..BACKPRESSURE_STRIPE_COUNT {
-        if job.publish_stripe(stripe(i)).is_ok() {
-            n += 1;
-        } else {
+    let mut accepted_publish_cycles = Vec::with_capacity(BACKPRESSURE_STRIPE_COUNT);
+    let mut next = 0;
+    while next < BACKPRESSURE_STRIPE_COUNT {
+        let publish_cycle = job.cycles();
+        if job.publish_stripe(stripe(next)).is_err() {
+            break;
+        }
+        accepted_publish_cycles.push(publish_cycle);
+        next += 1;
+    }
+    assert!(next >= 1 && next < BACKPRESSURE_STRIPE_COUNT);
+
+    // When the saturated publication is rejected and the same stripe is retried later.
+    let rejected_stripe = next;
+    let rejected_cycle = job.cycles();
+    assert_eq!(
+        job.publish_stripe(stripe(rejected_stripe)),
+        Err(SimError::StripeQueueFull)
+    );
+    let mut retry_cycle = None;
+    let mut completed = Vec::with_capacity(BACKPRESSURE_STRIPE_COUNT);
+    for _ in 0..MAX_ITERATIONS {
+        while next < BACKPRESSURE_STRIPE_COUNT && job.npu_ready() {
+            let publish_cycle = job.cycles();
+            job.publish_stripe(stripe(next))?;
+            if next == rejected_stripe {
+                retry_cycle = Some(publish_cycle);
+            }
+            accepted_publish_cycles.push(publish_cycle);
+            next += 1;
+        }
+        tick(&mut job, &mut mem)?;
+        while let Some(event) = job.poll_completed() {
+            completed.push(event);
+        }
+        if completed.len() == BACKPRESSURE_STRIPE_COUNT {
             break;
         }
     }
-    assert!(n >= 1 && n < BACKPRESSURE_STRIPE_COUNT);
+    let retry_cycle = retry_cycle.expect("backpressured stripe must be accepted later");
+
+    // Then only accepted publications have one completion and the retry owns its later cycle.
+    assert!(retry_cycle > rejected_cycle);
+    assert_eq!(completed.len(), BACKPRESSURE_STRIPE_COUNT);
     assert_eq!(
-        job.publish_stripe(stripe(n)),
-        Err(SimError::StripeQueueFull)
+        completed
+            .iter()
+            .map(|event| event.stripe_id)
+            .collect::<Vec<_>>(),
+        (0..BACKPRESSURE_STRIPE_COUNT as u32).collect::<Vec<_>>()
     );
+    assert_eq!(
+        completed
+            .iter()
+            .map(|event| event.publish_cycle)
+            .collect::<Vec<_>>(),
+        accepted_publish_cycles
+    );
+    assert_eq!(completed[rejected_stripe].publish_cycle, retry_cycle);
+    job.finish()?;
     Ok(())
 }
 

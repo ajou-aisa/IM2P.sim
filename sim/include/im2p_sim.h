@@ -155,6 +155,17 @@ typedef struct {
     uint64_t context;
 } im2p_stripe_completion_t;
 
+/*
+ * Additive ABI-v4 completion view. `base` is the frozen legacy layout.
+ * Raw endpoints use the work-relative RTL cycle timebase; zero is valid.
+ */
+typedef struct {
+    im2p_stripe_completion_t base;
+    uint64_t publish_cycle;
+    uint64_t completion_cycle;
+    uint64_t publish_to_completion_cycles;
+} im2p_stripe_completion_extended_t;
+
 typedef struct {
     uint64_t work_total_cycles;
     uint64_t activation_read_requests;
@@ -246,6 +257,10 @@ uint64_t im2p_stream_progress_count(const im2p_stream_t *stream);
 int im2p_poll_completed(
     im2p_stream_t *stream,
     im2p_stripe_completion_t *completion
+);
+int im2p_poll_completed_extended(
+    im2p_stream_t *stream,
+    im2p_stripe_completion_extended_t *completion
 );
 int im2p_finish_stream(im2p_stream_t *stream, im2p_work_stats_t *stats);
 int im2p_finish_stream_extended(

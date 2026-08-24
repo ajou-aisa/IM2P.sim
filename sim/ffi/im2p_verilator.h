@@ -64,6 +64,8 @@ typedef struct {
     uint32_t row_begin;
     uint32_t row_count;
     uint64_t stripe_context;
+    uint64_t publish_cycle;
+    uint64_t completion_cycle;
 } im2p_stripe_completion_t;
 
 /*

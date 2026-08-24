@@ -5,7 +5,10 @@ use common::{
     assert_matrix_eq, golden_output, k_fragments, structured_activations, structured_weights,
     KBlockScaleMatrix, Shape,
 };
-use im2p_sim::{ActivationStripe, Im2pSimulator, SimError, StripeLayout, StripeWorkDesc, VectorOp};
+use im2p_sim::{
+    ActivationStripe, Im2pSimulator, SimError, StripeCompletion, StripeLayout, StripeWorkDesc,
+    VectorOp,
+};
 
 fn stripe(id: u32, row: usize) -> ActivationStripe {
     ActivationStripe {
@@ -23,7 +26,15 @@ fn run(
     tile_j_columns: usize,
     scaled: bool,
     exact_second_publish_cycle: Option<u64>,
-) -> Result<(Vec<i32>, im2p_sim::WorkStats, Vec<u32>), SimError> {
+) -> Result<
+    (
+        Vec<i32>,
+        im2p_sim::WorkStats,
+        Vec<u32>,
+        Vec<StripeCompletion>,
+    ),
+    SimError,
+> {
     let shape = Shape {
         m: publish_cycles.len(),
         n: 3,
@@ -82,6 +93,7 @@ fn run(
     let mut next = 0;
     let mut written = 0;
     let mut prepared_ids = Vec::new();
+    let mut completions = Vec::with_capacity(shape.m);
     for cycle in 0..iteration_limit {
         while next < publish_cycles.len() && publish_cycles[next] <= cycle && job.npu_ready() {
             if next == 1 {
@@ -109,12 +121,15 @@ fn run(
             job.acknowledge_output_row(row)?;
         }
         job.progress(1)?;
+        while let Some(completion) = job.poll_completed() {
+            completions.push(completion);
+        }
         if let Some(id) = job.prepared_lookahead_stripe_id() {
             if prepared_ids.last() != Some(&id) {
                 prepared_ids.push(id);
             }
         }
-        if next == shape.m && written == shape.m * shape.n {
+        if next == shape.m && written == shape.m * shape.n && completions.len() == shape.m {
             break;
         }
     }
@@ -125,6 +140,7 @@ fn run(
         "stream did not finish within {iteration_limit} service iterations; pending activation={:?}",
         job.pending_activation_row()
     );
+    assert_eq!(completions.len(), shape.m, "missing stripe completions");
     let stats = job.finish()?;
     let mut packed_output = Vec::with_capacity(shape.m * shape.n);
     for row in 0..shape.m {
@@ -152,13 +168,13 @@ fn run(
         },
     );
     assert_matrix_eq(&packed_output, &golden, shape.m, shape.n);
-    Ok((packed_output, stats, prepared_ids))
+    Ok((packed_output, stats, prepared_ids, completions))
 }
 
 #[test]
 fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Result<(), SimError> {
-    let (_, stats, _) = run(&[0, 13], false, 35, 2, false, Some(40))?;
-    let (_, repeated, _) = run(&[0, 13], false, 35, 2, false, Some(40))?;
+    let (_, stats, _, completions) = run(&[0, 13], false, 35, 2, false, Some(40))?;
+    let (_, repeated, _, repeated_completions) = run(&[0, 13], false, 35, 2, false, Some(40))?;
     assert!(stats.current_stripe_completion_cycle > 100);
     assert_eq!(stats.lookahead_publish_cycle, 40);
     assert!(stats.lookahead_publish_cycle < stats.lookahead_first_activation_cycle);
@@ -175,6 +191,12 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
     assert_eq!(
         stats.lookahead_start_cycle - stats.current_stripe_completion_cycle,
         3
+    );
+    assert_eq!(completions, repeated_completions);
+    assert_eq!(completions[1].publish_cycle, stats.lookahead_publish_cycle);
+    assert_eq!(
+        completions[0].completion_cycle,
+        stats.current_stripe_completion_cycle
     );
     assert_eq!(
         (
@@ -216,9 +238,9 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
 
 #[test]
 fn published_lookahead_has_no_host_wait_and_late_publish_waits() -> Result<(), SimError> {
-    let (padded, stats, _) = run(&[0, 37, 151, 200], true, 35, 2, false, None)?;
-    let (packed, _, _) = run(&[0, 1, 2, 3], false, 35, 2, false, None)?;
-    let (_, late, _) = run(&[0, 800, 801, 802], false, 35, 2, false, None)?;
+    let (padded, stats, _, _) = run(&[0, 37, 151, 200], true, 35, 2, false, None)?;
+    let (packed, _, _, _) = run(&[0, 1, 2, 3], false, 35, 2, false, None)?;
+    let (_, late, _, _) = run(&[0, 800, 801, 802], false, 35, 2, false, None)?;
     assert_eq!(padded, packed);
     assert_eq!(stats.stripe_host_wait_cycles, 0);
     assert!(late.stripe_host_wait_cycles > 0);
@@ -236,7 +258,7 @@ fn published_lookahead_has_no_host_wait_and_late_publish_waits() -> Result<(), S
 
 #[test]
 fn only_one_immediate_stripe_is_prepared_and_weights_are_reused() -> Result<(), SimError> {
-    let (_, stats, prepared_ids) = run(&[0, 20, 21, 22], false, 16, 3, true, None)?;
+    let (_, stats, prepared_ids, _) = run(&[0, 20, 21, 22], false, 16, 3, true, None)?;
     assert_eq!(stats.stripes_published, 4);
     assert!(stats.lookahead_weight_reuse_hits > 0);
     assert!(stats.lookahead_weight_requests < stats.weight_read_requests);
@@ -263,7 +285,7 @@ fn scale_miss_is_requested_before_current_completion() -> Result<(), SimError> {
         .expect("valid test dimension");
     let reduction = (dim + 3).max(35);
     let publish = if dim == 64 { 1500 } else { 300 };
-    let (_, stats, _) = run(&[0, publish], false, reduction, 2, true, None)?;
+    let (_, stats, _, _) = run(&[0, publish], false, reduction, 2, true, None)?;
     println!(
         "scale miss requests={} reuses={} publish={} request={} complete={}",
         stats.lookahead_scale_requests,
@@ -294,8 +316,8 @@ fn partial_preparation_reuses_every_fetched_weight_row() -> Result<(), SimError>
         32 => 535,
         _ => 380,
     };
-    let (_, partial, _) = run(&[0, partial_publish], false, reduction, 2, false, None)?;
-    let (_, complete, _) = run(&[0, 13], false, reduction, 2, false, None)?;
+    let (_, partial, _, _) = run(&[0, partial_publish], false, reduction, 2, false, None)?;
+    let (_, complete, _, _) = run(&[0, 13], false, reduction, 2, false, None)?;
     println!(
         "partial prefetch={} total={} full_total={} first_w={} complete={}",
         partial.lookahead_weight_requests,

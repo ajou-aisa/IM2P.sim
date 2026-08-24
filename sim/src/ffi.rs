@@ -48,6 +48,8 @@ pub struct StripeCompletion {
     pub row_begin: u32,
     pub row_count: u32,
     pub stripe_context: u64,
+    pub publish_cycle: u64,
+    pub completion_cycle: u64,
 }
 
 #[repr(C)]
