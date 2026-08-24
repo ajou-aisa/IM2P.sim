@@ -8,6 +8,7 @@ survived lightweight review.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -223,6 +224,10 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+def display_path(path: Path) -> str:
+    return Path(os.path.relpath(path, ROOT)).as_posix()
+
+
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     return re.sub(r"//.*", "", text)
@@ -262,7 +267,7 @@ def obsolete_exsia_claims(text: str) -> list[str]:
 def package_name(path: Path) -> str:
     match = PACKAGE_RE.search(path.read_text(encoding="utf-8"))
     if not match:
-        fail(f"package declaration missing: {path.relative_to(ROOT)}")
+        fail(f"package declaration missing: {display_path(path)}")
     return match.group(1)
 
 
@@ -276,11 +281,11 @@ def check_balanced_delimiters(path: Path, text: str) -> None:
             stack.append((char, index))
         elif char in pairs.values():
             if not stack or pairs[stack[-1][0]] != char:
-                fail(f"unbalanced delimiter in {path.relative_to(ROOT)}")
+                fail(f"unbalanced delimiter in {display_path(path)}")
             stack.pop()
 
     if stack:
-        fail(f"unbalanced delimiter in {path.relative_to(ROOT)}")
+        fail(f"unbalanced delimiter in {display_path(path)}")
 
     for begin, end in (
         ("package", "endpackage"),
@@ -294,7 +299,7 @@ def check_balanced_delimiters(path: Path, text: str) -> None:
         if begins != ends:
             fail(
                 f"{begin}/{end} count mismatch in "
-                f"{path.relative_to(ROOT)} ({begins}/{ends})"
+                f"{display_path(path)} ({begins}/{ends})"
             )
 
 
@@ -304,7 +309,7 @@ def check_module_local_typedefs(path: Path, text: str) -> None:
         if re.search(r"\btypedef\b", module_block):
             fail(
                 "typedef declared inside module body: "
-                f"{path.relative_to(ROOT)}; move it to package scope"
+                f"{display_path(path)}; move it to package scope"
             )
 
 
@@ -332,13 +337,13 @@ def require_substrings(path: Path, required: tuple[str, ...]) -> None:
     text = path.read_text(encoding="utf-8")
     for token in required:
         if token not in text:
-            fail(f"{path.relative_to(ROOT)} missing required concept: {token}")
+            fail(f"{display_path(path)} missing required concept: {token}")
 
 
 def require_regex(path: Path, pattern: str, concept: str) -> None:
     text = path.read_text(encoding="utf-8")
     if re.search(pattern, text, flags=re.DOTALL) is None:
-        fail(f"{path.relative_to(ROOT)} missing required contract: {concept}")
+        fail(f"{display_path(path)} missing required contract: {concept}")
 
 
 def check_integer_width_contracts() -> None:
@@ -582,7 +587,7 @@ def check_exsia_integration_contracts() -> None:
         returned = [claim for claim in obsolete_claims if claim in text]
         returned.extend(obsolete_exsia_claims(text))
         if returned:
-            fail(f"obsolete A8-only/TODO ExSIA claim in {path.relative_to(ROOT)}: {returned}")
+            fail(f"obsolete A8-only/TODO ExSIA claim in {display_path(path)}: {returned}")
 
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     matrix_match = re.search(r"^REAL_MATRIX_PAIRS\s*:=\s*(.+)$", makefile, re.MULTILINE)
@@ -624,10 +629,10 @@ def check_exsia_integration_contracts() -> None:
     )
     require_regex(
         orchestration,
-        r"if \(full_requested\).*?install_sink\(\).*?quantize_activation\(src1, args\)"
+        r"if \(full_requested\).*?install_sink\(\).*?quantize_activation\(\)"
         r".*?full\.execution->finish\(quantize_ok\).*?"
         r"if \(!pipeline_requested\).*?start_exsia_stripe_pipeline\(args\).*?"
-        r"install_sink\(\).*?quantize_activation\(src1, args\).*?"
+        r"install_sink\(\).*?quantize_activation\(\).*?"
         r"started\.pipeline->finish\(quantize_ok\)",
         "ExSIA FULL/PIPELINE lifecycle without a third production mode",
     )
@@ -645,7 +650,7 @@ def check_exsia_integration_contracts() -> None:
 
 def main() -> None:
     stray_bsc_artifacts = sorted(
-        path.relative_to(ROOT)
+        display_path(path)
         for root in (SRC, TESTS, SYNTH)
         for suffix in ("*.bo", "*.ba")
         for path in root.rglob(suffix)
@@ -712,7 +717,7 @@ def main() -> None:
     for path in all_bsv:
         name = package_name(path)
         if name != path.stem:
-            fail(f"package/file mismatch: {path.relative_to(ROOT)} declares {name}")
+            fail(f"package/file mismatch: {display_path(path)} declares {name}")
         if name in package_to_path:
             fail(f"duplicate package: {name}")
         package_to_path[name] = path
@@ -724,12 +729,12 @@ def main() -> None:
         check_module_local_typedefs(path, text)
 
         if "\t" in text:
-            fail(f"tab character found: {path.relative_to(ROOT)}")
+            fail(f"tab character found: {display_path(path)}")
         if any(line.rstrip() != line for line in text.splitlines()):
-            fail(f"trailing whitespace found: {path.relative_to(ROOT)}")
+            fail(f"trailing whitespace found: {display_path(path)}")
         if VEC_CALL_RE.search(clean):
             fail(
-                f"unsupported vec(...) constructor in {path.relative_to(ROOT)}; "
+                f"unsupported vec(...) constructor in {display_path(path)}; "
                 "use TestVectorUtils or explicit Vector initialization"
             )
 
@@ -739,7 +744,7 @@ def main() -> None:
         unresolved = imports - STANDARD_PACKAGES - set(package_to_path)
         if unresolved:
             fail(
-                f"unresolved imports in {path.relative_to(ROOT)}: {sorted(unresolved)}"
+                f"unresolved imports in {display_path(path)}: {sorted(unresolved)}"
             )
         graph[name] = imports & set(package_to_path)
     detect_cycle(graph)
@@ -920,9 +925,9 @@ def main() -> None:
     for path in high_level_rust:
         text = path.read_text(encoding="utf-8")
         if "execute_tile(" in text:
-            fail(f"high-level API wraps execute_tile: {path.relative_to(ROOT)}")
+            fail(f"high-level API wraps execute_tile: {display_path(path)}")
         if re.search(r"\b(std::thread|thread::|sleep|Instant|SystemTime)\b", text):
-            fail(f"host timing dependency in {path.relative_to(ROOT)}")
+            fail(f"host timing dependency in {display_path(path)}")
 
     bridge_path = ROOT / "sim/ffi/im2p_verilator.cpp"
     bridge_text = bridge_path.read_text(encoding="utf-8")
@@ -959,7 +964,7 @@ def main() -> None:
         if cycle_assignment.search(path.read_text(encoding="utf-8")):
             fail(
                 "wall-clock value assigned to performance cycles: "
-                f"{path.relative_to(ROOT)}"
+                f"{display_path(path)}"
             )
 
     source_text = "\n".join(
