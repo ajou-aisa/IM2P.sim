@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -33,6 +34,10 @@ namespace im2p::gemmini {
 namespace {
 namespace wroute = ggml::gemmini::quants::wroute;
 namespace exsia = ggml::gemmini::quants::act::exsia;
+
+#if defined(IM2P_GEMMINI_FRONTEND_TESTING)
+std::atomic<bool> fail_timing_reserve_injected{false};
+#endif
 
 Status make_status(StatusCode code, Route route, bool native,
                    const char *message) noexcept {
@@ -506,6 +511,9 @@ struct Run::Impl {
   void *integer_output_destination = nullptr;
   float *float_output_destination = nullptr;
   im2p_work_stats_extended_t stats{};
+  std::vector<StripeRtlTiming> stripe_rtl_timings;
+  size_t canonical_stripe_count = 0;
+  bool timing_view_frozen = false;
   std::deque<DenseEvent> ready;
   std::unordered_map<uint32_t, DenseEvent> in_flight;
   static constexpr size_t producer_slot_count = 2;
@@ -1209,8 +1217,9 @@ struct Run::Impl {
     }
 #endif
     for (;;) {
-      im2p_stripe_completion_t c{};
-      const int result = im2p_poll_completed(stream, &c);
+      im2p_stripe_completion_extended_t extended{};
+      const int result = im2p_poll_completed_extended(stream, &extended);
+      const auto &c = extended.base;
       if (result < 0) {
         set_error(from_c_status(result, route, "IM2P completion poll failed",
                                 native));
@@ -1231,15 +1240,26 @@ struct Run::Impl {
       }
       std::lock_guard lock(mutex);
       const auto found = in_flight.find(c.stripe_id);
-      if (found == in_flight.end() || found->second.row_begin != c.i_start ||
+      if (found == in_flight.end() || found->second.stripe_id != c.stripe_id ||
+          c.stripe_id != stripe_rtl_timings.size() ||
+          found->second.row_begin != c.i_start ||
           found->second.row_end - found->second.row_begin != c.rows ||
-          found->second.run_id != c.context) {
+          found->second.run_id != c.context ||
+          stripe_rtl_timings.size() >= canonical_stripe_count ||
+          stripe_rtl_timings.size() >= stripe_rtl_timings.capacity() ||
+          extended.publish_to_completion_cycles !=
+              extended.completion_cycle - extended.publish_cycle) {
         if (final_status.ok())
           final_status = make_status(StatusCode::execution_failure, route,
                                      false, "invalid IM2P completion");
         changed.notify_all();
         return false;
       }
+      stripe_rtl_timings.push_back(
+          {found->second.run_id, found->second.stripe_id, found->second.slot,
+           found->second.row_begin, found->second.row_end,
+           extended.publish_cycle, extended.completion_cycle,
+           extended.publish_to_completion_cycles});
       in_flight.erase(found);
       --outstanding;
       ++completion_count;
@@ -1591,6 +1611,20 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       x.final_status = make_status(StatusCode::out_of_memory, x.route, x.native,
                                    "failed to retain IM2P operands");
   }
+  if (x.final_status.ok() && mode == Mode::stripe_pipeline) {
+    x.canonical_stripe_count =
+        1 + (x.scalars.i - 1) / x.scalars.activation_rows_per_stripe;
+    try {
+#if defined(IM2P_GEMMINI_FRONTEND_TESTING)
+      if (fail_timing_reserve_injected.exchange(false))
+        throw std::bad_alloc();
+#endif
+      x.stripe_rtl_timings.reserve(x.canonical_stripe_count);
+    } catch (...) {
+      x.final_status = make_status(StatusCode::out_of_memory, x.route, x.native,
+                                   "failed to reserve stripe RTL timings");
+    }
+  }
   if (!x.final_status.ok()) {
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
@@ -1618,6 +1652,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
         }
       });
       x.lifecycle = Run::Impl::Lifecycle::running;
+    } catch (const std::bad_alloc &) {
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      x.final_status = make_status(StatusCode::out_of_memory, x.route, false,
+                                   "failed to allocate IM2P worker");
+      return {x.final_status, std::move(run)};
     } catch (...) {
       x.lifecycle = Run::Impl::Lifecycle::terminal;
       x.final_status = make_status(StatusCode::execution_failure, x.route,
@@ -1711,12 +1750,19 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
 
 FenceResult fence(Run &run) noexcept {
   auto &x = *run.impl_;
+  const auto result_locked = [&x]() noexcept {
+    StripeRtlTimingView view{};
+    if (x.timing_view_frozen && x.final_status.ok() &&
+        x.mode == Mode::stripe_pipeline)
+      view = {x.stripe_rtl_timings.data(), x.stripe_rtl_timings.size()};
+    return FenceResult{x.final_status, x.stats, view};
+  };
   std::thread worker;
   {
     std::unique_lock lock(x.mutex);
     if (x.lifecycle == Run::Impl::Lifecycle::idle ||
         x.lifecycle == Run::Impl::Lifecycle::terminal)
-      return {x.final_status, x.stats};
+      return result_locked();
     if (x.lifecycle == Run::Impl::Lifecycle::starting ||
         x.lifecycle == Run::Impl::Lifecycle::running) {
       x.lifecycle = Run::Impl::Lifecycle::closing;
@@ -1725,7 +1771,7 @@ FenceResult fence(Run &run) noexcept {
     if (x.join_in_progress) {
       x.changed.wait(
           lock, [&] { return x.lifecycle == Run::Impl::Lifecycle::terminal; });
-      return {x.final_status, x.stats};
+      return result_locked();
     }
     x.join_in_progress = true;
     worker = std::move(x.worker);
@@ -1734,14 +1780,20 @@ FenceResult fence(Run &run) noexcept {
     worker.join();
   {
     std::lock_guard lock(x.mutex);
+    if (x.final_status.ok() && x.mode == Mode::stripe_pipeline &&
+        x.stripe_rtl_timings.size() != x.canonical_stripe_count)
+      x.final_status = make_status(StatusCode::execution_failure, x.route,
+                                   x.native,
+                                   "incomplete IM2P completion timings");
     if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
       x.commit_output();
       x.output_committed = true;
     }
+    x.timing_view_frozen = true;
     x.join_in_progress = false;
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     x.changed.notify_all();
-    return {x.final_status, x.stats};
+    return result_locked();
   }
 }
 
@@ -1870,6 +1922,8 @@ RunTestAccess::Snapshot RunTestAccess::inspect(const Run &run) noexcept {
   view.queued = x.ready.size();
   view.in_flight = x.in_flight.size();
   view.outstanding = x.outstanding;
+  view.timing_size = x.stripe_rtl_timings.size();
+  view.timing_capacity = x.stripe_rtl_timings.capacity();
   return view;
 }
 
@@ -1946,6 +2000,16 @@ void RunTestAccess::disable_completion_gate(Run &run) noexcept {
   std::lock_guard lock(x.mutex);
   x.completion_gate_enabled = false;
   x.changed.notify_all();
+}
+
+void RunTestAccess::fail_next_timing_reserve() noexcept {
+  fail_timing_reserve_injected = true;
+}
+
+void RunTestAccess::invalidate_timing_capacity(Run &run) noexcept {
+  auto &x = *run.impl_;
+  std::lock_guard lock(x.mutex);
+  x.canonical_stripe_count = 0;
 }
 #endif
 

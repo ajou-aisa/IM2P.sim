@@ -42,6 +42,11 @@ bool fail_publish = false;
 bool fail_progress = false;
 bool fail_poll = false;
 bool fail_finish = false;
+bool malformed_completion_id = false;
+bool malformed_completion_rows = false;
+bool malformed_completion_context = false;
+bool malformed_completion_duration = false;
+bool malformed_completion_order = false;
 bool throw_create = false;
 bool provider_force_callback_failure = false;
 std::vector<int64_t> provider_exact_values;
@@ -85,6 +90,11 @@ void reset() {
   fail_progress = false;
   fail_poll = false;
   fail_finish = false;
+  malformed_completion_id = false;
+  malformed_completion_rows = false;
+  malformed_completion_context = false;
+  malformed_completion_duration = false;
+  malformed_completion_order = false;
   throw_create = false;
   provider_force_callback_failure = false;
   provider_exact_values.clear();
@@ -172,7 +182,7 @@ int provider_outputs(const Descriptor &d, size_t row0, size_t rows) {
 
 struct im2p_sim {};
 struct im2p_stream {
-  std::deque<im2p_stripe_completion_t> done;
+  std::deque<im2p_stripe_completion_extended_t> done;
   size_t serviced = 0;
   uint64_t progress_count = 0;
 };
@@ -299,7 +309,13 @@ int im2p_progress_stream(im2p_stream_t *stream, uint64_t) {
                      fake::work_desc.output, fake::work_desc.output_row_stride,
                      s.rows, fake::work_desc.n, fake::work_desc.k, s.i_start);
     }
-    stream->done.push_back({s.stripe_id, s.i_start, s.rows, s.context});
+    const uint64_t publish_cycle = UINT64_C(0x1100000000000000) +
+                                   s.stripe_id * UINT64_C(0x101);
+    const uint64_t completion_cycle = UINT64_C(0x2200000000000000) +
+                                      s.stripe_id * UINT64_C(0x1001);
+    stream->done.push_back({{s.stripe_id, s.i_start, s.rows, s.context},
+                            publish_cycle, completion_cycle,
+                            completion_cycle - publish_cycle});
   }
   return IM2P_OK;
 }
@@ -313,8 +329,33 @@ int im2p_poll_completed(im2p_stream_t *stream, im2p_stripe_completion_t *out) {
     return IM2P_ERROR;
   if (stream->done.empty())
     return 0;
-  *out = stream->done.front();
+  *out = stream->done.front().base;
   stream->done.pop_front();
+  return 1;
+}
+int im2p_poll_completed_extended(
+    im2p_stream_t *stream, im2p_stripe_completion_extended_t *out) {
+  fake::abi_call();
+  std::lock_guard lock(fake::mutex);
+  if (fake::fail_poll)
+    return IM2P_ERROR;
+  if (stream->done.empty())
+    return 0;
+  if (fake::malformed_completion_order && stream->done.size() > 1) {
+    *out = stream->done[1];
+    stream->done.erase(stream->done.begin() + 1);
+  } else {
+    *out = stream->done.front();
+    stream->done.pop_front();
+  }
+  if (fake::malformed_completion_id)
+    ++out->base.stripe_id;
+  if (fake::malformed_completion_rows)
+    ++out->base.rows;
+  if (fake::malformed_completion_context)
+    ++out->base.context;
+  if (fake::malformed_completion_duration)
+    ++out->publish_to_completion_cycles;
   return 1;
 }
 int im2p_finish_stream_extended(im2p_stream_t *,
@@ -935,7 +976,8 @@ bool test_provider_int64_scaling_full_pipeline() {
     }
     const auto done = fence(*started.run);
     if (force_callback_failure)
-      return done.status.code == StatusCode::execution_failure;
+      return done.status.code == StatusCode::execution_failure &&
+             done.stripe_rtl_timings.empty();
     std::vector<int64_t> delivered_oracle;
     if (mode == Mode::full) {
       delivered_oracle = exact;
@@ -1257,8 +1299,34 @@ bool test_pipeline_lifecycle() {
   auto done = fence(*started.run);
   auto again = fence(*started.run);
   const auto authorized = authorize_output_commit(*started.run, true);
+  const auto *stable_data = done.stripe_rtl_timings.data;
+  const bool exact_timings =
+      done.stripe_rtl_timings.size == 2 &&
+      done.stripe_rtl_timings[0].run_id == 77 &&
+      done.stripe_rtl_timings[0].stripe_id == 0 &&
+      done.stripe_rtl_timings[0].slot == 9 &&
+      done.stripe_rtl_timings[0].row_begin == 0 &&
+      done.stripe_rtl_timings[0].row_end == 1 &&
+      done.stripe_rtl_timings[0].publish_cycle == UINT64_C(0x1100000000000000) &&
+      done.stripe_rtl_timings[0].completion_cycle == UINT64_C(0x2200000000000000) &&
+      done.stripe_rtl_timings[0].publish_to_completion_cycles ==
+          UINT64_C(0x1100000000000000) &&
+      done.stripe_rtl_timings[1].run_id == 77 &&
+      done.stripe_rtl_timings[1].stripe_id == 1 &&
+      done.stripe_rtl_timings[1].slot == 10 &&
+      done.stripe_rtl_timings[1].row_begin == 1 &&
+      done.stripe_rtl_timings[1].row_end == 2 &&
+      done.stripe_rtl_timings[1].publish_cycle == UINT64_C(0x1100000000000101) &&
+      done.stripe_rtl_timings[1].completion_cycle == UINT64_C(0x2200000000001001) &&
+      done.stripe_rtl_timings[1].publish_to_completion_cycles ==
+          UINT64_C(0x1100000000000f00);
   return expect(done.status.ok() && again.status.code == done.status.code,
                 "sticky idempotent fence") &&
+         expect(exact_timings,
+                "ordered timing view preserves run, stripe, slot, rows, and cycles") &&
+         expect(again.stripe_rtl_timings.data == stable_data &&
+                    again.stripe_rtl_timings.size == 2,
+                "repeated fence returns the same immutable timing view") &&
          expect(authorized.ok() && c == std::vector<int32_t>({4, 5, 10, 11}),
                 "RMD authorization commits stripe golden") &&
          expect(done.stats.lookahead_publish_cycle == 10 &&
@@ -1276,20 +1344,24 @@ bool test_backpressure_runid_incomplete_and_concurrent() {
   fake::reset();
   fake::allow_completion = false;
   fake::hold_publish = true;
-  std::vector<int8_t> a(9), b(6);
-  std::vector<int32_t> c(6, 99);
-  auto args = raw_args(a, b, c, 3);
+  std::vector<int8_t> a(15), b(6);
+  std::vector<int32_t> c(10, 99);
+  auto args = raw_args(a, b, c, 5);
+  args.activation_rows_per_stripe = 2;
   auto one = execute(&args, Mode::stripe_pipeline, {32});
-  if (!expect(submit_stripe(*one.run, event(0, 0, 1, 4)).ok() &&
-                  submit_stripe(*one.run, event(1, 1, 2, 4)).ok(),
+  const auto initial = RunTestAccess::inspect(*one.run);
+  if (!expect(initial.timing_size == 0 && initial.timing_capacity == 3,
+              "pipeline reserves exactly the canonical stripe count") ||
+      !expect(submit_stripe(*one.run, event(0, 0, 2, 4)).ok() &&
+                  submit_stripe(*one.run, event(1, 2, 4, 4)).ok(),
               "exactly two producer slots accept without blocking") ||
-      !expect(submit_stripe(*one.run, event(2, 2, 3, 5)).code ==
+      !expect(submit_stripe(*one.run, event(2, 4, 5, 5)).code ==
                   StatusCode::invalid_argument,
               "run id validation precedes the capacity wait"))
     return false;
   Status third_status{};
   std::thread producer(
-      [&] { third_status = submit_stripe(*one.run, event(2, 2, 3, 4)); });
+      [&] { third_status = submit_stripe(*one.run, event(2, 4, 5, 4)); });
   if (!expect(RunTestAccess::wait_for_blocked_submit(*one.run, 1),
               "third producer blocks on the fixed two-slot contract") ||
       !expect(RunTestAccess::inspect(*one.run).outstanding == 2,
@@ -1303,13 +1375,29 @@ bool test_backpressure_runid_incomplete_and_concurrent() {
   }
   producer.join();
   const auto completed = fence(*one.run);
+  const bool ordered_tail_timings =
+      completed.stripe_rtl_timings.size == 3 &&
+      completed.stripe_rtl_timings[0].run_id == 4 &&
+      completed.stripe_rtl_timings[0].stripe_id == 0 &&
+      completed.stripe_rtl_timings[0].row_begin == 0 &&
+      completed.stripe_rtl_timings[0].row_end == 2 &&
+      completed.stripe_rtl_timings[1].run_id == 4 &&
+      completed.stripe_rtl_timings[1].stripe_id == 1 &&
+      completed.stripe_rtl_timings[1].row_begin == 2 &&
+      completed.stripe_rtl_timings[1].row_end == 4 &&
+      completed.stripe_rtl_timings[2].run_id == 4 &&
+      completed.stripe_rtl_timings[2].stripe_id == 2 &&
+      completed.stripe_rtl_timings[2].row_begin == 4 &&
+      completed.stripe_rtl_timings[2].row_end == 5;
   if (!expect(third_status.ok() && completed.status.ok(),
               "completion wakes and accepts the third producer") ||
-      !expect(c == std::vector<int32_t>(6, 99),
+      !expect(ordered_tail_timings,
+              "accepted-only timings stay ordered through raw backpressure and one-row tail") ||
+      !expect(c == std::vector<int32_t>(10, 99),
               "pipeline fence leaves output staged before RMD authorization") ||
       !expect(authorize_output_commit(*one.run, true).ok(),
               "RMD authorization commits the fixed-slot run") ||
-      !expect(submit_stripe(*one.run, event(3, 3, 3, 4)).code ==
+      !expect(submit_stripe(*one.run, event(3, 5, 5, 4)).code ==
                   StatusCode::invalid_state,
               "submission is linearized after fence"))
     return false;
@@ -1332,8 +1420,65 @@ bool test_backpressure_runid_incomplete_and_concurrent() {
   }
   t1.join();
   t2.join();
-  return expect(x.status.ok() && y.status.ok(),
-                "concurrent lifecycle linearization");
+  return expect(x.status.ok() && y.status.ok() &&
+                    x.stripe_rtl_timings.empty() &&
+                    y.stripe_rtl_timings.empty(),
+                "concurrent FULL lifecycle returns one stable empty view");
+}
+
+bool test_timing_setup_and_malformed_completions() {
+  fake::reset();
+  std::vector<int8_t> activation = {1, 2, 3, 4, 5, 6};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> destination(4, 0x24681357);
+  auto args = raw_args(activation, weights, destination);
+
+  RunTestAccess::fail_next_timing_reserve();
+  auto allocation = execute(&args, Mode::stripe_pipeline);
+  if (!expect(allocation.status.code == StatusCode::out_of_memory &&
+                  fake::sim_created == 0 && fake::stream_created == 0 &&
+                  destination == std::vector<int32_t>(4, 0x24681357),
+              "timing reserve failure returns OOM before RTL execution"))
+    return false;
+
+  enum class Malformed { id, rows, context, duration, order, capacity };
+  for (const auto malformed : {Malformed::id, Malformed::rows,
+                               Malformed::context, Malformed::duration,
+                               Malformed::order, Malformed::capacity}) {
+    fake::reset();
+    fake::allow_completion = false;
+    destination.assign(4, 0x24681357);
+    auto started = execute(&args, Mode::stripe_pipeline);
+    if (!started.status.ok() ||
+        !submit_stripe(*started.run, event(0, 0, 1)).ok() ||
+        !submit_stripe(*started.run, event(1, 1, 2)).ok() ||
+        !fake::wait([] { return fake::publish_count == 2; }))
+      return false;
+    if (malformed == Malformed::capacity)
+      RunTestAccess::invalidate_timing_capacity(*started.run);
+    {
+      std::lock_guard lock(fake::mutex);
+      fake::malformed_completion_id = malformed == Malformed::id;
+      fake::malformed_completion_rows = malformed == Malformed::rows;
+      fake::malformed_completion_context = malformed == Malformed::context;
+      fake::malformed_completion_duration = malformed == Malformed::duration;
+      fake::malformed_completion_order = malformed == Malformed::order;
+      fake::allow_completion = true;
+      fake::changed.notify_all();
+    }
+    const auto done = fence(*started.run);
+    const bool output_unchanged =
+        destination == std::vector<int32_t>(4, 0x24681357);
+    std::printf("TIMING_FAILURE_EMPTY malformed=%d view_size=%zu "
+                "output_sentinel=%s\n",
+                static_cast<int>(malformed), done.stripe_rtl_timings.size,
+                output_unchanged ? "unchanged" : "changed");
+    if (!expect(done.status.code == StatusCode::execution_failure &&
+                    done.stripe_rtl_timings.empty() && output_unchanged,
+                "malformed completion fails with an empty transactional view"))
+      return false;
+  }
+  return true;
 }
 
 bool test_startup_failure_and_destruction() {
@@ -1418,8 +1563,13 @@ bool test_submit_fence_orderings_and_error_stickiness() {
   }
   one.join();
   two.join();
-  if (!expect(first.status.ok() && second.status.ok(),
-              "truly overlapping fences share one terminal result") ||
+  if (!expect(first.status.ok() && second.status.ok() &&
+                  first.stripe_rtl_timings.size == 1 &&
+                  first.stripe_rtl_timings.data ==
+                      second.stripe_rtl_timings.data &&
+                  first.stripe_rtl_timings.size ==
+                      second.stripe_rtl_timings.size,
+              "truly overlapping fences share one stable timing view") ||
       !expect(authorize_output_commit(*submitted.run, true).ok(),
               "one post-fence authorization commits concurrent fence result"))
     return false;
@@ -1783,8 +1933,9 @@ bool test_full_failure_matrix() {
     const auto expected = failure == FullFailure::create
                               ? StatusCode::out_of_memory
                               : StatusCode::execution_failure;
-    if (!expect(done.status.code == expected,
-                "full boundary returns its typed sticky error") ||
+    if (!expect(done.status.code == expected &&
+                    done.stripe_rtl_timings.empty(),
+                "full boundary returns its typed sticky error and empty view") ||
         !expect(fence(*started.run).status.code == expected,
                 "full boundary error is stable across repeated fence") ||
         !expect(destination == std::vector<int32_t>(2, 0x34567812),
@@ -1820,9 +1971,13 @@ bool test_stripe_failure_matrix() {
           !expect(submit_stripe(*started.run, event(0, 0, 1)).ok(),
                   "stripe boundary accepts publication"))
         return false;
-      code = fence(*started.run).status.code;
-      if (!expect(fence(*started.run).status.code == code,
-                  "stripe boundary error is stable across repeated fence"))
+      const auto done = fence(*started.run);
+      code = done.status.code;
+      const auto repeated = fence(*started.run);
+      if (!expect(done.stripe_rtl_timings.empty() &&
+                      repeated.stripe_rtl_timings.empty() &&
+                      repeated.status.code == code,
+                  "stripe boundary error has a stable empty repeated view"))
         return false;
     }
     const auto expected = failure == StripeFailure::create
@@ -2082,8 +2237,12 @@ int main(int argc, char **argv) {
             ? test_args_and_inputs_can_expire_after_execute()
         : selected == "pipeline_args_expire"
             ? test_pipeline_args_and_inputs_expire_before_submit()
-        : selected == "fixed_two_slots"
+        : selected == "fixed_two_slots" ||
+                  selected == "backpressure_runid_incomplete_and_concurrent"
             ? test_backpressure_runid_incomplete_and_concurrent()
+        : selected == "pipeline_lifecycle" ? test_pipeline_lifecycle()
+        : selected == "timing_malformed"
+            ? test_timing_setup_and_malformed_completions()
         : selected == "exsia_postfold_metadata"
             ? test_exsia_metadata_is_published_explicitly_after_args_expire()
         : selected == "rmd_commit_authorization"
@@ -2128,6 +2287,7 @@ int main(int argc, char **argv) {
       test_multiwidth_activation_snapshot_validation() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&
       test_backpressure_runid_incomplete_and_concurrent() &&
+      test_timing_setup_and_malformed_completions() &&
       test_startup_failure_and_destruction() &&
       test_submit_fence_orderings_and_error_stickiness() &&
       test_inflight_progress_and_long_valid_completion() &&

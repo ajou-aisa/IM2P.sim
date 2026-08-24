@@ -69,6 +69,33 @@ struct StripeMetadata {
   int16_t exsia_theta = 0;
 };
 
+struct StripeRtlTiming {
+  uint64_t run_id = 0;
+  size_t stripe_id = 0;
+  size_t slot = 0;
+  size_t row_begin = 0;
+  size_t row_end = 0;
+  uint64_t publish_cycle = 0;
+  uint64_t completion_cycle = 0;
+  uint64_t publish_to_completion_cycles = 0;
+};
+
+// Immutable borrowed storage owned by Run. A successful pipeline fence freezes
+// the pointer and size until Run destruction; FULL and failed fences are empty.
+struct StripeRtlTimingView {
+  const StripeRtlTiming *data = nullptr;
+  size_t size = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return size == 0; }
+  [[nodiscard]] const StripeRtlTiming &operator[](size_t index) const noexcept {
+    return data[index];
+  }
+  [[nodiscard]] const StripeRtlTiming *begin() const noexcept { return data; }
+  [[nodiscard]] const StripeRtlTiming *end() const noexcept {
+    return data == nullptr ? nullptr : data + size;
+  }
+};
+
 class Run;
 struct ExecuteResult;
 struct FenceResult;
@@ -114,6 +141,7 @@ struct ExecuteResult {
 struct FenceResult {
   Status status{};
   im2p_work_stats_extended_t stats{};
+  StripeRtlTimingView stripe_rtl_timings{};
 };
 
 struct PipelineOutputStage {

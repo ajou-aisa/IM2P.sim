@@ -44,6 +44,7 @@ struct RunTestAccess {
     uint8_t activation_bits = 0;
     size_t activation_raw_size = 0, activation_row_stride_bytes = 0;
     size_t queued = 0, in_flight = 0, outstanding = 0;
+    size_t timing_size = 0, timing_capacity = 0;
   };
 
   [[nodiscard]] static Snapshot inspect(const Run &) noexcept;
@@ -65,6 +66,8 @@ struct RunTestAccess {
   static void enable_completion_gate(Run &) noexcept;
   static void release_completion_gate(Run &) noexcept;
   static void disable_completion_gate(Run &) noexcept;
+  static void fail_next_timing_reserve() noexcept;
+  static void invalidate_timing_capacity(Run &) noexcept;
 };
 
 } // namespace im2p::gemmini

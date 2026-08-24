@@ -13,7 +13,7 @@
 
 - `execute(args[, mode, options])`는 `Run`을 만들고 아래에 나열한 스칼라 값과 포인터만 선택해 복사한다. `ggml_gemmini_args_t` 전체를 스냅샷하지 않는다. args 객체 자체는 이 호출 동안에만 필요하며, 기반 버퍼는 복사하지 않는다.
 - `submit_stripe(run, event)`는 범위의 순서와 첫 이벤트의 `run_id`를 검증한 뒤 `run_id`, `stripe_id`, `slot`, `row_begin`, `row_end`만 복사한다. 타이밍/프로파일링 필드나 이벤트를 보존하지 않으며, 해당 `rmd_packet` 또는 ExSIA 슬롯의 소유권도 유지하지 않는다. 프런트엔드가 `backpressure`를 반환하면 이벤트가 수락되지 않은 것이다. 호출자는 데이터를 계속 보유하고 있다가 용량이 확보되면 `submit_stripe`를 다시 호출해야 한다.
-- `fence(run)`는 제출을 닫고 확정된 최종 상태와 C ABI가 생성한 `im2p_work_stats_extended_t`를 그대로 반환한다. 멱등성을 보장하며 동시에 호출해도 안전하다.
+- `fence(run)`는 제출을 닫고 확정된 최종 상태와 C ABI가 생성한 `im2p_work_stats_extended_t`를 그대로 반환한다. PIPELINE 성공 시 canonical stripe 순서의 `StripeRtlTimingView`도 반환하며, 각 record는 run/stripe/slot/row 범위와 RTL publish/completion endpoint 및 modulo-2^64 duration을 보존한다. FULL과 실패 결과의 view는 비어 있다. 이 view는 `Run`이 소유하는 immutable borrowed storage이며, 반복 또는 동시 fence는 `Run` 소멸 전까지 같은 pointer와 size를 반환한다. 멱등성을 보장하며 동시에 호출해도 안전하다.
 
 이 세 고수준 작업은 worker가 전담하는 원시 저수준 C ABI 시퀀스와 분리되어 있다.
 
@@ -21,7 +21,7 @@
 - 원시 스트림 생성용 `begin_striped_matmul`
 - activation 가용성 공개용 `publish_stripe`
 - 논리 RTL 사이클 진행용 `progress_stream`
-- 완료된 stripe 백킹 스토리지 해제용 `poll_completed`
+- 완료된 stripe 백킹 스토리지와 RTL endpoint 수집용 `poll_completed_extended`
 - 스트림 완료 및 통계 수집용 `finish_stream`
 
 Production matched ExSIA route는 A4/Q4, A8/Q8, A16/Q16의

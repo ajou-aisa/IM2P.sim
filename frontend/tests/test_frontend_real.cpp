@@ -70,6 +70,42 @@ std::string published_row_sequence(Mode mode, size_t rows,
   return result;
 }
 
+bool verify_timing_view(Mode mode, const FenceResult &done,
+                        const FenceResult &repeated, size_t rows,
+                        size_t rows_per_stripe) {
+  const size_t expected =
+      mode == Mode::full ? 0 : (rows + rows_per_stripe - 1) / rows_per_stripe;
+  bool valid = done.stripe_rtl_timings.size == expected &&
+               repeated.stripe_rtl_timings.size == expected &&
+               done.stripe_rtl_timings.data ==
+                   repeated.stripe_rtl_timings.data;
+  for (size_t index = 0; valid && index < expected; ++index) {
+    const auto &timing = done.stripe_rtl_timings[index];
+    const size_t row_begin = index * rows_per_stripe;
+    valid = timing.run_id == kRunId && timing.stripe_id == index &&
+            timing.slot == index % 2 && timing.row_begin == row_begin &&
+            timing.row_end == std::min(rows, row_begin + rows_per_stripe) &&
+            timing.publish_to_completion_cycles ==
+                timing.completion_cycle - timing.publish_cycle;
+    std::printf(
+        "STRIPE_RTL_TIMING index=%zu run_id=%llu stripe_id=%zu slot=%zu "
+        "rows=%zu:%zu publish=%llu completion=%llu duration=%llu\n",
+        index, static_cast<unsigned long long>(timing.run_id),
+        timing.stripe_id, timing.slot, timing.row_begin, timing.row_end,
+        static_cast<unsigned long long>(timing.publish_cycle),
+        static_cast<unsigned long long>(timing.completion_cycle),
+        static_cast<unsigned long long>(
+            timing.publish_to_completion_cycles));
+  }
+  std::printf("FRONTEND_TIMING_VIEW mode=%s size=%zu data=%p "
+              "repeated_data=%p stable=%s\n",
+              mode == Mode::full ? "full" : "stripe", expected,
+              static_cast<const void *>(done.stripe_rtl_timings.data),
+              static_cast<const void *>(repeated.stripe_rtl_timings.data),
+              valid ? "yes" : "no");
+  return valid;
+}
+
 struct RealCase {
   const size_t m = DIM + 3;
   const size_t n = DIM + 5;
@@ -226,7 +262,9 @@ struct RealCase {
   }
 
   const auto done = fence(*started.run);
-  if (!done.status.ok()) {
+  const auto repeated = fence(*started.run);
+  if (!done.status.ok() ||
+      !verify_timing_view(mode, done, repeated, test.m, test.stripe_rows)) {
     std::fprintf(stderr, "fence failed bits=%d dim=%d mode=%d: %s\n",
                  IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM, int(mode),
                  done.status.message);
@@ -390,7 +428,9 @@ struct ProviderCase {
     }
   }
   const auto done = fence(*started.run);
+  const auto repeated = fence(*started.run);
   if (!done.status.ok() ||
+      !verify_timing_view(mode, done, repeated, test.m, test.stripe_rows) ||
       (mode == Mode::stripe_pipeline &&
        !authorize_output_commit(*started.run, true).ok()) ||
       test.output != test.expected ||
@@ -695,6 +735,7 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
     }
   }
   const auto done = fence(*started.run);
+  const auto repeated = fence(*started.run);
   const bool staged = mode == Mode::stripe_pipeline &&
                       std::all_of(test.output.begin(), test.output.end(),
                                   [](float value) { return value == 17.0f; });
@@ -704,7 +745,10 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
                  matched_format_name(format));
     return false;
   }
-  if (!done.status.ok() || test.output != test.expected ||
+  if (!done.status.ok() ||
+      !verify_timing_view(mode, done, repeated, test.m,
+                          test.args.activation_rows_per_stripe) ||
+      test.output != test.expected ||
       done.stats.base.activation_read_requests == 0 ||
       done.stats.base.weight_read_requests == 0 ||
       done.stats.base.scale_read_requests == 0 ||
