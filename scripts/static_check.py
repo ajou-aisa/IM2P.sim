@@ -28,9 +28,7 @@ EXPECTED_SRC = {
     "array/SystolicArrayTiled.bsv",
     "array/SystolicArrayA4W4D64.bsv",
     "array/SystolicArrayA16W16D64.bsv",
-    "array/SystolicArrayInt4x64.bsv",
     "array/SystolicArrayInt8x64.bsv",
-    "array/SystolicArrayInt16x64.bsv",
     "array/SystolicEngine.bsv",
     "vector/Scale.bsv",
     "vector/VectorUnit.bsv",
@@ -69,46 +67,32 @@ EXPECTED_TESTS = {
     "TbSystolicArrayWeightBanks.bsv",
     "TbSystolicEngineWeightBanks.bsv",
     "TbFloatCore.bsv",
-    "TbSynthInt8x16.bsv",
-    "TbSynthInt8x32.bsv",
-    "TbSynthInt8x64.bsv",
+    "TbSynthA8W8D16.bsv",
+    "TbSynthA8W8D32.bsv",
+    "TbSynthA8W8D64.bsv",
 }
 
 EXPECTED_SYNTH = {
-    "SynthInt8.bsv",
-    "SynthInt4x16.bsv",
-    "SynthInt8x16.bsv",
-    "SynthInt16x16.bsv",
-    "SynthInt4x32.bsv",
-    "SynthInt8x32.bsv",
-    "SynthInt16x32.bsv",
-    "SynthInt4x64.bsv",
-    "SynthInt8x64.bsv",
-    "SynthInt16x64.bsv",
     "SynthA4W4D16.bsv",
     "SynthA4W4D32.bsv",
     "SynthA4W4D64.bsv",
+    "SynthA8W8D16.bsv",
+    "SynthA8W8D32.bsv",
+    "SynthA8W8D64.bsv",
     "SynthA16W16D16.bsv",
     "SynthA16W16D32.bsv",
     "SynthA16W16D64.bsv",
-    "SynthFp16.bsv",
-    "SynthFp32.bsv",
+    "SynthFP16D16.bsv",
+    "SynthFP32D16.bsv",
 }
 
 INTEGER_SYNTH_TOPS = (
-    "SynthInt8.bsv",
-    "SynthInt4x16.bsv",
-    "SynthInt8x16.bsv",
-    "SynthInt16x16.bsv",
-    "SynthInt4x32.bsv",
-    "SynthInt8x32.bsv",
-    "SynthInt16x32.bsv",
-    "SynthInt4x64.bsv",
-    "SynthInt8x64.bsv",
-    "SynthInt16x64.bsv",
     "SynthA4W4D16.bsv",
     "SynthA4W4D32.bsv",
     "SynthA4W4D64.bsv",
+    "SynthA8W8D16.bsv",
+    "SynthA8W8D32.bsv",
+    "SynthA8W8D64.bsv",
     "SynthA16W16D16.bsv",
     "SynthA16W16D32.bsv",
     "SynthA16W16D64.bsv",
@@ -118,6 +102,9 @@ MATCHED_INTEGER_SYNTH_TYPES = {
     "SynthA4W4D16.bsv": ("4", "4", "8"),
     "SynthA4W4D32.bsv": ("4", "4", "8"),
     "SynthA4W4D64.bsv": ("4", "4", "8"),
+    "SynthA8W8D16.bsv": ("8", "8", "16"),
+    "SynthA8W8D32.bsv": ("8", "8", "16"),
+    "SynthA8W8D64.bsv": ("8", "8", "16"),
     "SynthA16W16D16.bsv": ("16", "16", "32"),
     "SynthA16W16D32.bsv": ("16", "16", "32"),
     "SynthA16W16D64.bsv": ("16", "16", "32"),
@@ -604,13 +591,9 @@ def check_exsia_integration_contracts() -> None:
         fail("REAL_MATRIX_PAIRS must be exactly the nine matched A/W/DIM identities")
     expected_targets = {
         f"sim-test-a{bits}-w{bits}-d{dim}": f"mkSynthA{bits}W{bits}D{dim}"
-        for bits in (4, 16)
+        for bits in (4, 8, 16)
         for dim in (16, 32, 64)
     }
-    expected_targets.update({
-        f"sim-test-int8x{dim}": f"mkSynthInt8x{dim}"
-        for dim in (16, 32, 64)
-    })
     phony_match = re.search(r"^\.PHONY:(.*?)(?:\n\n|\Z)", makefile, re.MULTILINE | re.DOTALL)
     if phony_match is None:
         fail("Makefile .PHONY target declaration missing")
@@ -621,10 +604,7 @@ def check_exsia_integration_contracts() -> None:
     require_substrings(
         ROOT / "Makefile",
         (
-            "$(foreach dim,16 32 64,$(eval $(call define_sim_config,8,$(dim))))",
-            "TOP=mkSynthInt$(1)x$(2)",
-            "IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2)",
-            "$(foreach bits,4 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))",
+            "$(foreach bits,4 8 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))",
             "TOP=mkSynthA$(1)W$(1)D$(2)",
             "IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2)",
             "gemmini-frontend-real-syntax-test:",
@@ -695,6 +675,29 @@ def main() -> None:
             f"  missing={sorted(EXPECTED_SYNTH - actual_synth)}\n"
             f"  extra={sorted(actual_synth - EXPECTED_SYNTH)}"
         )
+
+    build_script = ROOT / "sim" / "build.rs"
+    require_substrings(
+        build_script,
+        (
+            "weight_bits == activation_bits",
+            'format!("VmkSynthA{activation_bits}W{weight_bits}D{dim}")',
+        ),
+    )
+    mixed_top_tokens = (
+        "SynthA4W8D16",
+        "SynthA4W8D32",
+        "SynthA4W8D64",
+        "SynthA16W8D16",
+        "SynthA16W8D32",
+        "SynthA16W8D64",
+    )
+    ffi_text = (ROOT / "sim" / "ffi" / "im2p_verilator.cpp").read_text(
+        encoding="utf-8"
+    )
+    for token in mixed_top_tokens:
+        if token in ffi_text:
+            fail(f"mixed-width Verilator top remains in FFI: {token}")
 
     if (SRC / "memory").exists():
         fail("src/memory must not exist; Accumulator owns its storage")
@@ -773,7 +776,7 @@ def main() -> None:
         top
         for top in expected_synth_tops
         if re.fullmatch(
-            r"mkSynth(?:Int(?:4|8|16)x|A(?:4W4|16W16)D)(?:16|32|64)",
+            r"mkSynthA(?:4|8|16)W(?:4|8|16)D(?:16|32|64)",
             top,
         )
     }
@@ -782,32 +785,16 @@ def main() -> None:
     ):
         if not re.search(rf"\b{re.escape(top)}\b", makefile_text):
             fail(f"Makefile top list missing: {top}")
-    if "TOP=mkSynthInt$(1)x$(2)" not in makefile_text:
-        fail("Makefile multiwidth top template missing")
-    public_artifact_tops = {
-        top
-        for top in generated_multiwidth_tops
-        if re.fullmatch(
-            r"mkSynth(?:Int8x|A(?:4W4|16W16)D)(?:16|32|64)", top
-        )
-    }
-    for top in sorted(public_artifact_tops):
-        legacy_match = re.fullmatch(r"mkSynthInt(8)x(16|32|64)", top)
-        matched_match = re.fullmatch(
-            r"mkSynthA(4|16)W(4|16)D(16|32|64)", top
-        )
-        if legacy_match is not None:
-            target = (
-                f"verilator-int{legacy_match.group(1)}x{legacy_match.group(2)}"
-            )
-        else:
-            assert matched_match is not None
-            target = (
-                f"verilator-a{matched_match.group(1)}-w{matched_match.group(2)}-"
-                f"d{matched_match.group(3)}"
-            )
-        if target not in makefile_text:
-            fail(f"Makefile explicit matched artifact target missing: {target}")
+    if "TOP=mkSynthA$(1)W$(1)D$(2)" not in makefile_text:
+        fail("Makefile canonical A/W/D top template missing")
+    for bits in (4, 8, 16):
+        for dim in (16, 32, 64):
+            top = f"mkSynthA{bits}W{bits}D{dim}"
+            if top not in expected_synth_tops:
+                fail(f"canonical matched synth top missing: {top}")
+            target = f"verilator-a{bits}-w{bits}-d{dim}"
+            if target not in makefile_text:
+                fail(f"Makefile explicit matched artifact target missing: {target}")
     if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):
         fail("Bluesim tests must compile dynamicAssert checks")
 

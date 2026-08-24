@@ -71,8 +71,8 @@ High-level integration test는 Verilated `IM2PCore`를 실행해야 한다. `Mat
 DIM을 변경할 때는 생성된 두 차원을 모두 실행한다.
 
 ```bash
-make sim-test-int8x16
-make sim-test-int8x32
+make sim-test-a8-w8-d16
+make sim-test-a8-w8-d32
 ```
 
 상위 simulator 계약은 [simulator 사용법](../README.md), 전체 검증 범위는 [검증 가이드](../../docs/VERIFICATION.md)에서 확인한다.

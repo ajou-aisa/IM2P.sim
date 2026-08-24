@@ -39,11 +39,7 @@ def main() -> int:
     params_root = args.params_root.resolve()
     if args.bits != args.weight_bits:
         parser.error("real matrix fingerprints require matched activation/weight widths")
-    selected_stem = (
-        f"SynthInt8x{args.dim}"
-        if args.bits == 8
-        else f"SynthA{args.bits}W{args.weight_bits}D{args.dim}"
-    )
+    selected_stem = f"SynthA{args.bits}W{args.weight_bits}D{args.dim}"
     selected_top = ROOT / "synth" / f"{selected_stem}.bsv"
     required = (
         ROOT / "Makefile",

@@ -30,8 +30,8 @@ fn main() {
         "IM2P_WEIGHT_BITS must be one of 4, 8, or 16"
     );
     assert!(
-        weight_bits == "8" || weight_bits == activation_bits,
-        "W4 and W16 require matched activation and weight widths"
+        weight_bits == activation_bits,
+        "IM2P activation and weight widths must match"
     );
     let dim = env::var("IM2P_DIM").unwrap_or_else(|_| "16".to_string());
     assert!(
@@ -64,11 +64,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.cpp");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.h");
     println!("cargo:rerun-if-changed=ffi/testing/im2p_verilator_testing.h");
-    let top = if weight_bits == "8" {
-        format!("VmkSynthInt{activation_bits}x{dim}")
-    } else {
-        format!("VmkSynthA{activation_bits}W{weight_bits}D{dim}")
-    };
+    let top = format!("VmkSynthA{activation_bits}W{weight_bits}D{dim}");
     println!(
         "cargo:rerun-if-changed={}",
         obj_dir.join(format!("{top}.h")).display()

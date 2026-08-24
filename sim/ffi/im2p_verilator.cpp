@@ -29,36 +29,18 @@ using Top = VmkSynthA16W16D32;
 #elif IM2P_WEIGHT_BITS == 16 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
 #include "VmkSynthA16W16D64.h"
 using Top = VmkSynthA16W16D64;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 16
-#include "VmkSynthInt4x16.h"
-using Top = VmkSynthInt4x16;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 32
-#include "VmkSynthInt4x32.h"
-using Top = VmkSynthInt4x32;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 4 && IM2P_DIM == 64
-#include "VmkSynthInt4x64.h"
-using Top = VmkSynthInt4x64;
 #elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 16
-#include "VmkSynthInt8x16.h"
-using Top = VmkSynthInt8x16;
+#include "VmkSynthA8W8D16.h"
+using Top = VmkSynthA8W8D16;
 #elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 32
-#include "VmkSynthInt8x32.h"
-using Top = VmkSynthInt8x32;
+#include "VmkSynthA8W8D32.h"
+using Top = VmkSynthA8W8D32;
 #elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 8 && IM2P_DIM == 64
-#include "VmkSynthInt8x64.h"
-using Top = VmkSynthInt8x64;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 16
-#include "VmkSynthInt16x16.h"
-using Top = VmkSynthInt16x16;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 32
-#include "VmkSynthInt16x32.h"
-using Top = VmkSynthInt16x32;
-#elif IM2P_WEIGHT_BITS == 8 && IM2P_ACTIVATION_BITS == 16 && IM2P_DIM == 64
-#include "VmkSynthInt16x64.h"
-using Top = VmkSynthInt16x64;
+#include "VmkSynthA8W8D64.h"
+using Top = VmkSynthA8W8D64;
 #else
 #error                                                                         \
-    "IM2P_ACTIVATION_BITS/IM2P_DIM must select 4, 8, or 16 bits and DIM 16, 32, or 64"
+    "IM2P_ACTIVATION_BITS/IM2P_WEIGHT_BITS/IM2P_DIM must select a supported A/W/D configuration"
 #endif
 
 constexpr uint32_t kDim = IM2P_DIM;

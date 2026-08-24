@@ -62,7 +62,7 @@ endif
 GEMMINI_ARTIFACT_ID = a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM)
 GEMMINI_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(GEMMINI_ARTIFACT_ID))
 GEMMINI_RESULTS_DIR = $(BUILD_DIR)/results/$(GEMMINI_ARTIFACT_ID)
-GEMMINI_VERILATOR_TARGET = $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),verilator-int$(GEMMINI_FRONTEND_ACTIVATION_BITS)x$(GEMMINI_FRONTEND_DIM),verilator-a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM))
+GEMMINI_VERILATOR_TARGET = verilator-a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM)
 BSC_PATH  := +:src/common:src/io:src/array:src/vector:src/accumulator:src/control:src/core:tests:synth
 BSC_DIRS  := -bdir $(BUILD_DIR)/bsc -simdir $(BUILD_DIR)/sim \
              -info-dir $(BUILD_DIR)/info
@@ -103,9 +103,9 @@ BSV_TEST_TOPS := \
 	mkTbIM2PCoreExternal \
 	mkTbIM2PCoreGrouped \
 	mkTbFloatCore \
-	mkTbSynthInt8x16 \
-	mkTbSynthInt8x32 \
-	mkTbSynthInt8x64
+	mkTbSynthA8W8D16 \
+	mkTbSynthA8W8D32 \
+	mkTbSynthA8W8D64
 
 define run_bluesim
 	log="$(BUILD_DIR)/info/$$package.bluesim.log"; \
@@ -117,9 +117,9 @@ define run_bluesim
 endef
 
 SYNTH_TOPS := \
-	mkSynthInt8 \
-	mkSynthFp16 \
-	mkSynthFp32
+	mkSynthA8W8D16 \
+	mkSynthFP16D16 \
+	mkSynthFP32D16
 
 BSC_PREFIX := $(shell dirname $$(dirname $$(realpath $$(command -v $(BSC)))))
 BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
@@ -133,11 +133,12 @@ VERILATOR_COMMON := --cc --Wno-fatal
         gemmini-frontend-real-test-q8-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
         gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
         bsv-test bsv-test-one rtl rtl-one \
-        verilator-int8x16 verilator-int8x32 verilator-int8x64 verilator \
+        verilator \
         verilator-a4-w4-d16 verilator-a4-w4-d32 verilator-a4-w4-d64 \
+        verilator-a8-w8-d16 verilator-a8-w8-d32 verilator-a8-w8-d64 \
         verilator-a16-w16-d16 verilator-a16-w16-d32 verilator-a16-w16-d64 \
-        sim-test-int8x16 sim-test-int8x32 sim-test-int8x64 \
         sim-test-a4-w4-d16 sim-test-a4-w4-d32 sim-test-a4-w4-d64 \
+        sim-test-a8-w8-d16 sim-test-a8-w8-d32 sim-test-a8-w8-d64 \
         sim-test-a16-w16-d16 sim-test-a16-w16-d32 sim-test-a16-w16-d64 sim-test \
         verilator-lint yosys-stat clean help check-tools
 
@@ -158,10 +159,10 @@ help:
 	  'make bsv-test        - 모든 Bluesim testbench 컴파일 및 실행' \
 	  'make bsv-test-one TOP=mkTbPE - 지정한 testbench만 컴파일 및 실행' \
 	  'make rtl             - INT8/FP16/FP32 top의 Verilog 생성' \
-	  'make rtl-one TOP=mkSynthInt8 - 지정한 top의 Verilog만 생성' \
-	  'make verilator-a4-w4-d<dim>|verilator-int8x<dim>|verilator-a16-w16-d<dim> - matched isolated model' \
+	  'make rtl-one TOP=mkSynthA8W8D16 - 지정한 top의 Verilog만 생성' \
+	  'make verilator-a<bits>-w<bits>-d<dim> - matched isolated model' \
 	  'make verilator IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 - selected matched DIM16/32/64 models' \
-	  'make sim-test-a4-w4-d<dim>|sim-test-int8x<dim>|sim-test-a16-w16-d<dim> - matched isolated RTL tests' \
+	  'make sim-test-a<bits>-w<bits>-d<dim> - matched isolated RTL tests' \
 	  'make sim-test IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 - selected matched DIM16/32/64 tests' \
 	  'make gemmini-frontend - optional Gemmini adapter static library' \
 	  'make gemmini-frontend-test - optional Gemmini adapter contract tests' \
@@ -465,7 +466,7 @@ gemmini-frontend-real-test-mismatch:
 	fi; \
 	if test ! -f "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a8" \
-	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 verilator-int8x32; \
+	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 verilator-a8-w8-d32; \
 	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR="$$a8" \
 	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 \
 	    CARGO_TARGET_DIR="$$a8/cargo/a8-w8-d32" cargo build \
@@ -529,7 +530,7 @@ rtl: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
 rtl-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
 	@set -euo pipefail; \
 	top='$(TOP)'; \
-	test -n "$$top" || { echo 'TOP is required, e.g. TOP=mkSynthInt8' >&2; exit 2; }; \
+	test -n "$$top" || { echo 'TOP is required, e.g. TOP=mkSynthA8W8D16' >&2; exit 2; }; \
 	package="$${top#mk}"; \
 	out='$(RTL_OUT)'; \
 	test -n "$$out" || out="$(BUILD_DIR)/rtl/$$package"; \
@@ -543,33 +544,6 @@ rtl-one: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
 	$(BSC) -u -verilog -p $(BSC_PATH) $(BSC_EXTRA_FLAGS) \
 	  -bdir "$$bsc_dir" -info-dir "$$info_dir" \
 	  -vdir "$$out" -g $$top synth/$$package.bsv
-
-define define_sim_config
-verilator-int$(1)x$(2):
-	$$(MAKE) rtl-one TOP=mkSynthInt$(1)x$(2) \
-	  RTL_OUT="$$(BUILD_DIR)/rtl/a$(1)-w8-d$(2)/SynthInt$(1)x$(2)" \
-	  RTL_BSC_DIR="$$(BUILD_DIR)/bsc/a$(1)-w8-d$(2)" \
-	  RTL_INFO_DIR="$$(BUILD_DIR)/info/a$(1)-w8-d$(2)"
-	rm -rf "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir"
-	mkdir -p "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir"
-	$$(VERILATOR) $$(VERILATOR_COMMON) \
-	  --Mdir "$$(BUILD_DIR)/verilator/a$(1)-w8-d$(2)/obj_dir" \
-	  --top-module mkSynthInt$(1)x$(2) --prefix VmkSynthInt$(1)x$(2) \
-	  "$$(BUILD_DIR)/rtl/a$(1)-w8-d$(2)/SynthInt$(1)x$(2)"/*.v \
-	  "$$(BSC_VERILOG)/RegFile.v" "$$(BSC_VERILOG)/FIFO2.v"
-
-sim-test-int$(1)x$(2): verilator-int$(1)x$(2)
-	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)"
-	@set -o pipefail; \
-	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_BUILD_DIR="$$(abspath $$(BUILD_DIR))" \
-	  IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2) \
-	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w8-d$(2))" \
-	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \
-	    $$(CARGO_TEST_FILTER) -- --nocapture 2>&1 | \
-	    tee "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)/sim-test.log"
-endef
-
-$(foreach dim,16 32 64,$(eval $(call define_sim_config,8,$(dim))))
 
 define define_matched_sim_config
 verilator-a$(1)-w$(1)-d$(2):
@@ -596,16 +570,11 @@ sim-test-a$(1)-w$(1)-d$(2): verilator-a$(1)-w$(1)-d$(2)
 	    tee "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)/sim-test.log"
 endef
 
-$(foreach bits,4 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))
+$(foreach bits,4 8 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))
 
-# Legacy aggregate entry points default to INT8/W8 and select every supported dimension.
-ifeq ($(IM2P_WEIGHT_BITS),8)
-verilator: verilator-int$(IM2P_ACTIVATION_BITS)x16 verilator-int$(IM2P_ACTIVATION_BITS)x32 verilator-int$(IM2P_ACTIVATION_BITS)x64
-sim-test: sim-test-int$(IM2P_ACTIVATION_BITS)x16 sim-test-int$(IM2P_ACTIVATION_BITS)x32 sim-test-int$(IM2P_ACTIVATION_BITS)x64
-else
+# Aggregate entry points select every supported dimension for one matched A/W pair.
 verilator: verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d16 verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d32 verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d64
 sim-test: sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d16 sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d32 sim-test-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d64
-endif
 
 verilator-lint: rtl
 	@set -euo pipefail; \

@@ -270,7 +270,7 @@ make verify
 
 ```bash
 make bsv-test-one TOP=mkTbIM2PCore
-make rtl-one TOP=mkSynthInt8
+make rtl-one TOP=mkSynthA8W8D16
 ```
 
 `make check`는 BSC 없이 architecture 정적 검사와 C++20 reference self-test를 수행한다. 기본 build에는 llama.cpp-gemmini header가 필요 없다.
@@ -281,10 +281,9 @@ make rtl-one TOP=mkSynthInt8
 
 optional frontend는 read-only `llama.cpp-gemmini` checkout의 authoritative header로 build한다. Public frontend mode는 정확히 `FULL`과 `PIPELINE` 두 개뿐이다.
 
-Frontend artifact identity는 `a<activation>-w<weight>-d<dim>`이다. 기존 W8
-artifact는 DIM16/DIM32 block size 32, DIM64 block size 64를 유지한다. Native
-matched A4/W4와 A16/W16 artifact는 GGUF block layout에 맞춰 모든 DIM에서
-block size 32를 사용한다.
+Frontend artifact identity는 `a<activation>-w<weight>-d<dim>`이다. Block
+size는 DIM과 독립이며 기본값은 32다. 필요한 경우
+`GEMMINI_FRONTEND_BLOCK_SIZE`로 별도 선택한다.
 
 - `FULL`: ExSIA가 모든 stripe의 quantization/folding을 완료하면서 post-fold event를 collector에 보존한다. Quantization 성공 뒤 full NPU work를 시작하고, fence 뒤 기존 8-bit cpu-direct RMD를 완료한 다음에만 caller output을 publish한다.
 - `PIPELINE`: NPU stream을 먼저 시작한다. 각 stripe의 folding commit 직후 생성된 event를 batch의 quantization 종료까지 미루지 않고 즉시 stream에 publish하여 CPU ExSIA와 NPU 실행을 겹친다. Fence와 기존 8-bit cpu-direct RMD가 모두 성공한 다음에만 staged output을 caller에게 publish한다.

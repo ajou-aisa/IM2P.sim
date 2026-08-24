@@ -25,9 +25,9 @@
 | `TbIM2PLookaheadScale` | nonresident lookahead W/S miss timing |
 | `TbIM2PCoreGrouped` | 4-column/2-lane routing과 scale alignment |
 | `TbFloatCore` | 동일 Core source의 FLOAT Bypass execution |
-| `TbSynthInt8x16` | DIM16 synthesis wrapper smoke |
-| `TbSynthInt8x32` | DIM32 synthesis wrapper smoke |
-| `TbSynthInt8x64` | DIM64 4×4 tile hierarchy와 15/16, 31/32, 47/48 seam smoke |
+| `TbSynthA8W8D16` | DIM16 synthesis wrapper smoke |
+| `TbSynthA8W8D32` | DIM32 synthesis wrapper smoke |
+| `TbSynthA8W8D64` | DIM64 4×4 tile hierarchy와 15/16, 31/32, 47/48 seam smoke |
 
 `tests/TestVectorUtils.bsv`는 testbench에서 공유하는 고정 길이 Vector 생성 helper이며 synthesis top이 아니다.
 
@@ -78,7 +78,7 @@ make rtl
 ```bash
 make bsv-test-one TOP=mkTbAccumulator
 make bsv-test-one TOP=mkTbIM2PCore
-make rtl-one TOP=mkSynthInt8
+make rtl-one TOP=mkSynthA8W8D16
 ```
 
 ## 4. Verilated RTL integration test
@@ -86,9 +86,9 @@ make rtl-one TOP=mkSynthInt8
 Cargo는 `sim/tests/*.rs`를 자동으로 발견한다. 공통 CPU golden, scale matrix, fragment generator는 `sim/tests/common/`에 있다.
 
 ```bash
-make sim-test-int8x16
-make sim-test-int8x32
-make sim-test-int8x64
+make sim-test-a8-w8-d16
+make sim-test-a8-w8-d32
+make sim-test-a8-w8-d64
 ```
 
 각 target은 해당 DIM의 Verilog와 Verilated model을 다시 생성한 뒤 전체 test binary를 실행한다. 검증 범위는 다음과 같다.
@@ -131,7 +131,10 @@ Cargo auto-discovered integration tests:
 - `rtl_writeback`: prefix/tail/row-gutter guard 보존
 - `c_api_smoke.c`: blocking/cooperative C ABI, zero-budget 관찰, scheduler state별 정확한 `progress_stream(..., 1)` cycle delta
 
-`make sim-test-int8x16`, `make sim-test-int8x32`, `make sim-test-int8x64`는 각 DIM의 모든 Cargo integration binary를 실행한다. `make c-api-test`는 strict C11 header compile, static library link, 실제 C driver 실행까지 수행한다.
+`make sim-test-a8-w8-d16`, `make sim-test-a8-w8-d32`,
+`make sim-test-a8-w8-d64`는 각 DIM의 모든 Cargo integration binary를
+실행한다. `make c-api-test`는 strict C11 header compile, static library link,
+실제 C driver 실행까지 수행한다.
 
 ## ExSIA frontend lifecycle 및 sanitizer
 
@@ -176,7 +179,7 @@ make c-api-test IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=16
 make gemmini-frontend-real-test-matrix REAL_MATRIX_ROOT=/tmp/im2p-real-matrix
 make gemmini-frontend-real-test-mismatch REAL_MATRIX_ROOT=/tmp/im2p-real-matrix
 make sim-test-a4-w4-d{16,32,64}
-make sim-test-int8x{16,32,64}
+make sim-test-a8-w8-d{16,32,64}
 make sim-test-a16-w16-d{16,32,64}
 cargo test --manifest-path sim/Cargo.toml
 make bsv-test-one TOP=mkTbIM2PCoreOutputAddressing

@@ -7,8 +7,8 @@ BSV -> Verilog -> Verilator C++ -> C ABI -> Rust
 ```
 
 ```bash
-make sim-test-int8x16
-make sim-test-int8x32
+make sim-test-a8-w8-d16
+make sim-test-a8-w8-d32
 ```
 
 각 대상은 `sim/tests/*.rs`에서 자동 검색한 모든 통합 테스트를 실행하기 전에 Verilog와 Verilator 모델을 재생성한다.

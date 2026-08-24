@@ -1,4 +1,4 @@
-package TbSynthInt8x64;
+package TbSynthA8W8D64;
 
 import Vector::*;
 
@@ -6,7 +6,7 @@ import Types::*;
 import ExecuteCmd::*;
 import Config::*;
 import IM2PCore::*;
-import SynthInt8x64::*;
+import SynthA8W8D64::*;
 
 function Vector#(64, Int#(8)) identityWeight(UInt#(6) row);
     Vector#(64, Int#(8)) weights = newVector;
@@ -83,7 +83,7 @@ typedef enum {
     CheckRow0
 } TbState deriving (Bits, Eq, FShow);
 
-module mkTbSynthInt8x64(Empty);
+module mkTbSynthA8W8D64(Empty);
     IM2PCoreIfc#(
         64,
         1,
@@ -94,7 +94,7 @@ module mkTbSynthInt8x64(Empty);
         Int#(16),
         Int#(DefaultAccumulatorWidth),
         Int#(8)
-    ) dut <- mkSynthInt8x64;
+    ) dut <- mkSynthA8W8D64;
 
     Reg#(TbState) state <- mkReg(BeginWeights);
     Reg#(UInt#(6)) weightRow <- mkReg(0);
@@ -104,7 +104,7 @@ module mkTbSynthInt8x64(Empty);
     rule watch;
         watchdog <= watchdog + 1;
         if (watchdog == 8000) begin
-            $display("SYNTH INT8x64: FAIL (timeout)");
+            $display("SYNTH A8W8D64: FAIL (timeout)");
             $finish(1);
         end
     endrule
@@ -160,11 +160,11 @@ module mkTbSynthInt8x64(Empty);
             && observedRow1 == expectedRow(1);
 
         if (!passed) begin
-            $display("SYNTH INT8x64: FAIL (unexpected result)");
+            $display("SYNTH A8W8D64: FAIL (unexpected result)");
             $finish(1);
         end
         else begin
-            $display("SYNTH INT8x64: PASS");
+            $display("SYNTH A8W8D64: PASS");
             $finish(0);
         end
     endrule

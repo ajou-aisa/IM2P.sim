@@ -1,4 +1,4 @@
-package TbSynthInt8x32;
+package TbSynthA8W8D32;
 
 import Vector::*;
 
@@ -6,7 +6,7 @@ import Types::*;
 import ExecuteCmd::*;
 import Config::*;
 import IM2PCore::*;
-import SynthInt8x32::*;
+import SynthA8W8D32::*;
 
 // Identity weights make each output column reproduce the corresponding
 // activation value, which keeps expected results easy to inspect.
@@ -66,7 +66,7 @@ typedef enum {
 
 // Exercise the synthesized 32x32 INT8 configuration through the public
 // block-aware core interface: load weights, run two rows, then read results.
-module mkTbSynthInt8x32(Empty);
+module mkTbSynthA8W8D32(Empty);
     IM2PCoreIfc#(
         32,
         1,
@@ -77,7 +77,7 @@ module mkTbSynthInt8x32(Empty);
         Int#(16),
         Int#(DefaultAccumulatorWidth),
         Int#(8)
-    ) dut <- mkSynthInt8x32;
+    ) dut <- mkSynthA8W8D32;
 
     Reg#(TbState) state <- mkReg(BeginWeights);
     Reg#(UInt#(5)) weightRow <- mkReg(0);
@@ -88,7 +88,7 @@ module mkTbSynthInt8x32(Empty);
     rule watch;
         watchdog <= watchdog + 1;
         if (watchdog == 4000) begin
-            $display("SYNTH INT8x32: FAIL (timeout)");
+            $display("SYNTH A8W8D32: FAIL (timeout)");
             $finish(1);
         end
     endrule
@@ -150,11 +150,11 @@ module mkTbSynthInt8x32(Empty);
             && observedRow1 == expectedRow(1);
 
         if (!passed) begin
-            $display("SYNTH INT8x32: FAIL (unexpected result)");
+            $display("SYNTH A8W8D32: FAIL (unexpected result)");
             $finish(1);
         end
         else begin
-            $display("SYNTH INT8x32: PASS");
+            $display("SYNTH A8W8D32: PASS");
             $finish(0);
         end
     endrule

@@ -165,7 +165,7 @@ def main() -> int:
 
     expected_public_targets = {
         *(f"sim-test-a4-w4-d{dim}" for dim in DIMS),
-        *(f"sim-test-int8x{dim}" for dim in DIMS),
+        *(f"sim-test-a8-w8-d{dim}" for dim in DIMS),
         *(f"sim-test-a16-w16-d{dim}" for dim in DIMS),
     }
     phony_match = re.search(
@@ -177,7 +177,7 @@ def main() -> int:
             target
             for target in phony_match.group(1).replace("\\\n", " ").split()
             if re.fullmatch(
-                r"sim-test-(?:int(?:4|8|16)x(?:16|32|64)|a(?:4|8|16)-w(?:4|8|16)-d(?:16|32|64))",
+                r"sim-test-a(?:4|8|16)-w(?:4|8|16)-d(?:16|32|64)",
                 target,
             )
         }
@@ -278,7 +278,7 @@ def main() -> int:
     for bits in (8,):
         for dim in DIMS:
             identity = f"a{bits}-w8-d{dim}"
-            target = f"verilator-int{bits}x{dim}"
+            target = f"verilator-a{bits}-w8-d{dim}"
             result = make_dry_run(target)
             if result.returncode != 0:
                 failures.append(f"{target} is unavailable:\n{result.stdout}")
@@ -289,6 +289,18 @@ def main() -> int:
                     f"{target} must use only {identity}; observed {sorted(identities)}"
                 )
             normalized_output = result.stdout.replace('"', "")
+            stem = f"SynthA{bits}W8D{dim}"
+            canonical_required = (
+                f"TOP=mk{stem}",
+                f"--top-module mk{stem}",
+                f"--prefix Vmk{stem}",
+                artifact("rtl", identity, stem),
+            )
+            missing_canonical = [
+                value for value in canonical_required if value not in normalized_output
+            ]
+            if missing_canonical:
+                failures.append(f"{target} is missing {missing_canonical}")
             obj_dir = artifact("verilator", identity, "obj_dir")
             clean_command = f"rm -rf {obj_dir}"
             create_command = f"mkdir -p {obj_dir}"
@@ -303,9 +315,7 @@ def main() -> int:
                     f"creating {obj_dir}"
                 )
             if dim == 64:
-                rtl_glob = (
-                    f"{artifact('rtl', identity, f'SynthInt{bits}x{dim}')}/*.v"
-                )
+                rtl_glob = f"{artifact('rtl', identity, stem)}/*.v"
                 if rtl_glob not in normalized_output:
                     failures.append(
                         f"{target} must compile every generated hierarchy module; "
@@ -313,7 +323,7 @@ def main() -> int:
                     )
             observed[identity] = result.stdout
 
-            sim_target = f"sim-test-int{bits}x{dim}"
+            sim_target = f"sim-test-a{bits}-w8-d{dim}"
             sim = make_dry_run(
                 sim_target, variables=("CARGO_TEST_FILTER=contract_filter",)
             )
