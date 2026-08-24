@@ -253,7 +253,7 @@ Provider는 같은 combinational state에서 ready인 A/W/S/C response를 함께
 
 Async `publishStripe`는 queue-only operation이 아니다. 승인된 stripe는 activation host memory를 RTL에서 사용할 수 있음을 알리는 event이며, current WS/RC execution이 계속되는 동안 Core가 즉시 다음 stripe의 첫 A/W/S fragment를 prepare할 수 있게 한다.
 
-Production ExSIA `PIPELINE`에서는 각 stripe의 folding commit 직후 post-fold event를 이 publication path에 전달한다. 전체 activation quantization 종료까지 event를 모아 batch publish하지 않는다. `FULL`은 post-fold event를 collector에 보존하되 전체 quantization 성공 뒤 full descriptor를 한 번 시작한다. 두 mode 모두 NPU output과 기존 8-bit cpu-direct RMD를 frontend-owned staging에서 완료한 뒤에만 caller output을 publish한다.
+Production matched ExSIA `PIPELINE`에서는 각 stripe의 folding commit 직후 post-fold event를 이 publication path에 전달한다. 전체 activation quantization 종료까지 event를 모아 batch publish하지 않는다. `FULL`은 post-fold event를 collector에 보존하되 전체 quantization 성공 뒤 full descriptor를 한 번 시작한다. 두 mode 모두 NPU output과 matched-width H0/H1/HP1 RMD를 frontend-owned staging에서 완료한 뒤에만 caller output을 publish한다. `FULL`의 RTL publication 수와 published row 수는 항상 0이고, `PIPELINE`만 canonical llama stripe geometry와 같은 publication을 낸다.
 
 미공개 activation에는 A read를 발행하지 않는다. Full-matrix mode도 이 scheduler path를 사용하지만 A/W/S/C region 전체가 descriptor 제출 시점부터 available하므로 publication gate가 없다.
 
@@ -303,10 +303,21 @@ Host pointer dereference, CPU thread scheduling, sleep, 기타 wall-clock은 이
 
 Host pointer access도 zero-time이다. 따라서 CPU와 NPU의 common time 비교나 physical ns/GHz/Fmax 또는 silicon 성능을 이 counter나 Verilator host runtime에서 도출할 수 없다.
 
-Production ExSIA format은 A8/Q8이다. Non-RMD matched A4/Q4와 A16/Q16은
-FULL/PIPELINE 모두 단일 canonical ABI의 typed weight provider를 사용한다.
-Matched ExSIA의 RMD scale integration, Q8 H2/HP2와 unsupported mixed
-precision은 TODO이며 다른 format으로 fallback하지 않는다. Raw output의
-final signed-32 saturation 경계는 유지한다.
+Production matched ExSIA artifact는 A4/Q4, A8/Q8, A16/Q16이며 각각
+DIM16/32/64로 build된다. 아홉 artifact는
+`a<activation>-w<weight>-d<dim>` identity, activation/weight storage byte 수,
+ABI version을 RTL 실행 전에 exact probe한다. 모든 mixed A/W route는 allocation과
+worker start 전에 fail closed한다. 별도의 live-linked frontend/simulator identity
+mismatch는 frontend Run과 worker setup 뒤 probe에서 검출되지만 RTL submission,
+RMD, output commit, fallback 전에 실패한다. Q8 H2/HP2와 H0 compact-WS도
+지원하지 않는다. Raw output의 final signed-32 saturation 경계는 유지한다.
+
+Llama의 Gemmini geometry에서 `tile_I/J/K`는 DIM-block factor이고
+`I0/J0/K0`는 outer loop count다. Logical activation stripe는
+`tile_I*DIM` rows이며 마지막 stripe만 partial이다. RTL의
+`tile_i_rows`/`tile_j_columns`는 output work extent이고, K fragment는 DIM,
+remaining K, quantization block boundary로 정해져 publication을 만들지
+않는다. 따라서 stripe, RTL output work, K fragment, FULL/PIPELINE mode,
+A/W numeric width, artifact identity는 서로 대체할 수 없는 별도 축이다.
 
 코드 분석 순서와 작성 규칙은 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md), public simulator 계약은 [simulator 사용법](../sim/README.md)에서 확인한다.

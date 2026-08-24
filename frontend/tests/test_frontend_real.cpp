@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -54,6 +55,19 @@ exsia::StripeReadyEvent stripe(size_t id, size_t begin, size_t end) {
   event.row_begin = begin;
   event.row_end = end;
   return event;
+}
+
+std::string published_row_sequence(Mode mode, size_t rows,
+                                   size_t rows_per_stripe) {
+  if (mode == Mode::full)
+    return "none";
+  std::string result;
+  for (size_t row = 0; row < rows; row += rows_per_stripe) {
+    if (!result.empty())
+      result += ',';
+    result += std::to_string(std::min(rows_per_stripe, rows - row));
+  }
+  return result;
 }
 
 struct RealCase {
@@ -228,9 +242,13 @@ struct RealCase {
       done.stats.base.output_write_requests == 0 ||
       done.stats.base.scale_read_requests != 0)
     return false;
-  if (mode == Mode::stripe_pipeline &&
-      (done.stats.base.completed_stripes != 3 ||
-       done.stats.base.stripes_published != 3))
+  if ((mode == Mode::full &&
+       (done.stats.base.stripes_published != 0 ||
+        done.stats.base.stripe_rows_published != 0)) ||
+      (mode == Mode::stripe_pipeline &&
+       (done.stats.base.completed_stripes != 3 ||
+        done.stats.base.stripes_published != 3 ||
+        done.stats.base.stripe_rows_published != test.m)))
     return false;
 
   std::printf(
@@ -238,7 +256,8 @@ struct RealCase {
       "M=%zu N=%zu K=%zu activation_byte_stride=%zu "
       "weight_origin=%zu output_origin=%zu stripes=%zu "
       "activation_reads=%llu weight_reads=%llu output_writes=%llu "
-      "completed=%llu published=%llu\n",
+      "completed=%llu published=%llu published_rows=%llu "
+      "published_row_sequence=%s output_works=%llu fragments=%llu\n",
       IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM,
       mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
       test.activation_stride_bytes, kWeightOrigin, kOutputOrigin,
@@ -247,24 +266,32 @@ struct RealCase {
       static_cast<unsigned long long>(done.stats.base.weight_read_requests),
       static_cast<unsigned long long>(done.stats.base.output_write_requests),
       static_cast<unsigned long long>(done.stats.base.completed_stripes),
-      static_cast<unsigned long long>(done.stats.base.stripes_published));
+      static_cast<unsigned long long>(done.stats.base.stripes_published),
+      static_cast<unsigned long long>(done.stats.base.stripe_rows_published),
+      published_row_sequence(mode, test.m, test.stripe_rows).c_str(),
+      static_cast<unsigned long long>(done.stats.base.completed_output_tiles),
+      static_cast<unsigned long long>(done.stats.base.completed_fragments));
   return true;
 }
 
 struct ProviderCase {
   const size_t m = DIM + 3;
   const size_t n = DIM + 5;
-  const size_t k = DIM + 7;
+  const size_t k = 2 * size_t{QK8_0};
   const size_t stripe_rows = (m + 2) / 3;
-  const size_t blocks = (k + QK8_0 - 1) / QK8_0;
+  const size_t blocks = k / QK8_0;
+  const bool hp1;
   ggml::gemmini::quants::act::QuantizedActivationBuffer activations;
-  std::vector<block_q8_h1> weights;
+  std::vector<block_q8_h1> h1_weights;
+  std::vector<block_q8_hp1> hp1_weights;
   std::vector<float> output;
   std::vector<float> expected;
   ggml_gemmini_args_t args{};
 
-  ProviderCase()
-      : weights(n * blocks), output(m * n, 17.0f), expected(m * n, 0.0f) {
+  explicit ProviderCase(bool use_hp1)
+      : hp1(use_hp1), h1_weights(use_hp1 ? 0 : n * blocks),
+        hp1_weights(use_hp1 ? n * blocks : 0), output(m * n, 17.0f),
+        expected(m * n, 0.0f) {
     if (!activations.allocate(m, k, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
       std::abort();
     for (size_t i = 0; i < m; ++i)
@@ -274,24 +301,41 @@ struct ProviderCase {
           std::abort();
     for (size_t j = 0; j < n; ++j) {
       for (size_t block = 0; block < blocks; ++block) {
-        auto &weight = weights[j * blocks + block];
-        weight.s_rf = block % 2 == 0 ? 0.25f : 0.5f;
-        weight.c_b = static_cast<uint8_t>(1 + block);
-        weight.R = 1;
-        for (size_t lane = 0; lane < QK8_0; ++lane)
-          weight.qs[lane] =
-              static_cast<int8_t>((block * QK8_0 + lane + j * 5) % 13) - 6;
+        const auto code = [=](size_t lane) {
+          return static_cast<int8_t>(
+              (block * QK8_0 + lane + j * 5) % 13) - 6;
+        };
+        if (hp1) {
+          auto &weight = hp1_weights[j * blocks + block];
+          weight.channel_scale = 0.25f;
+          weight.m = 1;
+          for (size_t lane = 0; lane < QK8_0; ++lane)
+            weight.qs[lane] = code(lane);
+        } else {
+          auto &weight = h1_weights[j * blocks + block];
+          weight.s_rf = block % 2 == 0 ? 0.25f : 0.5f;
+          weight.c_b = static_cast<uint8_t>(1 + block);
+          weight.R = 1;
+          for (size_t lane = 0; lane < QK8_0; ++lane)
+            weight.qs[lane] = code(lane);
+        }
       }
     }
     for (size_t i = 0; i < m; ++i) {
       for (size_t j = 0; j < n; ++j) {
         double sum = 0.0;
         for (size_t x = 0; x < k; ++x) {
-          const auto &weight = weights[j * blocks + x / QK8_0];
-          const double factor = static_cast<double>(weight.s_rf) *
-                                static_cast<double>(weight.c_b + weight.R);
+          const size_t index = j * blocks + x / QK8_0;
+          const int8_t code = hp1 ? hp1_weights[index].qs[x % QK8_0]
+                                  : h1_weights[index].qs[x % QK8_0];
+          const double factor = hp1
+              ? std::ldexp(static_cast<double>(hp1_weights[index].channel_scale),
+                           hp1_weights[index].m)
+              : static_cast<double>(h1_weights[index].s_rf) *
+                    static_cast<double>(h1_weights[index].c_b +
+                                        h1_weights[index].R);
           sum += static_cast<double>(activations.get(i, x)) *
-                 static_cast<double>(weight.qs[x % QK8_0]) * factor * 0.5;
+                 static_cast<double>(code) * factor * 0.5;
         }
         expected[i * n + j] = static_cast<float>(sum);
       }
@@ -303,18 +347,27 @@ struct ProviderCase {
     args.activation_rows_per_stripe = stripe_rows;
     args.f_out = output.data();
     args.stride_f_out = n;
-    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-    args.q8_h1_blocks = weights.data();
-    args.q8_h1_block_count = weights.size();
-    args.q8_h1_rows = n;
-    args.blocks_per_row = blocks;
+    if (hp1) {
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+      args.q8_hp1_blocks = hp1_weights.data();
+      args.q8_hp1_block_count = hp1_weights.size();
+      args.q8_hp1_blocks_per_row = blocks;
+      args.native_weight_bytes = hp1_weights.size() * sizeof(block_q8_hp1);
+    } else {
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+      args.q8_h1_blocks = h1_weights.data();
+      args.q8_h1_block_count = h1_weights.size();
+      args.q8_h1_rows = n;
+      args.blocks_per_row = blocks;
+      args.native_weight_bytes = h1_weights.size() * sizeof(block_q8_h1);
+    }
     auto &meta = args.act_quant.storage().emplace<exsia::Meta>();
     meta.theta.assign(3, -1);
   }
 };
 
-[[maybe_unused]] bool run_provider(Mode mode) {
-  ProviderCase test;
+[[maybe_unused]] bool run_provider(Mode mode, bool hp1 = false) {
+  ProviderCase test(hp1);
   auto started = execute(&test.args, mode, Options{1000000});
   if (!started.status.ok()) {
     std::fprintf(stderr, "provider execute failed bits=%d dim=%d mode=%d: %s\n",
@@ -345,9 +398,13 @@ struct ProviderCase {
       done.stats.base.weight_read_requests == 0 ||
       done.stats.base.output_write_requests == 0 ||
       done.stats.base.scale_read_requests == 0 ||
+      (mode == Mode::full &&
+       (done.stats.base.stripes_published != 0 ||
+        done.stats.base.stripe_rows_published != 0)) ||
       (mode == Mode::stripe_pipeline &&
        (done.stats.base.completed_stripes != 3 ||
-        done.stats.base.stripes_published != 3))) {
+        done.stats.base.stripes_published != 3 ||
+        done.stats.base.stripe_rows_published != test.m))) {
     std::fprintf(stderr,
                  "provider verification failed bits=%d dim=%d mode=%d "
                  "status=%s stripes=%zu\n",
@@ -356,11 +413,13 @@ struct ProviderCase {
     return false;
   }
   std::printf(
-      "REAL_EXECUTION bits=%d dim=%d route=q8_h1 mode=%s PASS "
+      "REAL_EXECUTION bits=%d dim=%d route=%s mode=%s PASS "
       "M=%zu N=%zu K=%zu stripes=%zu activation_reads=%llu "
       "weight_reads=%llu scale_reads=%llu output_writes=%llu "
-      "completed=%llu published=%llu\n",
+      "completed=%llu published=%llu published_rows=%llu "
+      "published_row_sequence=%s output_works=%llu fragments=%llu\n",
       IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM,
+      hp1 ? "q8_hp1" : "q8_h1",
       mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
       mode == Mode::stripe_pipeline ? submitted : 0,
       static_cast<unsigned long long>(done.stats.base.activation_read_requests),
@@ -368,9 +427,82 @@ struct ProviderCase {
       static_cast<unsigned long long>(done.stats.base.scale_read_requests),
       static_cast<unsigned long long>(done.stats.base.output_write_requests),
       static_cast<unsigned long long>(done.stats.base.completed_stripes),
-      static_cast<unsigned long long>(done.stats.base.stripes_published));
+      static_cast<unsigned long long>(done.stats.base.stripes_published),
+      static_cast<unsigned long long>(done.stats.base.stripe_rows_published),
+      published_row_sequence(mode, test.m, test.stripe_rows).c_str(),
+      static_cast<unsigned long long>(done.stats.base.completed_output_tiles),
+      static_cast<unsigned long long>(done.stats.base.completed_fragments));
   return true;
 }
+
+#if GGML_GEMMINI_WEIGHT_BITS == 8
+bool run_full_projection_regression() {
+  constexpr size_t m = 1;
+  constexpr size_t n = 50257;
+  constexpr size_t k = 768;
+  constexpr size_t blocks = k / QK8_0;
+  constexpr uint64_t expected_works = (n + DIM - 1) / DIM;
+  constexpr uint64_t expected_fragments = expected_works * (k / DIM);
+  constexpr float expected_value = static_cast<float>(k);
+
+  ggml::gemmini::quants::act::QuantizedActivationBuffer activations;
+  if (!activations.allocate(m, k, 8))
+    return false;
+  for (size_t column = 0; column < k; ++column)
+    if (!activations.set(0, column, 1))
+      return false;
+
+  std::vector<block_q8_h1> weights(n * blocks);
+  for (auto &weight : weights) {
+    weight.s_rf = 1.0f;
+    weight.c_b = 1;
+    weight.R = 0;
+    std::fill(std::begin(weight.qs), std::end(weight.qs), int8_t{1});
+  }
+  std::vector<float> output(n, -12345.0f);
+
+  ggml_gemmini_args_t args{};
+  args.I = m;
+  args.J = n;
+  args.K = k;
+  args.A = activations;
+  args.activation_rows_per_stripe = DIM;
+  args.f_out = output.data();
+  args.stride_f_out = n;
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  args.q8_h1_blocks = weights.data();
+  args.q8_h1_block_count = weights.size();
+  args.q8_h1_rows = n;
+  args.blocks_per_row = blocks;
+  args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+  auto &meta = args.act_quant.storage().emplace<exsia::Meta>();
+  meta.theta.assign(1, 0);
+
+  auto started = execute(&args, Mode::full, Options{65536});
+  if (!started.status.ok() || !started.run)
+    return false;
+  const auto done = fence(*started.run);
+  const auto &stats = done.stats.base;
+  const size_t committed = static_cast<size_t>(std::count(
+      output.begin(), output.end(), expected_value));
+  const bool pass = done.status.ok() && committed == n &&
+                    stats.completed_output_tiles == expected_works &&
+                    stats.completed_fragments == expected_fragments &&
+                    stats.completed_stripes == 1 &&
+                    stats.stripes_published == 0 &&
+                    stats.stripe_rows_published == 0;
+  std::printf(
+      "FULL_PROJECTION_QA I=%zu J=%zu K=%zu works=%llu fragments=%llu "
+      "committed=%zu published=%llu published_rows=%llu %s\n",
+      m, n, k,
+      static_cast<unsigned long long>(stats.completed_output_tiles),
+      static_cast<unsigned long long>(stats.completed_fragments), committed,
+      static_cast<unsigned long long>(stats.stripes_published),
+      static_cast<unsigned long long>(stats.stripe_rows_published),
+      pass ? "PASS" : "FAIL");
+  return pass;
+}
+#endif
 
 #if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
 enum class MatchedFormat { h0, h1, hp1 };
@@ -501,6 +633,7 @@ struct MatchedProviderCase {
       args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h0;
       args.q16_h0_blocks = h0.data();
 #endif
+      args.native_weight_bytes = h0.size() * sizeof(NativeH0);
       break;
     case MatchedFormat::h1:
 #if GGML_GEMMINI_WEIGHT_BITS == 4
@@ -510,6 +643,7 @@ struct MatchedProviderCase {
       args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h1;
       args.q16_h1_blocks = h1.data();
 #endif
+      args.native_weight_bytes = h1.size() * sizeof(NativeH1);
       break;
     case MatchedFormat::hp1:
 #if GGML_GEMMINI_WEIGHT_BITS == 4
@@ -519,6 +653,7 @@ struct MatchedProviderCase {
       args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_hp1;
       args.q16_hp1_blocks = hp1.data();
 #endif
+      args.native_weight_bytes = hp1.size() * sizeof(NativeHp1);
       break;
     }
     args.act_quant.storage()
@@ -574,9 +709,13 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
       done.stats.base.weight_read_requests == 0 ||
       done.stats.base.scale_read_requests == 0 ||
       done.stats.base.output_write_requests == 0 ||
+      (mode == Mode::full &&
+       (done.stats.base.stripes_published != 0 ||
+        done.stats.base.stripe_rows_published != 0)) ||
       (mode == Mode::stripe_pipeline &&
        (done.stats.base.completed_stripes != submitted ||
-        done.stats.base.stripes_published != submitted))) {
+        done.stats.base.stripes_published != submitted ||
+        done.stats.base.stripe_rows_published != test.m))) {
     std::fprintf(stderr,
                  "matched verification failed route=%s mode=%s status=%s reads=%llu/%llu/%llu writes=%llu\n",
                  matched_format_name(format),
@@ -587,11 +726,26 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
                  static_cast<unsigned long long>(done.stats.base.output_write_requests));
     return false;
   }
-  std::printf("REAL_EXECUTION activation_bits=%d weight_bits=%d dim=%d route=%s mode=%s PASS M=%zu N=%zu K=%zu blocks=%zu stripes=%zu\n",
-              IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, GGML_GEMMINI_WEIGHT_BITS,
-              DIM, matched_format_name(format),
-              mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
-              test.blocks, submitted);
+  std::printf(
+      "REAL_EXECUTION activation_bits=%d weight_bits=%d dim=%d route=%s "
+      "mode=%s PASS M=%zu N=%zu K=%zu blocks=%zu stripes=%zu "
+      "activation_reads=%llu weight_reads=%llu output_writes=%llu "
+      "completed=%llu published=%llu published_rows=%llu "
+      "published_row_sequence=%s output_works=%llu fragments=%llu\n",
+      IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, GGML_GEMMINI_WEIGHT_BITS,
+      DIM, matched_format_name(format),
+      mode == Mode::full ? "full" : "stripe", test.m, test.n, test.k,
+      test.blocks, submitted,
+      static_cast<unsigned long long>(done.stats.base.activation_read_requests),
+      static_cast<unsigned long long>(done.stats.base.weight_read_requests),
+      static_cast<unsigned long long>(done.stats.base.output_write_requests),
+      static_cast<unsigned long long>(done.stats.base.completed_stripes),
+      static_cast<unsigned long long>(done.stats.base.stripes_published),
+      static_cast<unsigned long long>(done.stats.base.stripe_rows_published),
+      published_row_sequence(mode, test.m,
+                             test.args.activation_rows_per_stripe).c_str(),
+      static_cast<unsigned long long>(done.stats.base.completed_output_tiles),
+      static_cast<unsigned long long>(done.stats.base.completed_fragments));
   return true;
 }
 #endif
@@ -649,10 +803,19 @@ bool expect_configuration_mismatch() {
 
 int main(int argc, char **argv) {
   if (argc == 2 &&
-      std::string_view(argv[1]) == "--expect-configuration-mismatch")
+      std::string_view(argv[1]) == "--expect-configuration-mismatch") {
+    if (verify_compiled_identity()) {
+      std::fprintf(stderr, "expected frontend/simulator identity mismatch\n");
+      return 3;
+    }
     return expect_configuration_mismatch() ? 0 : 3;
+  }
   if (!verify_compiled_identity())
     return 2;
+#if GGML_GEMMINI_WEIGHT_BITS == 8
+  if (argc == 2 && std::string_view(argv[1]) == "--full-projection")
+    return run_full_projection_regression() ? 0 : 1;
+#endif
 #if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
   if (argc != 1) {
     std::fprintf(stderr, "matched-width real test takes no route override\n");
@@ -672,31 +835,32 @@ int main(int argc, char **argv) {
               GGML_GEMMINI_WEIGHT_BITS, DIM);
   return 0;
 #else
-  bool provider = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS == 8;
+  std::string_view route = "q8_h1";
   if (argc == 3 && std::string_view(argv[1]) == "--route") {
-    if (std::string_view(argv[2]) == "q8_h0")
-      provider = false;
-    else if (std::string_view(argv[2]) == "q8_h1")
-      provider = true;
-    else {
+    route = argv[2];
+    if (route != "q8_h0" && route != "q8_h1" && route != "q8_hp1") {
       std::fprintf(stderr, "unsupported route: %s\n", argv[2]);
       return 64;
     }
   } else if (argc != 1) {
     std::fprintf(
         stderr,
-        "usage: %s [--route q8_h0|q8_h1|--expect-configuration-mismatch]\n",
+        "usage: %s [--route q8_h0|q8_h1|q8_hp1|--full-projection|--expect-configuration-mismatch]\n",
         argv[0]);
     return 64;
   }
   const bool passed =
-      provider ? run_provider(Mode::full) && run_provider(Mode::stripe_pipeline)
-               : run_legacy(Mode::full) && run_legacy(Mode::stripe_pipeline);
+      route == "q8_h0"
+          ? run_legacy(Mode::full) && run_legacy(Mode::stripe_pipeline)
+      : route == "q8_hp1"
+          ? run_provider(Mode::full, true) &&
+                run_provider(Mode::stripe_pipeline, true)
+          : run_provider(Mode::full) && run_provider(Mode::stripe_pipeline);
   if (!passed)
     return 1;
-  std::printf("IM2P Gemmini frontend real RTL bits=%d DIM=%d route=%s: PASS\n",
+  std::printf("IM2P Gemmini frontend real RTL bits=%d DIM=%d route=%.*s: PASS\n",
               IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM,
-              provider ? "q8_h1" : "q8_h0");
+              static_cast<int>(route.size()), route.data());
   return 0;
 #endif
 }

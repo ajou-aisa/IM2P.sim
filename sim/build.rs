@@ -47,8 +47,11 @@ fn main() {
         })
         .expect("repository root must be discoverable");
     let artifact_id = format!("a{activation_bits}-w{weight_bits}-d{dim}");
-    let obj_dir = root
-        .join("build/verilator")
+    let build_dir = env::var_os("IM2P_BUILD_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("build"));
+    let obj_dir = build_dir
+        .join("verilator")
         .join(artifact_id)
         .join("obj_dir");
     let verilator = verilator_root();
@@ -57,6 +60,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=IM2P_WEIGHT_BITS");
     println!("cargo:rerun-if-env-changed=IM2P_DIM");
     println!("cargo:rerun-if-env-changed=IM2P_REPO_ROOT");
+    println!("cargo:rerun-if-env-changed=IM2P_BUILD_DIR");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.cpp");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.h");
     println!("cargo:rerun-if-changed=ffi/testing/im2p_verilator_testing.h");

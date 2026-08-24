@@ -27,6 +27,9 @@ endif
 ifeq ($(filter $(IM2P_DIM),$(IM2P_ALLOWED_DIMS)),)
 $(error IM2P_DIM must be 16, 32, or 64 (got '$(IM2P_DIM)'))
 endif
+ifneq ($(IM2P_ACTIVATION_BITS),$(IM2P_WEIGHT_BITS))
+$(error IM2P artifacts require matched activation/weight widths (got A$(IM2P_ACTIVATION_BITS)/W$(IM2P_WEIGHT_BITS)))
+endif
 
 BUILD_DIR := build
 ROOT_DIR  := $(CURDIR)
@@ -43,7 +46,7 @@ GEMMINI_PARAMS_ROOT ?= $(abspath ../RISC-V-DynDNN-gemmini-include/include)
 GEMMINI_FRONTEND_ACTIVATION_BITS ?= $(IM2P_ACTIVATION_BITS)
 GEMMINI_FRONTEND_WEIGHT_BITS ?= $(IM2P_WEIGHT_BITS)
 GEMMINI_FRONTEND_DIM ?= $(IM2P_DIM)
-GEMMINI_FRONTEND_BLOCK_SIZE = $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),$(if $(filter 64,$(GEMMINI_FRONTEND_DIM)),64,32),32)
+GEMMINI_FRONTEND_BLOCK_SIZE ?= 32
 ifeq ($(filter $(GEMMINI_FRONTEND_ACTIVATION_BITS),$(IM2P_ALLOWED_ACTIVATION_BITS)),)
 $(error GEMMINI_FRONTEND_ACTIVATION_BITS must be one of 4, 8, or 16 (got '$(GEMMINI_FRONTEND_ACTIVATION_BITS)'))
 endif
@@ -52,6 +55,9 @@ $(error GEMMINI_FRONTEND_WEIGHT_BITS must be one of 4, 8, or 16 (got '$(GEMMINI_
 endif
 ifeq ($(filter $(GEMMINI_FRONTEND_DIM),$(IM2P_ALLOWED_DIMS)),)
 $(error GEMMINI_FRONTEND_DIM must be 16, 32, or 64 (got '$(GEMMINI_FRONTEND_DIM)'))
+endif
+ifneq ($(GEMMINI_FRONTEND_ACTIVATION_BITS),$(GEMMINI_FRONTEND_WEIGHT_BITS))
+$(error Gemmini frontend artifacts require matched activation/weight widths (got A$(GEMMINI_FRONTEND_ACTIVATION_BITS)/W$(GEMMINI_FRONTEND_WEIGHT_BITS)))
 endif
 GEMMINI_ARTIFACT_ID = a$(GEMMINI_FRONTEND_ACTIVATION_BITS)-w$(GEMMINI_FRONTEND_WEIGHT_BITS)-d$(GEMMINI_FRONTEND_DIM)
 GEMMINI_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(GEMMINI_ARTIFACT_ID))
@@ -124,16 +130,13 @@ VERILATOR_COMMON := --cc --Wno-fatal
         gemmini-frontend-test gemmini-frontend-test-sanitized \
         gemmini-frontend-asan-test gemmini-frontend-tsan-test \
         gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
+        gemmini-frontend-real-test-q8-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
         gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
         bsv-test bsv-test-one rtl rtl-one \
-        verilator-int4x16 verilator-int8x16 verilator-int16x16 \
-        verilator-int4x32 verilator-int8x32 verilator-int16x32 verilator \
-        verilator-int4x64 verilator-int8x64 verilator-int16x64 \
+        verilator-int8x16 verilator-int8x32 verilator-int8x64 verilator \
         verilator-a4-w4-d16 verilator-a4-w4-d32 verilator-a4-w4-d64 \
         verilator-a16-w16-d16 verilator-a16-w16-d32 verilator-a16-w16-d64 \
-        sim-test-int4x16 sim-test-int8x16 sim-test-int16x16 \
-        sim-test-int4x32 sim-test-int8x32 sim-test-int16x32 \
-        sim-test-int4x64 sim-test-int8x64 sim-test-int16x64 \
+        sim-test-int8x16 sim-test-int8x32 sim-test-int8x64 \
         sim-test-a4-w4-d16 sim-test-a4-w4-d32 sim-test-a4-w4-d64 \
         sim-test-a16-w16-d16 sim-test-a16-w16-d32 sim-test-a16-w16-d64 sim-test \
         verilator-lint yosys-stat clean help check-tools
@@ -156,10 +159,10 @@ help:
 	  'make bsv-test-one TOP=mkTbPE - 지정한 testbench만 컴파일 및 실행' \
 	  'make rtl             - INT8/FP16/FP32 top의 Verilog 생성' \
 	  'make rtl-one TOP=mkSynthInt8 - 지정한 top의 Verilog만 생성' \
-	  'make verilator-int<bits>x<dim> - isolated 4/8/16-bit DIM16/32/64 model' \
-	  'make verilator IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32/64 models' \
-	  'make sim-test-int<bits>x<dim> - matching isolated Rust RTL tests' \
-	  'make sim-test IM2P_ACTIVATION_BITS=8 - selected-width DIM16/32/64 tests' \
+	  'make verilator-a4-w4-d<dim>|verilator-int8x<dim>|verilator-a16-w16-d<dim> - matched isolated model' \
+	  'make verilator IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 - selected matched DIM16/32/64 models' \
+	  'make sim-test-a4-w4-d<dim>|sim-test-int8x<dim>|sim-test-a16-w16-d<dim> - matched isolated RTL tests' \
+	  'make sim-test IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 - selected matched DIM16/32/64 tests' \
 	  'make gemmini-frontend - optional Gemmini adapter static library' \
 	  'make gemmini-frontend-test - optional Gemmini adapter contract tests' \
 	  'make gemmini-frontend-test-sanitized - public ASan+UBSan lifecycle suite' \
@@ -167,8 +170,10 @@ help:
 	  'make gemmini-frontend-tsan-test - isolated TSan frontend suite' \
 	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle (A8 uses q8_h1)' \
 	  'make gemmini-frontend-real-test-q8-h0 - maintained raw Q8 full/stripe RTL oracle' \
-	  'make gemmini-frontend-real-test-matrix - isolated A8 x DIM16/32/64 real matrix' \
-	  'make gemmini-frontend-real-test-mismatch - fail-closed A16 frontend/A8 simulator QA' \
+	  'make gemmini-frontend-real-test-q8-hp1 - maintained Q8 HP1 full/stripe RTL oracle' \
+	  'make gemmini-frontend-real-syntax-test - generated-header W4/W16 real fixture syntax' \
+	  'make gemmini-frontend-real-test-matrix - nine matched A/W/DIM artifacts in FULL and PIPELINE' \
+	  'make gemmini-frontend-real-test-mismatch - fail-closed A16/W16 frontend with A8/W8 simulator QA' \
 	  'make verilator-lint  - 생성 Verilog에 Verilator lint 적용' \
 	  'make yosys-stat      - 생성 Verilog에 Yosys generic synthesis/stat 적용' \
 	  'make check-tools     - 외부 도구 설치 여부 확인' \
@@ -208,7 +213,8 @@ c-api-test: c-api-layout-test | $(BUILD_DIR)/bin
 		-DIM2P_TEST_DIM=$(IM2P_DIM) \
 		-Isim/include -c sim/tests/c_api_runtime.c \
 		-o $(C_API_BUILD_DIR)/c_api_runtime.o
-	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
+	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_BUILD_DIR=$(abspath $(BUILD_DIR)) \
+		IM2P_ACTIVATION_BITS=$(IM2P_ACTIVATION_BITS) \
 		IM2P_WEIGHT_BITS=$(IM2P_WEIGHT_BITS) IM2P_DIM=$(IM2P_DIM) \
 		CARGO_TARGET_DIR=$(IM2P_CARGO_TARGET_DIR) cargo build \
 		--manifest-path sim/Cargo.toml --lib --release
@@ -234,6 +240,8 @@ GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthrea
 GEMMINI_FRONTEND_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend.o
 GEMMINI_FRONTEND_ARCHIVE = $(BUILD_DIR)/lib/$(GEMMINI_ARTIFACT_ID)/libim2p_gemmini_frontend.a
 GEMMINI_FRONTEND_TEST_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_testing.o
+GEMMINI_FRONTEND_DEPENDENCY_FILES = $(GEMMINI_FRONTEND_OBJECT:.o=.d) $(GEMMINI_FRONTEND_TEST_OBJECT:.o=.d)
+GEMMINI_FRONTEND_BOOTSTRAP_HEADER = $(GEMMINI_ROOT)/ggml/src/ggml-gemmini/ggml-gemmini-args.h
 GEMMINI_FRONTEND_TEST_ARCHIVE = $(BUILD_DIR)/lib/$(GEMMINI_ARTIFACT_ID)/libim2p_gemmini_frontend_testing.a
 GEMMINI_FRONTEND_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_test
 GEMMINI_FRONTEND_ASAN_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_asan_test
@@ -246,24 +254,27 @@ $(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h
 	@mkdir -p $(GEMMINI_DIM_CONFIG_DIR)
 	sed 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' $< > $@
 
-$(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
+$(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $@)
-	$(CXX) $(GEMMINI_FRONTEND_FLAGS) $(GEMMINI_FRONTEND_INCLUDES) -c $< -o $@
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) $(GEMMINI_FRONTEND_INCLUDES) \
+		-MMD -MP -c $< -o $@
 
 $(GEMMINI_FRONTEND_ARCHIVE): $(GEMMINI_FRONTEND_OBJECT) | $(BUILD_DIR)/lib
 	@mkdir -p $(dir $@)
 	rm -f $@
 	$(AR) rcs $@ $<
 
-$(GEMMINI_FRONTEND_TEST_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp frontend/tests/im2p_gemmini_frontend_testing.hpp $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
+$(GEMMINI_FRONTEND_TEST_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp frontend/tests/im2p_gemmini_frontend_testing.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $@)
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
-		$(GEMMINI_FRONTEND_INCLUDES) -c $< -o $@
+		$(GEMMINI_FRONTEND_INCLUDES) -MMD -MP -c $< -o $@
 
 $(GEMMINI_FRONTEND_TEST_ARCHIVE): $(GEMMINI_FRONTEND_TEST_OBJECT) | $(BUILD_DIR)/lib
 	@mkdir -p $(dir $@)
 	rm -f $@
 	$(AR) rcs $@ $<
+
+-include $(GEMMINI_FRONTEND_DEPENDENCY_FILES)
 
 gemmini-frontend: $(GEMMINI_FRONTEND_ARCHIVE) $(GEMMINI_FRONTEND_TEST_ARCHIVE)
 
@@ -277,6 +288,9 @@ gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend.cpp \
 		$(GEMMINI_FRONTEND_TEST_ARCHIVE) -o $(GEMMINI_FRONTEND_TEST)
 	$(GEMMINI_FRONTEND_TEST)
+ifeq ($(GEMMINI_FRONTEND_WEIGHT_BITS),8)
+	$(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract
+endif
 
 # Sanitizer binaries compile the production frontend and its fake-ABI tests
 # together so instrumentation covers ownership, workers, and teardown end to end.
@@ -317,7 +331,8 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
 
 gemmini-frontend-real-test: gemmini-frontend-test $(GEMMINI_VERILATOR_TARGET) | $(BUILD_DIR)/bin
-	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
+	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_BUILD_DIR=$(abspath $(BUILD_DIR)) \
+		IM2P_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 		IM2P_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
 		IM2P_DIM=$(GEMMINI_FRONTEND_DIM) CARGO_TARGET_DIR=$(GEMMINI_CARGO_TARGET_DIR) cargo build \
 		--manifest-path sim/Cargo.toml --lib --release
@@ -333,27 +348,48 @@ gemmini-frontend-real-test-q8-h0: gemmini-frontend-real-test
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_h0 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-h0.log
 
+gemmini-frontend-real-test-q8-hp1: gemmini-frontend-real-test
+	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_hp1 2>&1 | \
+		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-hp1.log
+
+gemmini-frontend-real-syntax-test:
+	@set -euo pipefail; \
+	for bits in 4 16; do \
+	  $(MAKE) --no-print-directory \
+	    BUILD_DIR="$(abspath $(BUILD_DIR))/real-syntax/a$${bits}-w$${bits}-d16" \
+	    IM2P_ACTIVATION_BITS="$$bits" IM2P_WEIGHT_BITS="$$bits" IM2P_DIM=16 \
+	    GEMMINI_FRONTEND_ACTIVATION_BITS="$$bits" \
+	    GEMMINI_FRONTEND_WEIGHT_BITS="$$bits" GEMMINI_FRONTEND_DIM=16 \
+	    gemmini-frontend-real-syntax-one; \
+	done
+
+gemmini-frontend-real-syntax-one: $(GEMMINI_DIM_CONFIG)
+	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
+		$(GEMMINI_FRONTEND_INCLUDES) -fsyntax-only \
+		frontend/tests/test_frontend_real.cpp
+
 REAL_MATRIX_ROOT ?= $(abspath $(BUILD_DIR)/real-matrix)
 REAL_MATRIX_RESULTS = $(REAL_MATRIX_ROOT)/results
-REAL_MATRIX_PAIRS := 8:16 8:32 8:64
+REAL_MATRIX_PAIRS := 4:4:16 4:4:32 4:4:64 8:8:16 8:8:32 8:8:64 16:16:16 16:16:32 16:16:64
+REAL_MATRIX_REVERSE_PAIRS := 16:16:64 16:16:32 16:16:16 8:8:64 8:8:32 8:8:16 4:4:64 4:4:32 4:4:16
 REAL_MATRIX_FINGERPRINT_FIXTURE_DIR ?=
 
-# Build and execute each owned A8 pair in its own complete workspace. Forward,
-# reverse, and concurrent passes each validate six DIM/mode identities, for
-# eighteen real executions total. Matched A4/A16 use their per-artifact real
-# target and remain outside this legacy W8 matrix.
+# Build and execute every matched A/W/DIM identity in an isolated workspace.
+# Each frontend binary probes the linked simulator identity before executing
+# both FULL and STRIPE_PIPELINE. Route records additionally lock H0/H1/HP1
+# without conflating residual families with artifact identity.
 gemmini-frontend-real-test-matrix:
 	@set -euo pipefail; \
 	root='$(REAL_MATRIX_ROOT)'; results='$(REAL_MATRIX_RESULTS)'; \
 	mkdir -p "$$results"; \
 	run_pair() { \
-	  bits="$$1"; dim="$$2"; id="a$${bits}-w8-d$${dim}"; \
+	  bits="$$1"; weight_bits="$$2"; dim="$$3"; id="a$${bits}-w$${weight_bits}-d$${dim}"; \
 	  binary="$$root/$$id/bin/$$id/im2p_gemmini_frontend_real_test"; \
 	  pair_results="$$root/$$id/results/$$id"; \
 	  fingerprint_file="$$root/$$id/.real-matrix-input.sha256"; \
 	  fixture_dir='$(REAL_MATRIX_FINGERPRINT_FIXTURE_DIR)'; \
 	  fingerprint_command=($(PYTHON) scripts/real_matrix_fingerprint.py \
-	    --bits "$$bits" --dim "$$dim" --gemmini-root '$(GEMMINI_ROOT)' \
+	    --bits "$$bits" --weight-bits "$$weight_bits" --dim "$$dim" --gemmini-root '$(GEMMINI_ROOT)' \
 	    --params-root '$(GEMMINI_PARAMS_ROOT)' \
 	    --config 'CXX=$(CXX)' --config 'BSC=$(BSC)' \
 	    --config 'VERILATOR=$(VERILATOR)' --config 'BSC_VERILOG=$(BSC_VERILOG)'); \
@@ -365,9 +401,9 @@ gemmini-frontend-real-test-matrix:
 	  if test ! -x "$$binary" || test "$$cached" != "$$fingerprint"; then \
 	    printf 'REAL_MATRIX_CACHE id=%s state=rebuild fingerprint=%s\n' "$$id" "$$fingerprint"; \
 	    $(MAKE) --no-print-directory BUILD_DIR="$$root/$$id" \
-	      IM2P_ACTIVATION_BITS="$$bits" IM2P_WEIGHT_BITS=8 IM2P_DIM="$$dim" \
+	      IM2P_ACTIVATION_BITS="$$bits" IM2P_WEIGHT_BITS="$$weight_bits" IM2P_DIM="$$dim" \
 	      GEMMINI_FRONTEND_ACTIVATION_BITS="$$bits" \
-	      GEMMINI_FRONTEND_WEIGHT_BITS=8 GEMMINI_FRONTEND_DIM="$$dim" \
+	      GEMMINI_FRONTEND_WEIGHT_BITS="$$weight_bits" GEMMINI_FRONTEND_DIM="$$dim" \
 	      gemmini-frontend-real-test; \
 	    printf '%s\n' "$$fingerprint" > "$$fingerprint_file.tmp"; \
 	    mv "$$fingerprint_file.tmp" "$$fingerprint_file"; \
@@ -379,59 +415,59 @@ gemmini-frontend-real-test-matrix:
 	}; \
 	: > "$$results/forward.log"; \
 	for pair in $(REAL_MATRIX_PAIRS); do \
-	  bits="$${pair%%:*}"; dim="$${pair##*:}"; \
-	  run_pair "$$bits" "$$dim" 2>&1 | tee -a "$$results/forward.log"; \
+	  bits="$${pair%%:*}"; rest="$${pair#*:}"; weight_bits="$${rest%%:*}"; dim="$${pair##*:}"; \
+	  run_pair "$$bits" "$$weight_bits" "$$dim" 2>&1 | tee -a "$$results/forward.log"; \
 	done; \
 	$(PYTHON) scripts/validate_real_matrix_log.py "$$results/forward.log"; \
 	for pair in $(REAL_MATRIX_PAIRS); do \
-	  bits="$${pair%%:*}"; dim="$${pair##*:}"; selected="a$${bits}-w8-d$${dim}"; \
+	  bits="$${pair%%:*}"; rest="$${pair#*:}"; weight_bits="$${rest%%:*}"; dim="$${pair##*:}"; selected="a$${bits}-w$${weight_bits}-d$${dim}"; \
 	  before="$$results/isolation-$${selected}-before.sha256"; \
 	  after="$$results/isolation-$${selected}-after.sha256"; \
 	  find "$$root" -type f ! -path "$$root/$$selected/*" ! -path "$$results/*" \
 	    -print0 | sort -z | xargs -0 shasum -a 256 > "$$before"; \
-	  run_pair "$$bits" "$$dim" > "$$results/isolation-$${selected}.log" 2>&1; \
+	  run_pair "$$bits" "$$weight_bits" "$$dim" > "$$results/isolation-$${selected}.log" 2>&1; \
 	  find "$$root" -type f ! -path "$$root/$$selected/*" ! -path "$$results/*" \
 	    -print0 | sort -z | xargs -0 shasum -a 256 > "$$after"; \
 	  cmp "$$before" "$$after"; \
 	done; \
 	: > "$$results/reverse.log"; \
-	for pair in 8:64 8:32 8:16; do \
-	  bits="$${pair%%:*}"; dim="$${pair##*:}"; \
-	  run_pair "$$bits" "$$dim" 2>&1 | tee -a "$$results/reverse.log"; \
+	for pair in $(REAL_MATRIX_REVERSE_PAIRS); do \
+	  bits="$${pair%%:*}"; rest="$${pair#*:}"; weight_bits="$${rest%%:*}"; dim="$${pair##*:}"; \
+	  run_pair "$$bits" "$$weight_bits" "$$dim" 2>&1 | tee -a "$$results/reverse.log"; \
 	done; \
 	$(PYTHON) scripts/validate_real_matrix_log.py "$$results/reverse.log"; \
 	pids=(); \
 	for pair in $(REAL_MATRIX_PAIRS); do \
-	  bits="$${pair%%:*}"; dim="$${pair##*:}"; id="a$${bits}-w8-d$${dim}"; \
-	  (run_pair "$$bits" "$$dim" > "$$results/concurrent-$${id}.log" 2>&1) & \
+	  bits="$${pair%%:*}"; rest="$${pair#*:}"; weight_bits="$${rest%%:*}"; dim="$${pair##*:}"; id="a$${bits}-w$${weight_bits}-d$${dim}"; \
+	  (run_pair "$$bits" "$$weight_bits" "$$dim" > "$$results/concurrent-$${id}.log" 2>&1) & \
 	  pids+=("$$!"); \
 	done; \
 	for pid in "$${pids[@]}"; do wait "$$pid"; done; \
 	for pair in $(REAL_MATRIX_PAIRS); do \
-	  bits="$${pair%%:*}"; dim="$${pair##*:}"; id="a$${bits}-w8-d$${dim}"; \
+	  bits="$${pair%%:*}"; rest="$${pair#*:}"; weight_bits="$${rest%%:*}"; dim="$${pair##*:}"; id="a$${bits}-w$${weight_bits}-d$${dim}"; \
 	  $(PYTHON) scripts/validate_real_matrix_log.py \
 	    "$$results/concurrent-$${id}.log" --bits "$$bits" --dim "$$dim"; \
 	done; \
-	printf 'REAL_MATRIX PASS distinct_identities=6 total_executions=18 forward=green reverse=green concurrent=green isolation=green root=%s\n' "$$root" | \
+	printf 'REAL_MATRIX PASS artifacts=9 artifact_modes=18 forward=green reverse=green concurrent=green isolation=green root=%s\n' "$$root" | \
 	  tee "$$results/summary.txt"
 
 REAL_MISMATCH_ROOT ?= $(abspath $(BUILD_DIR)/real-matrix-mismatch)
 
 gemmini-frontend-real-test-mismatch:
 	@set -euo pipefail; \
-	a16='$(REAL_MATRIX_ROOT)/a16-w8-d32'; \
+	a16='$(REAL_MATRIX_ROOT)/a16-w16-d32'; \
 	a8='$(REAL_MATRIX_ROOT)/a8-w8-d32'; \
-	if test ! -f "$$a16/lib/a16-w8-d32/libim2p_gemmini_frontend_testing.a"; then \
+	if test ! -f "$$a16/lib/a16-w16-d32/libim2p_gemmini_frontend_testing.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a16" \
-	    IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 \
-	    GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_WEIGHT_BITS=8 \
+	    IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=16 IM2P_DIM=32 \
+	    GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_WEIGHT_BITS=16 \
 	    GEMMINI_FRONTEND_DIM=32 gemmini-frontend; \
 	fi; \
 	if test ! -f "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a8" \
 	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 verilator-int8x32; \
-	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 \
-	    IM2P_DIM=32 \
+	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR="$$a8" \
+	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 \
 	    CARGO_TARGET_DIR="$$a8/cargo/a8-w8-d32" cargo build \
 	    --manifest-path sim/Cargo.toml --lib --release; \
 	fi; \
@@ -439,14 +475,14 @@ gemmini-frontend-real-test-mismatch:
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	  -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=32 \
 	  -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=16 \
-	  -DGGML_GEMMINI_WEIGHT_BITS=8 \
+	  -DGGML_GEMMINI_WEIGHT_BITS=16 \
 	  -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
-	  -Ifrontend/include -Isim/include -I"$$a16/generated/a16-w8-d32" \
+	  -Ifrontend/include -Isim/include -I"$$a16/generated/a16-w16-d32" \
 	  -I'$(GEMMINI_ROOT)/ggml/src/ggml-gemmini' \
 	  -I'$(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/include' \
 	  -I'$(GEMMINI_ROOT)/ggml/include' -I'$(GEMMINI_ROOT)/ggml/src' \
 	  -I'$(GEMMINI_PARAMS_ROOT)' frontend/tests/test_frontend_real.cpp \
-	  "$$a16/lib/a16-w8-d32/libim2p_gemmini_frontend_testing.a" \
+	  "$$a16/lib/a16-w16-d32/libim2p_gemmini_frontend_testing.a" \
 	  "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a" \
 	  -o '$(REAL_MISMATCH_ROOT)/bin/frontend-a16-simulator-a8'; \
 	set -o pipefail; \
@@ -525,15 +561,15 @@ verilator-int$(1)x$(2):
 sim-test-int$(1)x$(2): verilator-int$(1)x$(2)
 	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)"
 	@set -o pipefail; \
-	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_ACTIVATION_BITS=$(1) \
-	  IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2) \
+	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_BUILD_DIR="$$(abspath $$(BUILD_DIR))" \
+	  IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2) \
 	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w8-d$(2))" \
 	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \
 	    $$(CARGO_TEST_FILTER) -- --nocapture 2>&1 | \
 	    tee "$$(BUILD_DIR)/results/a$(1)-w8-d$(2)/sim-test.log"
 endef
 
-$(foreach bits,4 8 16,$(foreach dim,16 32 64,$(eval $(call define_sim_config,$(bits),$(dim)))))
+$(foreach dim,16 32 64,$(eval $(call define_sim_config,8,$(dim))))
 
 define define_matched_sim_config
 verilator-a$(1)-w$(1)-d$(2):
@@ -552,8 +588,8 @@ verilator-a$(1)-w$(1)-d$(2):
 sim-test-a$(1)-w$(1)-d$(2): verilator-a$(1)-w$(1)-d$(2)
 	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)"
 	@set -o pipefail; \
-	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_ACTIVATION_BITS=$(1) \
-	  IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2) \
+	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_BUILD_DIR="$$(abspath $$(BUILD_DIR))" \
+	  IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2) \
 	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w$(1)-d$(2))" \
 	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \
 	    $$(CARGO_TEST_FILTER) -- --nocapture 2>&1 | \

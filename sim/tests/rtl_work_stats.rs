@@ -51,6 +51,37 @@ fn scheduler_cycle_counters_are_rtl_owned_and_measurable() -> Result<(), SimErro
 }
 
 #[test]
+fn full_work_completes_without_fabricating_publications() -> Result<(), SimError> {
+    let mut simulator = Im2pSimulator::new()?;
+    let dim = simulator.dim();
+    let shape = Shape {
+        m: dim,
+        n: dim,
+        k: dim,
+    };
+    let activations = structured_activations(shape);
+    let weights = structured_weights(shape);
+    let mut output = vec![0_i32; shape.m * shape.n];
+    let work = MatmulWork {
+        activations: MatrixView::new(&activations, shape.m, shape.k, shape.k)?,
+        weights: MatrixView::new(&weights, shape.k, shape.n, shape.n)?,
+        scales: None,
+        vector_op: VectorOp::Bypass,
+    };
+    let stats = simulator.execute_matmul(
+        &work,
+        &mut MatrixViewMut::new(&mut output, shape.m, shape.n, shape.n)?,
+    )?;
+
+    assert_eq!(stats.completed_output_tiles, 1);
+    assert_eq!(stats.completed_fragments, 1);
+    assert_eq!(stats.completed_stripes, 1);
+    assert_eq!(stats.stripes_published, 0);
+    assert_eq!(stats.stripe_rows_published, 0);
+    Ok(())
+}
+
+#[test]
 fn back_to_back_work_uses_independent_rtl_intervals() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
     let dim = simulator.dim();

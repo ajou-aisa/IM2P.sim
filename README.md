@@ -27,8 +27,8 @@ IM2PCore
 - INT에서는 runtime에 `VectorBypass`, `VectorMultiply`, `VectorShift`를 선택한다.
 - FLOAT는 같은 Core source와 datapath를 사용하되 transform policy는 Bypass만 제공한다.
 - INT의 scale 적용 여부나 Multiply/Shift 선택 때문에 RTL을 다시 합성하지 않는다.
-- production ExSIA 경로는 A8/Q8만 지원한다. Matched A4/Q4와 A16/Q16의
-  RMD scale integration은 TODO다.
+- production matched ExSIA 경로는 A4/Q4, A8/Q8, A16/Q16의 H0/H1/HP1을
+  FULL과 PIPELINE에서 지원한다. Mixed A/W와 H2/HP2는 fail closed한다.
 
 FLOAT instance에는 실제 scale multiply/shift 구현이 없다. 최종 generated RTL에서 관련 연산기가 제거되는지는 `make rtl`과 synthesis report로 확인한다.
 
@@ -291,9 +291,9 @@ block size 32를 사용한다.
 
 두 mode 모두 post-fold metadata와 activation backing을 fence까지 보존한다. 제3 frontend mode, post-quantization batch publish, RMD 이전 output publish는 계약에 없다.
 
-Non-RMD Q4_0/Q4_H1/Q4_HP1은 A4/W4 artifact에서,
-Q16_0/Q16_H1/Q16_HP1은 A16/W16 artifact에서 `FULL`과 `PIPELINE` 모두
-실행한다. Production ExSIA는 A8/Q8만 허용한다.
+Matched ExSIA Q4_0/Q4_H1/Q4_HP1은 A4/W4 artifact에서,
+Q8_0/Q8_H1/Q8_HP1은 A8/W8 artifact에서, Q16_0/Q16_H1/Q16_HP1은
+A16/W16 artifact에서 `FULL`과 `PIPELINE` 모두 실행한다.
 
 ```bash
 make gemmini-frontend \
@@ -348,7 +348,7 @@ FenceResult completed = fence(*started.run);
 
 Referenced input buffers는 `fence`가 반환되거나 `Run` destruction이 끝날 때까지 alive/immutable 상태여야 한다. output `C`도 같은 기간 alive/exclusively writable 상태여야 한다.
 
-numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 호출하지 않는다. 표는 generic non-RMD frontend route 능력이며 production ExSIA는 A8/Q8만 선택한다.
+numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/`poll`을 호출하지 않는다. 표의 Q8 route와 matched ExSIA A4/Q4, A8/Q8, A16/Q16 H0/H1/HP1은 width-matched artifact에서 실행된다.
 
 | route | 상태 |
 |---|---|
@@ -360,8 +360,8 @@ numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/
 
 Provider route는 요청된 logical fragment만 native storage에서 읽는다. 전체 weight tensor를 unpack, transpose, materialize하지 않는다. M/N tile, K fragment, block boundary, accumulate 결정은 계속 RTL scheduler가 담당한다.
 
-ExSIA production에서 A4/Q4와 A16/Q16의 RMD scale integration, Q8 H2/HP2,
-mixed precision은 TODO이며 fail closed한다. 이를 deferred work queue나 다른
+Production matched ExSIA는 A4/Q4, A8/Q8, A16/Q16 H0/H1/HP1을 지원한다.
+Q8 H2/HP2와 mixed precision은 fail closed하며 deferred work queue나 다른
 format으로 fallback하지 않는다. Generic frontend의 `q8_h2` Deprecated 및
 `q8_hp2` Unsupported 상태도 그대로 유지된다.
 

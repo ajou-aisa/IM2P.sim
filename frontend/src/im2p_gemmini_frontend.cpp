@@ -1431,6 +1431,19 @@ uint32_t compiled_dim() noexcept {
   return DIM;
 }
 
+ArgsLayoutFingerprint compiled_args_layout_fingerprint() noexcept {
+  ggml_gemmini_args_t args{};
+  const auto *base = reinterpret_cast<const uint8_t *>(&args);
+  const auto offset = [base](const auto *member) noexcept -> uint64_t {
+    return static_cast<uint64_t>(reinterpret_cast<const uint8_t *>(member) - base);
+  };
+  return {sizeof(args),
+          offset(&args.native_weight_bytes),
+          offset(&args.col_stride_f_out),
+          offset(&args.stride_f_out),
+          offset(&args.tile_I)};
+}
+
 ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                       Options options) noexcept {
   switch (mode) {

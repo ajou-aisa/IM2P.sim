@@ -122,9 +122,18 @@ struct PipelineOutputStage {
   size_t element_count = 0;
 };
 
+struct ArgsLayoutFingerprint {
+  uint64_t size = 0;
+  uint64_t native_weight_bytes = 0;
+  uint64_t col_stride_f_out = 0;
+  uint64_t stride_f_out = 0;
+  uint64_t tile_i = 0;
+};
+
 [[nodiscard]] uint32_t compiled_activation_bits() noexcept;
 [[nodiscard]] uint32_t compiled_weight_bits() noexcept;
 [[nodiscard]] uint32_t compiled_dim() noexcept;
+[[nodiscard]] ArgsLayoutFingerprint compiled_args_layout_fingerprint() noexcept;
 
 [[nodiscard]] ExecuteResult execute(const ggml_gemmini_args_t *args,
                                     Mode mode = Mode::full,

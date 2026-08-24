@@ -28,6 +28,8 @@ def fingerprint(bits: int, dim: int, extra: Path) -> str:
         str(FINGERPRINT),
         "--bits",
         str(bits),
+        "--weight-bits",
+        str(bits),
         "--dim",
         str(dim),
         "--gemmini-root",
@@ -44,13 +46,32 @@ def fingerprint(bits: int, dim: int, extra: Path) -> str:
     return value
 
 
-def execution_line(bits: int, dim: int, mode: str) -> str:
-    route = "q8_h1" if bits == 8 else "q8_h0"
+def routes(bits: int) -> tuple[str, ...]:
+    if bits == 8:
+        return ("q8_h1",)
+    return (f"q{bits}_h0", f"q{bits}_h1", f"q{bits}_hp1")
+
+
+def canonical_rows(dim: int, mode: str) -> str:
+    if mode == "full":
+        return "none"
+    fixture_rows = dim + 3
+    stripe_rows = (fixture_rows + 2) // 3
+    return ",".join(
+        str(min(stripe_rows, fixture_rows - row))
+        for row in range(0, fixture_rows, stripe_rows)
+    )
+
+
+def execution_line(bits: int, dim: int, route: str, mode: str) -> str:
     stripes = 3 if mode == "stripe" else 0
     return (
-        f"REAL_EXECUTION bits={bits} dim={dim} route={route} mode={mode} PASS "
-        f"M=1 N=1 K=2 stripes={stripes} activation_reads=1 weight_reads=1 "
-        f"output_writes=1 completed={stripes} published={stripes}\n"
+        f"REAL_EXECUTION activation_bits={bits} weight_bits={bits} dim={dim} "
+        f"route={route} mode={mode} PASS M={dim + 3} N=1 K=2 stripes={stripes} "
+        f"activation_reads=1 weight_reads=1 output_writes=1 completed={stripes} "
+        f"published={stripes} published_rows={dim + 3 if stripes else 0} "
+        f"published_row_sequence={canonical_rows(dim, mode)} "
+        "output_works=1 fragments=2\n"
     )
 
 
@@ -69,8 +90,10 @@ def main() -> int:
         assert fingerprint(4, 64, fixture) != fingerprint(4, 32, fixture)
 
         expected = [
-            execution_line(8, dim, mode)
+            execution_line(bits, dim, route, mode)
+            for bits in (4, 8, 16)
             for dim in (16, 32, 64)
+            for route in routes(bits)
             for mode in ("full", "stripe")
         ]
         valid = temp / "valid.log"
@@ -80,14 +103,43 @@ def main() -> int:
         misleading = expected.copy()
         misleading[0] = misleading[0].replace("activation_reads=1", "activation_reads=0")
         wrong_route = expected.copy()
-        wrong_route[0] = wrong_route[0].replace("route=q8_h1", "route=q8_h0")
+        wrong_route[0] = wrong_route[0].replace("route=q4_h0", "route=q8_h0")
+        missing_output_works = expected.copy()
+        missing_output_works[0] = missing_output_works[0].replace("output_works=1 ", "")
+        duplicate_fragments = expected.copy()
+        duplicate_fragments[0] = duplicate_fragments[0].replace(
+            "fragments=2", "fragments=2 fragments=3"
+        )
+        negative_output_works = expected.copy()
+        negative_output_works[0] = negative_output_works[0].replace(
+            "output_works=1", "output_works=-1"
+        )
+        missing_rows = expected.copy()
+        missing_rows[1] = missing_rows[1].replace(
+            f"published_row_sequence={canonical_rows(16, 'stripe')} ", ""
+        )
+        wrong_rows = expected.copy()
+        wrong_rows[1] = wrong_rows[1].replace(
+            f"published_row_sequence={canonical_rows(16, 'stripe')}",
+            "published_row_sequence=7,6,6",
+        )
+        wrong_row_sum = expected.copy()
+        wrong_row_sum[1] = wrong_row_sum[1].replace(
+            "published_rows=19", "published_rows=18"
+        )
         malformed_logs = {
             "duplicate.log": expected + [expected[0]],
             "missing.log": expected[:-1],
-            "extra.log": expected + [execution_line(4, 64, "full")],
+            "extra.log": expected + [execution_line(4, 64, "q4_h0", "full")],
             "malformed.log": expected + ["REAL_EXECUTION malformed\n"],
             "misleading.log": misleading,
             "wrong-route.log": wrong_route,
+            "missing-output-works.log": missing_output_works,
+            "duplicate-fragments.log": duplicate_fragments,
+            "negative-output-works.log": negative_output_works,
+            "missing-rows.log": missing_rows,
+            "wrong-rows.log": wrong_rows,
+            "wrong-row-sum.log": wrong_row_sum,
         }
         for name, lines in malformed_logs.items():
             path = temp / name

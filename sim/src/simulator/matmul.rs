@@ -15,7 +15,53 @@ pub(super) const ACTIVATION_BASE: u64 = 0x1000_0000_0000_0000;
 pub(super) const WEIGHT_BASE: u64 = 0x2000_0000_0000_0000;
 pub(super) const SCALE_BASE: u64 = 0x3000_0000_0000_0000;
 pub(super) const OUTPUT_BASE: u64 = 0x4000_0000_0000_0000;
-const MATRIX_TIMEOUT_CYCLES: u64 = 10_000_000;
+const MATRIX_STALL_CYCLES: u64 = 10_000_000;
+
+#[derive(Clone, Copy, Default)]
+struct FullProgress {
+    fragments_completed: u64,
+    works_completed: u64,
+    output_write_responses: u64,
+}
+
+impl FullProgress {
+    fn update_high_water(&mut self, current: Self) -> bool {
+        let advanced = current.fragments_completed > self.fragments_completed
+            || current.works_completed > self.works_completed
+            || current.output_write_responses > self.output_write_responses;
+        self.fragments_completed = self.fragments_completed.max(current.fragments_completed);
+        self.works_completed = self.works_completed.max(current.works_completed);
+        self.output_write_responses = self
+            .output_write_responses
+            .max(current.output_write_responses);
+        advanced
+    }
+}
+
+struct FullProgressWatchdog {
+    stall_limit: u64,
+    stalled_cycles: u64,
+    progress: FullProgress,
+}
+
+impl FullProgressWatchdog {
+    fn new(stall_limit: u64, progress: FullProgress) -> Self {
+        Self {
+            stall_limit,
+            stalled_cycles: 0,
+            progress,
+        }
+    }
+
+    fn observe(&mut self, progress: FullProgress) -> bool {
+        if self.progress.update_high_water(progress) {
+            self.stalled_cycles = 0;
+            return false;
+        }
+        self.stalled_cycles = self.stalled_cycles.saturating_add(1);
+        self.stalled_cycles >= self.stall_limit
+    }
+}
 
 #[cfg(test)]
 static PROVIDER_START_INTERCEPT: std::sync::atomic::AtomicBool =
@@ -27,6 +73,15 @@ static PROVIDER_START_ATTEMPTS: std::sync::atomic::AtomicUsize =
 static PROVIDER_BOUNDARY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Im2pSimulator {
+    fn full_progress(&self) -> FullProgress {
+        let counters = self.matrix_counters();
+        FullProgress {
+            fragments_completed: counters.fragments_completed,
+            works_completed: counters.works_completed,
+            output_write_responses: counters.output_write_responses,
+        }
+    }
+
     pub fn execute_matmul(
         &mut self,
         work: &MatmulWork<'_>,
@@ -108,7 +163,8 @@ impl Im2pSimulator {
         let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
         self.require_ready("start_matmul", started)?;
 
-        for _ in 0..MATRIX_TIMEOUT_CYCLES {
+        let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
+        loop {
             self.service_matrix_reads(work)?;
             self.service_matrix_output(output)?;
             // SAFETY: handle remains valid for the simulator lifetime.
@@ -120,8 +176,10 @@ impl Im2pSimulator {
                 return Ok(self.work_stats(1));
             }
             self.tick_staged_raw();
+            if watchdog.observe(self.full_progress()) {
+                return Err(self.matrix_timeout("execute_matmul", MATRIX_STALL_CYCLES));
+            }
         }
-        Err(self.matrix_timeout("execute_matmul", MATRIX_TIMEOUT_CYCLES))
     }
 
     pub(crate) fn execute_matmul_provider(
@@ -203,7 +261,8 @@ impl Im2pSimulator {
         let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
         self.require_ready("start_matmul", started)?;
 
-        for _ in 0..MATRIX_TIMEOUT_CYCLES {
+        let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
+        loop {
             self.service_activation_request(&activations)?;
             self.service_provider_reads(
                 provider,
@@ -220,8 +279,10 @@ impl Im2pSimulator {
                 return Ok(self.work_stats(1));
             }
             self.tick_staged_raw();
+            if watchdog.observe(self.full_progress()) {
+                return Err(self.matrix_timeout("execute_matmul_provider", MATRIX_STALL_CYCLES));
+            }
         }
-        Err(self.matrix_timeout("execute_matmul_provider", MATRIX_TIMEOUT_CYCLES))
     }
 
     fn service_provider_reads(
@@ -483,8 +544,9 @@ mod activation_boundary_tests {
     use std::sync::atomic::Ordering;
 
     use super::{
-        Error, Im2pSimulator, MatmulLayout, MatrixView, MemoryProvider,
-        PROVIDER_BOUNDARY_TEST_LOCK, PROVIDER_START_ATTEMPTS, PROVIDER_START_INTERCEPT,
+        Error, FullProgress, FullProgressWatchdog, Im2pSimulator, MatmulLayout, MatrixView,
+        MemoryProvider, MATRIX_STALL_CYCLES, PROVIDER_BOUNDARY_TEST_LOCK, PROVIDER_START_ATTEMPTS,
+        PROVIDER_START_INTERCEPT,
     };
     use crate::{parse_activation, ActivationValue, VectorOp, ACTIVATION_BITS};
 
@@ -517,6 +579,95 @@ mod activation_boundary_tests {
         _values: *const i64,
     ) -> i32 {
         0
+    }
+
+    #[test]
+    fn full_provider_progress_can_exceed_the_bounded_stall_limit() {
+        let mut watchdog = FullProgressWatchdog::new(3, FullProgress::default());
+        let mut progress = FullProgress::default();
+        for cycle in 1..=12 {
+            if cycle % 2 == 0 {
+                progress.fragments_completed += 1;
+            }
+            assert!(
+                !watchdog.observe(progress),
+                "continuing fragment progress must reset the FULL stall budget"
+            );
+        }
+    }
+
+    #[test]
+    fn full_provider_true_no_progress_still_times_out() {
+        let progress = FullProgress::default();
+        let mut watchdog = FullProgressWatchdog::new(3, progress);
+        assert!(!watchdog.observe(progress));
+        assert!(!watchdog.observe(progress));
+        assert!(watchdog.observe(progress));
+    }
+
+    #[test]
+    fn full_provider_cross_field_regression_never_lowers_high_water_marks() {
+        let initial = FullProgress {
+            fragments_completed: 10,
+            ..FullProgress::default()
+        };
+        let mut watchdog = FullProgressWatchdog::new(2, initial);
+        assert!(!watchdog.observe(FullProgress {
+            fragments_completed: 0,
+            works_completed: 1,
+            ..FullProgress::default()
+        }));
+        assert!(!watchdog.observe(FullProgress {
+            fragments_completed: 1,
+            works_completed: 1,
+            ..FullProgress::default()
+        }));
+        assert!(
+            watchdog.observe(FullProgress {
+                fragments_completed: 2,
+                works_completed: 1,
+                ..FullProgress::default()
+            }),
+            "regressed fragment activity below the prior high-water mark must not defer timeout"
+        );
+    }
+
+    fn assert_progress_signal_resets_stall(progress: FullProgress) {
+        let mut watchdog = FullProgressWatchdog::new(2, FullProgress::default());
+        assert!(!watchdog.observe(FullProgress::default()));
+        assert!(
+            !watchdog.observe(progress),
+            "the selected completion signal must reset a nearly exhausted stall budget"
+        );
+        assert!(!watchdog.observe(progress));
+        assert!(watchdog.observe(progress));
+    }
+
+    #[test]
+    fn full_provider_production_stall_limit_is_exact_and_bounded() {
+        let progress = FullProgress::default();
+        let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, progress);
+        for _ in 1..MATRIX_STALL_CYCLES {
+            assert!(!watchdog.observe(progress));
+        }
+        assert!(watchdog.observe(progress));
+        assert_eq!(watchdog.stalled_cycles, MATRIX_STALL_CYCLES);
+    }
+
+    #[test]
+    fn full_provider_work_fragment_and_output_progress_each_reset_stall() {
+        assert_progress_signal_resets_stall(FullProgress {
+            works_completed: 1,
+            ..FullProgress::default()
+        });
+        assert_progress_signal_resets_stall(FullProgress {
+            fragments_completed: 1,
+            ..FullProgress::default()
+        });
+        assert_progress_signal_resets_stall(FullProgress {
+            output_write_responses: 1,
+            ..FullProgress::default()
+        });
     }
 
     #[test]

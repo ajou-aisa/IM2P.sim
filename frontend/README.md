@@ -4,8 +4,8 @@
 
 `im2p::gemmini`가 공개하는 frontend mode는 정확히 두 개다.
 
-- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 기존 8-bit cpu-direct RMD가 성공한 후 caller output을 한 번 publish한다.
-- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 기존 8-bit cpu-direct RMD가 성공하기 전까지 output은 frontend staging에만 있다.
+- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 matched-width H0/H1/HP1 RMD가 성공한 후 caller output을 한 번 publish한다.
+- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 matched-width H0/H1/HP1 RMD가 성공하기 전까지 output은 frontend staging에만 있다.
 
 두 mode 외 제3 mode나 deferred execution mode는 없다.
 
@@ -24,9 +24,8 @@
 - 완료된 stripe 백킹 스토리지 해제용 `poll_completed`
 - 스트림 완료 및 통계 수집용 `finish_stream`
 
-Production ExSIA route는 A8/Q8만 지원한다. Non-RMD A4/W4의
-Q4_0/Q4_H1/Q4_HP1과 A16/W16의 Q16_0/Q16_H1/Q16_HP1은 FULL/PIPELINE 모두
-같은 typed provider ABI를 사용한다. Matched ExSIA RMD scale integration, Q8 H2/HP2와
+Production matched ExSIA route는 A4/Q4, A8/Q8, A16/Q16의
+H0/H1/HP1을 FULL/PIPELINE 모두 같은 typed provider ABI로 실행한다. Q8 H2/HP2와
 unsupported mixed precision은 worker 시작 전에 fail closed하며 다른 route로
 fallback하지 않는다.
 

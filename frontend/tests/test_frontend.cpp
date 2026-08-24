@@ -324,7 +324,19 @@ int im2p_finish_stream_extended(im2p_stream_t *,
   ++fake::finish_count;
   if (fake::fail_finish)
     return IM2P_ERROR;
+  const size_t tile_rows = fake::work_desc.tile_i_rows;
+  const size_t tile_columns = fake::work_desc.tile_j_columns;
+  const uint64_t output_works =
+      ((fake::work_desc.m + tile_rows - 1) / tile_rows) *
+      ((fake::work_desc.n + tile_columns - 1) / tile_columns);
+  const uint64_t fragments_per_work =
+      (fake::work_desc.k + DIM - 1) / DIM;
+  stats->base.completed_fragments = output_works * fragments_per_work;
+  stats->base.completed_output_tiles = output_works;
   stats->base.completed_stripes = fake::published.size();
+  stats->base.stripes_published = fake::published.size();
+  for (const auto &publication : fake::published)
+    stats->base.stripe_rows_published += publication.rows;
   stats->lookahead_prepared = fake::published.size() > 1;
   stats->lookahead_publish_cycle = 10;
   stats->lookahead_first_activation_cycle = 11;
@@ -536,94 +548,89 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
                 "unsupported and deprecated routes never start raw execution");
 }
 
-[[maybe_unused]] bool test_native_classification() {
-  std::vector<int8_t> a(128), dense(128);
-  std::vector<int32_t> c(8);
-  auto base = raw_args(a, dense, c);
+bool test_q8_hp1_native_extent_contract() {
+  fake::reset();
+  const std::array<float, 1> untouched = {123.0f};
+  std::array<float, 1> output = untouched;
+  std::vector<block_q8_hp1> hp1(1);
+  hp1[0].qs[0] = 7;
+  hp1[0].m = 0;
+  hp1[0].channel_scale = 1.0f;
+  fake::provider_exact_values = {7};
+  ggml_gemmini_args_t base{};
   base.I = 1;
-  base.J = 2;
+  base.J = 1;
   base.K = 32;
-  base.sA = 32;
-  base.sC = 2;
-  base.B = nullptr;
-  auto check = [&](ggml_gemmini_args_t &x, Route expected) {
-    auto result = execute(&x);
-    const char *reason =
-        expected == Route::q8_h2
-            ? "q8_h2 is deprecated"
-            : "native Gemmini route is classified but not raw-ABI compatible";
-    return expect(
-        result.status.code == StatusCode::unsupported_route &&
-            result.status.route == expected && result.status.native_contract &&
-            std::strcmp(result.status.message, reason) == 0,
-        "authoritative native contract classified and explicitly unsupported");
+  if (!base.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  base.f_out = output.data();
+  base.stride_f_out = 1;
+  base.col_stride_f_out = 1;
+  base.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+  base.q8_hp1_blocks = hp1.data();
+  base.q8_hp1_block_count = hp1.size();
+  base.q8_hp1_blocks_per_row = 1;
+  base.native_weight_bytes = hp1.size() * sizeof(block_q8_hp1);
+  base.act_quant.storage()
+      .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+      .scale = 1.0f;
+  if (!expect(base.has_q8_hp1_im2p_contract(),
+              "Q8_HP1 provider fixture satisfies the native contract"))
+    return false;
+
+  auto started = execute(&base);
+  if (!expect(started.status.ok(), "Q8_HP1 provider route starts") ||
+      !expect(started.run != nullptr, "Q8_HP1 provider route returns a run") ||
+      !expect(fence(*started.run).status.ok(), "Q8_HP1 provider route fences"))
+    return false;
+
+  const auto &descriptor = fake::full_desc;
+  if (!expect(fake::sim_created == 1 && fake::provider_full_count == 1 &&
+                  fake::provider_work_count == 0 &&
+                  fake::provider_delivered_values == fake::provider_exact_values &&
+                  output == std::array<float, 1>{7.0f} &&
+                  descriptor.abi_version == IM2P_ABI_VERSION &&
+                  descriptor.activation_bits ==
+                      IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS &&
+                  descriptor.weight_bits == GGML_GEMMINI_WEIGHT_BITS &&
+                  descriptor.weight_storage_bytes == 1 &&
+                  descriptor.weight_row_stride_bytes == 1 &&
+                  descriptor.output_row_stride == 1 &&
+                  descriptor.block_size == 32 &&
+                  descriptor.vector_op == IM2P_VECTOR_EXTERNAL &&
+                  descriptor.provider.context != nullptr &&
+                  descriptor.provider.read_weight_i8 != nullptr &&
+                  descriptor.provider.read_weight_i16 == nullptr &&
+                  descriptor.provider.read_scale != nullptr &&
+                  descriptor.provider.write_output != nullptr,
+              "Q8_HP1 provider fixture produces the exact output and descriptor"))
+    return false;
+
+  auto reject = [&](auto mutate, const char *message) {
+    auto mutated = base;
+    output = untouched;
+    mutate(mutated);
+    fake::reset();
+    const auto result = execute(&mutated);
+    return expect(!mutated.has_q8_hp1_im2p_contract() &&
+                      result.status.code == StatusCode::invalid_contract &&
+                      result.status.route == Route::q8_hp1 &&
+                      fake::sim_created == 0 && fake::stream_created == 0 &&
+                      fake::provider_full_count == 0 &&
+                      fake::provider_work_count == 0 && output == untouched,
+                  message);
   };
 
-  std::vector<block_q8_h1> h1(2);
-  auto x = base;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  x.q8_h1_blocks = h1.data();
-  x.q8_h1_block_count = h1.size();
-  x.q8_h1_rows = 2;
-  x.blocks_per_row = 1;
-  if (!check(x, Route::q8_h1))
+  if (!reject([](auto &x) { x.q8_hp1_block_count = 0; },
+              "Q8_HP1 block-count underflow rejects before execution") ||
+      !reject([](auto &x) { x.native_weight_bytes = 0; },
+              "Q8_HP1 native extent underflow rejects before execution"))
     return false;
 
-  std::vector<block_q8_h2> h2(2);
-  x = base;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h2;
-  x.q8_h2_blocks = h2.data();
-  x.q8_h2_block_count = h2.size();
-  x.q8_h2_blocks_per_row = 1;
-  if (!check(x, Route::q8_h2))
-    return false;
-
-  std::vector<block_q8_hp1> hp1(2);
-  x = base;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
-  x.q8_hp1_blocks = hp1.data();
-  x.q8_hp1_block_count = hp1.size();
-  x.q8_hp1_blocks_per_row = 1;
-  if (!check(x, Route::q8_hp1))
-    return false;
-
-  std::vector<block_q8_hp2> hp2(2);
-  x = base;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp2;
-  x.q8_hp2_blocks = hp2.data();
-  x.q8_hp2_block_count = hp2.size();
-  x.q8_hp2_blocks_per_row = 1;
-  if (!check(x, Route::q8_hp2))
-    return false;
-
-  std::vector<uint8_t> rows(2 * (sizeof(float) + 3));
-  const float one = 1.0f;
-  std::memcpy(rows.data(), &one, sizeof(one));
-  std::memcpy(rows.data() + sizeof(float) + 3, &one, sizeof(one));
-  x = base;
-  x.K = 3;
-  x.sA = 3;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_channel;
-  x.q8_channel_row_base = rows.data();
-  x.q8_channel_row_stride = sizeof(float) + 3;
-  x.q8_channel_row_count = 2;
-  x.B = reinterpret_cast<elem_t *>(rows.data() + sizeof(float));
-  x.sB = sizeof(float) + 3;
-  if (!check(x, Route::q8_channel))
-    return false;
-
-  const float channel_scales[2] = {1.0f, 2.0f};
-  x = base;
-  x.K = 3;
-  x.sA = 3;
-  x.B = dense.data();
-  x.sB = 3;
-  x.weight_format =
-      ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar;
-  x.weight_channel_scales = channel_scales;
-  x.weight_channel_scale_count = 2;
-  return check(x, Route::q8_channel_dense_sidecar);
+  return expect(output == untouched,
+                "Q8_HP1 invalid contracts leave the destination untouched");
 }
+
 bool test_native_q4_q16_provider_golden() {
   auto base = [] {
     ggml_gemmini_args_t args{};
@@ -652,6 +659,7 @@ bool test_native_q4_q16_provider_golden() {
     auto args = base();
     args.weight_format = format;
     args.*member = block;
+    args.native_weight_bytes = args.native_block_count * sizeof(*block);
     std::array<int8_t, 1> lane15{}, lane16{};
     double factor = 0.0;
     return expect(args.has_native_matched_width_contract(), message) &&
@@ -692,6 +700,7 @@ bool test_native_q4_q16_provider_golden() {
     auto args = base();
     args.weight_format = format;
     args.*member = block;
+    args.native_weight_bytes = args.native_block_count * sizeof(*block);
     std::array<int16_t, 1> lane15{}, lane16{};
     double factor = 0.0;
     return expect(args.has_native_matched_width_contract(), message) &&
@@ -731,9 +740,11 @@ bool test_native_q4_q16_provider_golden() {
 #if GGML_GEMMINI_WEIGHT_BITS == 4
   args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q4_h0;
   args.q4_h0_blocks = &q4_h0;
+  args.native_weight_bytes = args.native_block_count * sizeof(q4_h0);
 #else
   args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q16_h0;
   args.q16_h0_blocks = &q16_h0;
+  args.native_weight_bytes = args.native_block_count * sizeof(q16_h0);
 #endif
   auto started = execute(&args, Mode::full);
   if (!expect(started.status.ok(), "matched native route starts") ||
@@ -820,6 +831,7 @@ bool test_native_h1_provider_start_contract() {
   x.q8_h1_block_count = 2;
   x.q8_h1_rows = 2;
   x.blocks_per_row = 1;
+  x.native_weight_bytes = sizeof(blocks);
   x.act_quant.storage()
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
@@ -901,6 +913,7 @@ bool test_provider_int64_scaling_full_pipeline() {
     args.q8_h1_block_count = weights.size();
     args.q8_h1_rows = columns;
     args.blocks_per_row = blocks_per_row;
+    args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
     args.act_quant.storage()
         .emplace<ggml::gemmini::quants::act::tensor::Meta>()
         .scale = static_cast<float>(activation_scale);
@@ -1013,6 +1026,8 @@ bool test_provider_int64_scaling_full_pipeline() {
   one_row_args.q8_h1_block_count = one_row_weights.size();
   one_row_args.q8_h1_rows = columns;
   one_row_args.blocks_per_row = 1;
+  one_row_args.native_weight_bytes =
+      one_row_weights.size() * sizeof(block_q8_h1);
   one_row_args.act_quant.storage()
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
@@ -1592,6 +1607,7 @@ bool test_exsia_metadata_is_published_explicitly_after_args_expire() {
     args.q8_h1_block_count = blocks.size();
     args.q8_h1_rows = 2;
     args.blocks_per_row = 1;
+    args.native_weight_bytes = blocks.size() * sizeof(block_q8_h1);
     args.act_quant.storage().emplace<exsia::Meta>();
     started = execute(&args, Mode::stripe_pipeline, {64});
   }
@@ -1634,6 +1650,7 @@ bool test_rmd_finalizes_frontend_stage_before_authorization() {
   args.q8_h1_block_count = blocks.size();
   args.q8_h1_rows = 2;
   args.blocks_per_row = 1;
+  args.native_weight_bytes = blocks.size() * sizeof(block_q8_h1);
   args.act_quant.storage().emplace<exsia::Meta>();
 
   auto started = execute(&args, Mode::stripe_pipeline, {64});
@@ -1915,6 +1932,136 @@ bool test_max_stall_limit_disables_watchdog() {
                 "disabled watchdog permits completion beyond ordinary limit");
 }
 
+bool test_publication_geometry_and_counter_separation() {
+  struct Result {
+    std::vector<size_t> publication_rows;
+    im2p_work_stats_t stats{};
+  };
+  auto run = [](size_t reduction) {
+    fake::reset();
+    constexpr size_t rows = 16 * DIM;
+    constexpr size_t rows_per_publication = 5 * DIM;
+    std::vector<int8_t> activation(rows * reduction, 1);
+    std::vector<int8_t> weights(reduction, 1);
+    std::vector<int32_t> output(rows, 0x12345678);
+    ggml_gemmini_args_t args{};
+    args.I = rows;
+    args.J = 1;
+    args.K = reduction;
+    if (!args.A.allocate(rows, reduction,
+                         IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+      return Result{};
+    for (size_t row = 0; row < rows; ++row)
+      for (size_t column = 0; column < reduction; ++column)
+        if (!args.A.set(row, column, activation[row * reduction + column]))
+          return Result{};
+    args.B = weights.data();
+    args.C = output.data();
+    args.sA = reduction;
+    args.sB = 1;
+    args.sC = 1;
+    args.full_C = true;
+    args.tile_I = 5;
+    args.tile_J = 1;
+    args.tile_K = 1;
+    args.activation_rows_per_stripe = rows_per_publication;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h0;
+
+    auto started = execute(&args, Mode::stripe_pipeline, {64});
+    if (!started.status.ok())
+      return Result{};
+    size_t stripe_id = 0;
+    for (size_t begin = 0; begin < rows;
+         begin += rows_per_publication, ++stripe_id) {
+      if (!submit_stripe(*started.run,
+                         event(stripe_id, begin,
+                               std::min(rows, begin + rows_per_publication)))
+               .ok())
+        return Result{};
+    }
+    const auto done = fence(*started.run);
+    if (!done.status.ok())
+      return Result{};
+    Result result;
+    for (const auto &published : fake::published)
+      result.publication_rows.push_back(published.rows);
+    result.stats = done.stats.base;
+    return result;
+  };
+
+  const auto one_k_fragment = run(DIM);
+  const auto three_k_fragments = run(2 * DIM + 1);
+  if (!expect(one_k_fragment.publication_rows ==
+                  std::vector<size_t>({5 * DIM, 5 * DIM, 5 * DIM, DIM}) &&
+                  three_k_fragments.publication_rows ==
+                      one_k_fragment.publication_rows,
+              "tile_I=5 publishes exact 5*DIM/5*DIM/5*DIM/DIM row stripes"))
+    return false;
+  if (!expect(one_k_fragment.stats.completed_output_tiles == 16 &&
+                  one_k_fragment.stats.completed_fragments == 16 &&
+                  one_k_fragment.stats.completed_stripes == 4 &&
+                  one_k_fragment.stats.stripes_published == 4 &&
+                  one_k_fragment.stats.stripe_rows_published == 16 * DIM,
+              "one K fragment keeps RTL works distinct from publications"))
+    return false;
+  if (!expect(three_k_fragments.stats.completed_output_tiles == 16 &&
+                  three_k_fragments.stats.completed_fragments == 48 &&
+                  three_k_fragments.stats.completed_stripes == 4 &&
+                  three_k_fragments.stats.stripes_published == 4 &&
+                  three_k_fragments.stats.stripe_rows_published == 16 * DIM,
+              "extra K fragments change internal progress but not publications"))
+    return false;
+  std::printf("STRIPE_COUNTER_QA rows=%d,%d,%d,%d works=%llu "
+              "k1_fragments=%llu k3_fragments=%llu publications=%llu "
+              "published_rows=%llu\n",
+              5 * DIM, 5 * DIM, 5 * DIM, DIM,
+              static_cast<unsigned long long>(
+                  three_k_fragments.stats.completed_output_tiles),
+              static_cast<unsigned long long>(
+                  one_k_fragment.stats.completed_fragments),
+              static_cast<unsigned long long>(
+                  three_k_fragments.stats.completed_fragments),
+              static_cast<unsigned long long>(
+                  three_k_fragments.stats.stripes_published),
+              static_cast<unsigned long long>(
+                  three_k_fragments.stats.stripe_rows_published));
+
+  fake::reset();
+  std::vector<int8_t> activation(16 * DIM * DIM, 1), weights(DIM, 1);
+  std::vector<int32_t> output(16 * DIM);
+  ggml_gemmini_args_t args{};
+  args.I = 16 * DIM;
+  args.J = 1;
+  args.K = DIM;
+  if (!args.A.allocate(args.I, args.K,
+                       IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  args.B = weights.data();
+  args.C = output.data();
+  args.sA = DIM;
+  args.sB = args.sC = 1;
+  args.full_C = true;
+  args.tile_I = 5;
+  args.tile_J = args.tile_K = 1;
+  args.activation_rows_per_stripe = 5 * DIM;
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h0;
+  auto malformed = execute(&args, Mode::stripe_pipeline, {64});
+  if (!malformed.status.ok())
+    return false;
+  return expect(submit_stripe(*malformed.run, event(1, 0, 5 * DIM)).code ==
+                    StatusCode::invalid_argument,
+                "out-of-order publication rejects deterministically") &&
+         expect(submit_stripe(*malformed.run, event(0, 0, 5 * DIM)).ok(),
+                "valid first publication remains acceptable") &&
+         expect(submit_stripe(*malformed.run,
+                              event(1, 5 * DIM - 1, 10 * DIM - 1)).code ==
+                    StatusCode::invalid_argument,
+                "overlapping publication rejects deterministically") &&
+         expect(fence(*malformed.run).status.code ==
+                    StatusCode::invalid_contract,
+                "incomplete publication sequence rejects at fence");
+}
+
 bool test_compiled_identity() {
   return expect(compiled_activation_bits() ==
                     IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
@@ -1950,11 +2097,15 @@ int main(int argc, char **argv) {
             ? test_forward_progress_is_not_stall()
         : selected == "disabled_progress_watchdog"
             ? test_max_stall_limit_disables_watchdog()
+        : selected == "q8_hp1_extent_contract"
+            ? test_q8_hp1_native_extent_contract()
         : selected == "native_q4_q16_provider"
             ? test_native_q4_q16_provider_golden()
         : selected == "provider_int64_scaling" ||
                   selected == "cross_mode_oracle"
             ? test_provider_int64_scaling_full_pipeline()
+        : selected == "publication_counter_separation"
+            ? test_publication_geometry_and_counter_separation()
             : false;
     if (selected_ok)
       std::printf("IM2P Gemmini frontend case %s: PASS\n", argv[1]);
@@ -1969,7 +2120,8 @@ int main(int argc, char **argv) {
       : (test_compiled_identity() &&
          test_native_q4_q16_provider_golden() &&
          test_native_h1_provider_start_contract() &&
-      test_provider_int64_scaling_full_pipeline() &&
+         test_provider_int64_scaling_full_pipeline() &&
+      test_publication_geometry_and_counter_separation() &&
       test_rejected_routes_do_not_execute() &&
       test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&

@@ -8,12 +8,17 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.static_check import obsolete_exsia_claims
+
 BITS = (4, 8, 16)
 DIMS = (16, 32, 64)
 MATCHED_WIDTHS = ((4, 4), (16, 16))
+REAL_MATRIX_PAIRS = tuple((bits, bits, dim) for bits in BITS for dim in DIMS)
 IDENTITY_RE = re.compile(r"a(?:4|8|16)-w(?:4|8|16)-d(?:16|32|64)")
 BUILD_DIR_TEXT = os.environ.get("IM2P_BUILD_CONTRACT_BUILD_DIR", "build")
 BUILD_DIR = Path(BUILD_DIR_TEXT)
@@ -104,25 +109,173 @@ def main() -> int:
     failures: list[str] = []
     observed: dict[str, str] = {}
 
-    generic_a4 = make_dry_run("verilator", variables=("IM2P_ACTIVATION_BITS=4",))
-    generic_a8 = make_dry_run("verilator", variables=("IM2P_ACTIVATION_BITS=8",))
-    if generic_a4.returncode != 0 or generic_a8.returncode != 0:
-        failures.append("generic A4/A8 Verilator dry-runs must both resolve")
-    else:
-        a4_ids = set(IDENTITY_RE.findall(generic_a4.stdout))
-        a8_ids = set(IDENTITY_RE.findall(generic_a8.stdout))
-        if not a4_ids and not a8_ids:
-            failures.append(
-                "A4 and A8 collide: generic Verilator paths have no width identity"
+    with tempfile.TemporaryDirectory(prefix="im2p-frontend-deps-") as temp_dir:
+        build_dir = Path(temp_dir) / "build"
+        identity = "a8-w8-d16"
+        frontend_object = build_dir / "bin" / identity / "im2p_gemmini_frontend.o"
+        variables = (
+            f"BUILD_DIR={build_dir}",
+            "IM2P_ACTIVATION_BITS=8",
+            "IM2P_WEIGHT_BITS=8",
+            "IM2P_DIM=16",
+        )
+        built = subprocess.run(
+            ["make", "--no-print-directory", str(frontend_object), *variables],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        args_header = ROOT.parent / "llama.cpp-gemmini" / "ggml" / "src" / "ggml-gemmini" / "ggml-gemmini-args.h"
+        dependency_file = frontend_object.with_suffix(".d")
+        if built.returncode != 0:
+            failures.append(f"frontend dependency bootstrap failed:\n{built.stdout}")
+        elif not dependency_file.is_file():
+            failures.append("frontend compile must emit a compiler dependency file")
+        else:
+            rebuilt = subprocess.run(
+                [
+                    "make", "--no-print-directory", "-q", "-W", str(args_header),
+                    str(frontend_object), *variables,
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
             )
-        elif a4_ids != {f"a4-w8-d{dim}" for dim in DIMS} or a8_ids != {
-            f"a8-w8-d{dim}" for dim in DIMS
-        }:
-            failures.append(
-                f"generic width paths are not isolated: A4={a4_ids}, A8={a8_ids}"
-            )
+            if rebuilt.returncode != 1:
+                failures.append(
+                    "frontend object must become out-of-date when an included llama header changes; "
+                    f"make -q returned {rebuilt.returncode}:\n{rebuilt.stdout}"
+                )
 
-    for bits in BITS:
+    makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+    matrix_match = re.search(r"^REAL_MATRIX_PAIRS\s*:=\s*(.+)$", makefile_text, re.MULTILINE)
+    expected_matrix = " ".join(
+        f"{activation_bits}:{weight_bits}:{dim}"
+        for activation_bits, weight_bits, dim in REAL_MATRIX_PAIRS
+    )
+    if matrix_match is None or matrix_match.group(1).strip() != expected_matrix:
+        failures.append(
+            "REAL_MATRIX_PAIRS must contain exactly the nine matched "
+            f"activation/weight/DIM identities: {expected_matrix}"
+        )
+
+    expected_public_targets = {
+        *(f"sim-test-a4-w4-d{dim}" for dim in DIMS),
+        *(f"sim-test-int8x{dim}" for dim in DIMS),
+        *(f"sim-test-a16-w16-d{dim}" for dim in DIMS),
+    }
+    phony_match = re.search(
+        r"^\.PHONY:(.*?)(?:\n\n|\Z)", makefile_text, re.MULTILINE | re.DOTALL
+    )
+    declared_public_targets = set()
+    if phony_match is not None:
+        declared_public_targets = {
+            target
+            for target in phony_match.group(1).replace("\\\n", " ").split()
+            if re.fullmatch(
+                r"sim-test-(?:int(?:4|8|16)x(?:16|32|64)|a(?:4|8|16)-w(?:4|8|16)-d(?:16|32|64))",
+                target,
+            )
+        }
+    if declared_public_targets != expected_public_targets:
+        failures.append(
+            "public exact sim targets must be exactly the nine matched identities: "
+            f"missing={sorted(expected_public_targets - declared_public_targets)} "
+            f"extra={sorted(declared_public_targets - expected_public_targets)}"
+        )
+
+    obsolete_claims = (
+        "Production ExSIA route는 A8/Q8만 지원한다",
+        "Production ExSIA는 A8/Q8만 허용한다",
+        "production ExSIA 경로는 A8/Q8만 지원한다",
+        "RMD scale integration은 TODO",
+        "Matched ExSIA RMD scale integration",
+    )
+    exact_prior_mutation = (
+        "The real matrix only exercises A8/Q8 and A4/Q4 and A16/Q16 "
+        "ExSIA remain rejected/TODO."
+    )
+    detected_mutation = obsolete_exsia_claims(exact_prior_mutation)
+    if len(detected_mutation) != 2:
+        failures.append(
+            "normalized semantic checker did not reject the exact prior mutation: "
+            f"{detected_mutation}"
+        )
+    copied_docs_negative_fixture = (
+        "Production ExSIA is A8/Q8 only; A4/Q4 and A16/Q16 are TODO rejection routes."
+    )
+    copied_fixture_findings = set(obsolete_exsia_claims(copied_docs_negative_fixture))
+    copied_fixture_expected = {
+        "production ExSIA is A8/Q8-only",
+        "matched A4/Q4 and A16/Q16 ExSIA remain rejected/TODO",
+    }
+    if copied_fixture_findings != copied_fixture_expected:
+        failures.append(
+            "copied obsolete docs sentence was not rejected by the full build contract: "
+            f"{sorted(copied_fixture_findings)}"
+        )
+    for relative in ("README.md", "frontend/README.md", "docs/ARCHITECTURE.md", "docs/VERIFICATION.md"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        if not all(value in text for value in ("matched ExSIA", "A4/Q4", "A8/Q8", "A16/Q16")):
+            failures.append(f"{relative} lacks the supported matched ExSIA contract")
+        returned = [claim for claim in obsolete_claims if claim in text]
+        returned.extend(obsolete_exsia_claims(text))
+        if returned:
+            failures.append(f"{relative} restored obsolete A8-only/TODO claims: {returned}")
+
+    syntax = make_dry_run("gemmini-frontend-real-syntax-test")
+    syntax_required = (
+        "IM2P_ACTIVATION_BITS=\"$bits\" IM2P_WEIGHT_BITS=\"$bits\" IM2P_DIM=16",
+        "GEMMINI_FRONTEND_WEIGHT_BITS=\"$bits\" GEMMINI_FRONTEND_DIM=16",
+        "-fsyntax-only",
+        "frontend/tests/test_frontend_real.cpp",
+    )
+    if syntax.returncode != 0:
+        failures.append(f"real frontend syntax dry-run failed:\n{syntax.stdout}")
+    else:
+        missing = [value for value in syntax_required if value not in syntax.stdout]
+        if missing:
+            failures.append(f"real frontend syntax target is missing {missing}")
+
+    for activation_bits in BITS:
+        for weight_bits in BITS:
+            if activation_bits == weight_bits:
+                continue
+            mixed = make_dry_run(
+                "gemmini-frontend-real-test",
+                variables=(
+                    f"IM2P_ACTIVATION_BITS={activation_bits}",
+                    f"IM2P_WEIGHT_BITS={weight_bits}",
+                    f"GEMMINI_FRONTEND_ACTIVATION_BITS={activation_bits}",
+                    f"GEMMINI_FRONTEND_WEIGHT_BITS={weight_bits}",
+                    "IM2P_DIM=16",
+                    "GEMMINI_FRONTEND_DIM=16",
+                ),
+            )
+            if mixed.returncode == 0:
+                failures.append(
+                    f"mixed artifact A{activation_bits}/W{weight_bits} must fail before execution"
+                )
+            elif "matched activation/weight widths" not in mixed.stdout:
+                failures.append(
+                    f"mixed artifact A{activation_bits}/W{weight_bits} lacks exact identity diagnostic"
+                )
+
+    generic_a8 = make_dry_run(
+        "verilator", variables=("IM2P_ACTIVATION_BITS=8", "IM2P_WEIGHT_BITS=8")
+    )
+    if generic_a8.returncode != 0:
+        failures.append("generic matched A8/Q8 Verilator dry-run must resolve")
+    elif set(IDENTITY_RE.findall(generic_a8.stdout)) != {
+        f"a8-w8-d{dim}" for dim in DIMS
+    }:
+        failures.append("generic A8/Q8 paths are not isolated")
+
+    for bits in (8,):
         for dim in DIMS:
             identity = f"a{bits}-w8-d{dim}"
             target = f"verilator-int{bits}x{dim}"
@@ -183,7 +336,11 @@ def main() -> int:
                 if missing:
                     failures.append(f"{sim_target} is missing {missing}")
 
-            config = (f"IM2P_ACTIVATION_BITS={bits}", f"IM2P_DIM={dim}")
+            config = (
+                f"IM2P_ACTIVATION_BITS={bits}",
+                f"IM2P_WEIGHT_BITS={bits}",
+                f"IM2P_DIM={dim}",
+            )
             frontend = make_dry_run("gemmini-frontend-test", variables=config)
             frontend_required = (
                 artifact("generated", identity, "gemmini_params.h"),
@@ -197,22 +354,22 @@ def main() -> int:
                 )
             else:
                 missing = missing_paths(frontend.stdout, frontend_required)
-                expected_block_size = 64 if dim == 64 else 32
-                block_definition = (
-                    f"-DGGML_GEMMINI_BLOCK_SIZE={expected_block_size}"
-                )
+                block_definition = "-DGGML_GEMMINI_BLOCK_SIZE=32"
                 if block_definition not in frontend.stdout:
                     missing.append(block_definition)
                 weight_definition = "-DGGML_GEMMINI_WEIGHT_BITS=8"
                 if weight_definition not in frontend.stdout:
                     missing.append(weight_definition)
+                selector_token = "q8_hp1_extent_contract"
+                if selector_token not in frontend.stdout:
+                    missing.append(selector_token)
                 if missing:
                     failures.append(f"frontend {identity} is missing {missing}")
 
             c_api = make_dry_run("c-api-test", variables=config)
             c_api_required = (
-                artifact("c-api", identity, "c_api_smoke.o"),
-                artifact("c-api", identity, "im2p_c_api_smoke"),
+                artifact("c-api", identity, "c_api_runtime.o"),
+                artifact("c-api", identity, "im2p_c_api_runtime"),
                 artifact("cargo", identity),
             )
             if c_api.returncode != 0:
@@ -286,6 +443,8 @@ def main() -> int:
                         ),
                     )
                 )
+                if "q8_hp1_extent_contract" in frontend.stdout:
+                    missing.append("!q8_hp1_extent_contract")
                 if missing:
                     failures.append(f"frontend {identity} is missing {missing}")
 
@@ -341,8 +500,9 @@ def main() -> int:
         "gemmini-frontend-test",
         variables=(
             "IM2P_ACTIVATION_BITS=4",
-            "IM2P_WEIGHT_BITS=8",
+            "IM2P_WEIGHT_BITS=4",
             "IM2P_DIM=16",
+            "GEMMINI_FRONTEND_ACTIVATION_BITS=4",
             "GEMMINI_FRONTEND_WEIGHT_BITS=4",
         ),
     )
@@ -402,9 +562,7 @@ def main() -> int:
             f"{invalid_frontend_weight.stdout}"
         )
 
-    expected_artifact_count = (
-        len(BITS) * len(DIMS) + len(MATCHED_WIDTHS) * len(DIMS)
-    )
+    expected_artifact_count = len(DIMS) + len(MATCHED_WIDTHS) * len(DIMS)
     if len(observed) == expected_artifact_count:
         path_sets = {
             identity: set(IDENTITY_RE.findall(output))

@@ -27,6 +27,7 @@ def add_file(digest: hashlib._Hash, category: str, root: Path, path: Path) -> No
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bits", type=int, choices=(4, 8, 16), required=True)
+    parser.add_argument("--weight-bits", type=int, choices=(4, 8, 16), required=True)
     parser.add_argument("--dim", type=int, choices=(16, 32, 64), required=True)
     parser.add_argument("--gemmini-root", type=Path, required=True)
     parser.add_argument("--params-root", type=Path, required=True)
@@ -36,7 +37,14 @@ def main() -> int:
 
     gemmini_root = args.gemmini_root.resolve()
     params_root = args.params_root.resolve()
-    selected_top = ROOT / "synth" / f"SynthInt{args.bits}x{args.dim}.bsv"
+    if args.bits != args.weight_bits:
+        parser.error("real matrix fingerprints require matched activation/weight widths")
+    selected_stem = (
+        f"SynthInt8x{args.dim}"
+        if args.bits == 8
+        else f"SynthA{args.bits}W{args.weight_bits}D{args.dim}"
+    )
+    selected_top = ROOT / "synth" / f"{selected_stem}.bsv"
     required = (
         ROOT / "Makefile",
         ROOT / "sim/Cargo.toml",
@@ -86,13 +94,15 @@ def main() -> int:
     )
 
     digest = hashlib.sha256()
-    identity = f"a{args.bits}-w8-d{args.dim}"
+    identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     for value in (
         "real-matrix-fingerprint-v1",
         f"identity={identity}",
-        f"top=mkSynthInt{args.bits}x{args.dim}",
+        f"top=mk{selected_stem}",
         f"activation_bits={args.bits}",
         f"activation_storage_bytes={(args.bits + 7) // 8}",
+        f"weight_bits={args.weight_bits}",
+        f"weight_storage_bytes={(args.weight_bits + 7) // 8}",
         f"dim={args.dim}",
         *sorted(f"config={value}" for value in args.config),
     ):

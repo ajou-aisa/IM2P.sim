@@ -241,6 +241,37 @@ def strip_comments(text: str) -> str:
     return re.sub(r"//.*", "", text)
 
 
+def normalize_semantic_text(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.casefold()).split())
+
+
+OBSOLETE_EXSIA_COPIED_DOC_FIXTURE = (
+    "Production ExSIA is A8/Q8 only; A4/Q4 and A16/Q16 are TODO rejection routes."
+)
+
+
+def obsolete_exsia_claims(text: str) -> list[str]:
+    normalized = normalize_semantic_text(text)
+    patterns = (
+        (
+            "real matrix is A8/Q8-only",
+            r"\breal matrix\b.{0,80}\b(?:only|exclusively)\b.{0,40}\ba8 q8\b",
+        ),
+        (
+            "production ExSIA is A8/Q8-only",
+            r"\bproduction exsia\b.{0,40}\ba8 q8\b.{0,20}\bonly\b",
+        ),
+        (
+            "matched A4/Q4 and A16/Q16 ExSIA remain rejected/TODO",
+            r"\ba4 q4\b.{0,60}\ba16 q16\b.{0,30}(?:exsia )?"
+            r"(?:(?:remain|are still|continue to be).{0,20}"
+            r"(?:rejected|unsupported|todo|unimplemented)"
+            r"|are todo rejection routes)\b",
+        ),
+    )
+    return [name for name, pattern in patterns if re.search(pattern, normalized)]
+
+
 def package_name(path: Path) -> str:
     match = PACKAGE_RE.search(path.read_text(encoding="utf-8"))
     if not match:
@@ -421,7 +452,7 @@ def check_frontend_and_output_contracts() -> None:
     )
     if routes != PUBLIC_FRONTEND_ROUTES:
         fail(
-            "public frontend routes must match the exact A8/Q8 allowlist, "
+            "public frontend routes must match the exact canonical allowlist, "
             f"got {routes}"
         )
 
@@ -439,7 +470,7 @@ def check_frontend_and_output_contracts() -> None:
     }
     if artifacts != PUBLIC_FRONTEND_ARTIFACTS:
         fail(
-            "public frontend artifacts must match the exact Q8 allowlist\n"
+            "public frontend artifacts must match the exact canonical allowlist\n"
             f"  missing={sorted(PUBLIC_FRONTEND_ARTIFACTS - artifacts)}\n"
             f"  extra={sorted(artifacts - PUBLIC_FRONTEND_ARTIFACTS)}"
         )
@@ -513,6 +544,19 @@ def check_frontend_and_output_contracts() -> None:
 
 
 def check_exsia_integration_contracts() -> None:
+    copied_fixture_findings = set(
+        obsolete_exsia_claims(OBSOLETE_EXSIA_COPIED_DOC_FIXTURE)
+    )
+    copied_fixture_expected = {
+        "production ExSIA is A8/Q8-only",
+        "matched A4/Q4 and A16/Q16 ExSIA remain rejected/TODO",
+    }
+    if copied_fixture_findings != copied_fixture_expected:
+        fail(
+            "copied obsolete ExSIA docs fixture was not rejected exactly: "
+            f"{sorted(copied_fixture_findings)}"
+        )
+
     gemmini = ROOT.parent / "llama.cpp-gemmini/ggml/src/ggml-gemmini"
     orchestration = gemmini / "ggml-gemmini.cpp"
     adapter = gemmini / "ggml-gemmini-im2p.cpp"
@@ -522,12 +566,72 @@ def check_exsia_integration_contracts() -> None:
 
     require_regex(
         adapter,
-        r"Result gate_route\(.*?"
-        r"if \(weight_bits != 4 && weight_bits != 8 && weight_bits != 16\).*?"
-        r"if \(exsia\).*?activation_bits == 8 && weight_bits == 8.*?"
-        r"rmd_enabled.*?cpu_direct_rmd.*?"
-        r"weight_bits == 8 \|\| activation_bits == weight_bits",
-        "matched Q4/Q16 non-ExSIA and A8/Q8-only ExSIA fail-closed gate",
+        r"Result gate_route\(const ExsiaRouteRequest &request\).*?"
+        r"request\.artifact_activation_bits != request\.activation_bits.*?"
+        r"request\.artifact_weight_bits != request\.weight_bits.*?"
+        r"IM2P artifact identity does not match the requested route.*?"
+        r"request\.activation_bits != request\.weight_bits.*?"
+        r"matched activation and weight widths",
+        "matched A4/Q4, A8/Q8, and A16/Q16 ExSIA fail-closed gate",
+    )
+    contract_docs = (
+        ROOT / "README.md",
+        ROOT / "frontend/README.md",
+        ROOT / "docs/VERIFICATION.md",
+        ROOT / "docs/ARCHITECTURE.md",
+    )
+    for path in contract_docs:
+        require_substrings(path, ("matched ExSIA", "A4/Q4", "A8/Q8", "A16/Q16"))
+    obsolete_claims = (
+        "Production ExSIA route는 A8/Q8만 지원한다",
+        "Production ExSIA는 A8/Q8만 허용한다",
+        "production ExSIA 경로는 A8/Q8만 지원한다",
+        "RMD scale integration은 TODO",
+        "Matched ExSIA RMD scale integration",
+    )
+    frontend_contract_source = ROOT / "frontend/src/im2p_gemmini_frontend.cpp"
+    for path in contract_docs + (frontend_contract_source,):
+        text = path.read_text(encoding="utf-8")
+        returned = [claim for claim in obsolete_claims if claim in text]
+        returned.extend(obsolete_exsia_claims(text))
+        if returned:
+            fail(f"obsolete A8-only/TODO ExSIA claim in {path.relative_to(ROOT)}: {returned}")
+
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    matrix_match = re.search(r"^REAL_MATRIX_PAIRS\s*:=\s*(.+)$", makefile, re.MULTILINE)
+    expected_matrix = "4:4:16 4:4:32 4:4:64 8:8:16 8:8:32 8:8:64 16:16:16 16:16:32 16:16:64"
+    if matrix_match is None or matrix_match.group(1).strip() != expected_matrix:
+        fail("REAL_MATRIX_PAIRS must be exactly the nine matched A/W/DIM identities")
+    expected_targets = {
+        f"sim-test-a{bits}-w{bits}-d{dim}": f"mkSynthA{bits}W{bits}D{dim}"
+        for bits in (4, 16)
+        for dim in (16, 32, 64)
+    }
+    expected_targets.update({
+        f"sim-test-int8x{dim}": f"mkSynthInt8x{dim}"
+        for dim in (16, 32, 64)
+    })
+    phony_match = re.search(r"^\.PHONY:(.*?)(?:\n\n|\Z)", makefile, re.MULTILINE | re.DOTALL)
+    if phony_match is None:
+        fail("Makefile .PHONY target declaration missing")
+    declared_targets = set(phony_match.group(1).replace("\\\n", " ").split())
+    missing_targets = sorted(set(expected_targets) - declared_targets)
+    if missing_targets:
+        fail(f"nine-artifact public sim targets missing from .PHONY: {missing_targets}")
+    require_substrings(
+        ROOT / "Makefile",
+        (
+            "$(foreach dim,16 32 64,$(eval $(call define_sim_config,8,$(dim))))",
+            "TOP=mkSynthInt$(1)x$(2)",
+            "IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=8 IM2P_DIM=$(2)",
+            "$(foreach bits,4 16,$(foreach dim,16 32 64,$(eval $(call define_matched_sim_config,$(bits),$(dim)))))",
+            "TOP=mkSynthA$(1)W$(1)D$(2)",
+            "IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2)",
+            "gemmini-frontend-real-syntax-test:",
+            "GEMMINI_FRONTEND_WEIGHT_BITS=\"$$bits\" GEMMINI_FRONTEND_DIM=16",
+            "-fsyntax-only",
+            "frontend/tests/test_frontend_real.cpp",
+        ),
     )
     require_substrings(
         adapter,
@@ -680,8 +784,15 @@ def main() -> None:
             fail(f"Makefile top list missing: {top}")
     if "TOP=mkSynthInt$(1)x$(2)" not in makefile_text:
         fail("Makefile multiwidth top template missing")
-    for top in sorted(generated_multiwidth_tops):
-        legacy_match = re.fullmatch(r"mkSynthInt(4|8|16)x(16|32|64)", top)
+    public_artifact_tops = {
+        top
+        for top in generated_multiwidth_tops
+        if re.fullmatch(
+            r"mkSynth(?:Int8x|A(?:4W4|16W16)D)(?:16|32|64)", top
+        )
+    }
+    for top in sorted(public_artifact_tops):
+        legacy_match = re.fullmatch(r"mkSynthInt(8)x(16|32|64)", top)
         matched_match = re.fullmatch(
             r"mkSynthA(4|16)W(4|16)D(16|32|64)", top
         )
@@ -696,7 +807,7 @@ def main() -> None:
                 f"d{matched_match.group(3)}"
             )
         if target not in makefile_text:
-            fail(f"Makefile explicit multiwidth target missing: {target}")
+            fail(f"Makefile explicit matched artifact target missing: {target}")
     if not re.search(r"BSC_SIM_COMMON\s*:=[^\n]*\\\n\s*-check-assert", makefile_text):
         fail("Bluesim tests must compile dynamicAssert checks")
 

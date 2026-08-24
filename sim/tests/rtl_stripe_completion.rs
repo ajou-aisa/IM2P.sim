@@ -114,3 +114,98 @@ fn stripe_completions_preserve_publication_order_and_context() -> Result<(), Sim
     job.finish()?;
     Ok(())
 }
+
+#[test]
+fn gemmini_publications_span_multiple_dim_works_without_k_republication() -> Result<(), SimError> {
+    let simulator = Im2pSimulator::new()?;
+    let dim = simulator.dim();
+    let shape = Shape {
+        m: 16 * dim,
+        n: 1,
+        k: 2 * dim + 1,
+    };
+    let activations = structured_activations(shape);
+    let weights = structured_weights(shape);
+    let mut job = simulator.begin_striped_matmul(&descriptor(shape, &weights))?;
+    let publication_rows = [5 * dim, 5 * dim, 5 * dim, dim];
+    let mut next_publication = 0;
+    let mut row_begin = 0;
+    let mut completed = Vec::new();
+
+    for _ in 0..MAX_STEPS {
+        if next_publication < publication_rows.len() && job.npu_ready() {
+            let row_count = publication_rows[next_publication];
+            job.publish_stripe(ActivationStripe {
+                stripe_id: next_publication as u32,
+                row_begin,
+                row_count,
+                stripe_context: 500 + next_publication as u64,
+            })?;
+            row_begin += row_count;
+            next_publication += 1;
+        }
+        service(&mut job, &activations, shape, true)?;
+        while let Some(event) = job.poll_completed() {
+            completed.push(event);
+        }
+        if completed.len() == publication_rows.len() {
+            break;
+        }
+    }
+
+    assert_eq!(next_publication, publication_rows.len());
+    assert_eq!(row_begin, shape.m);
+    assert_eq!(
+        completed
+            .iter()
+            .map(|event| event.row_count)
+            .collect::<Vec<_>>(),
+        publication_rows
+    );
+    let stats = job.finish()?;
+    assert_eq!(stats.completed_output_tiles, 16);
+    assert_eq!(stats.completed_fragments, 48);
+    assert_eq!(stats.completed_stripes, 4);
+    assert_eq!(stats.stripes_published, 4);
+    assert_eq!(stats.stripe_rows_published, (16 * dim) as u64);
+    Ok(())
+}
+
+#[test]
+fn malformed_publication_sequences_reject_before_rtl_progress() -> Result<(), SimError> {
+    let simulator = Im2pSimulator::new()?;
+    let shape = Shape { m: 8, n: 3, k: 4 };
+    let weights = structured_weights(shape);
+    let mut job = simulator.begin_striped_matmul(&descriptor(shape, &weights))?;
+
+    assert_eq!(
+        job.publish_stripe(ActivationStripe {
+            stripe_id: 1,
+            row_begin: 0,
+            row_count: 2,
+            stripe_context: 1,
+        }),
+        Err(SimError::InvalidStripe)
+    );
+    job.publish_stripe(ActivationStripe {
+        stripe_id: 0,
+        row_begin: 0,
+        row_count: 2,
+        stripe_context: 2,
+    })?;
+    assert_eq!(
+        job.publish_stripe(ActivationStripe {
+            stripe_id: 1,
+            row_begin: 1,
+            row_count: 2,
+            stripe_context: 3,
+        }),
+        Err(SimError::DuplicateStripe)
+    );
+    assert_eq!(
+        job.progress_count(),
+        0,
+        "K fragments cannot publish stripes"
+    );
+    Ok(())
+}

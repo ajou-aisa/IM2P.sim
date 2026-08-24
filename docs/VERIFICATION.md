@@ -54,7 +54,7 @@ make check
 - frontend mode가 `FULL`/`PIPELINE` 두 개뿐인지 검사
 - signed-64 Accumulator/provider transport와 canonical callback 검사
 - raw output final signed-32 saturation 경계 검사
-- non-RMD matched A4/Q4·A16/Q16 FULL/PIPELINE, production A8/Q8 ExSIA 및 RMD TODO 계약 검사
+- matched ExSIA A4/Q4·A8/Q8·A16/Q16 FULL/PIPELINE 및 mixed artifact fail-closed 계약 검사
 
 ## 3. 전체 BSC/RTL 검증
 
@@ -135,17 +135,19 @@ Cargo auto-discovered integration tests:
 
 ## ExSIA frontend lifecycle 및 sanitizer
 
-Production ExSIA는 A8/Q8을 지원하며 public frontend state는 다음 두 개다.
+Production matched ExSIA는 A4/Q4, A8/Q8, A16/Q16을 지원하며 public frontend state는 다음 두 개다.
 
 | mode | 검증할 lifecycle |
 |---|---|
-| `FULL` | post-fold event 수집, quantization 성공 뒤 NPU 시작, fence -> 8-bit cpu-direct RMD -> caller output publish |
-| `PIPELINE` | NPU 선시작, 각 folding commit 직후 post-fold immediate publication, producer/worker overlap, fence -> 8-bit cpu-direct RMD -> caller output publish |
+| `FULL` | post-fold event 수집, quantization 성공 뒤 NPU 시작, fence -> matched-width H0/H1/HP1 RMD -> caller output publish; RTL stripe publication/row counter는 0 |
+| `PIPELINE` | NPU 선시작, 각 folding commit 직후 post-fold immediate publication, producer/worker overlap, fence -> matched-width H0/H1/HP1 RMD -> caller output publish |
 
 `PIPELINE`은 quantization 전체가 끝난 뒤 stripe를 batch publish하지 않는다.
-Non-RMD A4/Q4와 A16/Q16도 canonical typed stripe provider로 같은 native stream
-lifecycle을 사용한다. Matched ExSIA RMD scale integration, Q8 H2/HP2와
-mixed precision은 worker 시작, deferred queue, fallback 없이 거부한다.
+세 width 모두 canonical typed provider와 같은 lifecycle을 사용한다. Unsupported
+mixed precision activation/weight pair, H2/HP2, H0 compact-WS route는 allocation과
+worker 시작 전에 거부한다. 별도로 live-linked A16/Q16 frontend+A8/Q8 simulator
+mismatch 검사는 Run과 worker setup 뒤 identity probe에서 검출되지만 RTL execution,
+RMD, output commit, fallback 전에 정확한 artifact identity 진단으로 실패한다.
 
 Frontend lifecycle은 다음 target으로 검증한다.
 
@@ -170,16 +172,33 @@ W8 frontend artifact는 DIM16/DIM32에서 block size 32, DIM64에서 64를
 
 ```bash
 make c-api-layout-test
-make c-api-test IM2P_ACTIVATION_BITS=8 IM2P_DIM=16
-make gemmini-frontend-real-test IM2P_ACTIVATION_BITS=4 IM2P_WEIGHT_BITS=4 IM2P_DIM=16
-make gemmini-frontend-real-test IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=16 IM2P_DIM=16
+make c-api-test IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=16
+make gemmini-frontend-real-test-matrix REAL_MATRIX_ROOT=/tmp/im2p-real-matrix
+make gemmini-frontend-real-test-mismatch REAL_MATRIX_ROOT=/tmp/im2p-real-matrix
+make sim-test-a4-w4-d{16,32,64}
+make sim-test-int8x{16,32,64}
+make sim-test-a16-w16-d{16,32,64}
 cargo test --manifest-path sim/Cargo.toml
 make bsv-test-one TOP=mkTbIM2PCoreOutputAddressing
 ```
+
+`gemmini-frontend-real-test-matrix`는 task-owned root 아래의 A4/Q4,
+A8/Q8, A16/Q16 x DIM16/32/64 아홉 artifact를 완전히 분리해 build하고 각
+identity를 `FULL`과 `PIPELINE`으로 실행한다. Frontend와 simulator는 RTL execution
+전에 ABI, activation/weight width와 storage byte 수, DIM을 exact probe한다.
+A16/Q16 frontend+A8/Q8 simulator mismatch는 Run과 worker setup 뒤에도 RTL work와
+output mutation 없이 실패한다. 모든 mixed A/W build는 target recipe 실행 전에
+matched-width diagnostic으로 실패한다.
 
 `c-api-layout-test`는 단일 canonical ABI의 FULL/PIPELINE activation/weight
 identity 및 typed i8/i16 callback을 확인한다. Rust/RTL test는 signed-32
 범위를 넘는 누산이 provider까지 보존되고 raw output 최종 경계에서만
 saturation하는지 확인한다.
+
+Llama의 `tile_I/J/K`는 DIM-block factor이고 `I0/J0/K0`는 outer loop count다.
+따라서 llama stripe row 수는 보통 `tile_I*DIM`(마지막은 partial)이다. 이것은
+RTL `tile_i_rows`/`tile_j_columns` output work extent, DIM·remaining K·block
+boundary로 나뉘는 K fragment, `FULL`/`PIPELINE` mode, numeric A/W width,
+`a<activation>-w<weight>-d<dim>` artifact identity와 각각 별도 계약이다.
 
 Architecture의 기준은 [architecture 문서](ARCHITECTURE.md)에 있으며, 코드 분석 순서는 [코드 분석 가이드](CODE_ANALYSIS_GUIDE.md)를 따른다.
