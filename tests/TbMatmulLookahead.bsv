@@ -15,7 +15,8 @@ function ActivationStripe stripe(UInt#(32) id, MatrixExtent row);
  return ActivationStripe { stripeId: id, rowBegin: row, rowCount: 2,
   activationBase: 'h1000 + zeroExtend(row) * 8,
   activationRowStride: 8 + zeroExtend(id),
-  stripeContext: 100 + zeroExtend(id) };
+  stripeContext: 100 + zeroExtend(id),
+  publishCycle: 200 + zeroExtend(id) };
 endfunction
 typedef enum { Start, Pub0, Accept0, Pub1, See1, Pub2, Pub3,
  Done0, Promote1, Done1, Promote2, Done2, Promote3, Pass }
@@ -52,7 +53,7 @@ module mkTbMatmulLookahead(Empty);
   if (!dut.lookaheadValid || dut.lookaheadWork.stripeId != 1) begin
    $display("MATMUL LOOKAHEAD: FAIL immediate lookahead replaced"); $finish(1);
   end
-  dut.completeWork; state <= Promote1;
+  dut.completeWork(300); state <= Promote1;
  endrule
  rule r8 (state == Promote1 && dut.workValid);
   if (dut.work.stripeId != 1) begin $display("MATMUL LOOKAHEAD: FAIL promote s1"); $finish(1); end
@@ -61,7 +62,7 @@ module mkTbMatmulLookahead(Empty);
  rule r9 (state == Done1 && dut.lookaheadValid);
   if (dut.lookaheadWork.stripeId != 2) begin $display("MATMUL LOOKAHEAD: FAIL expose s2"); $finish(1); end
   if (dut.completionValid) dut.acknowledgeCompletion;
-  dut.completeWork; state <= Promote2;
+  dut.completeWork(301); state <= Promote2;
  endrule
  rule r10 (state == Promote2 && dut.workValid);
   if (dut.work.stripeId != 2) begin $display("MATMUL LOOKAHEAD: FAIL promote s2"); $finish(1); end
@@ -70,7 +71,7 @@ module mkTbMatmulLookahead(Empty);
  rule r11 (state == Done2 && dut.lookaheadValid);
   if (dut.lookaheadWork.stripeId != 3) begin $display("MATMUL LOOKAHEAD: FAIL expose s3"); $finish(1); end
   if (dut.completionValid) dut.acknowledgeCompletion;
-  dut.completeWork; state <= Promote3;
+  dut.completeWork(302); state <= Promote3;
  endrule
  rule r12 (state == Promote3 && dut.workValid);
   if (dut.work.stripeId != 3 || dut.work.activationRowStride != 11) begin

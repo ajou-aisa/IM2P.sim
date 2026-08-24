@@ -11,9 +11,20 @@ typedef enum {
     TbFinishFull,
     TbStartAsync,
     TbCheckUnpublished,
-    TbPublishAsync,
-    TbWaitAsyncWork,
-    TbCompleteAsyncWork,
+    TbPublishFirst,
+    TbWaitFirstWork,
+    TbPublishThird,
+    TbPublishFinal,
+    TbWaitFirstCompletion,
+    TbWaitSecondWork,
+    TbCompleteSecondWork,
+    TbWaitThirdWork,
+    TbCompleteThirdWork,
+    TbHoldFullCompletionFifo,
+    TbCheckSecondCompletion,
+    TbCheckThirdCompletion,
+    TbWaitFinalWork,
+    TbCompleteFinalWork,
     TbFinishAsync
 } TbState deriving (Bits, Eq, FShow);
 
@@ -53,6 +64,7 @@ module mkTbMatmulScheduler(Empty);
     Reg#(TbState) state <- mkReg(TbStartFull);
     Reg#(UInt#(3)) fullWorkCount <- mkReg(0);
     Reg#(UInt#(3)) asyncWaitCycles <- mkReg(0);
+    Reg#(UInt#(3)) completionHoldCycles <- mkReg(0);
     Reg#(UInt#(8)) watchdog <- mkReg(0);
 
     rule watch;
@@ -99,7 +111,7 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule completeFullWork (state == TbCompleteFullWork);
-        dut.completeWork;
+        dut.completeWork(900 + zeroExtend(fullWorkCount));
         fullWorkCount <= fullWorkCount + 1;
         state <= fullWorkCount == 3 ? TbFinishFull : TbWaitFullWork;
     endrule
@@ -110,7 +122,7 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule startAsync (state == TbStartAsync);
-        dut.start(descriptorFor(AsyncStripes, 2, 3));
+        dut.start(descriptorFor(AsyncStripes, 4, 1));
         state <= TbCheckUnpublished;
     endrule
 
@@ -121,49 +133,203 @@ module mkTbMatmulScheduler(Empty);
         end
 
         if (asyncWaitCycles == 2) begin
-            state <= TbPublishAsync;
+            state <= TbPublishFirst;
         end
         else begin
             asyncWaitCycles <= asyncWaitCycles + 1;
         end
     endrule
 
-    rule publishAsync (state == TbPublishAsync);
+    rule publishFirst (state == TbPublishFirst);
         dut.publishStripe(ActivationStripe {
             stripeId: 3,
             rowBegin: 0,
-            rowCount: 2,
+            rowCount: 1,
             activationBase: 64'h5000,
             activationRowStride: 16,
-            stripeContext: 91
+            stripeContext: 91,
+            publishCycle: 101
         });
-        state <= TbWaitAsyncWork;
+        state <= TbWaitFirstWork;
     endrule
 
-    rule inspectAsyncWork (state == TbWaitAsyncWork && dut.workValid);
+    rule inspectFirstWork (state == TbWaitFirstWork && dut.workValid);
         MatmulWork#(4) work = dut.work;
-
-        if (work.stripeId != 3
-                || work.iStart != 0
-                || work.jStart != 0
-                || work.iCount != 2
-                || work.jCount != 3
+        if (work.stripeId != 3 || work.iStart != 0
+                || work.iCount != 1 || work.jCount != 1
                 || work.activationBase != 64'h5000) begin
-            $display("MATMUL SCHEDULER: FAIL async work");
+            $display("MATMUL SCHEDULER: FAIL current stripe work");
             $finish(1);
         end
-
+        dut.publishStripe(ActivationStripe {
+            stripeId: 4, rowBegin: 1, rowCount: 1,
+            activationBase: 64'h5100, activationRowStride: 16,
+            stripeContext: 92, publishCycle: 202
+        });
         dut.acceptWork;
-        state <= TbCompleteAsyncWork;
+        state <= TbPublishThird;
     endrule
 
-    rule completeAsyncWork (state == TbCompleteAsyncWork);
-        dut.completeWork;
+    rule publishThird (state == TbPublishThird);
+        dut.publishStripe(ActivationStripe {
+            stripeId: 5, rowBegin: 2, rowCount: 1,
+            activationBase: 64'h5200, activationRowStride: 16,
+            stripeContext: 93, publishCycle: 303
+        });
+        state <= TbPublishFinal;
+    endrule
+
+    rule publishFinal (state == TbPublishFinal);
+        dut.publishStripe(ActivationStripe {
+            stripeId: 6, rowBegin: 3, rowCount: 1,
+            activationBase: 64'h5300, activationRowStride: 16,
+            stripeContext: 94, publishCycle: 404
+        });
+        dut.completeWork(1001);
+        state <= TbWaitFirstCompletion;
+    endrule
+
+    rule checkFirstCompletion (
+        state == TbWaitFirstCompletion && dut.completionValid
+    );
+        StripeCompletion completion = dut.completion;
+        if (completion.stripeId != 3 || completion.rowBegin != 0
+                || completion.rowCount != 1 || completion.stripeContext != 91
+                || completion.publishCycle != 101
+                || completion.completionCycle != 1001) begin
+            $display(
+                "MATMUL SCHEDULER: FAIL current endpoint propagation publish=%0d completion=%0d",
+                completion.publishCycle, completion.completionCycle
+            );
+            $finish(1);
+        end
+        $display(
+            "MATMUL SCHEDULER: current endpoints publish=%0d completion=%0d",
+            completion.publishCycle, completion.completionCycle
+        );
+        state <= TbWaitSecondWork;
+    endrule
+
+    rule inspectSecondWork (state == TbWaitSecondWork && dut.workValid);
+        if (dut.work.stripeId != 4 || dut.work.iStart != 1) begin
+            $display("MATMUL SCHEDULER: FAIL lookahead promotion");
+            $finish(1);
+        end
+        dut.acceptWork;
+        state <= TbCompleteSecondWork;
+    endrule
+
+    rule completeSecondWork (state == TbCompleteSecondWork);
+        dut.completeWork(1002);
+        state <= TbWaitThirdWork;
+    endrule
+
+    rule inspectThirdWork (state == TbWaitThirdWork && dut.workValid);
+        if (dut.work.stripeId != 5 || dut.work.iStart != 2) begin
+            $display("MATMUL SCHEDULER: FAIL second lookahead promotion");
+            $finish(1);
+        end
+        dut.acceptWork;
+        state <= TbCompleteThirdWork;
+    endrule
+
+    rule completeThirdWork (state == TbCompleteThirdWork);
+        dut.completeWork(1003);
+        state <= TbHoldFullCompletionFifo;
+    endrule
+
+    rule holdFullCompletionFifo (state == TbHoldFullCompletionFifo);
+        StripeCompletion completion = dut.completion;
+        if (!dut.completionValid || completion.stripeId != 3
+                || completion.publishCycle != 101
+                || completion.completionCycle != 1001) begin
+            $display("MATMUL SCHEDULER: FAIL completion FIFO head changed");
+            $finish(1);
+        end
+        if (dut.workValid) begin
+            $display("MATMUL SCHEDULER: FAIL advanced through full completion FIFO");
+            $finish(1);
+        end
+        if (completionHoldCycles == 4) begin
+            dut.acknowledgeCompletion;
+            state <= TbCheckSecondCompletion;
+        end
+        else begin
+            completionHoldCycles <= completionHoldCycles + 1;
+        end
+    endrule
+
+    rule checkSecondCompletion (
+        state == TbCheckSecondCompletion && dut.completionValid
+    );
+        StripeCompletion completion = dut.completion;
+        if (completion.stripeId != 4 || completion.publishCycle != 202
+                || completion.completionCycle != 1002) begin
+            $display(
+                "MATMUL SCHEDULER: FAIL promoted endpoint propagation publish=%0d completion=%0d",
+                completion.publishCycle, completion.completionCycle
+            );
+            $finish(1);
+        end
+        $display(
+            "MATMUL SCHEDULER: promoted endpoints publish=%0d completion=%0d",
+            completion.publishCycle, completion.completionCycle
+        );
+        dut.acknowledgeCompletion;
+        state <= TbCheckThirdCompletion;
+    endrule
+
+    rule checkThirdCompletion (
+        state == TbCheckThirdCompletion && dut.completionValid
+    );
+        StripeCompletion completion = dut.completion;
+        if (completion.stripeId != 5 || completion.publishCycle != 303
+                || completion.completionCycle != 1003) begin
+            $display(
+                "MATMUL SCHEDULER: FAIL blocked endpoint changed publish=%0d completion=%0d",
+                completion.publishCycle, completion.completionCycle
+            );
+            $finish(1);
+        end
+        $display(
+            "MATMUL SCHEDULER: FIFO-blocked endpoints publish=%0d completion=%0d",
+            completion.publishCycle, completion.completionCycle
+        );
+        dut.acknowledgeCompletion;
+        state <= TbWaitFinalWork;
+    endrule
+
+    rule inspectFinalWork (state == TbWaitFinalWork && dut.workValid);
+        if (dut.work.stripeId != 6 || dut.work.iStart != 3) begin
+            $display("MATMUL SCHEDULER: FAIL final stripe promotion");
+            $finish(1);
+        end
+        dut.acceptWork;
+        state <= TbCompleteFinalWork;
+    endrule
+
+    rule completeFinalWork (state == TbCompleteFinalWork);
+        dut.completeWork(1004);
         state <= TbFinishAsync;
     endrule
 
-    rule finishAsync (state == TbFinishAsync && dut.done);
-        $display("MATMUL SCHEDULER: PASS");
+    rule finishAsync (
+        state == TbFinishAsync && dut.done && dut.completionValid
+    );
+        StripeCompletion completion = dut.completion;
+        if (completion.stripeId != 6 || completion.publishCycle != 404
+                || completion.completionCycle != 1004) begin
+            $display(
+                "MATMUL SCHEDULER: FAIL final endpoint propagation publish=%0d completion=%0d",
+                completion.publishCycle, completion.completionCycle
+            );
+            $finish(1);
+        end
+        $display(
+            "MATMUL SCHEDULER: final endpoints publish=%0d completion=%0d",
+            completion.publishCycle, completion.completionCycle
+        );
+        $display("MATMUL SCHEDULER: PASS exact stripe RTL endpoints");
         $finish(0);
     endrule
 endmodule

@@ -113,12 +113,41 @@ lookaheadReadyCycle
 lookaheadStartCycle
 ```
 
-`0`은 해당 event가 기록되지 않았음을 나타내는 sentinel이다. Lookahead ordering은 다음 관계를 검증한다.
+`0`은 위 lookahead 관측값에서 해당 event가 기록되지 않았음을 나타내는 sentinel이다. Lookahead ordering은 다음 관계를 검증한다.
 
 ```text
 publish(next) <= firstPrepare(next)
 firstPrepare(next) < currentCompletion < nextStart
 ```
+
+## Stripe publication-to-completion endpoint
+
+Async stripe의 ordered completion record는 identity와 함께 raw `publishCycle`과
+`completionCycle`을 같은 `matrixCycle` timebase로 보존한다. 두 값은 sentinel이
+아니므로 `0`도 유효한 endpoint다.
+
+```text
+publishCycle
+    = publishActivationStripe가 accepted되는 edge 직전 matrixCycle
+
+completionCycle
+    = stripe의 마지막 C write response가 accepted되는 edge 직전 matrixCycle
+
+interval
+    = (publishCycle, completionCycle]
+latency
+    = completionCycle - publishCycle  // consumer에서 UInt64 wrapping subtraction
+```
+
+`ActivationStripe`가 publication 값을 current/lookahead scheduler state로 운반하고,
+stripe terminal 전이가 증명된 뒤 기존 `StripeCompletion` FIFO record에 두 endpoint가
+같이 저장된다. Completion FIFO가 가득 차 enqueue가 지연되어도
+`completionCycle`은 `completeWork` 호출 시점의 값으로 유지된다.
+
+Endpoint에는 completion FIFO enqueue/poll/acknowledgement와 전체 matmul
+acknowledgement가 포함되지 않는다. RTL은 duration subtractor나 별도 timestamp
+FIFO를 두지 않으며, completion identity getter 옆의 raw cycle getter를 그대로
+노출한다.
 
 ## 포함 범위
 

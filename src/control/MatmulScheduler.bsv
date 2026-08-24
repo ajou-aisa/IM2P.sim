@@ -25,7 +25,7 @@ interface MatmulSchedulerIfc#(numeric type arrayDim);
     method MatmulWork#(arrayDim) lookaheadWork;
     method Bool lookaheadPreloadSafe;
     method Action acceptWork;
-    method Action completeWork;
+    method Action completeWork(UInt#(64) completionCycle);
     method Bool completionValid;
     method StripeCompletion completion;
     method Action acknowledgeCompletion;
@@ -85,6 +85,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
     Reg#(MatrixExtent) stripeRowCountReg <- mkReg(0);
     Reg#(HostAddress) stripeActivationBaseReg <- mkReg(0);
     Reg#(HostStride) stripeActivationStrideReg <- mkReg(0);
+    Reg#(UInt#(64)) stripePublishCycleReg <- mkReg(0);
     Reg#(Bool) lookaheadStripeValidReg <- mkReg(False);
     Reg#(ActivationStripe) lookaheadStripeReg <- mkRegU;
     Reg#(MatrixExtent) publishedRowsReg <- mkReg(0);
@@ -92,6 +93,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
     Reg#(MatrixExtent) iStartReg <- mkReg(0);
     Reg#(MatrixExtent) jStartReg <- mkReg(0);
     Reg#(Bool) completionPendingReg <- mkReg(False);
+    Reg#(UInt#(64)) completionCycleReg <- mkReg(0);
 
     rule beginMatmul (stateReg == MatmulIdle && startPendingReg);
         MatmulDescriptor descriptor = descriptorReg;
@@ -106,6 +108,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             stripeRowCountReg <= descriptor.rowCount;
             stripeActivationBaseReg <= descriptor.activationBase;
             stripeActivationStrideReg <= descriptor.activationRowStride;
+            stripePublishCycleReg <= 0;
             publishedRowsReg <= descriptor.rowCount;
             stateReg <= MatmulOfferWork;
         end
@@ -134,6 +137,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         stripeRowCountReg <= stripe.rowCount;
         stripeActivationBaseReg <= stripe.activationBase;
         stripeActivationStrideReg <= stripe.activationRowStride;
+        stripePublishCycleReg <= stripe.publishCycle;
         iStartReg <= stripe.rowBegin;
         jStartReg <= 0;
         stateReg <= MatmulOfferWork;
@@ -189,7 +193,9 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                     stripeId: stripeIdReg,
                     rowBegin: stripeRowBeginReg,
                     rowCount: stripeRowCountReg,
-                    stripeContext: stripeContextReg
+                    stripeContext: stripeContextReg,
+                    publishCycle: stripePublishCycleReg,
+                    completionCycle: completionCycleReg
                 });
             end
             stateReg <= MatmulDone;
@@ -199,7 +205,9 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                 stripeId: stripeIdReg,
                 rowBegin: stripeRowBeginReg,
                 rowCount: stripeRowCountReg,
-                stripeContext: stripeContextReg
+                stripeContext: stripeContextReg,
+                publishCycle: stripePublishCycleReg,
+                completionCycle: completionCycleReg
             });
             if (lookaheadStripeValidReg) begin
                 ActivationStripe stripe = lookaheadStripeReg;
@@ -209,6 +217,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                 stripeRowCountReg <= stripe.rowCount;
                 stripeActivationBaseReg <= stripe.activationBase;
                 stripeActivationStrideReg <= stripe.activationRowStride;
+                stripePublishCycleReg <= stripe.publishCycle;
                 iStartReg <= stripe.rowBegin;
                 jStartReg <= 0;
                 lookaheadStripeValidReg <= False;
@@ -398,9 +407,10 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         stateReg <= MatmulWaitWork;
     endmethod
 
-    method Action completeWork
+    method Action completeWork(UInt#(64) completionCycle)
             if (stateReg == MatmulWaitWork && !completionPendingReg);
         completionPendingReg <= True;
+        completionCycleReg <= completionCycle;
     endmethod
 
     method Bool completionValid = completionFifo.notEmpty;

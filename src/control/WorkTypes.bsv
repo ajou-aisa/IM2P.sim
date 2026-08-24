@@ -15,6 +15,7 @@ typedef struct {
     HostAddress activationBase;
     HostStride activationRowStride;
     UInt#(64) stripeContext;
+    UInt#(64) publishCycle;
 } ActivationStripe deriving (Bits, Eq, FShow);
 
 typedef struct {
@@ -22,6 +23,8 @@ typedef struct {
     MatrixExtent rowBegin;
     MatrixExtent rowCount;
     UInt#(64) stripeContext;
+    UInt#(64) publishCycle;
+    UInt#(64) completionCycle;
 } StripeCompletion deriving (Bits, Eq, FShow);
 
 typedef struct {

@@ -217,6 +217,9 @@ module mkTbIM2PCoreMatrix(Empty);
     Reg#(Bool) bankSwitchSeen <- mkReg(False);
     Reg#(Bool) preloadDuringExecutionSeen <- mkReg(False);
     Reg#(UInt#(64)) fullWorkCycles <- mkReg(0);
+    Reg#(UInt#(64)) asyncMatrixStartCycle <- mkReg(0);
+    Reg#(UInt#(64)) asyncPublishCycle <- mkReg(0);
+    Reg#(UInt#(64)) asyncCompletionCycle <- mkReg(0);
     Reg#(Bool) asyncInitialCountersChecked <- mkReg(False);
 
     rule watch;
@@ -449,16 +452,28 @@ module mkTbIM2PCoreMatrix(Empty);
     endrule
 
     rule returnOutputResponse (outputPending && outputDelay == 0);
+        if (phase == TbAsyncRun && outputResponses == 5) begin
+            asyncCompletionCycle <=
+                core.rtlCycleCount - asyncMatrixStartCycle;
+        end
         core.putOutputWriteResponse(outputTag);
         outputResponses <= outputResponses + 1;
         outputPending <= False;
     endrule
 
-    // 모든 C write가 acknowledge되기 전에 matmulDone이 뜨면 실패다.
-    rule checkCompletionOrdering (core.matmulDone);
-        if (phase == TbFullRun && outputResponses != 6) begin
+    // 모든 C write가 acknowledge되기 전에 completion이 뜨면 실패다.
+    rule checkCompletionOrdering (core.matmulDone || core.stripeCompletionValid);
+        if (phase == TbFullRun && core.matmulDone && outputResponses != 6) begin
             $display(
                 "IM2P CORE MATRIX: FAIL matmulDone before writes complete acks=%0d",
+                outputResponses
+            );
+            $finish(1);
+        end
+        if (phase == TbAsyncRun
+                && core.stripeCompletionValid && outputResponses != 6) begin
+            $display(
+                "IM2P CORE MATRIX: FAIL stripe completion before final C response acks=%0d",
                 outputResponses
             );
             $finish(1);
@@ -618,6 +633,7 @@ module mkTbIM2PCoreMatrix(Empty);
     // -------------------------------------------------------------------------
 
     rule startAsyncMatrix (phase == TbAsyncStart && core.idle);
+        asyncMatrixStartCycle <= core.rtlCycleCount;
         core.startMatmul(
             21,
             AsyncStripes,
@@ -690,6 +706,7 @@ module mkTbIM2PCoreMatrix(Empty);
     endrule
 
     rule publishStripes (phase == TbAsyncPublish && !publishDone);
+        asyncPublishCycle <= core.rtlCycleCount - asyncMatrixStartCycle;
         core.publishActivationStripe(0, 3, activationStride);
         publishDone <= True;
         phase <= TbAsyncRun;
@@ -723,6 +740,28 @@ module mkTbIM2PCoreMatrix(Empty);
             );
             $finish(1);
         end
+
+        if (!core.stripeCompletionValid
+                || core.stripeCompletionId != 0
+                || core.stripeCompletionRowBegin != 0
+                || core.stripeCompletionRowCount != 3
+                || core.stripeCompletionPublishCycle != asyncPublishCycle
+                || core.stripeCompletionCompletionCycle
+                    != asyncCompletionCycle) begin
+            $display(
+                "IM2P CORE MATRIX: FAIL raw stripe endpoints publish=%0d/%0d completion=%0d/%0d",
+                core.stripeCompletionPublishCycle,
+                asyncPublishCycle,
+                core.stripeCompletionCompletionCycle,
+                asyncCompletionCycle
+            );
+            $finish(1);
+        end
+        $display(
+            "IM2P CORE MATRIX: exact final-response endpoints publish=%0d completion=%0d",
+            core.stripeCompletionPublishCycle,
+            core.stripeCompletionCompletionCycle
+        );
 
         core.acknowledgeMatmul;
         phase <= TbAsyncCheck;

@@ -140,6 +140,8 @@ interface IM2PCoreIfc#(
     method MatrixExtent stripeCompletionRowBegin;
     method MatrixExtent stripeCompletionRowCount;
     method UInt#(64) stripeCompletionContext;
+    method UInt#(64) stripeCompletionPublishCycle;
+    method UInt#(64) stripeCompletionCompletionCycle;
     method Action acknowledgeStripeCompletion;
 
     method Bool matmulDone;
@@ -1876,7 +1878,8 @@ module mkIM2PCoreWithArray#(
             rowCount: rowCount,
             activationBase: stripeBase,
             activationRowStride: rowStride,
-            stripeContext: zeroExtend(nextStripeIdReg)
+            stripeContext: zeroExtend(nextStripeIdReg),
+            publishCycle: matrixCycle
         });
         if (nextStripeIdReg == 1 && lookaheadPublishCycleReg == 0)
             lookaheadPublishCycleReg <= matrixCycle;
@@ -2139,7 +2142,7 @@ module mkIM2PCoreWithArray#(
 
         if (zeroExtend(outputRowReg) + 1 == matrixWorkReg.iCount) begin
             if (matrixFinalBlockReg) begin
-                matmulScheduler.completeWork;
+                matmulScheduler.completeWork(matrixCycle);
                 if (matmulScheduler.lookaheadValid)
                     currentStripeCompletionCycleReg <= matrixCycle;
                 matmulWorksCompletedReg <= matmulWorksCompletedReg + 1;
@@ -2170,6 +2173,14 @@ module mkIM2PCoreWithArray#(
     method UInt#(64) stripeCompletionContext
             if (matmulScheduler.completionValid);
         return matmulScheduler.completion.stripeContext;
+    endmethod
+    method UInt#(64) stripeCompletionPublishCycle
+            if (matmulScheduler.completionValid);
+        return matmulScheduler.completion.publishCycle;
+    endmethod
+    method UInt#(64) stripeCompletionCompletionCycle
+            if (matmulScheduler.completionValid);
+        return matmulScheduler.completion.completionCycle;
     endmethod
     method Action acknowledgeStripeCompletion
             if (matmulScheduler.completionValid);
