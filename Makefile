@@ -129,6 +129,7 @@ VERILATOR_COMMON := --cc --Wno-fatal
 .PHONY: all check verify static-check cpp-test c-api-layout-test c-api-test gemmini-frontend \
         gemmini-frontend-test gemmini-frontend-test-sanitized \
         gemmini-frontend-asan-test gemmini-frontend-tsan-test \
+        gemmini-frontend-real-lib \
         gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
         gemmini-frontend-real-test-q8-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
         gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
@@ -248,6 +249,9 @@ GEMMINI_FRONTEND_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_fro
 GEMMINI_FRONTEND_ASAN_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_asan_test
 GEMMINI_FRONTEND_TSAN_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_tsan_test
 GEMMINI_FRONTEND_REAL_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_real_test
+GEMMINI_REAL_LIB_FINGERPRINT = $(BUILD_DIR)/fingerprints/$(GEMMINI_ARTIFACT_ID)/real-lib.sha256
+GEMMINI_REAL_LIB_SIM_ARCHIVE = $(GEMMINI_CARGO_TARGET_DIR)/release/libim2p_sim.a
+GEMMINI_REAL_LIB_VERILATOR_HEADER = $(BUILD_DIR)/verilator/$(GEMMINI_ARTIFACT_ID)/obj_dir/VmkSynthA$(GEMMINI_FRONTEND_ACTIVATION_BITS)W$(GEMMINI_FRONTEND_WEIGHT_BITS)D$(GEMMINI_FRONTEND_DIM).h
 GEMMINI_FRONTEND_ASAN_FLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 GEMMINI_FRONTEND_TSAN_FLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer
 
@@ -278,6 +282,51 @@ $(GEMMINI_FRONTEND_TEST_ARCHIVE): $(GEMMINI_FRONTEND_TEST_OBJECT) | $(BUILD_DIR)
 -include $(GEMMINI_FRONTEND_DEPENDENCY_FILES)
 
 gemmini-frontend: $(GEMMINI_FRONTEND_ARCHIVE) $(GEMMINI_FRONTEND_TEST_ARCHIVE)
+
+# Reuse a complete selected artifact only when its source/config fingerprint
+# and all three outputs agree. The stamp is written only after a full rebuild.
+gemmini-frontend-real-lib:
+	@set -euo pipefail; \
+	fingerprint_file='$(GEMMINI_REAL_LIB_FINGERPRINT)'; \
+	frontend_archive='$(GEMMINI_FRONTEND_ARCHIVE)'; \
+	simulator_archive='$(GEMMINI_REAL_LIB_SIM_ARCHIVE)'; \
+	verilator_header='$(GEMMINI_REAL_LIB_VERILATOR_HEADER)'; \
+	fingerprint="$$($(PYTHON) scripts/real_matrix_fingerprint.py \
+	  --bits '$(GEMMINI_FRONTEND_ACTIVATION_BITS)' \
+	  --weight-bits '$(GEMMINI_FRONTEND_WEIGHT_BITS)' \
+	  --dim '$(GEMMINI_FRONTEND_DIM)' \
+	  --gemmini-root '$(GEMMINI_ROOT)' \
+	  --params-root '$(GEMMINI_PARAMS_ROOT)' \
+	  --config 'CXX=$(CXX)' --config 'BSC=$(BSC)' \
+	  --config 'VERILATOR=$(VERILATOR)' --config 'BSC_VERILOG=$(BSC_VERILOG)')"; \
+	cached="$$(cat "$$fingerprint_file" 2>/dev/null || true)"; \
+	if test -f "$$frontend_archive" && test -f "$$simulator_archive" && \
+	   test -f "$$verilator_header" && test "$$cached" = "$$fingerprint"; then \
+	  printf 'IM2P_REAL_LIB_CACHE id=%s state=hit fingerprint=%s\n' \
+	    '$(GEMMINI_ARTIFACT_ID)' "$$fingerprint"; \
+	else \
+	  reason=fingerprint; \
+	  if test ! -f "$$fingerprint_file" || test ! -f "$$frontend_archive" || \
+	     test ! -f "$$simulator_archive" || test ! -f "$$verilator_header"; then \
+	    reason=missing; \
+	  fi; \
+	  printf 'IM2P_REAL_LIB_CACHE id=%s state=rebuild reason=%s fingerprint=%s\n' \
+	    '$(GEMMINI_ARTIFACT_ID)' "$$reason" "$$fingerprint"; \
+	  rm -f "$$fingerprint_file"; \
+	  $(MAKE) --no-print-directory -B \
+	    '$(GEMMINI_VERILATOR_TARGET)' '$(GEMMINI_FRONTEND_ARCHIVE)'; \
+	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR='$(abspath $(BUILD_DIR))' \
+	    IM2P_ACTIVATION_BITS='$(GEMMINI_FRONTEND_ACTIVATION_BITS)' \
+	    IM2P_WEIGHT_BITS='$(GEMMINI_FRONTEND_WEIGHT_BITS)' \
+	    IM2P_DIM='$(GEMMINI_FRONTEND_DIM)' \
+	    CARGO_TARGET_DIR='$(GEMMINI_CARGO_TARGET_DIR)' cargo build \
+	    --manifest-path sim/Cargo.toml --lib --release; \
+	  test -f "$$frontend_archive" && test -f "$$simulator_archive" && \
+	    test -f "$$verilator_header"; \
+	  mkdir -p "$$(dirname "$$fingerprint_file")"; \
+	  printf '%s\n' "$$fingerprint" > "$$fingerprint_file.tmp"; \
+	  mv "$$fingerprint_file.tmp" "$$fingerprint_file"; \
+	fi
 
 # The public declaration surface compiles without any llama include directory.
 gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
