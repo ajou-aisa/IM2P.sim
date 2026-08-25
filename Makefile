@@ -237,6 +237,7 @@ GEMMINI_FRONTEND_INCLUDES := \
 GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM) \
 	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
+	-DGGML_GEMMINI_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 	-DGGML_GEMMINI_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
 	-DGGML_GEMMINI_BLOCK_SIZE=$(GEMMINI_FRONTEND_BLOCK_SIZE)
 GEMMINI_FRONTEND_OBJECT = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend.o
@@ -255,9 +256,21 @@ GEMMINI_REAL_LIB_VERILATOR_HEADER = $(BUILD_DIR)/verilator/$(GEMMINI_ARTIFACT_ID
 GEMMINI_FRONTEND_ASAN_FLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 GEMMINI_FRONTEND_TSAN_FLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer
 
-$(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h
+$(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h Makefile
 	@mkdir -p $(GEMMINI_DIM_CONFIG_DIR)
-	sed 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' $< > $@
+	@if [[ '$(GEMMINI_FRONTEND_ACTIVATION_BITS)' == '16' ]]; then \
+	  sed \
+	    -e 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' \
+	    -e 's|^#define MAX_BLOCK_LEN .*|#define MAX_BLOCK_LEN (MAX_BYTES/(DIM*2))|' \
+	    -e 's/^typedef int8_t elem_t;/typedef int16_t elem_t;/' \
+	    -e 's/^static const elem_t elem_t_max = 127;/static const elem_t elem_t_max = 32767;/' \
+	    -e 's/^static const elem_t elem_t_min = -128;/static const elem_t elem_t_min = -32768;/' \
+	    -e 's/INT8_MAX/INT16_MAX/g' \
+	    -e 's/INT8_MIN/INT16_MIN/g' \
+	    $< > $@; \
+	else \
+	  sed 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' $< > $@; \
+	fi
 
 $(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $@)
