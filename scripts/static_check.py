@@ -217,15 +217,21 @@ CPP_NON_CODE_RE = re.compile(
     r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
 )
-EXSIA_LIFECYCLE_RE = re.compile(
-    r"if \(full_requested\).*?install_sink\(\).*?"
-    r"(?<![.\w:>])quantize_activation\(\).*?"
-    r"full\.execution->finish\(quantize_ok\).*?"
-    r"if \(!pipeline_requested\).*?start_exsia_stripe_pipeline\(args\).*?"
-    r"install_sink\(\).*?(?<![.\w:>])quantize_activation\(\).*?"
-    r"started\.pipeline->finish\(quantize_ok\)",
-    re.DOTALL,
+UNQUALIFIED_QUANTIZE_RE = re.compile(
+    r"(?<![.\w:>])quantize_activation\s*\(\s*\)"
 )
+PIPELINE_START_RE = re.compile(r"\bstart_exsia_stripe_pipeline\s*\(\s*args\s*\)")
+FULL_INSTALL_RE = re.compile(r"\bfull\.execution->install_sink\s*\(\s*\)")
+FULL_FINISH_RE = re.compile(
+    r"\bfull\.execution->finish\s*\(\s*quantize_ok\s*\)"
+)
+PIPELINE_INSTALL_RE = re.compile(
+    r"\bstarted\.pipeline->install_sink\s*\(\s*\)"
+)
+PIPELINE_FINISH_RE = re.compile(
+    r"\bstarted\.pipeline->finish\s*\(\s*quantize_ok\s*\)"
+)
+ANY_LIFECYCLE_FINISH_RE = re.compile(r"\bfinish\s*\(\s*quantize_ok\s*\)")
 
 
 def relative_files(directory: Path) -> set[str]:
@@ -359,13 +365,114 @@ def require_regex(path: Path, pattern: str, concept: str) -> None:
         fail(f"{display_path(path)} missing required contract: {concept}")
 
 
+def braced_scope(code: str, marker: str) -> tuple[str, int] | None:
+    match = re.search(marker, code)
+    if match is None:
+        return None
+    opening = code.find("{", match.end())
+    if opening < 0:
+        return None
+
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[opening + 1 : index], index + 1
+    return None
+
+
+def production_cpp_source(code: str) -> str:
+    testing_branches: list[bool | None] = []
+    production_lines: list[str] = []
+    for line in code.splitlines(keepends=True):
+        directive = re.match(r"\s*#\s*(\w+)(.*)", line)
+        if directive is not None:
+            name, condition = directive.groups()
+            if name in ("if", "ifdef", "ifndef"):
+                is_testing = "GGML_GEMMINI_TESTING" in condition
+                testing_branches.append(False if is_testing else None)
+            elif name == "else" and testing_branches:
+                if testing_branches[-1] is not None:
+                    testing_branches[-1] = not testing_branches[-1]
+            elif name == "endif" and testing_branches:
+                testing_branches.pop()
+            continue
+        if False not in testing_branches:
+            production_lines.append(line)
+    return "".join(production_lines)
+
+
 def require_exsia_lifecycle_contract(path: Path) -> None:
-    code = CPP_NON_CODE_RE.sub("", path.read_text(encoding="utf-8"))
-    if EXSIA_LIFECYCLE_RE.search(code) is None:
+    filtered = CPP_NON_CODE_RE.sub("", path.read_text(encoding="utf-8"))
+    code = production_cpp_source(filtered)
+    lifecycle = braced_scope(code, r"if\s+constexpr\s*\(\s*im2p_exsia\s*\)")
+    if lifecycle is None:
         fail(
             f"{display_path(path)} missing required contract: "
-            "ExSIA FULL/PIPELINE lifecycle without a third production mode"
+            "ExSIA production lifecycle scope"
         )
+    lifecycle_body, _ = lifecycle
+
+    full = braced_scope(lifecycle_body, r"if\s*\(\s*full_requested\s*\)")
+    guard = braced_scope(
+        lifecycle_body, r"if\s*\(\s*!\s*pipeline_requested\s*\)"
+    )
+    if full is None or guard is None:
+        fail(
+            f"{display_path(path)} missing required contract: "
+            "FULL or PIPELINE lifecycle scope"
+        )
+    full_body, _ = full
+    _, pipeline_start = guard
+    pipeline_body = lifecycle_body[pipeline_start:]
+
+    scoped_calls = (
+        ("FULL install", FULL_INSTALL_RE, full_body, 1),
+        ("FULL quantize", UNQUALIFIED_QUANTIZE_RE, full_body, 1),
+        ("FULL finish", FULL_FINISH_RE, full_body, 1),
+        ("PIPELINE start", PIPELINE_START_RE, pipeline_body, 1),
+        ("PIPELINE install", PIPELINE_INSTALL_RE, pipeline_body, 1),
+        ("PIPELINE quantize", UNQUALIFIED_QUANTIZE_RE, pipeline_body, 1),
+        ("PIPELINE finish", PIPELINE_FINISH_RE, pipeline_body, 1),
+        ("production quantize", UNQUALIFIED_QUANTIZE_RE, lifecycle_body, 2),
+        ("production start", PIPELINE_START_RE, lifecycle_body, 1),
+        ("production finish", ANY_LIFECYCLE_FINISH_RE, lifecycle_body, 2),
+    )
+    for operation, pattern, scope, expected in scoped_calls:
+        actual = len(pattern.findall(scope))
+        if actual != expected:
+            fail(
+                f"{display_path(path)} missing required contract: exactly "
+                f"{expected} {operation} call(s), found {actual}"
+            )
+
+    ordered_calls = (
+        (
+            "FULL",
+            full_body,
+            (FULL_INSTALL_RE, UNQUALIFIED_QUANTIZE_RE, FULL_FINISH_RE),
+        ),
+        (
+            "PIPELINE",
+            pipeline_body,
+            (
+                PIPELINE_START_RE,
+                PIPELINE_INSTALL_RE,
+                UNQUALIFIED_QUANTIZE_RE,
+                PIPELINE_FINISH_RE,
+            ),
+        ),
+    )
+    for mode, scope, patterns in ordered_calls:
+        positions = [scope.find(pattern.findall(scope)[0]) for pattern in patterns]
+        if positions != sorted(positions):
+            fail(
+                f"{display_path(path)} missing required contract: "
+                f"{mode} lifecycle call ordering"
+            )
 
 
 def check_integer_width_contracts() -> None:

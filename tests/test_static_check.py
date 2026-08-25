@@ -19,17 +19,19 @@ ORCHESTRATION = (
 )
 ORCHESTRATION_LABEL = "../llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini.cpp"
 LIFECYCLE = """\
-if (full_requested) {
-    full.execution->install_sink();
+if constexpr (im2p_exsia) {
+    if (full_requested) {
+        full.execution->install_sink();
+        quantize_activation();
+        full.execution->finish(quantize_ok);
+    }
+    if (!pipeline_requested) {
+    }
+    ggml::gemmini::im2p_adapter::start_exsia_stripe_pipeline(args);
+    started.pipeline->install_sink();
     quantize_activation();
-    full.execution->finish(quantize_ok);
+    started.pipeline->finish(quantize_ok);
 }
-if (!pipeline_requested) {
-}
-start_exsia_stripe_pipeline(args);
-started.pipeline->install_sink();
-quantize_activation();
-started.pipeline->finish(quantize_ok);
 """
 
 
@@ -64,6 +66,16 @@ def test_exsia_lifecycle_rejects_member_quantize_wrapper() -> None:
     # Then: member calls cannot satisfy the unqualified wrapper contract.
 
 
+def test_exsia_lifecycle_rejects_namespace_quantize_wrapper() -> None:
+    # Given: lifecycle calls are qualified through a namespace.
+    text = LIFECYCLE.replace(
+        "quantize_activation()", "namespace_name::quantize_activation()"
+    )
+    # When: the lifecycle contract is checked.
+    assert_exsia_lifecycle_rejected(text)
+    # Then: namespace calls cannot satisfy the unqualified wrapper contract.
+
+
 def test_exsia_lifecycle_rejects_commented_lifecycle() -> None:
     # Given: the complete lifecycle exists only in a block comment.
     text = f"/*\n{LIFECYCLE}*/\n"
@@ -88,6 +100,78 @@ def test_exsia_lifecycle_rejects_obsolete_wrapper_arguments() -> None:
     # Then: only the current zero-argument wrapper is accepted.
 
 
+def test_exsia_lifecycle_rejects_duplicate_full_quantize() -> None:
+    # Given: FULL quantization is invoked twice in production code.
+    text = LIFECYCLE.replace(
+        "        quantize_activation();",
+        "        quantize_activation();\n        quantize_activation();",
+        1,
+    )
+    # When: the lifecycle contract is checked.
+    assert_exsia_lifecycle_rejected(text)
+    # Then: FULL has exactly one unqualified quantization operation.
+
+
+def test_exsia_lifecycle_rejects_additional_pipeline_start() -> None:
+    # Given: PIPELINE startup is invoked twice in production code.
+    text = LIFECYCLE.replace(
+        "start_exsia_stripe_pipeline(args);",
+        "start_exsia_stripe_pipeline(args);\nstart_exsia_stripe_pipeline(args);",
+    )
+    # When: the lifecycle contract is checked.
+    assert_exsia_lifecycle_rejected(text)
+    # Then: PIPELINE has exactly one unqualified startup operation.
+
+
+def test_exsia_lifecycle_rejects_duplicate_pipeline_finish() -> None:
+    # Given: PIPELINE completion is invoked twice in production code.
+    text = LIFECYCLE.replace(
+        "started.pipeline->finish(quantize_ok);",
+        "started.pipeline->finish(quantize_ok);\n"
+        "started.pipeline->finish(quantize_ok);",
+    )
+    # When: the lifecycle contract is checked.
+    assert_exsia_lifecycle_rejected(text)
+    # Then: PIPELINE has exactly one matching completion operation.
+
+
+def test_exsia_lifecycle_rejects_third_production_mode() -> None:
+    # Given: a third mode performs another production quantization operation.
+    text = LIFECYCLE.replace(
+        "    started.pipeline->finish(quantize_ok);",
+        """\
+    started.pipeline->finish(quantize_ok);
+    if (third_requested) {
+        quantize_activation();
+    }
+""",
+    )
+    # When: the lifecycle contract is checked.
+    assert_exsia_lifecycle_rejected(text)
+    # Then: production lifecycle operations belong only to FULL or PIPELINE.
+
+
+def test_exsia_lifecycle_ignores_nonproduction_duplicate_calls() -> None:
+    # Given: call-shaped near-misses occur in qualified code, comments, and strings.
+    text = LIFECYCLE.replace(
+        "    started.pipeline->finish(quantize_ok);",
+        """\
+    started.pipeline->finish(quantize_ok);
+    other.quantize_activation();
+    namespace_name::quantize_activation();
+    // quantize_activation();
+    const char * call = "quantize_activation();";
+""",
+    )
+    # When: the lifecycle contract is checked.
+    with tempfile.TemporaryDirectory(prefix="im2p-static-check-") as temp_dir:
+        path = Path(temp_dir) / "ggml-gemmini.cpp"
+        path.write_text(text, encoding="utf-8")
+        result = static_check.require_exsia_lifecycle_contract(path)
+    # Then: only unqualified production calls contribute to cardinality.
+    assert result is None
+
+
 def test_contract_diagnostics_render_root_and_sibling_paths() -> None:
     # Given: both an in-root file and the sibling llama orchestration source.
     in_root = ROOT / "Makefile"
@@ -110,9 +194,15 @@ def test_contract_diagnostics_render_root_and_sibling_paths() -> None:
 def main() -> int:
     test_current_exsia_lifecycle_contract()
     test_exsia_lifecycle_rejects_member_quantize_wrapper()
+    test_exsia_lifecycle_rejects_namespace_quantize_wrapper()
     test_exsia_lifecycle_rejects_commented_lifecycle()
     test_exsia_lifecycle_rejects_string_lifecycle()
     test_exsia_lifecycle_rejects_obsolete_wrapper_arguments()
+    test_exsia_lifecycle_rejects_duplicate_full_quantize()
+    test_exsia_lifecycle_rejects_additional_pipeline_start()
+    test_exsia_lifecycle_rejects_duplicate_pipeline_finish()
+    test_exsia_lifecycle_rejects_third_production_mode()
+    test_exsia_lifecycle_ignores_nonproduction_duplicate_calls()
     test_contract_diagnostics_render_root_and_sibling_paths()
     print("STATIC CHECK REGRESSIONS PASS")
     return 0
