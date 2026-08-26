@@ -131,7 +131,8 @@ VERILATOR_COMMON := --cc --Wno-fatal
         gemmini-frontend-asan-test gemmini-frontend-tsan-test \
         gemmini-frontend-real-lib \
         gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
-        gemmini-frontend-real-test-q8-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
+        gemmini-frontend-real-test-q4-hp1 gemmini-frontend-real-test-q8-hp1 \
+        gemmini-frontend-real-test-q16-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
         gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
         bsv-test bsv-test-one rtl rtl-one \
         verilator \
@@ -172,7 +173,9 @@ help:
 	  'make gemmini-frontend-tsan-test - isolated TSan frontend suite' \
 	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle (A8 uses q8_h1)' \
 	  'make gemmini-frontend-real-test-q8-h0 - maintained raw Q8 full/stripe RTL oracle' \
-	  'make gemmini-frontend-real-test-q8-hp1 - maintained Q8 HP1 full/stripe RTL oracle' \
+	  'make gemmini-frontend-real-test-q4-hp1 - real Q4 HP1 dual-context active/empty oracle' \
+	  'make gemmini-frontend-real-test-q8-hp1 - real Q8 HP1 dual-context active/empty oracle' \
+	  'make gemmini-frontend-real-test-q16-hp1 - real Q16 HP1 dual-context active/empty oracle' \
 	  'make gemmini-frontend-real-syntax-test - generated-header W4/W16 real fixture syntax' \
 	  'make gemmini-frontend-real-test-matrix - nine matched A/W/DIM artifacts in FULL and PIPELINE' \
 	  'make gemmini-frontend-real-test-mismatch - fail-closed A16/W16 frontend with A8/W8 simulator QA' \
@@ -350,10 +353,15 @@ gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend.cpp \
 		$(GEMMINI_FRONTEND_TEST_ARCHIVE) -o $(GEMMINI_FRONTEND_TEST)
-	$(GEMMINI_FRONTEND_TEST)
-ifeq ($(GEMMINI_FRONTEND_WEIGHT_BITS),8)
-	$(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract
-endif
+	@set -euo pipefail; \
+	if test -n '$(FRONTEND_TEST_CASE)'; then \
+	  $(GEMMINI_FRONTEND_TEST) '$(FRONTEND_TEST_CASE)'; \
+	else \
+	  $(GEMMINI_FRONTEND_TEST); \
+	  if test '$(GEMMINI_FRONTEND_WEIGHT_BITS)' = 8; then \
+	    $(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract; \
+	  fi; \
+	fi
 
 # Sanitizer binaries compile the production frontend and its fake-ABI tests
 # together so instrumentation covers ownership, workers, and teardown end to end.
@@ -393,7 +401,7 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 	TSAN_OPTIONS=halt_on_error=1 $(GEMMINI_FRONTEND_TSAN_TEST) \
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
 
-gemmini-frontend-real-test: gemmini-frontend-test $(GEMMINI_VERILATOR_TARGET) | $(BUILD_DIR)/bin
+gemmini-frontend-real-test: gemmini-frontend-real-lib $(GEMMINI_FRONTEND_TEST_ARCHIVE) | $(BUILD_DIR)/bin
 	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_BUILD_DIR=$(abspath $(BUILD_DIR)) \
 		IM2P_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 		IM2P_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
@@ -411,9 +419,31 @@ gemmini-frontend-real-test-q8-h0: gemmini-frontend-real-test
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_h0 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-h0.log
 
+gemmini-frontend-real-test-q4-hp1:
+	$(MAKE) --no-print-directory \
+		IM2P_ACTIVATION_BITS=4 IM2P_WEIGHT_BITS=4 IM2P_DIM=$(GEMMINI_FRONTEND_DIM) \
+		GEMMINI_FRONTEND_ACTIVATION_BITS=4 GEMMINI_FRONTEND_WEIGHT_BITS=4 \
+		GEMMINI_FRONTEND_DIM=$(GEMMINI_FRONTEND_DIM) gemmini-frontend-real-test
+	@mkdir -p $(BUILD_DIR)/results/a4-w4-d$(GEMMINI_FRONTEND_DIM)
+	@set -o pipefail; \
+		$(BUILD_DIR)/bin/a4-w4-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
+		--route q4_hp1 2>&1 | \
+		tee $(BUILD_DIR)/results/a4-w4-d$(GEMMINI_FRONTEND_DIM)/frontend-real-test-q4-hp1.log
+
 gemmini-frontend-real-test-q8-hp1: gemmini-frontend-real-test
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_hp1 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-hp1.log
+
+gemmini-frontend-real-test-q16-hp1:
+	$(MAKE) --no-print-directory \
+		IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=16 IM2P_DIM=$(GEMMINI_FRONTEND_DIM) \
+		GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_WEIGHT_BITS=16 \
+		GEMMINI_FRONTEND_DIM=$(GEMMINI_FRONTEND_DIM) gemmini-frontend-real-test
+	@mkdir -p $(BUILD_DIR)/results/a16-w16-d$(GEMMINI_FRONTEND_DIM)
+	@set -o pipefail; \
+		$(BUILD_DIR)/bin/a16-w16-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
+		--route q16_hp1 2>&1 | \
+		tee $(BUILD_DIR)/results/a16-w16-d$(GEMMINI_FRONTEND_DIM)/frontend-real-test-q16-hp1.log
 
 gemmini-frontend-real-syntax-test:
 	@set -euo pipefail; \

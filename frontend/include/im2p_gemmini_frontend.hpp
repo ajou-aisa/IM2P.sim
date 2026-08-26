@@ -58,10 +58,47 @@ struct Status {
   explicit operator bool() const noexcept { return ok(); }
 };
 
+enum class ResidualStageMode : uint8_t {
+  none,
+  host_direct,
+  im2p_compact,
+};
+
+// Mutable private output staging borrowed for one residual callback invocation.
+// The callback may mutate elements in range but must not retain this view.
+struct ResidualStageView {
+  float *data = nullptr;
+  size_t element_count = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return element_count == 0; }
+  [[nodiscard]] float &operator[](size_t index) const noexcept {
+    return data[index];
+  }
+  [[nodiscard]] float *begin() const noexcept { return data; }
+  [[nodiscard]] float *end() const noexcept {
+    return data == nullptr ? nullptr : data + element_count;
+  }
+};
+
+struct ResidualStripeStats {
+  uint64_t rmd_dot_calls = 0;
+  im2p_work_stats_extended_t rmd_stats{};
+};
+
+// All pointer and reference arguments are call-borrowed. The simulator is
+// nullable and, when present, remains owned by the invoking frontend worker.
+using ResidualStageFn =
+    Status (*)(void *context, im2p_sim_t *simulator,
+               const ggml::gemmini::quants::act::exsia::StripeReadyEvent &event,
+               ResidualStageView stage, ResidualStripeStats &stats) noexcept;
+
 struct Options {
   // Logical RTL cycles allowed without a completed K fragment or stripe.
   // Runtime applies a 65536-cycle minimum; UINT64_MAX disables the watchdog.
   uint64_t max_stalled_cycles = 65536;
+  ResidualStageMode residual_stage_mode = ResidualStageMode::none;
+  void *residual_stage_context = nullptr;
+  ResidualStageFn residual_stage_fn = nullptr;
 };
 
 struct StripeMetadata {
@@ -96,6 +133,75 @@ struct StripeRtlTimingView {
   }
 };
 
+struct SemanticStripe {
+  uint64_t run_id = 0;
+  size_t stripe_id = 0;
+  size_t slot = 0;
+  size_t row_begin = 0;
+  size_t row_end = 0;
+};
+
+struct SemanticStripeView {
+  const SemanticStripe *data = nullptr;
+  size_t size = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return size == 0; }
+  [[nodiscard]] const SemanticStripe &operator[](size_t index) const noexcept {
+    return data[index];
+  }
+  [[nodiscard]] const SemanticStripe *begin() const noexcept { return data; }
+  [[nodiscard]] const SemanticStripe *end() const noexcept {
+    return data == nullptr ? nullptr : data + size;
+  }
+};
+
+struct ResidualStripeStatsView {
+  const ResidualStripeStats *data = nullptr;
+  size_t size = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return size == 0; }
+  [[nodiscard]] const ResidualStripeStats &
+  operator[](size_t index) const noexcept {
+    return data[index];
+  }
+  [[nodiscard]] const ResidualStripeStats *begin() const noexcept {
+    return data;
+  }
+  [[nodiscard]] const ResidualStripeStats *end() const noexcept {
+    return data == nullptr ? nullptr : data + size;
+  }
+};
+
+// Per-semantic-stripe statistics from the independent residual simulator.
+// Its cycle counters are durations in a separate RTL clock domain; they are
+// never endpoints on, or additive with, StripeRtlTiming.
+struct ResidualStripeTiming {
+  uint64_t run_id = 0;
+  size_t stripe_id = 0;
+  size_t slot = 0;
+  size_t row_begin = 0;
+  size_t row_end = 0;
+  uint64_t rmd_dot_calls = 0;
+  im2p_work_stats_extended_t rmd_stats{};
+};
+
+struct ResidualStripeTimingView {
+  const ResidualStripeTiming *data = nullptr;
+  size_t size = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return size == 0; }
+  [[nodiscard]] const ResidualStripeTiming &
+  operator[](size_t index) const noexcept {
+    return data[index];
+  }
+  [[nodiscard]] const ResidualStripeTiming *begin() const noexcept {
+    return data;
+  }
+  [[nodiscard]] const ResidualStripeTiming *end() const noexcept {
+    return data == nullptr ? nullptr : data + size;
+  }
+};
+
 class Run;
 struct ExecuteResult;
 struct FenceResult;
@@ -103,9 +209,10 @@ struct PipelineOutputStage;
 
 // execute() snapshots the activation backing store and copies the weight/scale
 // inputs needed by the selected route. Full-mode output commits on a successful
-// fence; pipeline output remains staged until explicit authorization. Pipeline
-// publication copies event-owned residual handles; no reference to the producer
-// event is retained. Calls on one Run are internally synchronized.
+// fence; pipeline output remains staged until explicit authorization. Accepted
+// pipeline publication retains copies of event-owned residual handles through
+// semantic completion; no reference to the producer event is retained. Calls on
+// one Run are internally synchronized.
 class Run {
 public:
   ~Run() noexcept;
@@ -140,8 +247,16 @@ struct ExecuteResult {
 
 struct FenceResult {
   Status status{};
+  // Dense simulator statistics. Existing meaning and layout are unchanged.
   im2p_work_stats_extended_t stats{};
   StripeRtlTimingView stripe_rtl_timings{};
+  ResidualStripeStatsView residual_stripe_stats{};
+  SemanticStripeView semantic_stripes{};
+  ResidualStripeTimingView residual_stripe_timings{};
+  uint64_t semantic_completion_count = 0;
+  uint64_t rmd_dot_calls = 0;
+  // Independent residual-simulator aggregate; never included in stats.
+  im2p_work_stats_extended_t rmd_stats{};
 };
 
 struct PipelineOutputStage {
@@ -175,14 +290,15 @@ submit_stripe(Run &run,
 [[nodiscard]] FenceResult fence(Run &run) noexcept;
 
 // Returns mutable frontend-owned float staging only after a successful pipeline
-// fence. The existing RMD path may finalize corrections there; the borrowed
-// destination remains untouched until explicit authorization.
+// fence. Residual-enabled runs have already completed their per-stripe checked
+// merges; compatibility callers may perform other terminal work here. The
+// borrowed destination remains untouched until explicit authorization.
 [[nodiscard]] PipelineOutputStage
 acquire_pipeline_output_stage(Run &run) noexcept;
 
 // Pipeline output remains staged after a successful fence. Call this only after
-// the existing 8-bit RMD path reaches its terminal result. A failed RMD result
-// permanently prevents destination mutation.
+// every configured semantic/residual stage reaches its terminal result. A false
+// terminal result permanently prevents destination mutation.
 [[nodiscard]] Status authorize_output_commit(Run &run,
                                              bool rmd_succeeded) noexcept;
 

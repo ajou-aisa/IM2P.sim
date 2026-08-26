@@ -14,11 +14,14 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -48,6 +51,8 @@ bool malformed_completion_context = false;
 bool malformed_completion_duration = false;
 bool malformed_completion_order = false;
 bool throw_create = false;
+size_t create_attempts = 0;
+size_t fail_create_attempt = 0;
 bool provider_force_callback_failure = false;
 std::vector<int64_t> provider_exact_values;
 std::vector<int64_t> provider_delivered_values;
@@ -70,6 +75,13 @@ im2p_stripe_work_desc_t work_desc{};
 size_t provider_full_count = 0;
 size_t provider_work_count = 0;
 std::vector<im2p_activation_stripe_t> published;
+size_t raw_in_flight = 0;
+size_t max_raw_in_flight = 0;
+size_t sim_count_at_first_publish = 0;
+std::vector<std::string> semantic_trace;
+std::vector<im2p_sim_t *> sim_handles;
+std::vector<std::thread::id> sim_create_threads;
+std::vector<std::thread::id> sim_destroy_threads;
 
 void abi_call() {
   const auto here = std::this_thread::get_id();
@@ -96,6 +108,8 @@ void reset() {
   malformed_completion_duration = false;
   malformed_completion_order = false;
   throw_create = false;
+  create_attempts = 0;
+  fail_create_attempt = 0;
   provider_force_callback_failure = false;
   provider_exact_values.clear();
   provider_delivered_values.clear();
@@ -118,6 +132,13 @@ void reset() {
   provider_full_count = 0;
   provider_work_count = 0;
   published.clear();
+  raw_in_flight = 0;
+  max_raw_in_flight = 0;
+  sim_count_at_first_publish = 0;
+  semantic_trace.clear();
+  sim_handles.clear();
+  sim_create_threads.clear();
+  sim_destroy_threads.clear();
 }
 
 template <class P> bool wait(P predicate) {
@@ -190,13 +211,30 @@ struct im2p_stream {
 extern "C" {
 im2p_sim_t *im2p_sim_create(void) {
   fake::abi_call();
-  if (fake::throw_create)
+  bool fail = false;
+  {
+    std::lock_guard lock(fake::mutex);
+    ++fake::create_attempts;
+    fail = fake::throw_create ||
+           fake::create_attempts == fake::fail_create_attempt;
+  }
+  if (fail)
     throw std::bad_alloc();
+  auto *sim = new im2p_sim;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::sim_handles.push_back(sim);
+    fake::sim_create_threads.push_back(std::this_thread::get_id());
+  }
   ++fake::sim_created;
-  return new im2p_sim;
+  return sim;
 }
 void im2p_sim_destroy(im2p_sim_t *p) {
   fake::abi_call();
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::sim_destroy_threads.push_back(std::this_thread::get_id());
+  }
   ++fake::sim_destroyed;
   delete p;
 }
@@ -278,6 +316,11 @@ int im2p_publish_stripe(im2p_stream_t *,
   }
   fake::published.push_back(*s);
   ++fake::publish_count;
+  ++fake::raw_in_flight;
+  fake::max_raw_in_flight =
+      std::max(fake::max_raw_in_flight, fake::raw_in_flight);
+  if (fake::publish_count == 1)
+    fake::sim_count_at_first_publish = fake::sim_created.load();
   fake::changed.notify_all();
   return IM2P_OK;
 }
@@ -356,6 +399,11 @@ int im2p_poll_completed_extended(
     ++out->base.context;
   if (fake::malformed_completion_duration)
     ++out->publish_to_completion_cycles;
+  if (fake::raw_in_flight != 0)
+    --fake::raw_in_flight;
+  fake::semantic_trace.push_back("D" +
+                                 std::to_string(out->base.stripe_id));
+  fake::changed.notify_all();
   return 1;
 }
 int im2p_finish_stream_extended(im2p_stream_t *,
@@ -1907,6 +1955,140 @@ bool test_blocked_producer_failure_is_transactional() {
                 "failed run leaves destination sentinel intact");
 }
 
+enum class RawInjectedFailure { progress, poll };
+
+bool test_raw_failure_wakes_every_waiter() {
+  for (const auto failure :
+       {RawInjectedFailure::progress, RawInjectedFailure::poll}) {
+    fake::reset();
+    fake::allow_completion = false;
+    std::vector<int8_t> activation(9, 1);
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    std::vector<int32_t> destination(6, 0x13572468);
+    auto args = raw_args(activation, weights, destination, 3);
+    auto started = execute(
+        &args, Mode::stripe_pipeline,
+        {std::numeric_limits<uint64_t>::max()});
+    if (!started.status.ok())
+      return false;
+    RunTestAccess::hold_progress(*started.run);
+    if (!submit_stripe(*started.run, event(0, 0, 1)).ok() ||
+        !submit_stripe(*started.run, event(1, 1, 2)).ok()) {
+      RunTestAccess::inject_execution_failure(*started.run);
+      (void)fence(*started.run);
+      return false;
+    }
+
+    std::mutex waiter_mutex;
+    std::condition_variable waiter_changed;
+    size_t completed_waiters = 0;
+    const auto waiter_completed = [&] {
+      std::lock_guard lock(waiter_mutex);
+      ++completed_waiters;
+      waiter_changed.notify_all();
+    };
+    Status producer_status{};
+    std::thread producer([&] {
+      producer_status = submit_stripe(*started.run, event(2, 2, 3));
+      waiter_completed();
+    });
+    const bool producer_blocked =
+        RunTestAccess::wait_for_blocked_submit(*started.run, 1);
+    const bool worker_held =
+        RunTestAccess::wait_for_held_progress(*started.run);
+    if (!producer_blocked || !worker_held) {
+      RunTestAccess::inject_execution_failure(*started.run);
+      producer.join();
+      (void)fence(*started.run);
+      return false;
+    }
+
+    FenceResult first{}, second{};
+    std::thread fence_one([&] {
+      first = fence(*started.run);
+      waiter_completed();
+    });
+    std::thread fence_two([&] {
+      second = fence(*started.run);
+      waiter_completed();
+    });
+    if (!RunTestAccess::wait_for_closing(*started.run)) {
+      RunTestAccess::inject_execution_failure(*started.run);
+      producer.join();
+      fence_one.join();
+      fence_two.join();
+      return false;
+    }
+    if (failure == RawInjectedFailure::progress)
+      RunTestAccess::inject_progress_failure(*started.run);
+    else
+      RunTestAccess::inject_poll_failure(*started.run);
+
+    bool all_waiters_woke = false;
+    {
+      std::unique_lock lock(waiter_mutex);
+      all_waiters_woke = waiter_changed.wait_for(
+          lock, std::chrono::seconds(5), [&] { return completed_waiters == 3; });
+    }
+    if (!all_waiters_woke)
+      RunTestAccess::inject_execution_failure(*started.run);
+    producer.join();
+    fence_one.join();
+    fence_two.join();
+    if (!expect(all_waiters_woke,
+                "raw injection wakes every waiter within the bounded call"))
+      return false;
+    const auto repeated = fence(*started.run);
+    const auto stage = acquire_pipeline_output_stage(*started.run);
+    const auto authorization = authorize_output_commit(*started.run, true);
+    const char *expected_message =
+        failure == RawInjectedFailure::progress
+            ? "injected IM2P progress failure"
+            : "injected IM2P poll failure";
+    const bool views_empty =
+        first.stripe_rtl_timings.empty() &&
+        first.semantic_stripes.empty() &&
+        first.residual_stripe_stats.empty() &&
+        first.residual_stripe_timings.empty() &&
+        first.semantic_completion_count == 0 && first.rmd_dot_calls == 0;
+    const bool resources =
+        fake::sim_created.load() == 1 && fake::sim_destroyed.load() == 1 &&
+        fake::stream_created.load() == 1 &&
+        fake::stream_destroyed.load() == 1;
+    std::printf(
+        "RAW_FAILURE point=%s producer=%u fence1=%u fence2=%u repeat=%u "
+        "message=%s views=%s sim=%zu/%zu stream=%zu/%zu sentinel=%s\n",
+        failure == RawInjectedFailure::progress ? "progress" : "poll",
+        static_cast<unsigned>(producer_status.code),
+        static_cast<unsigned>(first.status.code),
+        static_cast<unsigned>(second.status.code),
+        static_cast<unsigned>(repeated.status.code), first.status.message,
+        views_empty ? "empty" : "nonempty", fake::sim_created.load(),
+        fake::sim_destroyed.load(), fake::stream_created.load(),
+        fake::stream_destroyed.load(),
+        destination == std::vector<int32_t>(6, 0x13572468) ? "unchanged"
+                                                            : "changed");
+    if (!expect(producer_status.code == StatusCode::execution_failure &&
+                    first.status.code == producer_status.code &&
+                    second.status.code == producer_status.code &&
+                    repeated.status.code == producer_status.code &&
+                    std::strcmp(producer_status.message, expected_message) == 0 &&
+                    std::strcmp(first.status.message, expected_message) == 0 &&
+                    std::strcmp(second.status.message, expected_message) == 0 &&
+                    std::strcmp(repeated.status.message, expected_message) == 0,
+                "raw boundary preserves the first status for every waiter") ||
+        !expect(views_empty && stage.data == nullptr &&
+                    authorization.code == StatusCode::execution_failure,
+                "raw failure exposes no successful semantic view or stage") ||
+        !expect(destination == std::vector<int32_t>(6, 0x13572468),
+                "raw failure preserves the caller output sentinel") ||
+        !expect(resources,
+                "raw failure joins all waiters and destroys every handle"))
+      return false;
+  }
+  return true;
+}
+
 enum class FullFailure { create, execute };
 enum class StripeFailure { create, begin, publish, progress, poll, finish };
 
@@ -2217,6 +2399,678 @@ bool test_publication_geometry_and_counter_separation() {
                 "incomplete publication sequence rejects at fence");
 }
 
+bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
+                                    std::vector<block_q8_h1> &weights,
+                                    std::vector<float> &destination,
+                                    size_t rows) {
+  constexpr size_t columns = 2;
+  args.I = rows;
+  args.J = columns;
+  args.K = 32;
+  if (!args.A.allocate(rows, args.K,
+                       IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
+    return false;
+  args.activation_rows_per_stripe = 1;
+  args.f_out = destination.data();
+  args.stride_f_out = columns;
+  args.col_stride_f_out = 1;
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  weights.resize(columns);
+  for (auto &weight : weights) {
+    weight.s_rf = 1.0f;
+    weight.c_b = 1;
+    weight.R = 0;
+  }
+  args.q8_h1_blocks = weights.data();
+  args.q8_h1_block_count = weights.size();
+  args.q8_h1_rows = columns;
+  args.blocks_per_row = 1;
+  args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+  args.act_quant.storage().emplace<exsia::Meta>();
+  return true;
+}
+
+exsia::StripeReadyEvent semantic_event(size_t id) {
+  auto ready = event(id, id, id + 1, 83);
+  ready.activation_metadata.emplace();
+  ready.activation_metadata->e_s = -4;
+  ready.activation_metadata->rho = 5;
+  ready.activation_metadata->sigma = 17;
+  ready.activation_metadata->theta = 0;
+  ready.quantization_start = 1000 + id;
+  ready.quantization_end = 1100 + id;
+  ready.local_start_cycle = 1200 + id;
+  ready.local_end_cycle = 1300 + id;
+  ready.folding_commit_ns = 1400 + id;
+  return ready;
+}
+
+struct SemanticSchedulerProbe {
+  std::mutex mutex;
+  std::condition_variable changed;
+  Run *run = nullptr;
+  float *caller_destination = nullptr;
+  size_t stage_elements = 0;
+  im2p_sim_t *expected_simulator = nullptr;
+  bool gate_first = true;
+  bool release_first = false;
+  bool fail_first = false;
+  bool first_entered = false;
+  bool producer_done = false;
+  bool callback_outside_lock = true;
+  bool simulator_ok = true;
+  bool event_ok = true;
+  bool stage_ok = true;
+  size_t calls = 0;
+  std::thread::id callback_thread;
+  std::vector<std::thread::id> packet_release_threads;
+};
+
+template <class Predicate>
+bool wait_for_probe(SemanticSchedulerProbe &probe, Predicate predicate) {
+  std::unique_lock lock(probe.mutex);
+  return probe.changed.wait_for(lock, std::chrono::seconds(5), predicate);
+}
+
+Status semantic_scheduler_callback(void *opaque, im2p_sim_t *simulator,
+                                   const exsia::StripeReadyEvent &ready,
+                                   ResidualStageView stage,
+                                   ResidualStripeStats &stats) noexcept {
+  auto &probe = *static_cast<SemanticSchedulerProbe *>(opaque);
+  const bool scheduler_unlocked =
+      probe.run != nullptr && RunTestAccess::try_lock_scheduler(*probe.run);
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::semantic_trace.push_back("R" + std::to_string(ready.stripe_id));
+    fake::changed.notify_all();
+  }
+  bool fail = false;
+  {
+    std::unique_lock lock(probe.mutex);
+    probe.callback_outside_lock &= scheduler_unlocked;
+    probe.simulator_ok &= simulator == probe.expected_simulator;
+    probe.event_ok &=
+        ready.run_id == 83 && ready.slot == ready.stripe_id + 9 &&
+        ready.row_begin == ready.stripe_id &&
+        ready.row_end == ready.stripe_id + 1 &&
+        ready.activation_metadata.has_value() &&
+        ready.activation_metadata->e_s == -4 &&
+        ready.activation_metadata->rho == 5 &&
+        ready.activation_metadata->sigma == 17 &&
+        ready.activation_metadata->theta == 0 &&
+        ready.quantization_start == 1000 + ready.stripe_id &&
+        ready.quantization_end == 1100 + ready.stripe_id &&
+        ready.local_start_cycle == 1200 + ready.stripe_id &&
+        ready.local_end_cycle == 1300 + ready.stripe_id &&
+        ready.folding_commit_ns == 1400 + ready.stripe_id;
+    probe.stage_ok &= stage.data != nullptr &&
+                      stage.data != probe.caller_destination &&
+                      stage.element_count == probe.stage_elements;
+    if (probe.callback_thread == std::thread::id{})
+      probe.callback_thread = std::this_thread::get_id();
+    else
+      probe.simulator_ok &=
+          probe.callback_thread == std::this_thread::get_id();
+    ++probe.calls;
+    if (ready.stripe_id == 0) {
+      probe.first_entered = true;
+      probe.changed.notify_all();
+      if (probe.gate_first) {
+        probe.changed.wait(lock, [&] { return probe.release_first; });
+      }
+      fail = probe.fail_first;
+    }
+  }
+  if (fail)
+    return {StatusCode::execution_failure, Route::q8_h1, true,
+            "injected residual callback failure"};
+  stage[ready.row_begin * 2] += 100.0f;
+  stats.rmd_dot_calls = ready.stripe_id + 1;
+  stats.rmd_stats.base.work_total_cycles = 10 + ready.stripe_id;
+  stats.rmd_stats.base.completed_output_tiles = 1;
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::semantic_trace.push_back("C" + std::to_string(ready.stripe_id));
+    fake::changed.notify_all();
+  }
+  return {};
+}
+
+std::string joined_trace(const std::vector<std::string> &events) {
+  std::string result;
+  for (const auto &entry : events) {
+    if (!result.empty())
+      result += ',';
+    result += entry;
+  }
+  return result;
+}
+
+bool test_semantic_dense_rmd_order() {
+#if GGML_GEMMINI_WEIGHT_BITS != 8
+  return true;
+#else
+  fake::reset();
+  fake::allow_completion = false;
+  fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
+  std::vector<float> destination(6, 91.0f);
+  std::vector<block_q8_h1> weights;
+  ggml_gemmini_args_t args{};
+  if (!prepare_semantic_pipeline_args(args, weights, destination, 3))
+    return false;
+  SemanticSchedulerProbe probe;
+  probe.caller_destination = destination.data();
+  probe.stage_elements = destination.size();
+  auto started = execute(
+      &args, Mode::stripe_pipeline,
+      {std::numeric_limits<uint64_t>::max(),
+       ResidualStageMode::im2p_compact, &probe,
+       semantic_scheduler_callback});
+  if (!expect(started.status.ok(), "residual pipeline starts"))
+    return false;
+  probe.run = started.run.get();
+  {
+    std::lock_guard lock(fake::mutex);
+    probe.expected_simulator =
+        fake::sim_handles.size() == 2 ? fake::sim_handles[1] : nullptr;
+  }
+  if (!expect(submit_stripe(*started.run, semantic_event(0), {true, 0}).ok() &&
+                  submit_stripe(*started.run, semantic_event(1), {true, 0}).ok(),
+              "two semantic slots accept before raw completion"))
+    return false;
+  Status third_status{};
+  std::thread producer([&] {
+    third_status =
+        submit_stripe(*started.run, semantic_event(2), {true, 0});
+    std::lock_guard lock(probe.mutex);
+    probe.producer_done = true;
+    probe.changed.notify_all();
+  });
+  if (!expect(RunTestAccess::wait_for_blocked_submit(*started.run, 1),
+              "third semantic producer reaches capacity wait") ||
+      !expect(fake::wait([] { return fake::publish_count >= 1; }),
+              "first raw publication reaches the fake ABI")) {
+    RunTestAccess::inject_execution_failure(*started.run);
+    producer.join();
+    (void)fence(*started.run);
+    return false;
+  }
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::allow_completion = true;
+    fake::changed.notify_all();
+  }
+  const bool reached_first_boundary = wait_for_probe(probe, [&] {
+    return probe.first_entered || probe.producer_done;
+  });
+  const auto pending = RunTestAccess::inspect(*started.run);
+  bool producer_released_early = false;
+  {
+    std::lock_guard lock(probe.mutex);
+    producer_released_early = probe.producer_done;
+    probe.release_first = true;
+    probe.changed.notify_all();
+  }
+  producer.join();
+  const auto done = fence(*started.run);
+  const auto terminal = RunTestAccess::inspect(*started.run);
+  const bool destination_staged =
+      destination == std::vector<float>(6, 91.0f);
+  const auto authorized = authorize_output_commit(*started.run, true);
+  std::vector<std::string> trace;
+  size_t max_raw = 0;
+  size_t sim_count_at_publish = 0;
+  bool owner_threads = false;
+  {
+    std::lock_guard lock(fake::mutex);
+    trace = fake::semantic_trace;
+    max_raw = fake::max_raw_in_flight;
+    sim_count_at_publish = fake::sim_count_at_first_publish;
+    owner_threads = fake::one_owner && fake::sim_created == 2 &&
+                    fake::sim_destroyed == 2 && fake::stream_created == 1 &&
+                    fake::stream_destroyed == 1 &&
+                    fake::sim_create_threads.size() == 2 &&
+                    fake::sim_destroy_threads.size() == 2 &&
+                    std::all_of(fake::sim_create_threads.begin(),
+                                fake::sim_create_threads.end(),
+                                [&](std::thread::id id) {
+                                  return id == probe.callback_thread;
+                                }) &&
+                    std::all_of(fake::sim_destroy_threads.begin(),
+                                fake::sim_destroy_threads.end(),
+                                [&](std::thread::id id) {
+                                  return id == probe.callback_thread;
+                                });
+  }
+  const std::vector<std::string> exact_trace = {
+      "D0", "R0", "C0", "D1", "R1", "C1", "D2", "R2", "C2"};
+  const bool semantic_views =
+      done.semantic_completion_count == 3 &&
+      done.semantic_stripes.size == 3 &&
+      done.residual_stripe_stats.size == 3 &&
+      done.residual_stripe_timings.size == 3 &&
+      done.rmd_dot_calls == 6 && done.rmd_stats.base.work_total_cycles == 33 &&
+      done.semantic_stripes[0].stripe_id == 0 &&
+      done.semantic_stripes[1].stripe_id == 1 &&
+      done.semantic_stripes[2].stripe_id == 2 &&
+      done.residual_stripe_timings[1].rmd_dot_calls == 2 &&
+      done.residual_stripe_timings[1].rmd_stats.base.work_total_cycles == 11;
+  std::printf(
+      "SEMANTIC_ORDER trace=%s raw_max=%zu semantic_max=2 "
+      "pending_raw=%zu pending_outstanding=%zu raw_generation=%llu "
+      "semantic_generation=%llu third_released_before_c0=%d "
+      "sim_created_before_d0=%zu callback_thread=%zu owner_thread=%zu\n",
+      joined_trace(trace).c_str(), max_raw, pending.in_flight,
+      pending.outstanding,
+      static_cast<unsigned long long>(terminal.completion_generation),
+      static_cast<unsigned long long>(terminal.semantic_generation),
+      producer_released_early ? 1 : 0, sim_count_at_publish,
+      std::hash<std::thread::id>{}(probe.callback_thread),
+      std::hash<std::thread::id>{}(fake::owner));
+  const bool compact_ok =
+      expect(reached_first_boundary && probe.first_entered,
+             "raw completion enters residual callback") &&
+      expect(!producer_released_early && pending.queued == 1 &&
+                 pending.in_flight == 0 && pending.outstanding == 2 &&
+                 pending.timing_size == 1,
+             "raw-complete residual-pending state retains both semantic slots") &&
+      expect(third_status.ok(), "third producer releases after C0") &&
+      expect(done.status.ok() && done.stripe_rtl_timings.size == 3 &&
+                 semantic_views,
+             "fence freezes complete raw and semantic coverage") &&
+      expect(trace == exact_trace && max_raw == 1,
+             "dense, residual, and semantic stages are strictly serialized") &&
+      expect(probe.calls == 3 && probe.callback_outside_lock &&
+                 probe.simulator_ok && probe.event_ok && probe.stage_ok,
+             "callback runs outside scheduler lock with copied event and stage") &&
+      expect(owner_threads && sim_count_at_publish == 2,
+             "dense and residual simulators share one worker owner") &&
+      expect(destination_staged && authorized.ok() &&
+                 destination ==
+                     std::vector<float>({101, 2, 103, 4, 105, 6}),
+             "caller output remains staged until successful authorization") &&
+      expect(terminal.completion_generation == 3 &&
+                 terminal.semantic_generation == 3,
+             "raw and semantic generations advance independently");
+
+  fake::reset();
+  fake::provider_exact_values = {7, 8};
+  std::vector<float> direct_destination(2, 73.0f);
+  std::vector<block_q8_h1> direct_weights;
+  ggml_gemmini_args_t direct_args{};
+  if (!prepare_semantic_pipeline_args(direct_args, direct_weights,
+                                      direct_destination, 1))
+    return false;
+  SemanticSchedulerProbe direct_probe;
+  direct_probe.caller_destination = direct_destination.data();
+  direct_probe.stage_elements = direct_destination.size();
+  auto direct = execute(
+      &direct_args, Mode::stripe_pipeline,
+      {65536, ResidualStageMode::host_direct, &direct_probe,
+       semantic_scheduler_callback});
+  if (!direct.status.ok())
+    return false;
+  direct_probe.run = direct.run.get();
+  direct_probe.expected_simulator = nullptr;
+  if (!submit_stripe(*direct.run, semantic_event(0), {true, 0}).ok() ||
+      !wait_for_probe(direct_probe,
+                      [&] { return direct_probe.first_entered; })) {
+    std::lock_guard lock(direct_probe.mutex);
+    direct_probe.release_first = true;
+    direct_probe.changed.notify_all();
+    return false;
+  }
+  FenceResult direct_done{};
+  bool direct_fence_done = false;
+  std::thread direct_fence([&] {
+    direct_done = fence(*direct.run);
+    std::lock_guard lock(direct_probe.mutex);
+    direct_fence_done = true;
+    direct_probe.changed.notify_all();
+  });
+  const bool direct_closing = RunTestAccess::wait_for_closing(*direct.run);
+  bool direct_fence_done_before_release = false;
+  {
+    std::lock_guard lock(direct_probe.mutex);
+    direct_fence_done_before_release = direct_fence_done;
+    direct_probe.release_first = true;
+    direct_probe.changed.notify_all();
+  }
+  direct_fence.join();
+  std::vector<std::string> direct_trace;
+  size_t direct_created = 0, direct_destroyed = 0, direct_finish = 0;
+  {
+    std::lock_guard lock(fake::mutex);
+    direct_trace = fake::semantic_trace;
+    direct_created = fake::sim_created;
+    direct_destroyed = fake::sim_destroyed;
+    direct_finish = fake::finish_count;
+  }
+  std::printf("SEMANTIC_HOST_DIRECT trace=%s sim_created=%zu sim_destroyed=%zu "
+              "callback_simulator=null fence_waited_for_c0=%d finish=%zu\n",
+              joined_trace(direct_trace).c_str(), direct_created,
+              direct_destroyed, direct_fence_done_before_release ? 0 : 1,
+              direct_finish);
+  const bool direct_ok =
+      expect(direct_closing && !direct_fence_done_before_release &&
+                 direct_done.status.ok() &&
+                 direct_trace ==
+                     std::vector<std::string>({"D0", "R0", "C0"}) &&
+                 direct_probe.calls == 1 && direct_probe.simulator_ok &&
+                 direct_created == 1 && direct_destroyed == 1 &&
+                 direct_finish == 1,
+             "host-direct fence waits semantic completion without a residual "
+             "simulator");
+  return compact_ok && direct_ok;
+#endif
+}
+
+bool test_semantic_blocked_producer_failure() {
+#if GGML_GEMMINI_WEIGHT_BITS != 8
+  return true;
+#else
+  fake::reset();
+  fake::allow_completion = false;
+  fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
+  std::vector<float> destination(6, 67.0f);
+  std::vector<block_q8_h1> weights;
+  ggml_gemmini_args_t args{};
+  if (!prepare_semantic_pipeline_args(args, weights, destination, 3))
+    return false;
+  SemanticSchedulerProbe probe;
+  probe.fail_first = true;
+  probe.caller_destination = destination.data();
+  probe.stage_elements = destination.size();
+  auto started = execute(
+      &args, Mode::stripe_pipeline,
+      {std::numeric_limits<uint64_t>::max(),
+       ResidualStageMode::im2p_compact, &probe,
+       semantic_scheduler_callback});
+  if (!started.status.ok())
+    return false;
+  probe.run = started.run.get();
+  {
+    std::lock_guard lock(fake::mutex);
+    probe.expected_simulator =
+        fake::sim_handles.size() == 2 ? fake::sim_handles[1] : nullptr;
+  }
+  auto owned_event = [&](size_t id) {
+    auto ready = semantic_event(id);
+    auto packet = std::shared_ptr<ggml::gemmini::rmd::StripePacket>(
+        new ggml::gemmini::rmd::StripePacket, [&](auto *value) {
+          {
+            std::lock_guard lock(probe.mutex);
+            probe.packet_release_threads.push_back(
+                std::this_thread::get_id());
+            probe.changed.notify_all();
+          }
+          delete value;
+        });
+    ready.rmd_packet = packet;
+    return ready;
+  };
+  {
+    auto first = owned_event(0);
+    auto second = owned_event(1);
+    if (!submit_stripe(*started.run, first, {true, 0}).ok() ||
+        !submit_stripe(*started.run, second, {true, 0}).ok())
+      return false;
+  }
+  Status producer_status{};
+  std::thread producer([&] {
+    producer_status =
+        submit_stripe(*started.run, semantic_event(2), {true, 0});
+    std::lock_guard lock(probe.mutex);
+    probe.producer_done = true;
+    probe.changed.notify_all();
+  });
+  if (!RunTestAccess::wait_for_blocked_submit(*started.run, 1) ||
+      !fake::wait([] { return fake::publish_count >= 1; })) {
+    RunTestAccess::inject_execution_failure(*started.run);
+    producer.join();
+    (void)fence(*started.run);
+    return false;
+  }
+  {
+    std::lock_guard lock(fake::mutex);
+    fake::allow_completion = true;
+    fake::changed.notify_all();
+  }
+  const bool callback_or_early_release = wait_for_probe(probe, [&] {
+    return probe.first_entered || probe.producer_done;
+  });
+  FenceResult fence_one{}, fence_two{};
+  std::thread first_fence([&] { fence_one = fence(*started.run); });
+  std::thread second_fence([&] { fence_two = fence(*started.run); });
+  const bool closing = RunTestAccess::wait_for_closing(*started.run);
+  bool producer_done_before_failure = false;
+  {
+    std::lock_guard lock(probe.mutex);
+    producer_done_before_failure = probe.producer_done;
+    probe.release_first = true;
+    probe.changed.notify_all();
+  }
+  producer.join();
+  first_fence.join();
+  second_fence.join();
+  const auto repeated = fence(*started.run);
+  const auto stage = acquire_pipeline_output_stage(*started.run);
+  const auto authorization = authorize_output_commit(*started.run, true);
+  std::vector<std::string> trace;
+  size_t created = 0, destroyed = 0, streams_created = 0,
+         streams_destroyed = 0, max_raw = 0;
+  bool same_owner = false;
+  std::thread::id abi_owner;
+  {
+    std::lock_guard lock(fake::mutex);
+    trace = fake::semantic_trace;
+    created = fake::sim_created;
+    destroyed = fake::sim_destroyed;
+    streams_created = fake::stream_created;
+    streams_destroyed = fake::stream_destroyed;
+    max_raw = fake::max_raw_in_flight;
+    same_owner = fake::one_owner;
+    abi_owner = fake::owner;
+  }
+  std::vector<std::thread::id> release_threads;
+  {
+    std::lock_guard lock(probe.mutex);
+    release_threads = probe.packet_release_threads;
+  }
+  const bool handles_on_owner =
+      release_threads.size() == 2 &&
+      std::all_of(release_threads.begin(), release_threads.end(),
+                  [&](std::thread::id id) { return id == abi_owner; });
+  std::printf(
+      "SEMANTIC_FAILURE trace=%s producer_status=%u fence1=%u fence2=%u "
+      "repeat=%u raw_max=%zu sim=%zu/%zu stream=%zu/%zu handles=%zu "
+      "callback_thread=%zu owner_thread=%zu sentinel=%s\n",
+      joined_trace(trace).c_str(),
+      static_cast<unsigned>(producer_status.code),
+      static_cast<unsigned>(fence_one.status.code),
+      static_cast<unsigned>(fence_two.status.code),
+      static_cast<unsigned>(repeated.status.code), max_raw, created, destroyed,
+      streams_created, streams_destroyed, release_threads.size(),
+      std::hash<std::thread::id>{}(probe.callback_thread),
+      std::hash<std::thread::id>{}(abi_owner),
+      destination == std::vector<float>(6, 67.0f) ? "unchanged" : "changed");
+  const bool callback_failure_ok =
+      expect(callback_or_early_release && probe.first_entered && closing &&
+                 !producer_done_before_failure,
+             "gated R0 holds producer and both fences before failure") &&
+      expect(producer_status.code == StatusCode::execution_failure &&
+                 fence_one.status.code == producer_status.code &&
+                 fence_two.status.code == producer_status.code &&
+                 repeated.status.code == producer_status.code &&
+                 std::strcmp(producer_status.message,
+                             "injected residual callback failure") == 0 &&
+                 std::strcmp(fence_one.status.message,
+                             producer_status.message) == 0,
+             "first callback error is sticky for every waiter") &&
+      expect(trace == std::vector<std::string>({"D0", "R0"}) &&
+                 max_raw == 1,
+             "failure stops later dense publication before semantic commit") &&
+      expect(fence_one.stripe_rtl_timings.empty() &&
+                 fence_one.semantic_stripes.empty() &&
+                 fence_one.residual_stripe_stats.empty() &&
+                 fence_one.residual_stripe_timings.empty() &&
+                 fence_one.semantic_completion_count == 0 &&
+                 fence_one.rmd_dot_calls == 0 &&
+                 stage.data == nullptr && authorization.code ==
+                                              StatusCode::execution_failure,
+             "failed run exposes no raw or semantic success view") &&
+      expect(destination == std::vector<float>(6, 67.0f),
+             "failed semantic merge preserves caller sentinel") &&
+      expect(created == 2 && destroyed == 2 && streams_created == 1 &&
+                 streams_destroyed == 1 && same_owner && handles_on_owner &&
+                 probe.callback_outside_lock && probe.simulator_ok,
+             "failure tears down both simulators and handles on worker owner");
+
+  fake::reset();
+  fake::fail_create_attempt = 2;
+  std::vector<float> create_destination(2, 59.0f);
+  std::vector<block_q8_h1> create_weights;
+  ggml_gemmini_args_t create_args{};
+  if (!prepare_semantic_pipeline_args(create_args, create_weights,
+                                      create_destination, 1))
+    return false;
+  SemanticSchedulerProbe create_probe;
+  create_probe.gate_first = false;
+  create_probe.caller_destination = create_destination.data();
+  create_probe.stage_elements = create_destination.size();
+  auto create_failed = execute(
+      &create_args, Mode::stripe_pipeline,
+      {65536, ResidualStageMode::im2p_compact, &create_probe,
+       semantic_scheduler_callback});
+  FenceResult create_fence{};
+  if (create_failed.run)
+    create_fence = fence(*create_failed.run);
+  const bool second_create_ok =
+      expect(create_failed.status.code == StatusCode::out_of_memory &&
+                 create_fence.status.code == create_failed.status.code &&
+                 fake::create_attempts == 2 && fake::sim_created == 1 &&
+                 fake::sim_destroyed == 1 && fake::stream_created == 0 &&
+                 create_probe.calls == 0 &&
+                 create_destination == std::vector<float>(2, 59.0f),
+             "second simulator create failure is transactional before raw start");
+  std::printf("SEMANTIC_SECOND_CREATE status=%u attempts=%zu sim=%zu/%zu "
+              "stream_created=%zu sentinel=%s\n",
+              static_cast<unsigned>(create_failed.status.code),
+              fake::create_attempts, fake::sim_created.load(),
+              fake::sim_destroyed.load(), fake::stream_created.load(),
+              create_destination == std::vector<float>(2, 59.0f)
+                  ? "unchanged"
+                  : "changed");
+  return callback_failure_ok && second_create_ok;
+#endif
+}
+
+struct ResidualCallbackProbe {
+  const exsia::StripeReadyEvent *expected_event = nullptr;
+  float *expected_stage = nullptr;
+  size_t expected_element_count = 0;
+  im2p_sim_t *expected_simulator = nullptr;
+  bool exact_borrowed_arguments = false;
+  size_t calls = 0;
+};
+
+Status residual_callback_probe(void *opaque, im2p_sim_t *simulator,
+                               const exsia::StripeReadyEvent &ready,
+                               ResidualStageView stage,
+                               ResidualStripeStats &stats) noexcept {
+  auto &probe = *static_cast<ResidualCallbackProbe *>(opaque);
+  probe.exact_borrowed_arguments =
+      &ready == probe.expected_event && stage.data == probe.expected_stage &&
+      stage.element_count == probe.expected_element_count &&
+      simulator == probe.expected_simulator;
+  ++probe.calls;
+  stage[ready.row_begin] += 4.0f;
+  stats.rmd_dot_calls = 3;
+  stats.rmd_stats.base.completed_output_tiles = 2;
+  return {};
+}
+
+bool test_legacy_options_aggregate() {
+  fake::reset();
+  std::vector<int8_t> activation = {1, 2, 3};
+  std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+  std::vector<int32_t> output(2, 41);
+  auto args = raw_args(activation, weights, output, 1);
+  auto started = execute(&args, Mode::full, Options{65536});
+  return expect(started.status.ok() && started.run != nullptr &&
+                    fence(*started.run).status.ok() &&
+                    output == std::vector<int32_t>({4, 5}),
+                "legacy single-field Options aggregate retains full execution");
+}
+
+bool test_residual_stage_contract() {
+  constexpr Options legacy{65536};
+  static_assert(legacy.max_stalled_cycles == 65536);
+  static_assert(legacy.residual_stage_mode == ResidualStageMode::none);
+  static_assert(legacy.residual_stage_context == nullptr);
+  static_assert(legacy.residual_stage_fn == nullptr);
+  static_assert(std::is_nothrow_invocable_r_v<
+                Status, ResidualStageFn, void *, im2p_sim_t *,
+                const exsia::StripeReadyEvent &, ResidualStageView,
+                ResidualStripeStats &>);
+
+  std::array<float, 4> private_stage = {1, 2, 3, 4};
+  const auto ready = event(5, 1, 3, 91);
+  ResidualCallbackProbe probe{&ready, private_stage.data(),
+                              private_stage.size(), nullptr};
+  ResidualStripeStats stats{};
+  const ResidualStageView stage{private_stage.data(), private_stage.size()};
+  const auto callback = residual_callback_probe;
+  const auto status = callback(&probe, nullptr, ready, stage, stats);
+
+  const std::array<ResidualStageMode, 3> modes = {
+      ResidualStageMode::none, ResidualStageMode::host_direct,
+      ResidualStageMode::im2p_compact};
+  Options host{65536, modes[1], &probe, callback};
+  Options compact{65536, modes[2], &probe, callback};
+  const FenceResult empty_result{};
+  return expect(status.ok() && probe.calls == 1 &&
+                    probe.exact_borrowed_arguments &&
+                    private_stage[1] == 6.0f &&
+                    stage.begin() == private_stage.data() &&
+                    stage.end() == private_stage.data() + private_stage.size() &&
+                    stats.rmd_dot_calls == 3 &&
+                    stats.rmd_stats.base.completed_output_tiles == 2,
+                "residual callback receives exact borrowed event and stage") &&
+         expect(host.residual_stage_mode == ResidualStageMode::host_direct &&
+                    compact.residual_stage_mode ==
+                        ResidualStageMode::im2p_compact &&
+                    empty_result.residual_stripe_stats.empty() &&
+                    empty_result.semantic_stripes.empty(),
+                "all residual modes and default result views are additive");
+}
+
+bool test_residual_stage_invalid_options() {
+  ResidualCallbackProbe probe;
+  const auto callback = residual_callback_probe;
+  const std::array invalid_options = {
+      Options{65536, ResidualStageMode::host_direct, nullptr, nullptr},
+      Options{65536, ResidualStageMode::im2p_compact, nullptr, nullptr},
+      Options{65536, ResidualStageMode::none, &probe, callback},
+      Options{65536, static_cast<ResidualStageMode>(0xff), nullptr, callback},
+  };
+  for (const auto options : invalid_options) {
+    fake::reset();
+    std::vector<int8_t> activation = {1, 2, 3};
+    std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};
+    std::vector<int32_t> destination(2, 41);
+    auto args = raw_args(activation, weights, destination, 1);
+    const auto rejected = execute(&args, Mode::full, options);
+    if (!expect(rejected.status.code == StatusCode::invalid_argument &&
+                    rejected.run == nullptr && fake::sim_created == 0 &&
+                    fake::stream_created == 0 &&
+                    destination == std::vector<int32_t>({41, 41}),
+                "invalid residual options reject before execution"))
+      return false;
+  }
+  return true;
+}
+
 bool test_compiled_identity() {
   return expect(compiled_activation_bits() ==
                     IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
@@ -2265,6 +3119,18 @@ int main(int argc, char **argv) {
             ? test_provider_int64_scaling_full_pipeline()
         : selected == "publication_counter_separation"
             ? test_publication_geometry_and_counter_separation()
+        : selected == "legacy_options_aggregate"
+            ? test_legacy_options_aggregate()
+        : selected == "residual_stage_contract"
+            ? test_residual_stage_contract()
+        : selected == "residual_stage_invalid_options"
+            ? test_residual_stage_invalid_options()
+        : selected == "semantic_dense_rmd_order"
+            ? test_semantic_dense_rmd_order()
+        : selected == "semantic_blocked_producer_failure"
+            ? test_semantic_blocked_producer_failure()
+        : selected == "raw_failure_wakeup"
+            ? test_raw_failure_wakes_every_waiter()
             : false;
     if (selected_ok)
       std::printf("IM2P Gemmini frontend case %s: PASS\n", argv[1]);
@@ -2282,7 +3148,7 @@ int main(int argc, char **argv) {
          test_provider_int64_scaling_full_pipeline() &&
       test_publication_geometry_and_counter_separation() &&
       test_rejected_routes_do_not_execute() &&
-      test_mode_and_raw_scale_contract() &&
+      test_legacy_options_aggregate() && test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&
       test_multiwidth_activation_snapshot_validation() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&
@@ -2298,6 +3164,9 @@ int main(int argc, char **argv) {
       test_rmd_finalizes_frontend_stage_before_authorization() &&
       test_rmd_commit_authorization_ordering() &&
       test_blocked_producer_failure_is_transactional() &&
+      test_semantic_dense_rmd_order() &&
+      test_semantic_blocked_producer_failure() &&
+      test_raw_failure_wakes_every_waiter() &&
       test_full_failure_matrix() && test_stripe_failure_matrix() &&
       test_invalid_reuse_is_bounded() &&
       test_forward_progress_is_not_stall() &&

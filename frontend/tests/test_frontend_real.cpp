@@ -1,16 +1,20 @@
 #define IM2P_GEMMINI_FRONTEND_TESTING 1
 #include "im2p_gemmini_frontend.hpp"
+#include "im2p_gemmini_frontend_testing.hpp"
 
 #include "ggml-gemmini-args.h"
 #include "quants/act/exsia/exsia.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -177,7 +181,7 @@ struct RealCase {
     args.J = n;
     args.K = k;
     args.A = activations;
-    args.B = weights;
+    args.B = reinterpret_cast<elem_t *>(weights);
     args.C = output_storage.data() + kOutputOrigin;
     args.sA = k;
     args.sB = weight_stride;
@@ -794,6 +798,278 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
 }
 #endif
 
+#if GGML_GEMMINI_WEIGHT_BITS == 16
+using ResidualOperand = int16_t;
+#else
+using ResidualOperand = int8_t;
+#endif
+
+struct RealResidualProvider {
+  const size_t rows;
+  std::vector<ResidualOperand> activations;
+  std::vector<int64_t> output;
+  size_t weight_reads = 0;
+  size_t output_writes = 0;
+
+  explicit RealResidualProvider(size_t row_count)
+      : rows(row_count), activations(row_count, ResidualOperand{2}),
+        output(row_count, std::numeric_limits<int64_t>::min()) {}
+
+  static int read_i8(void *opaque, size_t row, size_t column, size_t count,
+                     int8_t *out) {
+    auto &self = *static_cast<RealResidualProvider *>(opaque);
+    if (GGML_GEMMINI_WEIGHT_BITS == 16 || row != 0 || column != 0 ||
+        count != 1 || out == nullptr)
+      return -1;
+    ++self.weight_reads;
+    out[0] = 3;
+    return 0;
+  }
+
+  static int read_i16(void *opaque, size_t row, size_t column, size_t count,
+                      int16_t *out) {
+    auto &self = *static_cast<RealResidualProvider *>(opaque);
+    if (GGML_GEMMINI_WEIGHT_BITS != 16 || row != 0 || column != 0 ||
+        count != 1 || out == nullptr)
+      return -1;
+    ++self.weight_reads;
+    out[0] = 3;
+    return 0;
+  }
+
+  static int write(void *opaque, size_t block, size_t row, size_t column,
+                   size_t count, const int64_t *values) {
+    auto &self = *static_cast<RealResidualProvider *>(opaque);
+    if (block != 0 || row >= self.rows || column != 0 || count != 1 ||
+        values == nullptr)
+      return -1;
+    ++self.output_writes;
+    self.output[row] = values[0];
+    return 0;
+  }
+};
+
+struct DualContextGate {
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool active_entered = false;
+  bool release_active = false;
+  bool empty_entered = false;
+  bool release_empty = false;
+  bool callback_timed_out = false;
+  uintptr_t callback_residual_identity = 0;
+  size_t active_rows = 0;
+  size_t provider_weight_reads = 0;
+  size_t provider_output_writes = 0;
+};
+
+Status real_residual_callback(
+    void *opaque, im2p_sim_t *simulator,
+    const ggml::gemmini::quants::act::exsia::StripeReadyEvent &event,
+    ResidualStageView stage, ResidualStripeStats &stats) noexcept {
+  auto &gate = *static_cast<DualContextGate *>(opaque);
+  const bool active = event.stripe_id == 0;
+  if (simulator == nullptr || event.row_end <= event.row_begin ||
+      stage.data == nullptr)
+    return {StatusCode::invalid_contract, Route::unknown, false,
+            "invalid real residual callback input"};
+
+  if (active) {
+    RealResidualProvider provider(event.row_end - event.row_begin);
+    im2p_matmul_desc_t descriptor{};
+    descriptor.abi_version = IM2P_ABI_VERSION;
+    descriptor.activation_bits = IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
+    descriptor.activation_storage_bytes = sizeof(ResidualOperand);
+    descriptor.weight_bits = GGML_GEMMINI_WEIGHT_BITS;
+    descriptor.weight_storage_bytes = sizeof(ResidualOperand);
+    descriptor.dim = DIM;
+    descriptor.activations = provider.activations.data();
+    descriptor.m = provider.rows;
+    descriptor.n = 1;
+    descriptor.k = 1;
+    descriptor.activation_row_stride_bytes = sizeof(ResidualOperand);
+    descriptor.weight_row_stride_bytes = sizeof(ResidualOperand);
+    descriptor.output_row_stride = 1;
+    descriptor.tile_i_rows = std::min(provider.rows, size_t{DIM});
+    descriptor.tile_j_columns = 1;
+    descriptor.block_size = 1;
+    descriptor.vector_op = IM2P_VECTOR_BYPASS;
+    descriptor.work_context = 0x524d4400ULL + event.stripe_id;
+    descriptor.provider.context = &provider;
+    if constexpr (GGML_GEMMINI_WEIGHT_BITS == 16)
+      descriptor.provider.read_weight_i16 = RealResidualProvider::read_i16;
+    else
+      descriptor.provider.read_weight_i8 = RealResidualProvider::read_i8;
+    descriptor.provider.write_output = RealResidualProvider::write;
+
+    im2p_work_stats_extended_t real_stats{};
+    if (im2p_execute_matmul_extended(simulator, &descriptor, &real_stats) !=
+        IM2P_OK)
+      return {StatusCode::execution_failure, Route::unknown, false,
+              "real residual provider execution failed"};
+    for (size_t row = 0; row < provider.rows; ++row) {
+      if (provider.output[row] != int64_t{2} * int64_t{3})
+        return {StatusCode::execution_failure, Route::unknown, false,
+                "real residual scalar oracle mismatch"};
+      const size_t stage_index =
+          (event.row_begin + row) * (stage.element_count / (DIM + 3));
+      if (stage_index >= stage.element_count)
+        return {StatusCode::invalid_contract, Route::unknown, false,
+                "real residual stage index out of range"};
+      stage[stage_index] += static_cast<float>(provider.output[row]);
+    }
+    stats.rmd_dot_calls = 1;
+    stats.rmd_stats = real_stats;
+    {
+      std::unique_lock lock(gate.mutex);
+      gate.callback_residual_identity =
+          reinterpret_cast<uintptr_t>(simulator);
+      gate.active_rows = provider.rows;
+      gate.provider_weight_reads += provider.weight_reads;
+      gate.provider_output_writes += provider.output_writes;
+      gate.active_entered = true;
+      gate.changed.notify_all();
+      if (!gate.changed.wait_for(lock, std::chrono::seconds(10),
+                                 [&] { return gate.release_active; })) {
+        gate.callback_timed_out = true;
+        return {StatusCode::execution_failure, Route::unknown, false,
+                "real residual active gate timed out"};
+      }
+    }
+  } else {
+    std::unique_lock lock(gate.mutex);
+    gate.empty_entered = true;
+    gate.changed.notify_all();
+    if (!gate.changed.wait_for(lock, std::chrono::seconds(10),
+                               [&] { return gate.release_empty; })) {
+      gate.callback_timed_out = true;
+      return {StatusCode::execution_failure, Route::unknown, false,
+              "real residual empty gate timed out"};
+    }
+  }
+  return {};
+}
+
+template <typename Case>
+bool run_dual_context_hp1(Case &test, const char *route) {
+  test.args.activation_rows_per_stripe = DIM;
+  DualContextGate gate;
+  Options options{};
+  options.max_stalled_cycles = 1000000;
+  options.residual_stage_mode = ResidualStageMode::im2p_compact;
+  options.residual_stage_context = &gate;
+  options.residual_stage_fn = real_residual_callback;
+  auto started = execute(&test.args, Mode::stripe_pipeline, options);
+  if (!started.status.ok() || !started.run) {
+    std::fprintf(stderr, "dual-context execute failed route=%s: %s\n", route,
+                 started.status.message);
+    return false;
+  }
+  const auto identities = RunTestAccess::inspect(*started.run);
+  if (identities.dense_simulator_identity == 0 ||
+      identities.residual_simulator_identity == 0 ||
+      identities.dense_simulator_identity ==
+          identities.residual_simulator_identity)
+    return false;
+
+  const auto first = stripe(0, 0, std::min(test.m, size_t{DIM}));
+  const auto second = stripe(1, first.row_end, test.m);
+  if (!submit_stripe(*started.run, first, StripeMetadata{true, -1}).ok())
+    return false;
+  {
+    std::unique_lock lock(gate.mutex);
+    if (!gate.changed.wait_for(lock, std::chrono::seconds(10),
+                               [&] { return gate.active_entered; }))
+      return false;
+  }
+  if (!submit_stripe(*started.run, second, StripeMetadata{true, -1}).ok())
+    return false;
+  {
+    std::lock_guard lock(gate.mutex);
+    gate.release_active = true;
+    gate.changed.notify_all();
+  }
+  {
+    std::unique_lock lock(gate.mutex);
+    if (!gate.changed.wait_for(lock, std::chrono::seconds(10),
+                               [&] { return gate.empty_entered; }))
+      return false;
+    gate.release_empty = true;
+    gate.changed.notify_all();
+  }
+
+  const auto done = fence(*started.run);
+  const bool staged = std::all_of(test.output.begin(), test.output.end(),
+                                  [](float value) { return value == 17.0f; });
+  if (!done.status.ok() || gate.callback_timed_out || !staged ||
+      !authorize_output_commit(*started.run, true).ok())
+    return false;
+  std::vector<float> oracle = test.expected;
+  for (size_t row = 0; row < gate.active_rows; ++row)
+    oracle[row * test.n] += 6.0f;
+
+  const bool ordered = done.stripe_rtl_timings.size == 2 &&
+                       done.residual_stripe_timings.size == 2 &&
+                       done.semantic_stripes.size == 2 &&
+                       done.semantic_completion_count == 2 &&
+                       done.stripe_rtl_timings[0].stripe_id == 0 &&
+                       done.residual_stripe_timings[0].stripe_id == 0 &&
+                       done.semantic_stripes[0].stripe_id == 0 &&
+                       done.stripe_rtl_timings[1].stripe_id == 1;
+  const bool counters = done.residual_stripe_timings[0].rmd_dot_calls > 0 &&
+                        done.residual_stripe_timings[1].rmd_dot_calls == 0 &&
+                        done.rmd_dot_calls > 0 &&
+                        done.stats.base.work_total_cycles > 0 &&
+                        done.rmd_stats.base.work_total_cycles > 0 &&
+                        gate.provider_weight_reads > 0 &&
+                        gate.provider_output_writes == gate.active_rows;
+  const bool contexts = gate.callback_residual_identity ==
+                            identities.residual_simulator_identity &&
+                        identities.dense_simulator_identity !=
+                            gate.callback_residual_identity;
+  if (!ordered || !counters || !contexts || test.output != oracle)
+    return false;
+
+  double checksum = 0.0;
+  for (float value : test.output)
+    checksum += value;
+  std::printf(
+      "REAL_DUAL_CONTEXT route=%s activation_bits=%d weight_bits=%d dim=%d "
+      "dense_context=0x%llx residual_context=0x%llx contexts=distinct "
+      "trace=D0,R0,C0,D1,R1,C1 active_dot_calls=%llu empty_dot_calls=0 "
+      "provider_weight_reads=%zu provider_output_writes=%zu "
+      "dense_cycles=%llu rmd_cycles=%llu clocks=independent-nonadditive "
+      "physical_fallback=0 checked_fallback=0 oracle=equal checksum=%.9g PASS\n",
+      route, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+      GGML_GEMMINI_WEIGHT_BITS, DIM,
+      static_cast<unsigned long long>(identities.dense_simulator_identity),
+      static_cast<unsigned long long>(identities.residual_simulator_identity),
+      static_cast<unsigned long long>(
+          done.residual_stripe_timings[0].rmd_dot_calls),
+      gate.provider_weight_reads, gate.provider_output_writes,
+      static_cast<unsigned long long>(done.stats.base.work_total_cycles),
+      static_cast<unsigned long long>(done.rmd_stats.base.work_total_cycles),
+      checksum);
+  return true;
+}
+
+bool run_selected_dual_hp1() {
+#if GGML_GEMMINI_WEIGHT_BITS == 8
+  ProviderCase test(true);
+#else
+  MatchedProviderCase test(MatchedFormat::hp1);
+#endif
+  return run_dual_context_hp1(test,
+#if GGML_GEMMINI_WEIGHT_BITS == 4
+                              "q4_hp1"
+#elif GGML_GEMMINI_WEIGHT_BITS == 8
+                              "q8_hp1"
+#else
+                              "q16_hp1"
+#endif
+  );
+}
+
 bool verify_compiled_identity() {
   const uint32_t expected_activation_storage =
       (IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS + 7) / 8;
@@ -861,8 +1137,24 @@ int main(int argc, char **argv) {
     return run_full_projection_regression() ? 0 : 1;
 #endif
 #if GGML_GEMMINI_WEIGHT_BITS == 4 || GGML_GEMMINI_WEIGHT_BITS == 16
+  const std::string_view hp1_route =
+      GGML_GEMMINI_WEIGHT_BITS == 4 ? "q4_hp1" : "q16_hp1";
+  if (argc == 3 && std::string_view(argv[1]) == "--route") {
+    if (std::string_view(argv[2]) != hp1_route) {
+      std::fprintf(stderr, "unsupported route: %s\n", argv[2]);
+      return 64;
+    }
+    if (!run_selected_dual_hp1())
+      return 1;
+    std::printf("IM2P Gemmini frontend real RTL A%d/W%d/D%d route=%.*s: PASS\n",
+                IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
+                GGML_GEMMINI_WEIGHT_BITS, DIM,
+                static_cast<int>(hp1_route.size()), hp1_route.data());
+    return 0;
+  }
   if (argc != 1) {
-    std::fprintf(stderr, "matched-width real test takes no route override\n");
+    std::fprintf(stderr, "usage: %s [--route %.*s]\n", argv[0],
+                 static_cast<int>(hp1_route.size()), hp1_route.data());
     return 64;
   }
   const bool passed =
@@ -897,8 +1189,7 @@ int main(int argc, char **argv) {
       route == "q8_h0"
           ? run_legacy(Mode::full) && run_legacy(Mode::stripe_pipeline)
       : route == "q8_hp1"
-          ? run_provider(Mode::full, true) &&
-                run_provider(Mode::stripe_pipeline, true)
+          ? run_selected_dual_hp1()
           : run_provider(Mode::full) && run_provider(Mode::stripe_pipeline);
   if (!passed)
     return 1;

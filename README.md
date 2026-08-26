@@ -285,14 +285,16 @@ Frontend artifact identity는 `a<activation>-w<weight>-d<dim>`이다. Block
 size는 DIM과 독립이며 기본값은 32다. 필요한 경우
 `GEMMINI_FRONTEND_BLOCK_SIZE`로 별도 선택한다.
 
-- `FULL`: ExSIA가 모든 stripe의 quantization/folding을 완료하면서 post-fold event를 collector에 보존한다. Quantization 성공 뒤 full NPU work를 시작하고, fence 뒤 기존 8-bit cpu-direct RMD를 완료한 다음에만 caller output을 publish한다.
-- `PIPELINE`: NPU stream을 먼저 시작한다. 각 stripe의 folding commit 직후 생성된 event를 batch의 quantization 종료까지 미루지 않고 즉시 stream에 publish하여 CPU ExSIA와 NPU 실행을 겹친다. Fence와 기존 8-bit cpu-direct RMD가 모두 성공한 다음에만 staged output을 caller에게 publish한다.
+- `FULL`: ExSIA가 모든 stripe의 quantization/folding을 완료하면서 residual handle과 immutable activation metadata를 collector에 보존한다. Full dense fence가 성공한 뒤 caller thread가 별도 residual simulator handle 하나를 생성해 H1/HP1 packet을 canonical row 순서로 처리한다. H0는 CPU-direct로 처리하며 compact simulator call은 0이다. 모든 residual merge가 성공한 뒤 caller output을 한 번만 commit한다.
+- `PIPELINE`: 전용 worker 하나가 dense stream handle과 별도 residual handle을 생성·사용·파기하며 두 handle 모두 worker thread-affine이다. Residual-enabled run은 `dense raw completion -> 해당 stripe residual execute -> checked merge -> semantic completion -> 다음 dense publish` 순서를 직렬화한다. Raw dense in-flight depth는 1이고 producer semantic capacity는 2다. Residual handle과 metadata는 semantic completion까지 유지되며 post-fence RMD batch는 없다.
 
-두 mode 모두 post-fold metadata와 activation backing을 fence까지 보존한다. 제3 frontend mode, post-quantization batch publish, RMD 이전 output publish는 계약에 없다.
+두 mode 모두 caller output을 private staging과 분리한다. 첫 dense/provider/compose/authorization 오류는 sticky failure가 되어 모든 waiter를 깨우고 staging을 폐기하며 caller output을 보존한다. Checked-software 또는 physical Gemmini로 fallback하지 않는다. 제3 frontend mode, post-quantization batch publish, RMD 이전 output publish는 계약에 없다.
 
-Matched ExSIA Q4_0/Q4_H1/Q4_HP1은 A4/W4 artifact에서,
-Q8_0/Q8_H1/Q8_HP1은 A8/W8 artifact에서, Q16_0/Q16_H1/Q16_HP1은
-A16/W16 artifact에서 `FULL`과 `PIPELINE` 모두 실행한다.
+Matched ExSIA Q4_H1/Q4_HP1은 A4/W4 artifact에서, Q8_H1/Q8_HP1은
+A8/W8 artifact에서, Q16_H1/Q16_HP1은 A16/W16 artifact에서 `FULL`과
+`PIPELINE` 모두 두 번째 IM2P.sim handle로 compact residual dot을 실행한다.
+Matched H0는 세 width 모두 CPU-direct이며 compact simulator call은 0이다.
+H2/HP2와 mixed activation/weight width는 실행 전에 fail closed한다.
 
 ```bash
 make gemmini-frontend \
@@ -360,9 +362,16 @@ numerical route 상태는 다음과 같다. High-level caller는 raw `progress`/
 Provider route는 요청된 logical fragment만 native storage에서 읽는다. 전체 weight tensor를 unpack, transpose, materialize하지 않는다. M/N tile, K fragment, block boundary, accumulate 결정은 계속 RTL scheduler가 담당한다.
 
 Production matched ExSIA는 A4/Q4, A8/Q8, A16/Q16 H0/H1/HP1을 지원한다.
-Q8 H2/HP2와 mixed precision은 fail closed하며 deferred work queue나 다른
-format으로 fallback하지 않는다. Generic frontend의 `q8_h2` Deprecated 및
-`q8_hp2` Unsupported 상태도 그대로 유지된다.
+H1/HP1 compact residual은 IM2P.sim, H0 residual은 CPU-direct가 담당한다.
+H2/HP2와 mixed precision은 fail closed하며 deferred work queue나 다른 format,
+checked software, physical Gemmini로 fallback하지 않는다. Generic frontend의
+`q8_h2` Deprecated 및 `q8_hp2` Unsupported 상태도 그대로 유지된다.
+
+Dense simulator와 residual simulator는 각자 `VerilatedContext`와 RTL clock을
+소유한다. 따라서 dense `rtl_work_total_cycles`/raw stripe timing과 RMD
+`rmd_stats`/dot-call duration은 별도이며 서로 더할 수 없다. 이 telemetry는
+하나의 연속 RTL timeline, shared core/state/contention, physical ns/GHz/Fmax,
+또는 physical Gemmini 성능을 주장하지 않는다.
 
 ## 문서
 

@@ -19,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -94,6 +95,71 @@ bool checked_mul(size_t left, size_t right, size_t &result) noexcept {
   if (right != 0 && left > std::numeric_limits<size_t>::max() / right)
     return false;
   result = left * right;
+  return true;
+}
+
+bool checked_add_u64(uint64_t left, uint64_t right,
+                     uint64_t &result) noexcept {
+  if (left > std::numeric_limits<uint64_t>::max() - right)
+    return false;
+  result = left + right;
+  return true;
+}
+
+bool accumulate_stats(im2p_work_stats_extended_t &aggregate,
+                      const im2p_work_stats_extended_t &value) noexcept {
+  auto staged = aggregate;
+#define IM2P_ADD_BASE(field)                                                   \
+  if (!checked_add_u64(staged.base.field, value.base.field,                   \
+                       staged.base.field))                                    \
+    return false
+#define IM2P_ADD_EXTENDED(field)                                               \
+  if (!checked_add_u64(staged.field, value.field, staged.field))               \
+    return false
+  IM2P_ADD_BASE(work_total_cycles);
+  IM2P_ADD_BASE(activation_read_requests);
+  IM2P_ADD_BASE(weight_read_requests);
+  IM2P_ADD_BASE(scale_read_requests);
+  IM2P_ADD_BASE(output_write_requests);
+  IM2P_ADD_BASE(output_write_responses);
+  IM2P_ADD_BASE(activation_wait_cycles);
+  IM2P_ADD_BASE(weight_wait_cycles);
+  IM2P_ADD_BASE(scale_wait_cycles);
+  IM2P_ADD_BASE(output_wait_cycles);
+  IM2P_ADD_BASE(stripe_host_wait_cycles);
+  IM2P_ADD_BASE(drain_cycles);
+  IM2P_ADD_BASE(weight_preload_cycles);
+  IM2P_ADD_BASE(same_block_scale_hits);
+  IM2P_ADD_BASE(next_scale_hits);
+  IM2P_ADD_BASE(scale_demand_misses);
+  IM2P_ADD_BASE(compute_cycles);
+  IM2P_ADD_BASE(overlap_cycles);
+  IM2P_ADD_BASE(activation_overlap_cycles);
+  IM2P_ADD_BASE(weight_overlap_cycles);
+  IM2P_ADD_BASE(scale_overlap_cycles);
+  IM2P_ADD_BASE(completed_fragments);
+  IM2P_ADD_BASE(completed_output_tiles);
+  IM2P_ADD_BASE(completed_stripes);
+  IM2P_ADD_BASE(stripes_published);
+  IM2P_ADD_BASE(stripe_rows_published);
+  IM2P_ADD_BASE(weight_bank_activations);
+  IM2P_ADD_EXTENDED(cross_stripe_overlap_cycles);
+  IM2P_ADD_EXTENDED(lookahead_prepared);
+  IM2P_ADD_EXTENDED(lookahead_publish_cycle);
+  IM2P_ADD_EXTENDED(lookahead_first_activation_cycle);
+  IM2P_ADD_EXTENDED(lookahead_first_weight_cycle);
+  IM2P_ADD_EXTENDED(lookahead_weight_preload_cycle);
+  IM2P_ADD_EXTENDED(lookahead_weight_requests);
+  IM2P_ADD_EXTENDED(lookahead_weight_reuse_hits);
+  IM2P_ADD_EXTENDED(lookahead_scale_cycle);
+  IM2P_ADD_EXTENDED(lookahead_scale_requests);
+  IM2P_ADD_EXTENDED(lookahead_scale_reuses);
+  IM2P_ADD_EXTENDED(current_stripe_completion_cycle);
+  IM2P_ADD_EXTENDED(lookahead_ready_cycle);
+  IM2P_ADD_EXTENDED(lookahead_start_cycle);
+#undef IM2P_ADD_EXTENDED
+#undef IM2P_ADD_BASE
+  aggregate = staged;
   return true;
 }
 
@@ -463,8 +529,7 @@ struct Run::Impl {
   struct DenseEvent {
     uint64_t run_id = 0;
     size_t stripe_id = 0, slot = 0, row_begin = 0, row_end = 0;
-    ggml::gemmini::rmd::StripePacketHandle rmd_packet;
-    ggml::gemmini::residual::DirectStripePayloadHandle direct_residual;
+    exsia::StripeReadyEvent residual_event;
   };
 
   Impl(const ggml_gemmini_args_t *source, Mode requested_mode,
@@ -512,20 +577,34 @@ struct Run::Impl {
   float *float_output_destination = nullptr;
   im2p_work_stats_extended_t stats{};
   std::vector<StripeRtlTiming> stripe_rtl_timings;
+  // Residual-enabled runs publish these only after successful callback merge.
+  // Keeping them private makes failed or in-progress telemetry unobservable
+  // through FenceResult.
+  std::vector<ResidualStripeStats> residual_stripe_stats;
+  std::vector<SemanticStripe> semantic_stripes;
+  std::vector<ResidualStripeTiming> residual_stripe_timings;
+  uint64_t semantic_completion_count = 0;
+  uint64_t rmd_dot_calls = 0;
+  im2p_work_stats_extended_t rmd_stats{};
   size_t canonical_stripe_count = 0;
   bool timing_view_frozen = false;
   std::deque<DenseEvent> ready;
   std::unordered_map<uint32_t, DenseEvent> in_flight;
+  std::optional<DenseEvent> residual_pending;
   static constexpr size_t producer_slot_count = 2;
   size_t outstanding = 0, next_row = 0, next_stripe = 0;
   size_t blocked_producers = 0;
   uint64_t completion_generation = 0;
+  uint64_t semantic_generation = 0;
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
   bool progress_held = false;
+  size_t held_progress_waiters = 0;
   bool progress_failure_injected = false;
   bool poll_failure_injected = false;
   bool completion_gate_enabled = false;
   uint64_t completion_gate_permits = 0;
+  uintptr_t dense_simulator_identity = 0;
+  uintptr_t residual_simulator_identity = 0;
 #endif
   bool bound_run = false;
   uint64_t run_id = 0;
@@ -1201,7 +1280,20 @@ struct Run::Impl {
     return result;
   }
 
-  bool poll(im2p_stream_t *stream, size_t &completion_count) {
+  bool residual_enabled() const noexcept {
+    return options.residual_stage_mode != ResidualStageMode::none;
+  }
+
+  bool semantic_coverage_complete() const noexcept {
+    return !residual_enabled() ||
+           (semantic_completion_count == canonical_stripe_count &&
+            semantic_stripes.size() == canonical_stripe_count &&
+            residual_stripe_stats.size() == canonical_stripe_count &&
+            residual_stripe_timings.size() == canonical_stripe_count);
+  }
+
+  bool poll(im2p_stream_t *stream, im2p_sim_t *residual_simulator,
+            size_t &completion_count) {
     completion_count = 0;
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
     {
@@ -1238,33 +1330,105 @@ struct Run::Impl {
 #endif
         return true;
       }
-      std::lock_guard lock(mutex);
-      const auto found = in_flight.find(c.stripe_id);
-      if (found == in_flight.end() || found->second.stripe_id != c.stripe_id ||
-          c.stripe_id != stripe_rtl_timings.size() ||
-          found->second.row_begin != c.i_start ||
-          found->second.row_end - found->second.row_begin != c.rows ||
-          found->second.run_id != c.context ||
-          stripe_rtl_timings.size() >= canonical_stripe_count ||
-          stripe_rtl_timings.size() >= stripe_rtl_timings.capacity() ||
-          extended.publish_to_completion_cycles !=
-              extended.completion_cycle - extended.publish_cycle) {
-        if (final_status.ok())
-          final_status = make_status(StatusCode::execution_failure, route,
-                                     false, "invalid IM2P completion");
+      bool run_residual = false;
+      {
+        std::lock_guard lock(mutex);
+        const auto found = in_flight.find(c.stripe_id);
+        if (found == in_flight.end() ||
+            found->second.stripe_id != c.stripe_id ||
+            c.stripe_id != stripe_rtl_timings.size() ||
+            found->second.row_begin != c.i_start ||
+            found->second.row_end - found->second.row_begin != c.rows ||
+            found->second.run_id != c.context || residual_pending.has_value() ||
+            stripe_rtl_timings.size() >= canonical_stripe_count ||
+            stripe_rtl_timings.size() >= stripe_rtl_timings.capacity() ||
+            extended.completion_cycle < extended.publish_cycle ||
+            extended.publish_to_completion_cycles !=
+                extended.completion_cycle - extended.publish_cycle) {
+          if (final_status.ok())
+            final_status = make_status(StatusCode::execution_failure, route,
+                                       false, "invalid IM2P completion");
+          changed.notify_all();
+          return false;
+        }
+        stripe_rtl_timings.push_back(
+            {found->second.run_id, found->second.stripe_id, found->second.slot,
+             found->second.row_begin, found->second.row_end,
+             extended.publish_cycle, extended.completion_cycle,
+             extended.publish_to_completion_cycles});
+        if (residual_enabled()) {
+          residual_pending.emplace(std::move(found->second));
+          run_residual = true;
+        } else {
+          --outstanding;
+        }
+        in_flight.erase(found);
+        ++completion_count;
+        ++completion_generation;
         changed.notify_all();
-        return false;
       }
-      stripe_rtl_timings.push_back(
-          {found->second.run_id, found->second.stripe_id, found->second.slot,
-           found->second.row_begin, found->second.row_end,
-           extended.publish_cycle, extended.completion_cycle,
-           extended.publish_to_completion_cycles});
-      in_flight.erase(found);
-      --outstanding;
-      ++completion_count;
-      ++completion_generation;
-      changed.notify_all();
+      if (!run_residual)
+        continue;
+
+      ResidualStripeStats callback_stats{};
+      const Status callback_status = options.residual_stage_fn(
+          options.residual_stage_context, residual_simulator,
+          residual_pending->residual_event,
+          {float_output_stage->data(), float_output_stage->size()},
+          callback_stats);
+
+      {
+        std::lock_guard lock(mutex);
+        if (!final_status.ok()) {
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+        if (!callback_status.ok()) {
+          final_status = callback_status;
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+        const auto &event = *residual_pending;
+        im2p_work_stats_extended_t accumulated_stats = rmd_stats;
+        uint64_t accumulated_calls = 0;
+        const bool valid_semantic_completion =
+            event.stripe_id == semantic_completion_count && outstanding != 0 &&
+            semantic_stripes.size() == semantic_completion_count &&
+            residual_stripe_stats.size() == semantic_completion_count &&
+            residual_stripe_timings.size() == semantic_completion_count &&
+            semantic_stripes.size() < semantic_stripes.capacity() &&
+            residual_stripe_stats.size() < residual_stripe_stats.capacity() &&
+            residual_stripe_timings.size() <
+                residual_stripe_timings.capacity() &&
+            checked_add_u64(rmd_dot_calls, callback_stats.rmd_dot_calls,
+                            accumulated_calls) &&
+            accumulate_stats(accumulated_stats, callback_stats.rmd_stats);
+        if (!valid_semantic_completion) {
+          final_status = make_status(StatusCode::execution_failure, route,
+                                     native,
+                                     "invalid residual stage completion");
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+        residual_stripe_stats.push_back(callback_stats);
+        semantic_stripes.push_back(
+            {event.run_id, event.stripe_id, event.slot, event.row_begin,
+             event.row_end});
+        residual_stripe_timings.push_back(
+            {event.run_id, event.stripe_id, event.slot, event.row_begin,
+             event.row_end, callback_stats.rmd_dot_calls,
+             callback_stats.rmd_stats});
+        rmd_dot_calls = accumulated_calls;
+        rmd_stats = accumulated_stats;
+        ++semantic_completion_count;
+        ++semantic_generation;
+        --outstanding;
+        residual_pending.reset();
+        changed.notify_all();
+      }
     }
   }
 
@@ -1277,13 +1441,19 @@ struct Run::Impl {
     }
   }
 
-  bool progress(im2p_stream_t *stream, uint64_t &stalled,
-                uint64_t &observed_generation, uint64_t &observed_progress,
-                const char *message) {
+  bool progress(im2p_stream_t *stream, im2p_sim_t *residual_simulator,
+                uint64_t &stalled, uint64_t &observed_generation,
+                uint64_t &observed_progress, const char *message) {
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
     {
       std::unique_lock lock(mutex);
-      changed.wait(lock, [&] { return !progress_held || !final_status.ok(); });
+      if (progress_held) {
+        ++held_progress_waiters;
+        changed.notify_all();
+        changed.wait(lock, [&] { return !progress_held || !final_status.ok(); });
+        --held_progress_waiters;
+        changed.notify_all();
+      }
       if (!final_status.ok())
         return false;
       if (progress_failure_injected) {
@@ -1297,7 +1467,7 @@ struct Run::Impl {
 #endif
     size_t completion_count = 0;
     if (im2p_progress_stream(stream, 1) != IM2P_OK ||
-        !poll(stream, completion_count)) {
+        !poll(stream, residual_simulator, completion_count)) {
       set_error(
           make_status(StatusCode::execution_failure, route, false, message));
       return false;
@@ -1325,18 +1495,32 @@ struct Run::Impl {
 
   void run_pipeline() {
     std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
+    std::unique_ptr<im2p_sim_t, SimDelete> residual_simulator;
+    if (sim && options.residual_stage_mode == ResidualStageMode::im2p_compact)
+      residual_simulator.reset(im2p_sim_create());
     im2p_stream_t *raw = nullptr;
-    if (sim) {
+    if (!sim) {
+      set_error(make_status(StatusCode::execution_failure, route, false,
+                            "failed to create IM2P simulator"));
+    } else if (options.residual_stage_mode ==
+                   ResidualStageMode::im2p_compact &&
+               !residual_simulator) {
+      set_error(make_status(StatusCode::execution_failure, route, false,
+                            "failed to create residual IM2P simulator"));
+    } else {
       auto d = stripe_descriptor();
       const int result = im2p_begin_striped_matmul(sim.get(), &d, &raw);
       if (result != IM2P_OK)
         set_error(from_c_status(result, route, "failed to start IM2P stream",
                                 native));
-    } else
-      set_error(make_status(StatusCode::execution_failure, route, false,
-                            "failed to create IM2P simulator"));
+    }
     {
       std::lock_guard lock(mutex);
+#if defined(IM2P_GEMMINI_FRONTEND_TESTING)
+      dense_simulator_identity = reinterpret_cast<uintptr_t>(sim.get());
+      residual_simulator_identity =
+          reinterpret_cast<uintptr_t>(residual_simulator.get());
+#endif
       startup_done = true;
       changed.notify_all();
     }
@@ -1351,21 +1535,24 @@ struct Run::Impl {
       bool have = false;
       {
         std::unique_lock lock(mutex);
-        if (ready.empty() && in_flight.empty() &&
+        if (ready.empty() && in_flight.empty() && !residual_pending &&
             lifecycle != Lifecycle::closing && final_status.ok()) {
           changed.wait(lock, [&] {
-            return !ready.empty() || !in_flight.empty() ||
+            return !ready.empty() || !in_flight.empty() || residual_pending ||
                    lifecycle == Lifecycle::closing || !final_status.ok();
           });
         }
         if (!final_status.ok())
           break;
-        if (!ready.empty()) {
+        const bool raw_slot_available =
+            !residual_enabled() ||
+            (in_flight.empty() && !residual_pending.has_value());
+        if (!ready.empty() && raw_slot_available) {
           event = ready.front();
           ready.pop_front();
           changed.notify_all();
           have = true;
-        } else if (lifecycle == Lifecycle::closing) {
+        } else if (ready.empty() && lifecycle == Lifecycle::closing) {
           if (next_row != scalars.i)
             final_status =
                 make_status(StatusCode::invalid_contract, route, false,
@@ -1384,8 +1571,8 @@ struct Run::Impl {
                                     native));
             break;
           }
-          if (!progress(stream.get(), stalled, observed_generation,
-                        observed_progress,
+          if (!progress(stream.get(), residual_simulator.get(), stalled,
+                        observed_generation, observed_progress,
                         "IM2P progress failed during raw retry"))
             break;
         }
@@ -1396,19 +1583,21 @@ struct Run::Impl {
           break;
       }
       size_t completion_count = 0;
-      if (!poll(stream.get(), completion_count))
+      if (!poll(stream.get(), residual_simulator.get(), completion_count))
         break;
       observe_completions(stalled, observed_generation);
       bool complete = false;
       {
-        std::unique_lock lock(mutex);
+        std::lock_guard lock(mutex);
         complete = lifecycle == Lifecycle::closing && ready.empty() &&
-                   in_flight.empty() && next_row == scalars.i;
+                   in_flight.empty() && !residual_pending &&
+                   next_row == scalars.i && outstanding == 0 &&
+                   semantic_coverage_complete();
       }
       if (complete)
         break;
-      if (!progress(stream.get(), stalled, observed_generation,
-                    observed_progress,
+      if (!progress(stream.get(), residual_simulator.get(), stalled,
+                    observed_generation, observed_progress,
                     "IM2P stream progress failed"))
         break;
     }
@@ -1416,7 +1605,9 @@ struct Run::Impl {
     {
       std::lock_guard lock(mutex);
       complete = final_status.ok() && lifecycle == Lifecycle::closing &&
-                 next_row == scalars.i && outstanding == 0 && in_flight.empty();
+                 next_row == scalars.i && outstanding == 0 && ready.empty() &&
+                 in_flight.empty() && !residual_pending &&
+                 semantic_coverage_complete();
     }
     if (complete) {
       const int result = im2p_finish_stream_extended(stream.get(), &stats);
@@ -1429,6 +1620,16 @@ struct Run::Impl {
     } else if (provider_failed) {
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
+    }
+    {
+      std::lock_guard lock(mutex);
+      if (!final_status.ok()) {
+        ready.clear();
+        in_flight.clear();
+        residual_pending.reset();
+        outstanding = 0;
+        changed.notify_all();
+      }
     }
   }
 };
@@ -1473,6 +1674,25 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   default:
     return {make_status(StatusCode::invalid_argument, Route::unknown, false,
                         "invalid IM2P invocation mode"),
+            {}};
+  }
+  switch (options.residual_stage_mode) {
+  case ResidualStageMode::none:
+    if (options.residual_stage_fn != nullptr)
+      return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                          "invalid residual stage options"),
+              {}};
+    break;
+  case ResidualStageMode::host_direct:
+  case ResidualStageMode::im2p_compact:
+    if (options.residual_stage_fn == nullptr || mode != Mode::stripe_pipeline)
+      return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                          "invalid residual stage options"),
+              {}};
+    break;
+  default:
+    return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                        "invalid residual stage mode"),
             {}};
   }
   if (!args)
@@ -1611,6 +1831,12 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       x.final_status = make_status(StatusCode::out_of_memory, x.route, x.native,
                                    "failed to retain IM2P operands");
   }
+  if (x.final_status.ok() &&
+      options.residual_stage_mode != ResidualStageMode::none &&
+      !x.float_output_stage)
+    x.final_status = make_status(StatusCode::invalid_contract, x.route,
+                                 x.native,
+                                 "residual stage requires float output staging");
   if (x.final_status.ok() && mode == Mode::stripe_pipeline) {
     x.canonical_stripe_count =
         1 + (x.scalars.i - 1) / x.scalars.activation_rows_per_stripe;
@@ -1620,6 +1846,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
         throw std::bad_alloc();
 #endif
       x.stripe_rtl_timings.reserve(x.canonical_stripe_count);
+      if (x.options.residual_stage_mode != ResidualStageMode::none) {
+        x.residual_stripe_stats.reserve(x.canonical_stripe_count);
+        x.semantic_stripes.reserve(x.canonical_stripe_count);
+        x.residual_stripe_timings.reserve(x.canonical_stripe_count);
+      }
     } catch (...) {
       x.final_status = make_status(StatusCode::out_of_memory, x.route, x.native,
                                    "failed to reserve stripe RTL timings");
@@ -1702,8 +1933,7 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
     x.changed.notify_all();
     x.changed.wait(lock, [&] {
       return x.outstanding < Run::Impl::producer_slot_count ||
-             !x.final_status.ok() ||
-             x.lifecycle != Run::Impl::Lifecycle::running;
+             !x.final_status.ok();
     });
     --x.blocked_producers;
     x.changed.notify_all();
@@ -1725,9 +1955,8 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
     std::fill(x.activation_scales.begin() + e.row_begin,
               x.activation_scales.begin() + e.row_end, scale);
   }
-  Run::Impl::DenseEvent dense{e.run_id,         e.stripe_id, e.slot,
-                              e.row_begin,      e.row_end,   e.rmd_packet,
-                              e.direct_residual};
+  Run::Impl::DenseEvent dense{e.run_id, e.stripe_id, e.slot, e.row_begin,
+                              e.row_end, e};
   try {
     x.ready.push_back(dense);
   } catch (const std::bad_alloc &) {
@@ -1751,11 +1980,24 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
 FenceResult fence(Run &run) noexcept {
   auto &x = *run.impl_;
   const auto result_locked = [&x]() noexcept {
-    StripeRtlTimingView view{};
+    FenceResult result{};
+    result.status = x.final_status;
+    result.stats = x.stats;
     if (x.timing_view_frozen && x.final_status.ok() &&
-        x.mode == Mode::stripe_pipeline)
-      view = {x.stripe_rtl_timings.data(), x.stripe_rtl_timings.size()};
-    return FenceResult{x.final_status, x.stats, view};
+        x.mode == Mode::stripe_pipeline) {
+      result.stripe_rtl_timings = {x.stripe_rtl_timings.data(),
+                                   x.stripe_rtl_timings.size()};
+      result.residual_stripe_stats = {x.residual_stripe_stats.data(),
+                                      x.residual_stripe_stats.size()};
+      result.semantic_stripes = {x.semantic_stripes.data(),
+                                 x.semantic_stripes.size()};
+      result.residual_stripe_timings = {x.residual_stripe_timings.data(),
+                                        x.residual_stripe_timings.size()};
+      result.semantic_completion_count = x.semantic_completion_count;
+      result.rmd_dot_calls = x.rmd_dot_calls;
+      result.rmd_stats = x.rmd_stats;
+    }
+    return result;
   };
   std::thread worker;
   {
@@ -1785,6 +2027,12 @@ FenceResult fence(Run &run) noexcept {
       x.final_status = make_status(StatusCode::execution_failure, x.route,
                                    x.native,
                                    "incomplete IM2P completion timings");
+    if (x.final_status.ok() && x.mode == Mode::stripe_pipeline &&
+        x.options.residual_stage_mode != ResidualStageMode::none &&
+        !x.semantic_coverage_complete())
+      x.final_status = make_status(StatusCode::execution_failure, x.route,
+                                   x.native,
+                                   "incomplete residual stage coverage");
     if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
       x.commit_output();
       x.output_committed = true;
@@ -1916,6 +2164,7 @@ RunTestAccess::Snapshot RunTestAccess::inspect(const Run &run) noexcept {
   view.scale = static_cast<float>(x.scalars.scale);
   view.bert_scale = static_cast<float>(x.scalars.bert_scale);
   view.completion_generation = x.completion_generation;
+  view.semantic_generation = x.semantic_generation;
   view.activation_bits = x.scalars.activation_bits;
   view.activation_raw_size = x.scalars.activation_raw_size;
   view.activation_row_stride_bytes = x.scalars.activation_row_stride_bytes;
@@ -1924,6 +2173,8 @@ RunTestAccess::Snapshot RunTestAccess::inspect(const Run &run) noexcept {
   view.outstanding = x.outstanding;
   view.timing_size = x.stripe_rtl_timings.size();
   view.timing_capacity = x.stripe_rtl_timings.capacity();
+  view.dense_simulator_identity = x.dense_simulator_identity;
+  view.residual_simulator_identity = x.residual_simulator_identity;
   return view;
 }
 
@@ -1952,6 +2203,22 @@ bool RunTestAccess::wait_for_blocked_submit(Run &run, size_t target) noexcept {
   }) && x.blocked_producers >= target;
 }
 
+bool RunTestAccess::try_lock_scheduler(Run &run) noexcept {
+  auto &x = *run.impl_;
+  if (!x.mutex.try_lock())
+    return false;
+  x.mutex.unlock();
+  return true;
+}
+
+bool RunTestAccess::wait_for_held_progress(Run &run) noexcept {
+  auto &x = *run.impl_;
+  std::unique_lock lock(x.mutex);
+  return x.changed.wait_for(lock, std::chrono::seconds(5), [&] {
+    return x.held_progress_waiters != 0 || !x.final_status.ok();
+  }) && x.held_progress_waiters != 0;
+}
+
 void RunTestAccess::hold_progress(Run &run) noexcept {
   auto &x = *run.impl_;
   std::lock_guard lock(x.mutex);
@@ -1972,6 +2239,7 @@ void RunTestAccess::inject_progress_failure(Run &run) noexcept {
   auto &x = *run.impl_;
   std::lock_guard lock(x.mutex);
   x.progress_failure_injected = true;
+  x.progress_held = false;
   x.changed.notify_all();
 }
 
@@ -1979,6 +2247,7 @@ void RunTestAccess::inject_poll_failure(Run &run) noexcept {
   auto &x = *run.impl_;
   std::lock_guard lock(x.mutex);
   x.poll_failure_injected = true;
+  x.progress_held = false;
   x.changed.notify_all();
 }
 

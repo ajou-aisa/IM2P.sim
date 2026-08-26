@@ -4,16 +4,16 @@
 
 `im2p::gemmini`가 공개하는 frontend mode는 정확히 두 개다.
 
-- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event를 수집한다. 성공 뒤 full NPU descriptor를 시작하고 fence 및 matched-width H0/H1/HP1 RMD가 성공한 후 caller output을 한 번 publish한다.
-- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Fence 및 matched-width H0/H1/HP1 RMD가 성공하기 전까지 output은 frontend staging에만 있다.
+- `FULL`: 모든 ExSIA stripe의 quantization/folding이 끝날 때까지 post-fold event와 residual handle을 수집한다. Full dense fence 뒤 caller thread가 소유하는 별도 residual simulator로 H1/HP1 batch를 canonical row 순서로 처리하고, H0는 CPU-direct로 처리한 뒤 caller output을 한 번 publish한다.
+- `PIPELINE`: NPU stream을 먼저 시작한다. Producer가 stripe folding을 commit할 때마다 post-fold event를 즉시 submit하며 quantization 전체 종료 뒤 batch publish하지 않는다. Worker thread 하나가 dense와 residual simulator handle을 각각 소유한다. 각 stripe는 dense raw completion 뒤 residual execute와 checked merge를 거쳐 semantic completion된 다음에만 다음 dense stripe를 시작한다.
 
 두 mode 외 제3 mode나 deferred execution mode는 없다.
 
 `im2p::gemmini`가 호출자에게 제공하는 인터페이스는 다음 세 작업으로 구성된다.
 
 - `execute(args[, mode, options])`는 `Run`을 만들고 아래에 나열한 스칼라 값과 포인터만 선택해 복사한다. `ggml_gemmini_args_t` 전체를 스냅샷하지 않는다. args 객체 자체는 이 호출 동안에만 필요하며, 기반 버퍼는 복사하지 않는다.
-- `submit_stripe(run, event)`는 범위의 순서와 첫 이벤트의 `run_id`를 검증한 뒤 `run_id`, `stripe_id`, `slot`, `row_begin`, `row_end`만 복사한다. 타이밍/프로파일링 필드나 이벤트를 보존하지 않으며, 해당 `rmd_packet` 또는 ExSIA 슬롯의 소유권도 유지하지 않는다. 프런트엔드가 `backpressure`를 반환하면 이벤트가 수락되지 않은 것이다. 호출자는 데이터를 계속 보유하고 있다가 용량이 확보되면 `submit_stripe`를 다시 호출해야 한다.
-- `fence(run)`는 제출을 닫고 확정된 최종 상태와 C ABI가 생성한 `im2p_work_stats_extended_t`를 그대로 반환한다. PIPELINE 성공 시 canonical stripe 순서의 `StripeRtlTimingView`도 반환하며, 각 record는 run/stripe/slot/row 범위와 RTL publish/completion endpoint 및 modulo-2^64 duration을 보존한다. FULL과 실패 결과의 view는 비어 있다. 이 view는 `Run`이 소유하는 immutable borrowed storage이며, 반복 또는 동시 fence는 `Run` 소멸 전까지 같은 pointer와 size를 반환한다. 멱등성을 보장하며 동시에 호출해도 안전하다.
+- `submit_stripe(run, event)`는 범위 순서와 첫 이벤트의 `run_id`를 검증하고 accepted event의 identity, immutable activation metadata, owned `rmd_packet`/direct-residual handle을 semantic completion까지 보존한다. Producer event 객체 자체와 call-borrowed view는 보존하지 않는다. 프런트엔드가 `backpressure`를 반환하면 이벤트와 handle이 수락되지 않은 것이므로 호출자가 그대로 보유한 뒤 다시 제출해야 한다.
+- `fence(run)`는 제출을 닫고 확정된 최종 상태를 반환한다. `stats`와 `StripeRtlTimingView`는 dense raw RTL domain이다. Residual-enabled PIPELINE 성공은 canonical `SemanticStripeView`, `ResidualStripeTimingView`, `rmd_dot_calls`, 별도 `rmd_stats`도 반환한다. RMD duration은 독립 residual simulator clock domain이며 dense endpoint/total과 더하거나 하나의 timeline으로 연결하지 않는다. FULL과 실패 결과의 stripe view는 비어 있다. 성공 view는 `Run` 소유 immutable borrowed storage이며 반복 또는 동시 fence는 `Run` 소멸 전까지 같은 pointer와 size를 반환한다.
 
 이 세 고수준 작업은 worker가 전담하는 원시 저수준 C ABI 시퀀스와 분리되어 있다.
 
@@ -24,10 +24,11 @@
 - 완료된 stripe 백킹 스토리지와 RTL endpoint 수집용 `poll_completed_extended`
 - 스트림 완료 및 통계 수집용 `finish_stream`
 
-Production matched ExSIA route는 A4/Q4, A8/Q8, A16/Q16의
-H0/H1/HP1을 FULL/PIPELINE 모두 같은 typed provider ABI로 실행한다. Q8 H2/HP2와
-unsupported mixed precision은 worker 시작 전에 fail closed하며 다른 route로
-fallback하지 않는다.
+Production matched ExSIA route에서 H1/HP1은 A4/Q4, A8/Q8, A16/Q16의
+width-matched artifact와 typed provider ABI를 사용해 별도 IM2P.sim residual
+handle에서 실행한다. H0는 FULL/PIPELINE 모두 CPU-direct이고 compact simulator
+call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시작 전에 fail
+closed하며 checked software, physical Gemmini, 다른 route로 fallback하지 않는다.
 
 Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_h1`, `q4_hp1`,
 `q16_h0`, `q16_h1`, `q16_hp1`을 수치 실행 경로에서 지원한다. Matched route는
@@ -55,7 +56,7 @@ RTL Accumulator부터 bridge와 Rust provider service까지 output request는 si
 
 K 실행은 `K`와 `block_size_k`로 결정한다.
 
-파이프라인 모드에서는 전용 worker 하나가 모든 원시 simulator 및 stream 호출을 단독으로 소유한다. 호출자 큐는 `Options::queue_capacity`로 제한하며, 용량을 넘으면 프런트엔드 backpressure를 반환한다. 원시 `IM2P_BACKPRESSURE`는 내부에서 처리한다.
+Residual-enabled 파이프라인에서는 전용 worker 하나가 dense stream simulator와 residual simulator의 두 handle을 생성·호출·파기한다. Raw dense in-flight depth는 1이며 accepted/raw-complete/RMD-pending을 포함한 semantic producer capacity는 2다. 순서는 `raw dense completion -> per-stripe residual execute -> checked merge -> semantic completion -> next dense`이고, capacity는 raw completion이 아니라 semantic completion에서 해제된다. 원시 `IM2P_BACKPRESSURE`는 내부에서 처리하며 high-level backpressure는 수락되지 않은 event를 뜻한다. Residual callback이 없는 일반 frontend route의 기존 lookahead 동작은 그대로다.
 
 이때 동일한 밀집 이벤트 메타데이터를 유지하고 RTL logical cycle 하나를 진행한 뒤 완료를 poll하고 재시도한다. RTL logical cycle 하나는 상승 에지 하나를 포함하는 완전한 RTL clock period 하나다. `im2p_progress_stream(stream, 1)`는 동시에 준비된 A/W/S/C 응답을 포함해 scheduler가 어떤 상태이든 정확히 그 주기 하나를 진행한다.
 
@@ -69,7 +70,9 @@ watchdog은 RTL의 완료된 K fragment 카운터가 바뀌거나 matched stripe
 
 Frontend worker 반복 횟수와 native provider wall-clock은 `total_cycles`에 반영하지 않는다. Model은 on-core scale cache와 resident weight-bank state를 기능적으로 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, clock frequency는 포함하지 않는다. Host pointer access는 zero-time이다.
 
-Frontend/Verilator runtime과 RTL counter만으로는 CPU/NPU 공통 시간, 물리적 ns/GHz/Fmax, silicon 성능을 확립할 수 없다. 완료되지 않은 fence는 결정론적으로 실패하며 원시 stream을 finish하지 않고 파기한다.
+Dense와 residual handle은 서로 다른 `VerilatedContext`, RTL state, clock을 소유한다. 두 domain의 cycle duration은 비가산이며 unified RTL timing, shared-core contention/context-switch cost, 또는 physical Gemmini 실행을 뜻하지 않는다. Frontend/Verilator runtime과 RTL counter만으로는 CPU/NPU 공통 시간, 물리적 ns/GHz/Fmax, silicon 성능을 확립할 수 없다.
+
+첫 simulator/provider/compose 오류는 sticky다. 모든 blocked producer와 fence waiter를 깨우고 이후 dense publication을 중단하며 private staging과 실패한 semantic/RMD public view를 폐기한다. Caller output은 보존되고 retry나 checked-software/physical-Gemmini fallback은 없다. 완료되지 않은 fence는 결정론적으로 실패하며 원시 stream을 finish하지 않고 파기한다.
 
 ## 빌드 및 검증
 

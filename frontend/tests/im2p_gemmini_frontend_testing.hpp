@@ -41,10 +41,13 @@ struct RunTestAccess {
     float scale = 1.0f;
     float bert_scale = 1.0f;
     uint64_t completion_generation = 0;
+    uint64_t semantic_generation = 0;
     uint8_t activation_bits = 0;
     size_t activation_raw_size = 0, activation_row_stride_bytes = 0;
     size_t queued = 0, in_flight = 0, outstanding = 0;
     size_t timing_size = 0, timing_capacity = 0;
+    uintptr_t dense_simulator_identity = 0;
+    uintptr_t residual_simulator_identity = 0;
   };
 
   [[nodiscard]] static Snapshot inspect(const Run &) noexcept;
@@ -59,6 +62,8 @@ struct RunTestAccess {
   [[nodiscard]] static bool wait_for_closing(Run &) noexcept;
   [[nodiscard]] static bool wait_for_blocked_submit(Run &,
                                                     size_t target) noexcept;
+  [[nodiscard]] static bool try_lock_scheduler(Run &) noexcept;
+  [[nodiscard]] static bool wait_for_held_progress(Run &) noexcept;
   static void hold_progress(Run &) noexcept;
   static void inject_execution_failure(Run &) noexcept;
   static void inject_progress_failure(Run &) noexcept;
