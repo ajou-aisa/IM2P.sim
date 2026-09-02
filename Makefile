@@ -153,6 +153,7 @@ all: check
 check: static-check cpp-test
 
 cache-contract-test:
+	bash tests/test_frontend_pic_contract.sh
 	$(PYTHON) tests/test_real_lib_cache_contract.py
 	$(PYTHON) tests/test_real_lib_matrix_cache_contract.py
 ifeq ($(ENABLE_GEMMINI_FRONTEND),1)
@@ -246,7 +247,7 @@ GEMMINI_FRONTEND_INCLUDES := \
 	-I$(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/include \
 	-I$(GEMMINI_ROOT)/ggml/include -I$(GEMMINI_ROOT)/ggml/src \
 	-I$(GEMMINI_PARAMS_ROOT)
-GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
+GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -fPIC -Wall -Wextra -Wpedantic -Werror -pthread \
 	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM) \
 	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 	-DGGML_GEMMINI_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
