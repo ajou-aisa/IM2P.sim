@@ -66,6 +66,7 @@ def command_path_operands(output: str):
         for token in tokens:
             if "=" in token:
                 _, token = token.split("=", 1)
+            token = token.strip(";|()")
             if "/" in token:
                 yield token
 
@@ -461,12 +462,14 @@ def main() -> int:
             if dim == 16:
                 real = make_dry_run("gemmini-frontend-real-test", variables=config)
                 real_required = (
-                    f"IM2P_ACTIVATION_BITS={activation_bits}",
-                    f"IM2P_WEIGHT_BITS={weight_bits}",
-                    f"IM2P_DIM={dim}",
+                    f"-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS={activation_bits}",
+                    f"-DGGML_GEMMINI_ACTIVATION_BITS={activation_bits}",
+                    f"-DGGML_GEMMINI_WEIGHT_BITS={weight_bits}",
                 )
                 real_paths = (
-                    cargo_dir(identity),
+                    artifact(
+                        "selected", identity, "current", "libim2p_sim.a"
+                    ),
                     artifact("results", identity),
                 )
                 if real.returncode != 0:
@@ -481,6 +484,11 @@ def main() -> int:
                     if missing:
                         failures.append(
                             f"frontend real {identity} is missing {missing}"
+                        )
+                    if "cargo build" in real.stdout:
+                        failures.append(
+                            f"frontend real {identity} must consume the verified "
+                            "cached simulator archive without rebuilding Cargo"
                         )
 
             sim_target = f"sim-test-a{activation_bits}-w{weight_bits}-d{dim}"

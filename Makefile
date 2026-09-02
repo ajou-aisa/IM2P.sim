@@ -10,6 +10,8 @@ CXX       ?= g++
 AR        ?= ar
 PYTHON    ?= python3
 VERILATOR ?= verilator
+RUSTC     ?= rustc
+CARGO     ?= cargo
 YOSYS     ?= yosys
 
 IM2P_ACTIVATION_BITS ?= 8
@@ -129,7 +131,9 @@ VERILATOR_COMMON := --cc --Wno-fatal
 .PHONY: all check verify static-check cpp-test c-api-layout-test c-api-test gemmini-frontend \
         gemmini-frontend-test gemmini-frontend-test-sanitized \
         gemmini-frontend-asan-test gemmini-frontend-tsan-test \
-        gemmini-frontend-real-lib \
+        gemmini-frontend-real-lib gemmini-frontend-real-lib-all \
+        cache-contract-test \
+        _gemmini-frontend-real-lib-build \
         gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
         gemmini-frontend-real-test-q4-hp1 gemmini-frontend-real-test-q8-hp1 \
         gemmini-frontend-real-test-q16-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
@@ -147,6 +151,10 @@ VERILATOR_COMMON := --cc --Wno-fatal
 all: check
 
 check: static-check cpp-test
+
+cache-contract-test:
+	$(PYTHON) tests/test_real_lib_cache_contract.py
+	$(PYTHON) tests/test_real_lib_matrix_cache_contract.py
 ifeq ($(ENABLE_GEMMINI_FRONTEND),1)
 check: gemmini-frontend-test
 endif
@@ -171,6 +179,7 @@ help:
 	  'make gemmini-frontend-test-sanitized - public ASan+UBSan lifecycle suite' \
 	  'make gemmini-frontend-asan-test - isolated ASan+UBSan frontend suite' \
 	  'make gemmini-frontend-tsan-test - isolated TSan frontend suite' \
+	  'make gemmini-frontend-real-lib-all - cache all nine production matched libraries' \
 	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle (A8 uses q8_h1)' \
 	  'make gemmini-frontend-real-test-q8-h0 - maintained raw Q8 full/stripe RTL oracle' \
 	  'make gemmini-frontend-real-test-q4-hp1 - real Q4 HP1 dual-context active/empty oracle' \
@@ -254,7 +263,8 @@ GEMMINI_FRONTEND_ASAN_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmin
 GEMMINI_FRONTEND_TSAN_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_tsan_test
 GEMMINI_FRONTEND_REAL_TEST = $(BUILD_DIR)/bin/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_real_test
 GEMMINI_REAL_LIB_FINGERPRINT = $(BUILD_DIR)/fingerprints/$(GEMMINI_ARTIFACT_ID)/real-lib.sha256
-GEMMINI_REAL_LIB_SIM_ARCHIVE = $(GEMMINI_CARGO_TARGET_DIR)/release/libim2p_sim.a
+GEMMINI_REAL_LIB_SELECTED_DIR = $(BUILD_DIR)/selected/$(GEMMINI_ARTIFACT_ID)/current
+GEMMINI_REAL_LIB_SIM_ARCHIVE = $(GEMMINI_REAL_LIB_SELECTED_DIR)/libim2p_sim.a
 GEMMINI_REAL_LIB_VERILATOR_HEADER = $(BUILD_DIR)/verilator/$(GEMMINI_ARTIFACT_ID)/obj_dir/VmkSynthA$(GEMMINI_FRONTEND_ACTIVATION_BITS)W$(GEMMINI_FRONTEND_WEIGHT_BITS)D$(GEMMINI_FRONTEND_DIM).h
 GEMMINI_FRONTEND_ASAN_FLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 GEMMINI_FRONTEND_TSAN_FLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer
@@ -299,50 +309,38 @@ $(GEMMINI_FRONTEND_TEST_ARCHIVE): $(GEMMINI_FRONTEND_TEST_OBJECT) | $(BUILD_DIR)
 
 gemmini-frontend: $(GEMMINI_FRONTEND_ARCHIVE) $(GEMMINI_FRONTEND_TEST_ARCHIVE)
 
-# Reuse a complete selected artifact only when its source/config fingerprint
-# and all three outputs agree. The stamp is written only after a full rebuild.
+# The cache driver owns identity locking, hash verification, staging, and
+# atomic publication. Keeping this recipe free of recursive-make syntax also
+# guarantees that make -n cannot execute it.
 gemmini-frontend-real-lib:
-	@set -euo pipefail; \
-	fingerprint_file='$(GEMMINI_REAL_LIB_FINGERPRINT)'; \
-	frontend_archive='$(GEMMINI_FRONTEND_ARCHIVE)'; \
-	simulator_archive='$(GEMMINI_REAL_LIB_SIM_ARCHIVE)'; \
-	verilator_header='$(GEMMINI_REAL_LIB_VERILATOR_HEADER)'; \
-	fingerprint="$$($(PYTHON) scripts/real_matrix_fingerprint.py \
+	$(PYTHON) scripts/real_lib_cache.py ensure \
 	  --bits '$(GEMMINI_FRONTEND_ACTIVATION_BITS)' \
 	  --weight-bits '$(GEMMINI_FRONTEND_WEIGHT_BITS)' \
 	  --dim '$(GEMMINI_FRONTEND_DIM)' \
-	  --gemmini-root '$(GEMMINI_ROOT)' \
-	  --params-root '$(GEMMINI_PARAMS_ROOT)' \
-	  --config 'CXX=$(CXX)' --config 'BSC=$(BSC)' \
-	  --config 'VERILATOR=$(VERILATOR)' --config 'BSC_VERILOG=$(BSC_VERILOG)')"; \
-	cached="$$(cat "$$fingerprint_file" 2>/dev/null || true)"; \
-	if test -f "$$frontend_archive" && test -f "$$simulator_archive" && \
-	   test -f "$$verilator_header" && test "$$cached" = "$$fingerprint"; then \
-	  printf 'IM2P_REAL_LIB_CACHE id=%s state=hit fingerprint=%s\n' \
-	    '$(GEMMINI_ARTIFACT_ID)' "$$fingerprint"; \
-	else \
-	  reason=fingerprint; \
-	  if test ! -f "$$fingerprint_file" || test ! -f "$$frontend_archive" || \
-	     test ! -f "$$simulator_archive" || test ! -f "$$verilator_header"; then \
-	    reason=missing; \
-	  fi; \
-	  printf 'IM2P_REAL_LIB_CACHE id=%s state=rebuild reason=%s fingerprint=%s\n' \
-	    '$(GEMMINI_ARTIFACT_ID)' "$$reason" "$$fingerprint"; \
-	  rm -f "$$fingerprint_file"; \
-	  $(MAKE) --no-print-directory -B \
-	    '$(GEMMINI_VERILATOR_TARGET)' '$(GEMMINI_FRONTEND_ARCHIVE)'; \
-	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR='$(abspath $(BUILD_DIR))' \
-	    IM2P_ACTIVATION_BITS='$(GEMMINI_FRONTEND_ACTIVATION_BITS)' \
-	    IM2P_WEIGHT_BITS='$(GEMMINI_FRONTEND_WEIGHT_BITS)' \
-	    IM2P_DIM='$(GEMMINI_FRONTEND_DIM)' \
-	    CARGO_TARGET_DIR='$(GEMMINI_CARGO_TARGET_DIR)' cargo build \
-	    --manifest-path sim/Cargo.toml --lib --release; \
-	  test -f "$$frontend_archive" && test -f "$$simulator_archive" && \
-	    test -f "$$verilator_header"; \
-	  mkdir -p "$$(dirname "$$fingerprint_file")"; \
-	  printf '%s\n' "$$fingerprint" > "$$fingerprint_file.tmp"; \
-	  mv "$$fingerprint_file.tmp" "$$fingerprint_file"; \
-	fi
+	  --block-size '$(GEMMINI_FRONTEND_BLOCK_SIZE)' \
+	  --build-dir '$(BUILD_DIR)' --gemmini-root '$(GEMMINI_ROOT)' \
+	  --params-root '$(GEMMINI_PARAMS_ROOT)' --cxx '$(CXX)' --ar '$(AR)' \
+	  --bsc '$(BSC)' --bsc-verilog '$(BSC_VERILOG)' \
+	  --bsc-extra-flags '$(BSC_EXTRA_FLAGS)' \
+	  --verilator '$(VERILATOR)' --rustc '$(RUSTC)' --cargo '$(CARGO)'
+
+_gemmini-frontend-real-lib-build: $(GEMMINI_VERILATOR_TARGET) $(GEMMINI_FRONTEND_ARCHIVE)
+	IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR='$(abspath $(BUILD_DIR))' \
+	  IM2P_ACTIVATION_BITS='$(GEMMINI_FRONTEND_ACTIVATION_BITS)' \
+	  IM2P_WEIGHT_BITS='$(GEMMINI_FRONTEND_WEIGHT_BITS)' \
+	  IM2P_DIM='$(GEMMINI_FRONTEND_DIM)' \
+	  CARGO_TARGET_DIR='$(GEMMINI_CARGO_TARGET_DIR)' $(CARGO) build --locked \
+	  --manifest-path sim/Cargo.toml --lib --release
+
+IM2P_CACHE_JOBS ?= 1
+gemmini-frontend-real-lib-all:
+	$(PYTHON) scripts/real_lib_matrix.py --build-dir '$(BUILD_DIR)' \
+	  --block-size '$(GEMMINI_FRONTEND_BLOCK_SIZE)' --jobs '$(IM2P_CACHE_JOBS)' \
+	  --gemmini-root '$(GEMMINI_ROOT)' --params-root '$(GEMMINI_PARAMS_ROOT)' \
+	  --cxx '$(CXX)' --ar '$(AR)' --bsc '$(BSC)' \
+	  --bsc-verilog '$(BSC_VERILOG)' --bsc-extra-flags '$(BSC_EXTRA_FLAGS)' \
+	  --verilator '$(VERILATOR)' \
+	  --rustc '$(RUSTC)' --cargo '$(CARGO)'
 
 # The public declaration surface compiles without any llama include directory.
 gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
@@ -358,9 +356,7 @@ gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 	  $(GEMMINI_FRONTEND_TEST) '$(FRONTEND_TEST_CASE)'; \
 	else \
 	  $(GEMMINI_FRONTEND_TEST); \
-	  if test '$(GEMMINI_FRONTEND_WEIGHT_BITS)' = 8; then \
-	    $(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract; \
-	  fi; \
+	  $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),$(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract,:); \
 	fi
 
 # Sanitizer binaries compile the production frontend and its fake-ABI tests
@@ -402,14 +398,9 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
 
 gemmini-frontend-real-test: gemmini-frontend-real-lib $(GEMMINI_FRONTEND_TEST_ARCHIVE) | $(BUILD_DIR)/bin
-	IM2P_REPO_ROOT=$(ROOT_DIR) IM2P_BUILD_DIR=$(abspath $(BUILD_DIR)) \
-		IM2P_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
-		IM2P_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
-		IM2P_DIM=$(GEMMINI_FRONTEND_DIM) CARGO_TARGET_DIR=$(GEMMINI_CARGO_TARGET_DIR) cargo build \
-		--manifest-path sim/Cargo.toml --lib --release
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend_real.cpp \
-		$(GEMMINI_FRONTEND_TEST_ARCHIVE) $(GEMMINI_CARGO_TARGET_DIR)/release/libim2p_sim.a \
+		$(GEMMINI_FRONTEND_TEST_ARCHIVE) $(GEMMINI_REAL_LIB_SIM_ARCHIVE) \
 		-o $(GEMMINI_FRONTEND_REAL_TEST)
 	@mkdir -p $(GEMMINI_RESULTS_DIR)
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) 2>&1 | \
@@ -550,24 +541,25 @@ gemmini-frontend-real-test-mismatch:
 	@set -euo pipefail; \
 	a16='$(REAL_MATRIX_ROOT)/a16-w16-d32'; \
 	a8='$(REAL_MATRIX_ROOT)/a8-w8-d32'; \
+	a8_sim="$$a8/selected/a8-w8-d32/current/libim2p_sim.a"; \
 	if test ! -f "$$a16/lib/a16-w16-d32/libim2p_gemmini_frontend_testing.a"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a16" \
 	    IM2P_ACTIVATION_BITS=16 IM2P_WEIGHT_BITS=16 IM2P_DIM=32 \
 	    GEMMINI_FRONTEND_ACTIVATION_BITS=16 GEMMINI_FRONTEND_WEIGHT_BITS=16 \
 	    GEMMINI_FRONTEND_DIM=32 gemmini-frontend; \
 	fi; \
-	if test ! -f "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a"; then \
+	if test ! -f "$$a8_sim"; then \
 	  $(MAKE) --no-print-directory BUILD_DIR="$$a8" \
-	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 verilator-a8-w8-d32; \
-	  IM2P_REPO_ROOT='$(ROOT_DIR)' IM2P_BUILD_DIR="$$a8" \
 	    IM2P_ACTIVATION_BITS=8 IM2P_WEIGHT_BITS=8 IM2P_DIM=32 \
-	    CARGO_TARGET_DIR="$$a8/cargo/a8-w8-d32" cargo build \
-	    --manifest-path sim/Cargo.toml --lib --release; \
+	    GEMMINI_FRONTEND_ACTIVATION_BITS=8 \
+	    GEMMINI_FRONTEND_WEIGHT_BITS=8 GEMMINI_FRONTEND_DIM=32 \
+	    gemmini-frontend-real-lib; \
 	fi; \
 	mkdir -p '$(REAL_MISMATCH_ROOT)/bin' '$(REAL_MISMATCH_ROOT)/results'; \
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread \
 	  -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=32 \
 	  -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=16 \
+	  -DGGML_GEMMINI_ACTIVATION_BITS=16 \
 	  -DGGML_GEMMINI_WEIGHT_BITS=16 \
 	  -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 	  -Ifrontend/include -Isim/include -I"$$a16/generated/a16-w16-d32" \
@@ -576,7 +568,7 @@ gemmini-frontend-real-test-mismatch:
 	  -I'$(GEMMINI_ROOT)/ggml/include' -I'$(GEMMINI_ROOT)/ggml/src' \
 	  -I'$(GEMMINI_PARAMS_ROOT)' frontend/tests/test_frontend_real.cpp \
 	  "$$a16/lib/a16-w16-d32/libim2p_gemmini_frontend_testing.a" \
-	  "$$a8/cargo/a8-w8-d32/release/libim2p_sim.a" \
+	  "$$a8_sim" \
 	  -o '$(REAL_MISMATCH_ROOT)/bin/frontend-a16-simulator-a8'; \
 	set -o pipefail; \
 	'$(REAL_MISMATCH_ROOT)/bin/frontend-a16-simulator-a8' \

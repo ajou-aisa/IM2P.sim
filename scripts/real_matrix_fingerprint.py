@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument("--bits", type=int, choices=(4, 8, 16), required=True)
     parser.add_argument("--weight-bits", type=int, choices=(4, 8, 16), required=True)
     parser.add_argument("--dim", type=int, choices=(16, 32, 64), required=True)
+    parser.add_argument("--block-size", type=int, default=32)
     parser.add_argument("--gemmini-root", type=Path, required=True)
     parser.add_argument("--params-root", type=Path, required=True)
     parser.add_argument("--extra-input", type=Path)
@@ -44,6 +45,7 @@ def main() -> int:
     required = (
         ROOT / "Makefile",
         ROOT / "sim/Cargo.toml",
+        ROOT / "sim/Cargo.lock",
         ROOT / "sim/build.rs",
         selected_top,
         params_root.parent / "gemmini_params.h",
@@ -60,6 +62,8 @@ def main() -> int:
         (
             "Makefile",
             "scripts/real_matrix_fingerprint.py",
+            "scripts/real_lib_*.py",
+            ".cargo/config*",
             "frontend/include/*.hpp",
             "frontend/src/*.cpp",
             "frontend/tests/*.cpp",
@@ -92,8 +96,9 @@ def main() -> int:
     digest = hashlib.sha256()
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     for value in (
-        "real-matrix-fingerprint-v1",
+        "real-matrix-fingerprint-v2",
         f"identity={identity}",
+        f"block_size={args.block_size}",
         f"top=mk{selected_stem}",
         f"activation_bits={args.bits}",
         f"activation_storage_bytes={(args.bits + 7) // 8}",

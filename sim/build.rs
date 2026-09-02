@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn verilator_root() -> PathBuf {
-    let output = Command::new("verilator")
+    let executable =
+        env::var("IM2P_VERILATOR_EXECUTABLE").unwrap_or_else(|_| "verilator".to_string());
+    let output = Command::new(executable)
         .arg("-V")
         .output()
         .expect("verilator must be installed");
@@ -61,6 +63,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=IM2P_DIM");
     println!("cargo:rerun-if-env-changed=IM2P_REPO_ROOT");
     println!("cargo:rerun-if-env-changed=IM2P_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=IM2P_VERILATOR_EXECUTABLE");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.cpp");
     println!("cargo:rerun-if-changed=ffi/im2p_verilator.h");
     println!("cargo:rerun-if-changed=ffi/testing/im2p_verilator_testing.h");

@@ -285,6 +285,40 @@ Frontend artifact identity는 `a<activation>-w<weight>-d<dim>`이다. Block
 size는 DIM과 독립이며 기본값은 32다. 필요한 경우
 `GEMMINI_FRONTEND_BLOCK_SIZE`로 별도 선택한다.
 
+`make gemmini-frontend-real-lib-all`은 A4/W4, A8/W8, A16/W16과
+DIM16/32/64의 정확한 아홉 production library cache를 생성한다.
+`IM2P_CACHE_JOBS`(기본 1)가 matrix 동시성을 제한하며 각 child build는
+직렬 실행된다. Cache key는 block/platform, CXX/AR/BSC/Verilator/Rust/Cargo
+toolchain, BSC primitive와 Verilator runtime source, build flag, repository
+source hash를 포함한다.
+
+선택된 pair는
+`build/selected/<id>/generations/<fingerprint>.<generation>/`에 immutable
+generation으로 복원되고, `build/selected/<id>/current` symlink 하나만
+atomic하게 교체한다. CMake는 이 pointer를 한 번 realpath로 고정한 뒤
+같은 generation의 manifest와 두 archive를 사용한다. All-nine summary는
+`build/manifests/real-lib-all.json`이다. 다음 명령은 selected manifest의
+정확한 두 regular archive와 content hash를 다시 검증한다.
+
+```bash
+python3 scripts/real_lib_cache.py verify \
+  --manifest build/selected/a8-w8-d16/current/real-lib.json \
+  --expected-identity a8-w8-d16 --expected-block-size 32 \
+  --artifact-kind selected
+```
+
+Manifest hash는 accidental corruption을 검출하지만 provenance 서명은
+아니다. Remote/GitHub cache를 restore할 때는 workflow permission,
+artifact attestation 또는 별도 서명으로 cache 출처를 인증해야 한다.
+인증되지 않은 제3자 archive를 configure/link하지 않는다.
+
+RTL build 없이 cache cold/hit, tamper, interruption, concurrency,
+all-nine scheduling 계약만 재검증하려면 다음 target을 사용한다.
+
+```bash
+make cache-contract-test
+```
+
 - `FULL`: ExSIA가 모든 stripe의 quantization/folding을 완료하면서 residual handle과 immutable activation metadata를 collector에 보존한다. Full dense fence가 성공한 뒤 caller thread가 별도 residual simulator handle 하나를 생성해 H1/HP1 packet을 canonical row 순서로 처리한다. H0는 CPU-direct로 처리하며 compact simulator call은 0이다. 모든 residual merge가 성공한 뒤 caller output을 한 번만 commit한다.
 - `PIPELINE`: 전용 worker 하나가 dense stream handle과 별도 residual handle을 생성·사용·파기하며 두 handle 모두 worker thread-affine이다. Residual-enabled run은 `dense raw completion -> 해당 stripe residual execute -> checked merge -> semantic completion -> 다음 dense publish` 순서를 직렬화한다. Raw dense in-flight depth는 1이고 producer semantic capacity는 2다. Residual handle과 metadata는 semantic completion까지 유지되며 post-fence RMD batch는 없다.
 

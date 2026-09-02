@@ -7,4 +7,5 @@ __pycache__/
 *.pyc
 build/verilator/
 sim/target/
-sim/Cargo.lock
+# Library lockfile is a cache-identity input and must remain versioned.
+!sim/Cargo.lock
