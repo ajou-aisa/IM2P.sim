@@ -121,9 +121,14 @@ function MatrixExtent nextKFragmentCount(
         ? remainingK
         : arrayDimension;
 
+    // Keep the divisor nonzero even if an unused expression is evaluated.
+    // Scaled work must still satisfy the existing blockSize > 0 contract.
+    MatrixExtent safeBlockSize = (blockSize == 0) ? 1 : blockSize;
+    MatrixExtent blockOffset = kStart % safeBlockSize;
+
     if (usesScale) begin
         MatrixExtent remainingInBlock =
-            blockSize - (kStart % blockSize);
+            blockSize - blockOffset;
         fragmentCount = fragmentCount < remainingInBlock
             ? fragmentCount
             : remainingInBlock;
