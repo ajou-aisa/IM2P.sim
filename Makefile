@@ -683,6 +683,7 @@ sim-test-a$(1)-w$(1)-d$(2): verilator-a$(1)-w$(1)-d$(2)
 	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)"
 	@set -o pipefail; \
 	  IM2P_REPO_ROOT="$$(ROOT_DIR)" IM2P_BUILD_DIR="$$(abspath $$(BUILD_DIR))" \
+	  IM2P_VERILATOR_EXECUTABLE="$$(VERILATOR)" \
 	  IM2P_ACTIVATION_BITS=$(1) IM2P_WEIGHT_BITS=$(1) IM2P_DIM=$(2) \
 	  CARGO_TARGET_DIR="$$(abspath $$(BUILD_DIR)/cargo/a$(1)-w$(1)-d$(2))" \
 	  cargo test --manifest-path sim/Cargo.toml --tests --features test-hooks \

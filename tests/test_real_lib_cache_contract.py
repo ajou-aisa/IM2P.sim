@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,12 @@ def cache_args(temp: Path, fixture: Path, builder: Path) -> list[str]:
         (verilator_include / name).write_text(f"// {name}\n", encoding="utf-8")
     fake_tool.write_text(
         "#!/bin/sh\n"
-        f"test \"${{1:-}}\" = -V && echo 'VERILATOR_ROOT = {temp / 'verilator-root'}' "
-        "|| echo fake-tool-v1\n",
+        "if test \"${1:-}\" = -V; then\n"
+        f"  echo 'VERILATOR_ROOT = {temp / 'missing-verilator-root'}'\n"
+        f"  echo 'VERILATOR_ROOT = {temp / 'verilator-root'}'\n"
+        "else\n"
+        "  echo fake-tool-v1\n"
+        "fi\n",
         encoding="utf-8",
     )
     fake_tool.chmod(0o755)
@@ -56,6 +61,11 @@ def cache_args(temp: Path, fixture: Path, builder: Path) -> list[str]:
 
 def main() -> int:
     assert CACHE.is_file(), "production cache driver is missing"
+    build_script = (ROOT / "sim/build.rs").read_text(encoding="utf-8")
+    build_script = re.sub(r"//[^\n]*|/\*.*?\*/", "", build_script, flags=re.DOTALL)
+    assert not re.search(r"\.\s*cpp_(?:link|set)_stdlib\s*\(", build_script), (
+        "sim/build.rs must let cc-rs select the target C++ standard library"
+    )
     with tempfile.TemporaryDirectory(prefix="im2p-real-lib-cache-") as raw:
         temp = Path(raw)
         fixture = temp / "source-input"
@@ -83,6 +93,13 @@ obj.mkdir(parents=True)
         )
         builder.chmod(0o755)
         env = os.environ.copy()
+        stdlib_variables = (
+            "CXXSTDLIB", "HOST_CXXSTDLIB", "TARGET_CXXSTDLIB",
+            "CXXSTDLIB_x86_64-unknown-linux-gnu",
+            "CXXSTDLIB_x86_64_unknown_linux_gnu",
+        )
+        for name in stdlib_variables:
+            env.pop(name, None)
         env["IM2P_TEST_BUILD_COUNT"] = str(count)
         args = cache_args(temp, fixture, builder)
 
@@ -248,6 +265,24 @@ obj.mkdir(parents=True)
         assert primitive_rebuilt.returncode == 0 and "state=rebuild" in primitive_rebuilt.stdout
         assert count.read_text() == prior_builds + "xx"
         assert json.loads(manifest_path.read_text())["fingerprint"] != current_manifest["fingerprint"]
+
+        for name, value in (
+            *((name, "stdc++") for name in stdlib_variables),
+            ("CXXSTDLIB", "c++"),
+            ("CXXSTDLIB", ""),
+        ):
+            stdlib_env = cargo_env.copy()
+            stdlib_env[name] = value
+            prior_builds = count.read_text()
+            stdlib_changed = run(*args, env=stdlib_env)
+            assert stdlib_changed.returncode == 0, stdlib_changed.stdout
+            assert "state=rebuild" in stdlib_changed.stdout, stdlib_changed.stdout
+            assert count.read_text() == prior_builds + "x"
+            stdlib_manifest = json.loads(manifest_path.read_text())
+            assert stdlib_manifest["build_config"][f"env.{name}"] == value
+            stdlib_hit = run(*args, env=stdlib_env)
+            assert stdlib_hit.returncode == 0 and "state=hit" in stdlib_hit.stdout
+            assert count.read_text() == prior_builds + "x"
 
         poison = temp / "poison"
         escape = temp / "escape"

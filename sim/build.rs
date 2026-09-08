@@ -6,20 +6,44 @@ use std::process::Command;
 fn verilator_root() -> PathBuf {
     let executable =
         env::var("IM2P_VERILATOR_EXECUTABLE").unwrap_or_else(|_| "verilator".to_string());
-    let output = Command::new(executable)
+
+    let output = Command::new(&executable)
         .arg("-V")
         .output()
         .expect("verilator must be installed");
-    let text = String::from_utf8(output.stdout).expect("verilator -V output must be UTF-8");
-    text.lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once('=')?;
-            (key.trim() == "VERILATOR_ROOT").then(|| value.trim())
-        })
-        .map(PathBuf::from)
-        .expect("VERILATOR_ROOT missing from verilator -V")
-}
 
+    assert!(
+        output.status.success(),
+        "verilator -V failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = String::from_utf8(output.stdout).expect("verilator -V output must be UTF-8");
+
+    const RUNTIME_FILES: [&str; 4] = [
+        "verilated.cpp",
+        "verilated_threads.cpp",
+        "verilated.h",
+        "verilated_threads.h",
+    ];
+
+    text.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "VERILATOR_ROOT").then(|| PathBuf::from(value.trim()))
+        })
+        .find(|root| {
+            RUNTIME_FILES
+                .iter()
+                .all(|name| root.join("include").join(name).is_file())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no usable VERILATOR_ROOT found in `{} -V` output:\n{}",
+                executable, text
+            )
+        })
+}
 fn main() {
     let activation_bits = env::var("IM2P_ACTIVATION_BITS").unwrap_or_else(|_| "8".to_string());
     assert!(
@@ -105,7 +129,6 @@ fn main() {
         .define("IM2P_WEIGHT_BITS", Some(weight_bits.as_str()))
         .define("IM2P_DIM", Some(dim.as_str()))
         .warnings(false)
-        .cpp_link_stdlib("c++")
         .file("ffi/im2p_verilator.cpp");
     if env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() {
         build.define("IM2P_VERILATOR_TEST_HOOKS", None);

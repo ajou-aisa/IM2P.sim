@@ -73,30 +73,53 @@ def verilator_runtime_inputs(command: str) -> tuple[Path, ...]:
     executable = shutil.which(words[0]) if words else None
     if executable is None:
         raise CacheError("Verilator executable is unavailable")
+
     result = subprocess.run(
         [str(Path(executable).resolve()), *words[1:], "-V"],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
     )
+    if result.returncode != 0:
+        raise CacheError("verilator -V failed")
+
+    runtime_names = (
+        "verilated.cpp",
+        "verilated_threads.cpp",
+        "verilated.h",
+        "verilated_threads.h",
+    )
+
+    roots = [
+        Path(value.strip())
+        for line in result.stdout.splitlines()
+        if "=" in line
+        for key, value in (line.split("=", 1),)
+        if key.strip() == "VERILATOR_ROOT"
+    ]
+
     root = next(
         (
-            Path(value.strip())
-            for line in result.stdout.splitlines()
-            if "=" in line
-            for key, value in (line.split("=", 1),)
-            if key.strip() == "VERILATOR_ROOT"
+            candidate
+            for candidate in roots
+            if all(
+                (candidate / "include" / name).is_file()
+                for name in runtime_names
+            )
         ),
         None,
     )
+
     if root is None:
-        raise CacheError("VERILATOR_ROOT missing from verilator -V")
+        raise CacheError(
+            "no usable VERILATOR_ROOT found in verilator -V output"
+        )
+
     return tuple(
         root / "include" / name
-        for name in (
-            "verilated.cpp", "verilated_threads.cpp",
-            "verilated.h", "verilated_threads.h",
-        )
+        for name in runtime_names
     )
-
 
 def collect_toolchain(
     args: argparse.Namespace,
@@ -141,8 +164,8 @@ def collect_toolchain(
         config[f"env.{name}"] = os.environ.get(name, "")
     for name, value in os.environ.items():
         if name.startswith(
-            ("CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_")
-        ):
+            ("CARGO_BUILD_", "CARGO_PROFILE_", "CARGO_TARGET_", "CXXSTDLIB_")
+        ) or name in ("CXXSTDLIB", "HOST_CXXSTDLIB", "TARGET_CXXSTDLIB"):
             config[f"env.{name}"] = value
     config["cargo_home"] = str(cargo_home.resolve())
     return tools, config
