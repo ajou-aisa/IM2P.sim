@@ -8,6 +8,8 @@ use crate::{
     ActivationValue, MatmulLayout, MatmulWork, MatrixView, MatrixViewMut, WeightValue, WorkStats,
 };
 mod memory;
+#[cfg(test)]
+mod profile_tests;
 mod stats;
 use memory::{resolve_activation, resolve_scale, resolve_weight, validate_work, write_raw_output};
 

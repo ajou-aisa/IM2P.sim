@@ -22,6 +22,7 @@ pub(super) fn status_for_error(error: crate::SimError) -> i32 {
         | InvalidKRange
         | UnsupportedBlockConfiguration { .. }
         | InvalidAccumulatorRow { .. }
+        | InvalidAccumulatorValue { .. }
         | InvalidTileShape
         | InvalidStripe
         | InvalidActivationStride

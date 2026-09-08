@@ -14,6 +14,7 @@ typedef enum {
     TbInitAccumulator,
     TbStart,
     TbFeed,
+    TbRead,
     TbCheck
 } TbState deriving (Bits, Eq, FShow);
 
@@ -68,11 +69,17 @@ module mkTbFloatCore(Empty);
 
     rule feedActivation (state == TbFeed && core.activationReady);
         core.putActivationRow(replicate(fromInteger(2)));
+        state <= TbRead;
+    endrule
+
+    rule requestResult (state == TbRead && core.executionDone);
+        core.requestReadAccumulatorRow(0);
         state <= TbCheck;
     endrule
 
-    rule checkResult (state == TbCheck && core.executionDone);
-        Vector#(1, Half) row0 = core.readAccumulatorRow(0);
+    rule checkResult (state == TbCheck);
+        Vector#(1, Half) row0 = core.readAccumulatorRowResponse;
+        core.consumeAccumulatorReadResponse;
         Bool passed = row0[0] == fromInteger(10);
 
         if (!passed) begin

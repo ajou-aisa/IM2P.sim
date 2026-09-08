@@ -82,6 +82,10 @@ CPP_TOOL := $(BUILD_DIR)/bin/im2p_reference
 CPP_SRC  := tools/im2p_reference.cpp
 
 BSV_TEST_TOPS := \
+	mkTbProfileConfig \
+	mkTbBlockPosition \
+	mkTbWorkSchedulerProgress \
+	mkTbCoreBramBoundary \
 	mkTbArithmetic \
 	mkTbPE \
 	mkTbWorkScheduler \
@@ -126,7 +130,7 @@ SYNTH_TOPS := \
 BSC_PREFIX := $(shell dirname $$(dirname $$(realpath $$(command -v $(BSC)))))
 BSC_VERILOG ?= $(firstword $(wildcard $(BSC_PREFIX)/libexec/lib/Verilog \
                                       $(BSC_PREFIX)/lib/Verilog))
-VERILATOR_COMMON := --cc --Wno-fatal
+VERILATOR_COMMON := --cc --assert --Wno-fatal
 
 .PHONY: all check verify static-check cpp-test c-api-layout-test c-api-test gemmini-frontend \
         gemmini-frontend-test gemmini-frontend-test-sanitized \
@@ -150,11 +154,42 @@ VERILATOR_COMMON := --cc --Wno-fatal
 
 all: check
 
-check: static-check cpp-test
+check: profile-config-check static-check cpp-test numerical-reference-test
+
+.PHONY: profile-config-check numerical-reference-test fpga-rtl fpga-area \
+        fpga-timing fpga-route fpga-fifo-rtl fpga-flow-test scheduler-rtl
+
+profile-config-check:
+	$(PYTHON) scripts/im2p_config.py --check
+	$(PYTHON) tests/test_profile_config.py
+
+numerical-reference-test:
+	$(PYTHON) scripts/numerical_reference.py --self-test
+	$(PYTHON) tests/test_numerical_reference.py
+	$(PYTHON) tests/test_host_reconstruction.py
+
+fpga-rtl fpga-area fpga-timing fpga-route:
+	BSC="$(BSC)" VERILATOR="$(VERILATOR)" scripts/fpga_build.sh \
+	  --mode $(patsubst fpga-%,%,$@) --bits $(IM2P_ACTIVATION_BITS) --dim $(IM2P_DIM)
+
+fpga-fifo-rtl:
+	$(MAKE) rtl-one TOP=mkSynthActivationFIFO
+
+fpga-flow-test:
+	bash tests/test_fpga_flow.sh
+
+scheduler-rtl: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
+	@set -euo pipefail; \
+	for top in mkWorkSchedulerDiagnostic mkMatmulSchedulerDiagnostic; do \
+	  out="$(BUILD_DIR)/rtl/$$top"; mkdir -p "$$out"; \
+	  $(BSC) -u -verilog $(BSC_COMMON) -vdir "$$out" -g "$$top" \
+	    synth/SynthSchedulerDiagnostics.bsv; \
+	done
 
 cache-contract-test:
 	$(PYTHON) tests/test_real_lib_cache_contract.py
 	$(PYTHON) tests/test_real_lib_matrix_cache_contract.py
+	$(PYTHON) tests/test_real_lib_semantic_identity.py
 ifeq ($(ENABLE_GEMMINI_FRONTEND),1)
 check: gemmini-frontend-test
 endif
@@ -641,7 +676,7 @@ verilator-a$(1)-w$(1)-d$(2):
 	  --Mdir "$$(BUILD_DIR)/verilator/a$(1)-w$(1)-d$(2)/obj_dir" \
 	  --top-module mkSynthA$(1)W$(1)D$(2) --prefix VmkSynthA$(1)W$(1)D$(2) \
 	  "$$(BUILD_DIR)/rtl/a$(1)-w$(1)-d$(2)/SynthA$(1)W$(1)D$(2)"/*.v \
-	  "$$(BSC_VERILOG)/RegFile.v" "$$(BSC_VERILOG)/FIFO2.v"
+	  "$$(BSC_VERILOG)/RegFile.v" "$$(BSC_VERILOG)/FIFO2.v" "$$(BSC_VERILOG)/BRAM1.v"
 
 sim-test-a$(1)-w$(1)-d$(2): verilator-a$(1)-w$(1)-d$(2)
 	@mkdir -p "$$(BUILD_DIR)/results/a$(1)-w$(1)-d$(2)"

@@ -204,6 +204,10 @@ uint32_t im2p_max_concurrent_responses(im2p_handle_t handle);
 uint32_t im2p_compiled_activation_bits(void);
 uint32_t im2p_compiled_weight_bits(void);
 uint32_t im2p_compiled_dim(void);
+uint32_t im2p_compiled_accumulator_bits(void);
+uint32_t im2p_compiled_accumulator_rows(void);
+uint32_t im2p_compiled_partial_bits(void);
+const char *im2p_compiled_numerical_semantics_revision(void);
 uint32_t im2p_compiled_activation_storage_bytes(void);
 uint32_t im2p_compiled_weight_storage_bytes(void);
 
@@ -228,12 +232,17 @@ int im2p_start_execution(
     uint32_t k_count
 );
 int im2p_put_activation_row(im2p_handle_t handle, const void *values);
+/* Read request/consume each drive one edge; response polling drives none. */
+int im2p_request_accumulator_row_read(im2p_handle_t handle, uint32_t row);
+int im2p_accumulator_row_read_response(im2p_handle_t handle, int64_t *values);
+int im2p_consume_accumulator_row_read_response(im2p_handle_t handle);
 int im2p_acknowledge_execution(im2p_handle_t handle);
 int im2p_write_accumulator_row_i64(
     im2p_handle_t handle,
     uint32_t row,
     const int64_t *values
 );
+/* Blocking BRAM transaction: request, wait edges, then response consumption. */
 int im2p_read_accumulator_row_i64(
     im2p_handle_t handle,
     uint32_t row,

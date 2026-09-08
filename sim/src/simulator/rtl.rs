@@ -89,7 +89,7 @@ impl Im2pSimulator {
     pub(super) fn start_execution(&mut self, execution: StartExecution) -> Result<(), Error> {
         let base_row =
             u32::try_from(execution.base_row).map_err(|_| Error::InvalidAccumulatorRow {
-                maximum: 255,
+                maximum: crate::profile::IM2P_ACCUMULATOR_ROWS - 1,
                 actual: execution.base_row,
             })?;
         let row_count = u32::try_from(execution.row_count).map_err(|_| Error::InvalidTileShape)?;

@@ -15,6 +15,11 @@
 #define IM2P_TEST_DIM 16
 #endif
 
+#define IM2P_ACTIVATION_BITS IM2P_TEST_ACTIVATION_BITS
+#define IM2P_WEIGHT_BITS IM2P_TEST_WEIGHT_BITS
+#define IM2P_DIM IM2P_TEST_DIM
+#include "../ffi/im2p_config.h"
+
 #if IM2P_TEST_ACTIVATION_BITS == 16
 typedef int16_t activation_t;
 #define A_STORAGE 2
@@ -256,7 +261,15 @@ static int test_duplicate_stripe(im2p_sim_t *sim) {
 }
 
 static int test_wide_transport_and_recovery(im2p_sim_t *sim) {
-  const int64_t expected = INT64_C(6) << 30;
+  if (im2p_compiled_accumulator_bits() != IM2P_ACCUMULATOR_BITS ||
+      im2p_compiled_accumulator_rows() != IM2P_ACCUMULATOR_ROWS ||
+      im2p_compiled_partial_bits() != IM2P_PARTIAL_BITS ||
+      strcmp(im2p_compiled_numerical_semantics_revision(),
+             IM2P_NUMERICAL_SEMANTICS_REVISION) != 0) return 13;
+  const int64_t expected = IM2P_ACCUMULATOR_BITS == 32
+                              ? INT32_MIN : INT64_C(6) << 30;
+  const int32_t expected_raw = IM2P_ACCUMULATOR_BITS == 32
+                                  ? INT32_MIN : INT32_MAX;
   im2p_matmul_desc_t provider = descriptor();
   provider.weights = NULL;
   provider.scale_total_k = 1;
@@ -298,7 +311,7 @@ static int test_wide_transport_and_recovery(im2p_sim_t *sim) {
   raw.scale_values_len = 1;
   raw.vector_op = IM2P_VECTOR_SHIFT;
   if (im2p_execute_matmul(sim, &raw, NULL) != IM2P_OK ||
-      narrowed != INT32_MAX) return 16;
+      narrowed != expected_raw) return 16;
   return 0;
 }
 

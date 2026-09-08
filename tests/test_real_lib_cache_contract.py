@@ -39,7 +39,7 @@ def cache_args(temp: Path, fixture: Path, builder: Path) -> list[str]:
     fake_tool.chmod(0o755)
     bsc_verilog = temp / "bsc-verilog"
     bsc_verilog.mkdir(exist_ok=True)
-    for name in ("RegFile.v", "FIFO2.v"):
+    for name in ("RegFile.v", "FIFO2.v", "BRAM1.v"):
         (bsc_verilog / name).write_text(f"// {name}\n", encoding="utf-8")
     return [
         str(CACHE), "ensure", "--bits", "4", "--weight-bits", "4",
@@ -231,6 +231,23 @@ obj.mkdir(parents=True)
         mixed[mixed.index("--weight-bits") + 1] = "8"
         rejected = run(*mixed, env=env)
         assert rejected.returncode != 0 and "matched" in rejected.stdout
+
+        current_manifest = json.loads(manifest_path.read_text())
+        cache_manifest = Path(current_manifest["cache_manifest"])
+        stale = json.loads(cache_manifest.read_text())
+        del stale["identity"]["accumulator_bits"]
+        cache_manifest.write_text(json.dumps(stale))
+        prior_builds = count.read_text()
+        stale_rebuilt = run(*args, env=cargo_env)
+        assert stale_rebuilt.returncode == 0 and "reason=tamper" in stale_rebuilt.stdout
+        assert count.read_text() == prior_builds + "x"
+
+        primitive = temp / "bsc-verilog/BRAM1.v"
+        primitive.write_text("// changed BRAM primitive\n", encoding="utf-8")
+        primitive_rebuilt = run(*args, env=cargo_env)
+        assert primitive_rebuilt.returncode == 0 and "state=rebuild" in primitive_rebuilt.stdout
+        assert count.read_text() == prior_builds + "xx"
+        assert json.loads(manifest_path.read_text())["fingerprint"] != current_manifest["fingerprint"]
 
         poison = temp / "poison"
         escape = temp / "escape"

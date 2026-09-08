@@ -11,7 +11,7 @@ module mkSynthFP16D16(IM2PCoreIfc#(
     DefaultArrayDim,
     DefaultPeLatency,
     DefaultVectorLanes,
-    DefaultAccumulatorRows,
+    FloatingAccumulatorRows,
     Half,
     Half,
     Half,

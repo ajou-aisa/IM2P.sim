@@ -106,7 +106,7 @@ VectorShift
     scale <  0 : contribution = partial >> |scale|
 ```
 
-integer policy는 signed 64-bit accumulator/provider transport 안에서 two's-complement arithmetic과 arithmetic right shift를 사용한다. 중간 32-bit narrowing은 없으며 rounding도 적용하지 않는다. 단일 canonical ABI의 provider callback은 signed-64 값을 그대로 받고, raw output의 최종 signed-32 경계에서만 한 번 saturation한다.
+Integer policy는 A4/A8 signed32, A16 signed64 partial/contribution/accumulator에서 two's-complement wrap과 arithmetic right shift를 사용한다. Rounding이나 중간 saturation은 추가하지 않는다. canonical ABI의 provider callback transport는 signed64를 유지하며 A4/A8 값을 sign-extend한다. Raw output의 최종 signed32 saturation은 유지한다. Overflow가 있는 입력은 이전 INT64 profile과 결과가 달라질 수 있다.
 
 ### Accumulator는 주소와 상태를 담당
 
@@ -127,7 +127,7 @@ accumulate=True
     bank[column][row] = bank[column][row] + contribution
 ```
 
-Column별 `RegFile`을 `Accumulator` 내부 backend로 사용하며, 별도 범용 `BankedVectorMem` package는 두지 않는다. `accumulate=True`를 사용하기 전에 대상 accumulator row를 유효한 값으로 초기화해야 한다.
+Column별 synchronous BRAM을 `Accumulator` 내부 backend로 사용한다. 정수 profile은 DIM별 rows를 조정해64 KiB를 유지한다. 요청 수락과 writeback 완료를 분리하며 read response는 acknowledgement까지 보존한다. `accumulate=True` 전에 대상 row를 preload 또는 replace로 정의해야 한다. 자세한 계약은 `docs/ARCHITECTURE.md`, 합성 재현은 `docs/FPGA_FLOW.md` 참조.
 
 ### Block은 별도 core가 아니라 runtime control
 

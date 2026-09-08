@@ -151,6 +151,10 @@ pub enum Error {
         maximum: usize,
         actual: usize,
     },
+    InvalidAccumulatorValue {
+        lane: usize,
+        value: i64,
+    },
     InvalidTileShape,
     RtlNotReady {
         operation: &'static str,
@@ -228,10 +232,7 @@ impl Im2pSimulator {
     pub fn new() -> Result<Self, Error> {
         // SAFETY: `im2p_create` has no preconditions and returns an owned handle.
         let handle = NonNull::new(unsafe { ffi::im2p_create() }).ok_or(Error::AllocationFailed)?;
-        let dim = option_env!("IM2P_DIM")
-            .unwrap_or("16")
-            .parse::<usize>()
-            .map_err(|_| Error::InvalidDimension)?;
+        let dim = crate::profile::IM2P_DIM;
         let mut simulator = Self { handle, dim };
         simulator.reset();
         Ok(simulator)

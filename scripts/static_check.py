@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scripts import im2p_config
+
 SRC = ROOT / "src"
 TESTS = ROOT / "tests"
 SYNTH = ROOT / "synth"
@@ -45,12 +49,14 @@ EXPECTED_SRC = {
 
 EXPECTED_TESTS = {
     "TestVectorUtils.bsv",
+    "TbProfileConfig.bsv",
     "TbArithmetic.bsv",
     "TbPE.bsv",
     "TbInputSkew.bsv",
     "TbSystolicArray.bsv",
     "TbVectorUnit.bsv",
     "TbAccumulator.bsv",
+    "TbCoreBramBoundary.bsv",
     "TbExecuteController.bsv",
     "TbIM2PCore.bsv",
     "TbIM2PCoreGrouped.bsv",
@@ -65,6 +71,8 @@ EXPECTED_TESTS = {
     "TbMatmulLookahead.bsv",
     "TbMatmulScheduler.bsv",
     "TbWorkScheduler.bsv",
+    "TbWorkSchedulerProgress.bsv",
+    "TbBlockPosition.bsv",
     "TbSystolicArrayWeightBanks.bsv",
     "TbSystolicEngineWeightBanks.bsv",
     "TbFloatCore.bsv",
@@ -85,6 +93,13 @@ EXPECTED_SYNTH = {
     "SynthA16W16D64.bsv",
     "SynthFP16D16.bsv",
     "SynthFP32D16.bsv",
+    "SynthActivationFIFO.bsv",
+    "SynthSchedulerDiagnostics.bsv",
+}
+
+DIAGNOSTIC_SYNTH_TOPS = {
+    "SynthActivationFIFO.bsv": ("mkSynthActivationFIFO",),
+    "SynthSchedulerDiagnostics.bsv": ("mkWorkSchedulerDiagnostic", "mkMatmulSchedulerDiagnostic"),
 }
 
 INTEGER_SYNTH_TOPS = (
@@ -98,18 +113,6 @@ INTEGER_SYNTH_TOPS = (
     "SynthA16W16D32.bsv",
     "SynthA16W16D64.bsv",
 )
-
-MATCHED_INTEGER_SYNTH_TYPES = {
-    "SynthA4W4D16.bsv": ("4", "4", "8"),
-    "SynthA4W4D32.bsv": ("4", "4", "8"),
-    "SynthA4W4D64.bsv": ("4", "4", "8"),
-    "SynthA8W8D16.bsv": ("8", "8", "16"),
-    "SynthA8W8D32.bsv": ("8", "8", "16"),
-    "SynthA8W8D64.bsv": ("8", "8", "16"),
-    "SynthA16W16D16.bsv": ("16", "16", "32"),
-    "SynthA16W16D32.bsv": ("16", "16", "32"),
-    "SynthA16W16D64.bsv": ("16", "16", "32"),
-}
 
 PUBLIC_FRONTEND_ROUTES = (
     "q8_0_unpacked_to_h1",
@@ -180,10 +183,14 @@ PUBLIC_FRONTEND_ARTIFACTS = {
 }
 
 STANDARD_PACKAGES = {
+    "RWire",
     "Assert",
+    "BRAMCore",
+    "Clocks",
     "FIFOF",
     "FloatingPoint",
     "RegFile",
+    "StmtFSM",
     "Vector",
 }
 
@@ -477,15 +484,11 @@ def require_exsia_lifecycle_contract(path: Path) -> None:
 
 def check_integer_width_contracts() -> None:
     config_path = SRC / "common/Config.bsv"
-    config = strip_comments(config_path.read_text(encoding="utf-8"))
-    accumulator_width = re.findall(
-        r"\btypedef\s+(\d+)\s+DefaultAccumulatorWidth\s*;", config
-    )
-    if accumulator_width != ["64"]:
-        fail(
-            "DefaultAccumulatorWidth must be exactly one signed-64 production "
-            f"definition, got {accumulator_width}"
-        )
+    generated = im2p_config.generated_files()
+    for path, content in ((config_path, generated[im2p_config.BSV]),
+                          (ROOT / "sim/ffi/im2p_config.h", generated[im2p_config.HEADER])):
+        if path.read_text(encoding="utf-8") != content:
+            fail(f"stale generated configuration: {display_path(path)}")
 
     for filename in INTEGER_SYNTH_TOPS:
         path = SYNTH / filename
@@ -498,29 +501,28 @@ def check_integer_width_contracts() -> None:
         )
         if interface is None:
             fail(f"integer synth interface declaration missing: synth/{filename}")
-        if interface.group(1).count("Int#(DefaultAccumulatorWidth)") != 1:
-            fail(
-                "integer synth accumulator/output-request lane must be signed "
-                f"DefaultAccumulatorWidth (64-bit): synth/{filename}"
-            )
-
-    for filename, expected_types in MATCHED_INTEGER_SYNTH_TYPES.items():
-        clean = strip_comments((SYNTH / filename).read_text(encoding="utf-8"))
-        interface = re.search(
-            rf"\bmodule\s+mk{Path(filename).stem}\s*\(\s*"
-            r"IM2PCoreIfc#\((.*?)\)\s*\)\s*;",
-            clean,
-            flags=re.DOTALL,
-        )
-        assert interface is not None
-        lane_types = tuple(
-            re.findall(r"Int#\((4|8|16|32)\)", interface.group(1))[:3]
-        )
+        precision = path.stem.split("W")[0].removeprefix("SynthA")
+        dim = int(path.stem.split("D")[1])
+        if re.match(rf"\s*{dim}\s*,", interface.group(1)) is None:
+            fail(f"integer synth DIM must match its artifact identity: synth/{filename}")
+        profile = im2p_config.profile_config(int(precision), int(precision), dim)
+        expected_types = tuple(f"A{precision}{kind}Width" for kind in
+                               ("Input", "Weight", "Product", "Accumulator"))
+        lane_types = tuple(re.findall(r"Int#\((\w+)\)", interface.group(1))[:4])
         if lane_types != expected_types:
-            fail(
-                f"matched integer lane types are wrong in synth/{filename}: "
-                f"expected {expected_types}, got {lane_types}"
-            )
+            fail(f"matched integer lane types are wrong in synth/{filename}: {lane_types}")
+        rows = f"IntegerAccumulatorRows#({dim}, A{precision}AccumulatorWidth)"
+        if rows not in " ".join(interface.group(1).split()):
+            fail(f"integer synth rows must use the profile capacity: synth/{filename}")
+        if profile["accumulator_rows"] * dim * profile["accumulator_bits"] != profile["logical_capacity_bytes"] * 8:
+            fail(f"integer accumulator capacity mismatch: synth/{filename}")
+
+    for filename, precision in (("SystolicArrayA4W4D64.bsv", 4),
+                                ("SystolicArrayInt8x64.bsv", 8),
+                                ("SystolicArrayA16W16D64.bsv", 16)):
+        tile = strip_comments((SRC / "array" / filename).read_text(encoding="utf-8"))
+        if tile.count(f"Int#(A{precision}AccumulatorWidth)") != 3:
+            fail(f"DIM64 tile accumulator widths must match the profile: {filename}")
 
     for stem in ("A4W4", "A16W16"):
         path = SRC / f"array/SystolicArray{stem}D64.bsv"
@@ -896,7 +898,10 @@ def main() -> None:
     expected_test_tops = {
         f"mk{Path(name).stem}" for name in EXPECTED_TESTS if name.startswith("Tb")
     }
-    expected_synth_tops = {f"mk{Path(name).stem}" for name in EXPECTED_SYNTH}
+    expected_synth_tops = {
+        top for name in EXPECTED_SYNTH
+        for top in DIAGNOSTIC_SYNTH_TOPS.get(name, (f"mk{Path(name).stem}",))
+    }
 
     generated_multiwidth_tops = {
         top
@@ -960,9 +965,12 @@ def main() -> None:
     accumulator_path = SRC / "accumulator/Accumulator.bsv"
     require_substrings(
         accumulator_path,
-        ("RegFile", "rowAddresses", "commit", "readRow", "writeRow"),
+        ("BRAMCore", "mkBRAMCore1", "rowAddresses", "commit", "completionValid",
+         "consumeCompletion", "requestReadRow", "readResponseValid", "writeRow"),
     )
     accumulator_clean = strip_comments(accumulator_path.read_text(encoding="utf-8"))
+    if "RegFile" in accumulator_clean:
+        fail("Accumulator storage must use synchronous BRAM")
     for forbidden in ("VectorOp", "VectorMultiply", "VectorShift", "scale"):
         if forbidden in accumulator_clean:
             fail(f"Accumulator knows vector transform concern: {forbidden}")
@@ -1101,6 +1109,19 @@ def main() -> None:
 
     for synth in SYNTH.glob("*.bsv"):
         text = synth.read_text(encoding="utf-8")
+        if synth.name == "SynthActivationFIFO.bsv":
+            require_substrings(synth, ("FIFOF#(Vector#(16, Int#(8)))", "mkGFIFOF(False, True)"))
+            if "IM2PCore" in strip_comments(text):
+                fail("FIFO diagnostic must isolate activationRows from IM2PCore")
+            continue
+        if synth.name == "SynthSchedulerDiagnostics.bsv":
+            for top, constructor in (("mkWorkSchedulerDiagnostic", "mkWorkScheduler"),
+                                     ("mkMatmulSchedulerDiagnostic", "mkMatmulScheduler")):
+                require_regex(synth, rf"\bmodule\s+{top}\b.*?<-\s+{constructor}\s*;.*?\bendmodule\b",
+                              f"isolated {constructor} diagnostic")
+            if "IM2PCore" in strip_comments(text):
+                fail("scheduler diagnostics must isolate schedulers from IM2PCore")
+            continue
         if "mkIM2PCore" not in text or "IM2PCoreIfc" not in text:
             fail(f"synth top does not use the single IM2PCore: {synth.name}")
         if strip_comments(text).count("<- mkIM2PCore") != 1:
@@ -1108,11 +1129,6 @@ def main() -> None:
 
     makefile_path = ROOT / "Makefile"
     makefile_text = makefile_path.read_text(encoding="utf-8")
-
-    expected_test_tops = {
-        "mk" + Path(name).stem for name in EXPECTED_TESTS if name.startswith("Tb")
-    }
-    expected_synth_tops = {"mk" + Path(name).stem for name in EXPECTED_SYNTH}
 
     for top in sorted(
         expected_test_tops | (expected_synth_tops - generated_multiwidth_tops)
@@ -1145,8 +1161,8 @@ def main() -> None:
         "STATIC CHECK: PASS\n"
         f"  src packages : {len(EXPECTED_SRC)}\n"
         f"  test packages: {len(EXPECTED_TESTS)}\n"
-        f"  testbenches  : {len(EXPECTED_TESTS) - 1}\n"
-        f"  synth tops   : {len(EXPECTED_SYNTH)}\n"
+        f"  testbenches  : {len(expected_test_tops)}\n"
+        f"  synth tops   : {len(expected_synth_tops)}\n"
         "  architecture : SystolicEngine -> VectorUnit -> Accumulator\n"
         "  core         : single IM2PCore with runtime VectorOp scaling"
     )

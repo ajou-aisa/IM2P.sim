@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "dimensions": [16, 32, 64],
+  "integer_accumulator_bits": {"4": 32, "8": 32, "16": 64},
+  "logical_capacity_bytes": 65536,
+  "fp_accumulator_rows": 256,
+  "memory_backend": "column-banked-sync-bram",
+  "memory_read_latency": 1,
+  "memory_latency_contract": "serialized-rmw-v1",
+  "numerical_semantics_revision": "signed-wrap-v1"
+}

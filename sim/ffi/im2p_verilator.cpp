@@ -1,4 +1,5 @@
 #include "im2p_verilator.h"
+#include "im2p_config.h"
 
 #ifdef IM2P_VERILATOR_TEST_HOOKS
 #include "testing/im2p_verilator_testing.h"
@@ -51,8 +52,16 @@ constexpr uint32_t kWeightStorageBytes = kWeightBits == 16 ? 2 : 1;
 constexpr uint32_t kActivationWords = (kActivationBits * kDim + 31) / 32;
 constexpr uint32_t kWeightWords = (kWeightBits * kDim + 31) / 32;
 constexpr uint32_t kByteLaneWords = (8 * kDim + 31) / 32;
-constexpr uint32_t kCommandRowBits = kDim == 16 ? 5 : kDim == 32 ? 6 : 7;
-constexpr uint32_t kAccumulatorWords = 2 * kDim;
+constexpr uint32_t kCommandRowBits = IM2P_ROW_COUNT_BITS;
+constexpr uint32_t kAccumulatorBits = IM2P_ACCUMULATOR_BITS;
+constexpr uint32_t kAccumulatorRows = IM2P_ACCUMULATOR_ROWS;
+constexpr uint32_t kAccumulatorWords = kAccumulatorBits / 32 * kDim;
+static_assert(kAccumulatorRows * kDim * kAccumulatorBits == IM2P_LOGICAL_CAPACITY_BYTES * 8);
+static_assert(kAccumulatorRows >= kDim);
+static_assert((1U << IM2P_ROW_ADDRESS_BITS) >= kAccumulatorRows);
+static_assert((1U << kCommandRowBits) > kDim);
+static_assert(sizeof(Top::startExecution_command) * 8 >= IM2P_ROW_ADDRESS_BITS + kCommandRowBits + 3);
+static_assert(sizeof(Top::writeAccumulatorRow_row) * 8 >= IM2P_ROW_ADDRESS_BITS);
 
 struct Simulator {
     VerilatedContext *context;
@@ -88,15 +97,17 @@ void set_bytes(VlWide<Words> &signal, const int8_t *values, size_t count) {
 template <size_t Words>
 void set_i64_signal(VlWide<Words> &signal, const int64_t *values, size_t count) {
     static_assert(Words == kAccumulatorWords,
-                  "generated accumulator port must be 64 bits per lane");
+                  "generated accumulator port must match the numerical profile");
     for (size_t index = 0; index < Words; ++index) {
         signal[index] = 0U;
     }
     for (size_t index = 0; index < count; ++index) {
         uint64_t bits;
         std::memcpy(&bits, &values[index], sizeof(bits));
-        signal[2 * index] = static_cast<uint32_t>(bits);
-        signal[2 * index + 1] = static_cast<uint32_t>(bits >> 32);
+        signal[(kAccumulatorBits / 32) * index] = static_cast<uint32_t>(bits);
+        if constexpr (kAccumulatorBits == 64) {
+            signal[2 * index + 1] = static_cast<uint32_t>(bits >> 32);
+        }
     }
 }
 
@@ -104,13 +115,28 @@ template <size_t Words>
 void copy_i64_signal(const VlWide<Words> &signal, int64_t *values,
                      size_t count) {
     static_assert(Words == kAccumulatorWords,
-                  "generated accumulator port must be 64 bits per lane");
+                  "generated accumulator port must match the numerical profile");
     for (size_t index = 0; index < count; ++index) {
-        const uint64_t bits = static_cast<uint64_t>(signal[2 * index]) |
-                              (static_cast<uint64_t>(signal[2 * index + 1])
-                               << 32);
-        std::memcpy(&values[index], &bits, sizeof(bits));
+        if constexpr (kAccumulatorBits == 32) {
+            const uint32_t bits = signal[index];
+            int32_t value;
+            std::memcpy(&value, &bits, sizeof(value));
+            values[index] = value;
+        } else {
+            const uint64_t bits = static_cast<uint64_t>(signal[2 * index]) |
+                                  (static_cast<uint64_t>(signal[2 * index + 1]) << 32);
+            std::memcpy(&values[index], &bits, sizeof(bits));
+        }
     }
+}
+
+bool valid_accumulator_values(const int64_t *values, size_t count) {
+    if constexpr (kAccumulatorBits == 32) {
+        return std::all_of(values, values + count, [](int64_t value) {
+            return value >= INT32_MIN && value <= INT32_MAX;
+        });
+    }
+    return true;
 }
 
 int32_t narrow_i64(int64_t value) {
@@ -278,6 +304,8 @@ void clear_enables(Simulator *simulator) {
     top->EN_putActivationRow = 0;
     top->EN_acknowledgeExecution = 0;
     top->EN_writeAccumulatorRow = 0;
+    top->EN_requestReadAccumulatorRow = 0;
+    top->EN_consumeAccumulatorReadResponse = 0;
     top->EN_startMatmul = 0;
     top->EN_publishActivationStripe = 0;
     top->EN_putActivationReadResponse = 0;
@@ -424,6 +452,12 @@ extern "C" uint32_t im2p_compiled_activation_bits(void) {
 extern "C" uint32_t im2p_compiled_weight_bits(void) { return kWeightBits; }
 
 extern "C" uint32_t im2p_compiled_dim(void) { return kDim; }
+extern "C" uint32_t im2p_compiled_accumulator_bits(void) { return kAccumulatorBits; }
+extern "C" uint32_t im2p_compiled_accumulator_rows(void) { return kAccumulatorRows; }
+extern "C" uint32_t im2p_compiled_partial_bits(void) { return IM2P_PARTIAL_BITS; }
+extern "C" const char *im2p_compiled_numerical_semantics_revision(void) {
+    return IM2P_NUMERICAL_SEMANTICS_REVISION;
+}
 
 extern "C" uint32_t im2p_compiled_activation_storage_bytes(void) {
   return kActivationStorageBytes;
@@ -598,15 +632,16 @@ extern "C" int im2p_start_execution(
     uint32_t k_start,
     uint32_t k_count
 ) {
+    if (handle == nullptr || accumulator_base_row >= kAccumulatorRows
+        || row_count == 0 || row_count > kDim
+        || row_count > kAccumulatorRows - accumulator_base_row
+        || k_count == 0 || k_count > kDim || vector_op > 3
+        || k_count > UINT32_MAX - k_start) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    if (!simulator->top->RDY_startExecution
-        || accumulator_base_row >= 256
-        || row_count > kDim
-        || row_count == 0
-        || k_count > kDim
-        || k_count == 0
-            || vector_op > 3) {
+    if (!simulator->top->RDY_startExecution) {
         return 0;
     }
     simulator->top->startExecution_command =
@@ -654,9 +689,12 @@ extern "C" int im2p_write_accumulator_row_i64(
     if (handle == nullptr || values == nullptr) {
         return 0;
     }
+    if (row >= kAccumulatorRows || !valid_accumulator_values(values, kDim)) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    if (!simulator->top->RDY_writeAccumulatorRow || row >= 256) {
+    if (!simulator->top->RDY_writeAccumulatorRow) {
         return 0;
     }
     simulator->top->writeAccumulatorRow_row = row;
@@ -679,9 +717,22 @@ extern "C" int im2p_write_accumulator_row(
     return im2p_write_accumulator_row_i64(handle, row, exact);
 }
 
-extern "C" int im2p_read_accumulator_row_i64(
+extern "C" int im2p_request_accumulator_row_read(im2p_handle_t handle, uint32_t row) {
+    if (handle == nullptr || row >= kAccumulatorRows) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_requestReadAccumulatorRow) {
+        return 0;
+    }
+    simulator->top->requestReadAccumulatorRow_row = row;
+    pulse(simulator, simulator->top->EN_requestReadAccumulatorRow);
+    return 1;
+}
+
+extern "C" int im2p_accumulator_row_read_response(
     im2p_handle_t handle,
-    uint32_t row,
     int64_t *values
 ) {
     if (handle == nullptr || values == nullptr) {
@@ -689,13 +740,35 @@ extern "C" int im2p_read_accumulator_row_i64(
     }
     auto *simulator = static_cast<Simulator *>(handle);
     evaluate(simulator);
-    if (!simulator->top->RDY_readAccumulatorRow || row >= 256) {
+    if (!simulator->top->accumulatorReadResponseValid
+        || !simulator->top->RDY_readAccumulatorRowResponse) {
         return 0;
     }
-    simulator->top->readAccumulatorRow_row = row;
-    evaluate(simulator);
-    copy_i64_signal(simulator->top->readAccumulatorRow, values, kDim);
+    copy_i64_signal(simulator->top->readAccumulatorRowResponse, values, kDim);
     return 1;
+}
+
+extern "C" int im2p_consume_accumulator_row_read_response(im2p_handle_t handle) {
+    if (handle == nullptr) return IM2P_REQUEST_INVALID_ARGUMENT;
+    auto *simulator = static_cast<Simulator *>(handle);
+    evaluate(simulator);
+    if (!simulator->top->RDY_consumeAccumulatorReadResponse) return 0;
+    pulse(simulator, simulator->top->EN_consumeAccumulatorReadResponse);
+    return 1;
+}
+
+extern "C" int im2p_read_accumulator_row_i64(
+    im2p_handle_t handle, uint32_t row, int64_t *values) {
+    if (values == nullptr) return IM2P_REQUEST_INVALID_ARGUMENT;
+    const int accepted = im2p_request_accumulator_row_read(handle, row);
+    if (accepted != 1) return accepted;
+    for (unsigned elapsed = 0; elapsed < 16; ++elapsed) {
+        if (im2p_accumulator_row_read_response(handle, values) == 1) {
+            return im2p_consume_accumulator_row_read_response(handle);
+        }
+        im2p_tick(handle);
+    }
+    return IM2P_REQUEST_INVALID_ARGUMENT;
 }
 
 extern "C" int im2p_read_accumulator_row(
@@ -714,6 +787,13 @@ extern "C" int im2p_read_accumulator_row(
     return result;
 }
 
+bool valid_address_extent(uint64_t base, uint64_t stride, uint64_t rows,
+                          uint64_t row_bytes) {
+    return rows > 0 && row_bytes > 0 && stride >= row_bytes
+        && row_bytes - 1 <= UINT64_MAX - base
+        && rows - 1 <= (UINT64_MAX - base - (row_bytes - 1)) / stride;
+}
+
 extern "C" int im2p_start_matmul(
     im2p_handle_t handle,
     const im2p_matmul_descriptor_t *descriptor
@@ -729,7 +809,32 @@ extern "C" int im2p_start_matmul(
         || descriptor->activation_row_stride < descriptor->reduction_count
         || descriptor->weight_row_stride < descriptor->column_count
         || descriptor->output_row_stride
-            < descriptor->column_count * sizeof(int32_t)) {
+            < static_cast<uint64_t>(descriptor->column_count) * sizeof(int32_t)
+        || descriptor->reduction_count > UINT32_MAX - descriptor->k_origin
+        || (descriptor->vector_op != 0
+            && (descriptor->scale_block_size == 0
+                || descriptor->k_origin > descriptor->scale_total_k
+                || descriptor->reduction_count > descriptor->scale_total_k - descriptor->k_origin))) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    if (descriptor->vector_op == 3
+        && descriptor->row_count > UINT64_MAX / descriptor->output_row_stride) {
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    const uint64_t blocks = descriptor->vector_op == 0 ? 1 :
+        (static_cast<uint64_t>(descriptor->k_origin) + descriptor->reduction_count - 1)
+        / descriptor->scale_block_size + 1;
+    const uint64_t output_rows = static_cast<uint64_t>(descriptor->row_count)
+        * (descriptor->vector_op == 3 ? blocks : 1);
+    if (!valid_address_extent(descriptor->activation_base, descriptor->activation_row_stride,
+            descriptor->row_count, static_cast<uint64_t>(descriptor->reduction_count) * kActivationStorageBytes)
+        || !valid_address_extent(descriptor->weight_base, descriptor->weight_row_stride,
+            descriptor->reduction_count, static_cast<uint64_t>(descriptor->column_count) * kWeightStorageBytes)
+        || !valid_address_extent(descriptor->output_base, descriptor->output_row_stride,
+            output_rows, static_cast<uint64_t>(descriptor->column_count) * sizeof(int32_t))
+        || (descriptor->vector_op != 0
+            && !valid_address_extent(descriptor->scale_base, descriptor->scale_row_stride,
+                blocks, descriptor->column_count))) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     auto *simulator = static_cast<Simulator *>(handle);
@@ -1277,7 +1382,8 @@ extern "C" int im2p_test_accumulator_words(
     im2p_handle_t handle, const int64_t *values, uint32_t count,
     uint32_t *words, uint32_t word_count) {
   if (handle == nullptr || values == nullptr || words == nullptr ||
-      count > kDim || word_count != kAccumulatorWords) {
+      count > kDim || word_count != kAccumulatorWords ||
+      !valid_accumulator_values(values, count)) {
     return IM2P_REQUEST_INVALID_ARGUMENT;
   }
   auto *top = static_cast<Simulator *>(handle)->top;

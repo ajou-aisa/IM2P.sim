@@ -35,6 +35,8 @@ typedef enum {
     TbFeed0,
     TbFeed1,
     TbWait,
+    TbReadFirst,
+    TbRequestSecond,
     TbCheck
 } TbState deriving (Bits, Eq, FShow);
 
@@ -126,12 +128,24 @@ module mkTbIM2PCoreGrouped(Empty);
     endrule
 
     rule readFirstResultRow (state == TbWait && core.executionDone);
-        observedRow2 <= core.readAccumulatorRow(2);
+        core.requestReadAccumulatorRow(2);
+        state <= TbReadFirst;
+    endrule
+
+    rule captureFirstResultRow (state == TbReadFirst);
+        observedRow2 <= core.readAccumulatorRowResponse;
+        core.consumeAccumulatorReadResponse;
+        state <= TbRequestSecond;
+    endrule
+
+    rule requestSecondResultRow (state == TbRequestSecond);
+        core.requestReadAccumulatorRow(3);
         state <= TbCheck;
     endrule
 
     rule checkResult (state == TbCheck);
-        Vector#(4, Int#(32)) row3 = core.readAccumulatorRow(3);
+        Vector#(4, Int#(32)) row3 = core.readAccumulatorRowResponse;
+        core.consumeAccumulatorReadResponse;
 
         Bool passed = observedRow2 == vector4(2, 6, 12, 20)
             && row3 == vector4(10, 18, 28, 40);

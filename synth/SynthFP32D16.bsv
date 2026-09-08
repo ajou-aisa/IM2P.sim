@@ -12,7 +12,7 @@ module mkSynthFP32D16(IM2PCoreIfc#(
     DefaultArrayDim,
     DefaultPeLatency,
     DefaultVectorLanes,
-    DefaultAccumulatorRows,
+    FloatingAccumulatorRows,
     Single,
     Single,
     Single,

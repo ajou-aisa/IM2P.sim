@@ -138,7 +138,7 @@ VectorShift    : shift(P, E)
 
 `VectorScaleCapability#(format_t)`는 format의 scale 지원 여부를 나타내며, `VectorTransform#(format_t, acc_t, scale_t)`는 실제 transform을 정의한다.
 
-- Signed INT: Bypass/Multiply/Shift. Production integer synthesis는 signed 64-bit partial, contribution, Accumulator state를 사용한다.
+- Signed INT: Bypass/Multiply/Shift/External. A4/W4와 A8/W8의 partial, contribution, Accumulator는 signed INT32이며 A16/W16은 INT64다. Add/Multiply/left shift는 선택한 폭의 하위 bit를 보존한다. Right shift는 arithmetic shift이며 폭 이상의 shift를 modulo 처리하지 않는다.
 - FLOAT: Bypass behavior only
 
 Accumulator 주소, 기존 state, `accumulate` 여부는 VectorUnit interface에 없다. Integer provider request도 signed 64-bit lane을 유지한다. 단일 canonical ABI의 provider callback은 signed-64 lane을 그대로 받고 raw signed-32 output 경계에서만 final saturation을 수행한다.
@@ -171,7 +171,11 @@ accumulate=True
         = bank[column][row] + contribution
 ```
 
-현재 storage backend는 column별 `mkRegFileFull`이다.
+Storage backend는 column별 synchronous `mkBRAMCore1(rows, False)`다. 정수 profile의 logical capacity는 65536 bytes이며 rows는 `capacity * 8 / (DIM * accumulator_bits)`로 생성한다. 설정 원천은 `config/im2p_profiles.json`, 생성물은 `Config.bsv`와 `im2p_config.h`다. DIM16/32/64에서 A4/A8 rows는 1024/512/256, A16 rows는 512/256/128이다. FP 연산과 기존 rows=256 구성은 유지한다.
+
+`commit`은 요청 수락이다. 주소·valid·contribution·accumulate를 저장하고 다음 edge에 실제 bank writeback을 수행한다. `completionValid` 이후 `completedValids`를 Engine에 전달한다. 한 outstanding transaction만 허용해 같은 bank/row RMW, replace/accumulate, preload/read 충돌을 직렬화한다. 응답을 소비할 때까지 새 요청은 stall한다. 메모리 전체 reset이나 초기 zero 보장은 없다.
+
+출력은 `requestReadRow` 후 register에 확보된 `readResponse`만 사용한다. Output payload/address/count/tag는 host acknowledgement까지 유지한다. Low-level read도 request/response/consume transaction이며 getter는 clock을 진행하지 않는다. Engine 완료는 실제 writeback 뒤이고 job 완료는 마지막 C acknowledgement 뒤다. 현재 scheduler가 64 KiB 전체에 여러 tile을 상주시키는 기능은 제공하지 않는다.
 
 ## 7. Block scale selection and alignment
 
@@ -187,6 +191,8 @@ request tag = (context + J tile offset, b)
 Core는 응답받은 `S[b,column]` vector를 execution 동안 고정한다. 한 hardware partial이 두 K-block을 가로지르면 실행을 거부한다.
 
 Execution은 이전 column wavefront, VectorUnit, Accumulator commit이 모두 끝난 뒤에만 교체된다. 따라서 서로 다른 K-block의 column output이 섞이지 않는다. Staggered column output은 모두 execution 시작 시 latch한 `executionScaleRow[j] = S[b,j]`를 사용한다.
+
+Weight residency는 하나의 `startMatmul` job 안에서만 재사용한다. Provider logical weight 주소는 다음 job에서 다른 데이터를 가리킬 수 있으므로 job 시작 시 두 bank의 residency metadata를 무효화한다. 실제 weight storage reset이나 같은 job 내부의 current/lookahead 재사용 제거는 하지 않는다.
 
 전체 `ceil(K/B) × J` matrix는 host memory가 소유한다. Core는 `kStart / blockSize`로 block을 선택하고 `(context + J tile offset, block)` tag의 row를 요청한다. Normal execution cache는 current/next row entry 두 개를 유지한다.
 

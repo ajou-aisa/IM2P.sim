@@ -170,4 +170,8 @@ FIFO를 두지 않으며, completion identity getter 옆의 raw cycle getter를 
 
 High-level worker가 다음 host stripe나 raw RTL work가 없는 상태에서 condition variable을 기다리면 RTL clock을 구동하지 않는다. 이 host wall-clock 구간은 RTL logical-cycle 통계에 포함되지 않는다. CPU와 NPU의 common timebase는 제공하지 않는다.
 
-이 프로젝트는 Verilator 범위만 다룬다. Telemetry synthesis-disable option, FPGA/ASIC top, area/Fmax용 counter gate, STA integration은 이 구조의 범위가 아니다.
+Synchronous BRAM은 Verilator와 FPGA RTL에서 같은 backend를 사용한다. Update/read는 edge E에서 수락되고, E+1에 update writeback 또는 read-response capture가 수행된다. 기존 값이 필요한 accumulate 또는 read 요청만 bank read를 발행한다. Preload writeRow는 수락 edge E에 write 완료한다. Completion/read response는 capture 이후 소비 전까지 유지되며, core output-valid 등록과 host C ACK는 별도 후속 단계다.
+
+BRAM 대기, 충돌 직렬화, output read, divider 준비는 실제 clock으로 진행하므로 work interval에 포함한다. 단순 getter/eval은 0 cycles다. 기존 low-level read wrapper는 명시적 read transaction을 진행하므로 그 RTL cycle이 global counter에 반영된다.
+
+Core OOC 합성 및 10 ns CLK timing flow는 `FPGA_FLOW.md`에 정의한다. OOC 결과는 board shell/외부 interface timing closure가 아니다. Telemetry counter/timestamp는 계속64-bit이며 dense와 residual은 독립 handle/timebase를 유지한다.

@@ -11,7 +11,9 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import TypedDict
 
-SCHEMA = "im2p-real-lib-cache-v3"
+from scripts.im2p_config import ProfileConfig, profile_config
+
+SCHEMA = "im2p-real-lib-cache-v4"
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -36,11 +38,8 @@ class ToolIdentity(TypedDict):
     inputs: list[ArtifactRow]
 
 
-class IdentityData(TypedDict):
+class IdentityData(ProfileConfig):
     id: str
-    activation_bits: int
-    weight_bits: int
-    dim: int
     block_size: int
     platform: str
     platform_release: str
@@ -174,6 +173,10 @@ def verify_manifest(
         }
         if any(identity.get(field) != value for field, value in derived.items()):
             return False, "identity fields"
+        profile = profile_config(**derived)
+        for field, value in profile.items():
+            if type(identity.get(field)) is not type(value) or identity.get(field) != value:
+                return False, f"identity.{field}"
         if expected_identity_data is not None and identity != expected_identity_data:
             return False, "identity"
         expected = (

@@ -18,8 +18,9 @@ unsafe extern "C" {
     fn im2p_create() -> *mut c_void;
     fn im2p_destroy(handle: *mut c_void);
     fn im2p_reset(handle: *mut c_void);
+    fn im2p_tick(handle: *mut c_void);
     fn im2p_begin_weight_load(handle: *mut c_void) -> i32;
-    fn im2p_load_weight_row(handle: *mut c_void, row: u32, values: *const i8) -> i32;
+    fn im2p_load_weight_row(handle: *mut c_void, row: u32, values: *const c_void) -> i32;
     fn im2p_configure_scaling(
         handle: *mut c_void,
         block_size: u32,
@@ -43,7 +44,7 @@ pub fn assert_bad_response_identity_rejected() {
         .unwrap_or("16")
         .parse::<usize>()
         .expect("valid test dimension");
-    let weights = vec![0_i8; dim];
+    let weights = vec![im2p_sim::parse_weight(0).expect("zero fits every profile"); dim];
     let values = [1_i8, 2];
 
     // SAFETY: handle is owned for this test, all arrays remain live during
@@ -55,7 +56,7 @@ pub fn assert_bad_response_identity_rejected() {
         assert_eq!(im2p_begin_weight_load(handle), 1);
         for row in 0..dim {
             assert_eq!(
-                im2p_load_weight_row(handle, row as u32, weights.as_ptr()),
+                im2p_load_weight_row(handle, row as u32, weights.as_ptr().cast()),
                 1
             );
         }
@@ -72,7 +73,15 @@ pub fn assert_bad_response_identity_rejected() {
             valid_columns: 1,
             context: 101,
         };
-        assert_eq!(im2p_service_scale_request(handle, &wrong), -3);
+        let mut rejected = im2p_service_scale_request(handle, &wrong);
+        for _ in 0..1000 {
+            if rejected != 0 {
+                break;
+            }
+            im2p_tick(handle);
+            rejected = im2p_service_scale_request(handle, &wrong);
+        }
+        assert_eq!(rejected, -3);
 
         let wrong_block_range = RawScaleView {
             context: 100,

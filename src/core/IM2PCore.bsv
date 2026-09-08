@@ -226,9 +226,10 @@ interface IM2PCoreIfc#(
         RowAddress#(accRows) row,
         Vector#(arrayDim, acc_t) values
     );
-    method Vector#(arrayDim, acc_t) readAccumulatorRow(
-        RowAddress#(accRows) row
-    );
+    method Action requestReadAccumulatorRow(RowAddress#(accRows) row);
+    method Bool accumulatorReadResponseValid;
+    method Vector#(arrayDim, acc_t) readAccumulatorRowResponse;
+    method Action consumeAccumulatorReadResponse;
 endinterface
 
 module mkIM2PCoreWithArray#(
@@ -341,6 +342,12 @@ module mkIM2PCoreWithArray#(
     Reg#(ExecuteCmd#(arrayDim, accRows)) pendingCommandReg <- mkRegU;
     Reg#(ScaleContext) pendingContextReg <- mkRegU;
     Reg#(ScaleBlockIndex) pendingBlockReg <- mkRegU;
+    BlockPositionIfc executionPosition <- mkBlockPosition;
+    Reg#(Bool) executionPreparingReg <- mkReg(False);
+    Reg#(ExecuteCmd#(arrayDim, accRows)) preparationCommandReg <- mkRegU;
+    Reg#(UInt#(32)) preparationKStartReg <- mkReg(0);
+    Reg#(BoundedCount#(arrayDim)) preparationKCountReg <- mkReg(0);
+    Reg#(UInt#(33)) executionBlockEndReg <- mkReg(0);
 
     Reg#(Vector#(arrayDim, scale_t)) executionScaleRowReg <- mkRegU;
     Reg#(Bool) executionUsesScaleReg <- mkReg(False);
@@ -375,6 +382,7 @@ module mkIM2PCoreWithArray#(
     Reg#(Bool) matrixFragmentAccumulateReg <- mkReg(False);
     Reg#(Bool) matrixFragmentEndsBlockReg <- mkReg(False);
     Reg#(ScaleBlockIndex) matrixFragmentBlockIndexReg <- mkReg(0);
+    Reg#(MatrixExtent) matrixFragmentBlockRemainingReg <- mkReg(0);
     Reg#(Bool) matrixFinalBlockReg <- mkReg(False);
     Reg#(Bool) matrixFragmentBankReg <- mkReg(False);
 
@@ -427,6 +435,7 @@ module mkIM2PCoreWithArray#(
     Reg#(HostAddress) weightRequestAddressReg <- mkRegU;
 
     Reg#(Bool) outputRequestValidReg <- mkReg(False);
+    Reg#(Bool) outputReadPendingReg <- mkReg(False);
     Reg#(HostRequestTag) outputRequestTagReg <- mkRegU;
     Reg#(HostAddress) outputRequestAddressReg <- mkRegU;
     Reg#(BoundedIndex#(arrayDim)) outputRowReg <- mkReg(0);
@@ -464,6 +473,8 @@ module mkIM2PCoreWithArray#(
     Reg#(UInt#(64)) workStartCycleReg <- mkReg(0);
     Reg#(UInt#(64)) workCompletionCycleReg <- mkReg(0);
     Reg#(Bool) lookaheadPreparedReg <- mkReg(False);
+    Reg#(Bool) lookaheadPreparingReg <- mkReg(False);
+    Reg#(ScaleBlockIndex) lookaheadInitialBlockReg <- mkReg(0);
     Reg#(MatmulWork#(arrayDim)) lookaheadWorkReg <- mkRegU;
     Reg#(MatrixExtent) lookaheadKStartReg <- mkReg(0);
     Reg#(BoundedCount#(arrayDim)) lookaheadKCountReg <- mkReg(0);
@@ -644,19 +655,15 @@ module mkIM2PCoreWithArray#(
     endrule
 
     rule captureLookaheadWork (
-        !lookaheadPreparedReg && matmulScheduler.lookaheadValid
+        !lookaheadPreparedReg && !lookaheadPreparingReg
+        && matmulScheduler.lookaheadValid
         && matrixStateReg != MatrixIdle && matrixStateReg != MatrixWaitWork
         && matrixStateReg != MatrixDone
     );
         MatmulWork#(arrayDim) work = matmulScheduler.lookaheadWork;
-        MatrixExtent count = nextKFragmentCount(
-            fromInteger(valueOf(arrayDim)), matrixKOriginReg,
-            matrixKOriginReg + work.reductionCount,
-            matrixScaleBlockSizeReg, vectorOpUsesScale(work.vectorOp));
-        lookaheadPreparedReg <= True;
+        lookaheadPreparingReg <= True;
         lookaheadWorkReg <= work;
         lookaheadKStartReg <= matrixKOriginReg;
-        lookaheadKCountReg <= truncate(count);
         lookaheadActivationRowReg <= 0;
         lookaheadWeightRowReg <= 0;
         lookaheadWeightsFetchedReg <= False;
@@ -670,6 +677,15 @@ module mkIM2PCoreWithArray#(
             matrixAccumulateFirstReg, work.vectorOp == VectorExternal);
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1)
             lookaheadActivationValid[row] <= False;
+    endrule
+
+    rule finishLookaheadPreparation (
+        lookaheadPreparingReg && workScheduler.lookaheadValid
+    );
+        lookaheadKCountReg <= workScheduler.lookaheadKCount;
+        lookaheadInitialBlockReg <= workScheduler.lookaheadBlockIndex;
+        lookaheadPreparingReg <= False;
+        lookaheadPreparedReg <= True;
     endrule
 
     rule issueLookaheadActivation (
@@ -754,19 +770,18 @@ module mkIM2PCoreWithArray#(
              && currentScaleContextReg == matrixScaleContextReg
                 + zeroExtend(lookaheadWorkReg.jStart)
              && currentScaleBlockReg
-                == lookaheadKStartReg / matrixScaleBlockSizeReg)
+                == lookaheadInitialBlockReg)
             ||
             (nextScaleValidReg
              && nextScaleContextReg == matrixScaleContextReg
                 + zeroExtend(lookaheadWorkReg.jStart)
              && nextScaleBlockReg
-                == lookaheadKStartReg / matrixScaleBlockSizeReg)
+                == lookaheadInitialBlockReg)
         )
     );
         ScaleContext wantedContext = matrixScaleContextReg
             + zeroExtend(lookaheadWorkReg.jStart);
-        ScaleBlockIndex wantedBlock =
-            lookaheadKStartReg / matrixScaleBlockSizeReg;
+        ScaleBlockIndex wantedBlock = lookaheadInitialBlockReg;
         Bool useCurrent = currentScaleValidReg
             && currentScaleContextReg == wantedContext
             && currentScaleBlockReg == wantedBlock;
@@ -789,23 +804,29 @@ module mkIM2PCoreWithArray#(
         lookaheadPreparedReg && vectorOpUsesScale(lookaheadWorkReg.vectorOp)
         && !lookaheadScaleValidReg && !lookaheadScaleRequestValidReg
         && !scaleOutstandingReg && !scaleRequestValidReg
-        && matrixStateReg == MatrixExecute && engine.active
+        && !pendingExecutionReg && !executionPreparingReg
+        && ((matrixStateReg == MatrixExecute && engine.active)
+            || matrixStateReg == MatrixWaitWork)
         && !(
             currentScaleValidReg
             && currentScaleContextReg == matrixScaleContextReg
                 + zeroExtend(lookaheadWorkReg.jStart)
             && currentScaleBlockReg
-                == lookaheadKStartReg / matrixScaleBlockSizeReg
+                == lookaheadInitialBlockReg
         )
         && !(
             nextScaleValidReg
             && nextScaleContextReg == matrixScaleContextReg
                 + zeroExtend(lookaheadWorkReg.jStart)
             && nextScaleBlockReg
-                == lookaheadKStartReg / matrixScaleBlockSizeReg
+                == lookaheadInitialBlockReg
         )
     );
-        ScaleBlockIndex block = lookaheadKStartReg / matrixScaleBlockSizeReg;
+        ScaleBlockIndex block = lookaheadInitialBlockReg;
+        dynamicAssert(hostBlockMatrixSpanFits(lookaheadWorkReg.scaleBase,
+            block, lookaheadWorkReg.scaleRowStride, 1, 0,
+            lookaheadWorkReg.jCount, fromInteger(storageBytes(valueOf(scaleBits)))),
+            "lookahead scale address range overflows");
         lookaheadScaleContextReg <= matrixScaleContextReg
             + zeroExtend(lookaheadWorkReg.jStart);
         lookaheadScaleBlockReg <= block;
@@ -930,11 +951,16 @@ module mkIM2PCoreWithArray#(
         && !scaleRequestValidReg
         && !engine.idle
     );
-        ScaleBlockIndex finalBlock =
-            (totalKReg - 1) / blockSizeReg;
         prefetchNeededReg <= False;
 
-        if (currentScaleBlockReg < finalBlock) begin
+        if (executionBlockEndReg < zeroExtend(totalKReg)) begin
+            if (matrixStateReg != MatrixIdle) begin
+                dynamicAssert(hostBlockMatrixSpanFits(matrixWorkReg.scaleBase,
+                    currentScaleBlockReg + 1, matrixWorkReg.scaleRowStride,
+                    1, 0, matrixWorkReg.jCount,
+                    fromInteger(storageBytes(valueOf(scaleBits)))),
+                    "prefetch scale address range overflows");
+            end
             ScaleRowRequest request = ScaleRowRequest {
                 contextId: currentScaleContextReg,
                 block: currentScaleBlockReg + 1,
@@ -947,6 +973,70 @@ module mkIM2PCoreWithArray#(
             scalePrefetchRequestsReg <= scalePrefetchRequestsReg + 1;
             if (matrixStateReg != MatrixIdle) begin
                 scaleReadRequestsReg <= scaleReadRequestsReg + 1;
+            end
+        end
+    endrule
+
+    rule finishExecutionPreparation (
+        matrixStateReg == MatrixIdle && !pendingExecutionReg
+        && executionPreparingReg && executionPosition.ready
+        && engine.idle && vectorUnit.ready && accumulator.idle
+    );
+        ExecuteCmd#(arrayDim, accRows) command = preparationCommandReg;
+        ScaleBlockIndex selectedBlock = executionPosition.blockIndex;
+        MatrixExtent blockRemaining = blockSizeReg - executionPosition.offset;
+        MatrixExtent kCount = zeroExtend(preparationKCountReg);
+        dynamicAssert(kCount <= blockRemaining,
+            "hardware K partial crosses a scale block boundary");
+        executionPreparingReg <= False;
+        executionBlockEndReg <= zeroExtend(preparationKStartReg)
+            + zeroExtend(blockRemaining);
+        Bool currentHit = currentScaleValidReg
+            && currentScaleContextReg == scalingContextReg
+            && currentScaleBlockReg == selectedBlock;
+        Bool nextHit = nextScaleValidReg
+            && nextScaleContextReg == scalingContextReg
+            && nextScaleBlockReg == selectedBlock;
+
+        if (currentHit) begin
+            executionScaleRowReg <= currentScaleRowReg;
+            executionUsesScaleReg <= True;
+            commandReg <= command;
+            acceptedInputRowsReg <= 0;
+            scaleCurrentHitsReg <= scaleCurrentHitsReg + 1;
+            engine.start(command.rowCount);
+        end
+        else if (nextHit) begin
+            executionScaleRowReg <= nextScaleRowReg;
+            executionUsesScaleReg <= True;
+            commandReg <= command;
+            acceptedInputRowsReg <= 0;
+            currentScaleValidReg <= True;
+            currentScaleContextReg <= nextScaleContextReg;
+            currentScaleBlockReg <= nextScaleBlockReg;
+            currentScaleRowReg <= nextScaleRowReg;
+            nextScaleValidReg <= False;
+            prefetchNeededReg <= True;
+            scaleNextHitsReg <= scaleNextHitsReg + 1;
+            engine.start(command.rowCount);
+        end
+        else begin
+            pendingExecutionReg <= True;
+            pendingCommandReg <= command;
+            pendingContextReg <= scalingContextReg;
+            pendingBlockReg <= selectedBlock;
+            scaleDemandMissesReg <= scaleDemandMissesReg + 1;
+            if (!scaleOutstandingReg && !scaleRequestValidReg) begin
+                ScaleRowRequest request = ScaleRowRequest {
+                    contextId: scalingContextReg,
+                    block: selectedBlock,
+                    kind: ScaleDemand
+                };
+                scaleRequestReg <= request;
+                outstandingRequestReg <= request;
+                scaleRequestValidReg <= True;
+                scaleOutstandingReg <= True;
+                scaleDemandRequestsReg <= scaleDemandRequestsReg + 1;
             end
         end
     endrule
@@ -987,7 +1077,8 @@ module mkIM2PCoreWithArray#(
         matrixStateReg == MatrixWaitWork
         && matmulScheduler.workValid
         && !weightLoadingReg
-        && !pendingExecutionReg
+        && !pendingExecutionReg && !executionPreparingReg
+        && !lookaheadPreparingReg
         && (!lookaheadPreparedReg
             || (!lookaheadActivationRequestValidReg
                 && !lookaheadWeightRequestValidReg
@@ -1082,6 +1173,7 @@ module mkIM2PCoreWithArray#(
         matrixFragmentAccumulateReg <= workScheduler.fragmentAccumulate;
         matrixFragmentEndsBlockReg <= workScheduler.fragmentEndsBlock;
         matrixFragmentBlockIndexReg <= workScheduler.fragmentBlockIndex;
+        matrixFragmentBlockRemainingReg <= workScheduler.fragmentBlockRemaining;
         matrixFragmentBankReg <= targetBank;
         workScheduler.acceptFragment;
 
@@ -1255,7 +1347,7 @@ module mkIM2PCoreWithArray#(
         && engine.idle
         && vectorUnit.ready
         && engine.weightsReady
-        && !pendingExecutionReg
+        && !pendingExecutionReg && !executionPreparingReg
         && activationSlotRowValid[
             activationSlotIndex(currentActivationSlotReg)
         ][0]
@@ -1268,17 +1360,20 @@ module mkIM2PCoreWithArray#(
         };
         Bool operationNeedsScale = vectorUnit.scalingSupported
             && vectorOpUsesScale(command.vectorOp);
-        UInt#(32) safeBlockSize = blockSizeReg == 0 ? 1 : blockSizeReg;
         UInt#(32) kCountWide = zeroExtend(matrixFragmentKCountReg);
         UInt#(32) remainingK = matrixFragmentKStartReg < totalKReg
             ? totalKReg - matrixFragmentKStartReg
             : 0;
-        UInt#(32) blockOffset = matrixFragmentKStartReg % safeBlockSize;
-        UInt#(32) blockRemaining = safeBlockSize - blockOffset;
-        ScaleBlockIndex selectedBlock =
-            matrixFragmentKStartReg / safeBlockSize;
+        UInt#(32) blockRemaining = matrixFragmentBlockRemainingReg;
+        ScaleBlockIndex selectedBlock = matrixFragmentBlockIndexReg;
 
         if (operationNeedsScale) begin
+            executionBlockEndReg <= zeroExtend(matrixFragmentKStartReg)
+                + zeroExtend(matrixFragmentBlockRemainingReg);
+            dynamicAssert(hostBlockMatrixSpanFits(matrixWorkReg.scaleBase,
+                selectedBlock, matrixWorkReg.scaleRowStride, 1, 0,
+                matrixWorkReg.jCount, fromInteger(storageBytes(valueOf(scaleBits)))),
+                "matrix scale address range overflows");
             dynamicAssert(
                 configurationValidReg,
                 "scaled matrix execution requires a scale snapshot"
@@ -1469,6 +1564,7 @@ module mkIM2PCoreWithArray#(
         matrixStateReg == MatrixExecute
         && engine.done
         && vectorUnit.ready
+        && accumulator.idle
     );
         engine.acknowledge;
         if (workScheduler.hasNextFragment) begin
@@ -1512,9 +1608,15 @@ module mkIM2PCoreWithArray#(
     rule issueMatrixOutputRequest (
         matrixStateReg == MatrixWriteOutput
         && !outputRequestValidReg
+        && !outputReadPendingReg
         && zeroExtend(outputRowReg) < matrixWorkReg.iCount
     );
         HostRequestTag tag = matrixTag(outputTagSequenceReg);
+        dynamicAssert(hostBlockMatrixSpanFits(matrixWorkReg.outputBase,
+            matrixBlockOutputReg ? matrixFragmentBlockIndexReg : 0,
+            matrixOutputBlockStrideReg, zeroExtend(outputRowReg) + 1,
+            matrixWorkReg.outputRowStride, matrixWorkReg.jCount, 4),
+            "matrix output address range overflows");
         HostAddress blockBase = matrixBlockOutputReg
             ? matrixBlockAddress(
                 matrixWorkReg.outputBase,
@@ -1530,8 +1632,16 @@ module mkIM2PCoreWithArray#(
 
         outputRequestTagReg <= tag;
         outputRequestAddressReg <= address;
-        outputRequestValidReg <= True;
+        accumulator.requestReadRow(zeroExtend(outputRowReg));
+        outputReadPendingReg <= True;
         outputTagSequenceReg <= outputTagSequenceReg + 1;
+    endrule
+
+    rule publishMatrixOutputRequest (
+        outputReadPendingReg && accumulator.readResponseValid
+    );
+        outputReadPendingReg <= False;
+        outputRequestValidReg <= True;
         outputWriteRequestsReg <= outputWriteRequestsReg + 1;
     endrule
 
@@ -1539,7 +1649,7 @@ module mkIM2PCoreWithArray#(
         matrixStateReg == MatrixWaitSchedulerDone && matmulScheduler.done
     );
         dynamicAssert(
-            !outputRequestValidReg,
+            !outputRequestValidReg && !outputReadPendingReg && accumulator.idle,
             "matmul completed before C write acknowledgement"
         );
         workCyclesReg <= workCyclesReg + 1;
@@ -1617,11 +1727,15 @@ module mkIM2PCoreWithArray#(
             commandReg.accumulate
         );
 
-        if (anyTrue(transformed.valids)) begin
-            engine.noteCommitted(transformed.valids);
-        end
-
         vectorUnit.consume;
+    endrule
+
+    (* descending_urgency = "completeAccumulatorUpdate, engine_advanceArray" *)
+    rule completeAccumulatorUpdate (accumulator.completionValid);
+        if (anyTrue(accumulator.completedValids)) begin
+            engine.noteCommitted(accumulator.completedValids);
+        end
+        accumulator.consumeCompletion;
     endrule
 
     method Action configureScaling(
@@ -1632,7 +1746,7 @@ module mkIM2PCoreWithArray#(
         matrixStateReg == MatrixIdle
         && engine.idle
         && vectorUnit.ready
-        && !pendingExecutionReg
+        && !pendingExecutionReg && !executionPreparingReg
         && !scaleOutstandingReg
         && !scaleRequestValidReg
     );
@@ -1751,18 +1865,22 @@ module mkIM2PCoreWithArray#(
         matrixStateReg == MatrixIdle
         && engine.idle
         && vectorUnit.ready
-        && !pendingExecutionReg
+        && accumulator.idle
+        && !pendingExecutionReg && !executionPreparingReg
         && !scaleOutstandingReg
         && !scaleRequestValidReg
     );
         MatrixExtent dimension = fromInteger(valueOf(arrayDim));
         dynamicAssert(reductionCount > 0, "matmul K must be positive");
+        dynamicAssert(reductionCount <= maxBound - kOrigin,
+            "matmul K extent overflows");
         dynamicAssert(
             !vectorOpUsesScale(vectorOp) || scaleBlockSize > 0,
             "scaled matmul block size must be positive"
         );
         dynamicAssert(
-            !vectorOpUsesScale(vectorOp) || scaleTotalK >= kOrigin + reductionCount,
+            !vectorOpUsesScale(vectorOp) || (kOrigin <= scaleTotalK
+                && reductionCount <= scaleTotalK - kOrigin),
             "scaled matmul exceeds total K"
         );
 
@@ -1796,6 +1914,11 @@ module mkIM2PCoreWithArray#(
         });
 
         matrixJobIdReg <= jobId;
+        // Provider logical addresses can name different weight data in each job.
+        // Residency is reusable only within the current job's lifetime.
+        for (Integer bank = 0; bank < 2; bank = bank + 1) begin
+            residentWeightValid[bank] <= False;
+        end
         matrixModeReg <= mode;
         matrixActivationBaseReg <= activationBase;
         matrixActivationStrideReg <= activationRowStride;
@@ -1807,6 +1930,9 @@ module mkIM2PCoreWithArray#(
         matrixBlockOutputReg <= vectorOp == VectorExternal;
         UInt#(96) outputBlockStride =
             zeroExtend(rowCount) * zeroExtend(outputRowStride);
+        dynamicAssert(vectorOp != VectorExternal
+            || outputBlockStride <= 96'hffffffffffffffff,
+            "output block stride overflows host address width");
         matrixOutputBlockStrideReg <= truncate(outputBlockStride);
         matrixStartCycleReg <= cycleReg;
         workActiveReg <= True;
@@ -2132,11 +2258,12 @@ module mkIM2PCoreWithArray#(
     endmethod
     method Vector#(arrayDim, acc_t) outputWriteRequestValues
             if (outputRequestValidReg);
-        return accumulator.readRow(zeroExtend(outputRowReg));
+        return accumulator.readResponse;
     endmethod
     method Action putOutputWriteResponse(HostRequestTag tag)
             if (outputRequestValidReg);
         dynamicAssert(tag == outputRequestTagReg, "output response tag mismatch");
+        accumulator.consumeReadResponse;
         outputRequestValidReg <= False;
         outputWriteResponsesReg <= outputWriteResponsesReg + 1;
 
@@ -2257,7 +2384,7 @@ module mkIM2PCoreWithArray#(
 
     method Action beginWeightLoad if (
         matrixStateReg == MatrixIdle
-        && engine.idle && vectorUnit.ready && !pendingExecutionReg
+        && engine.idle && vectorUnit.ready && !pendingExecutionReg && !executionPreparingReg
     );
         engine.beginWeightLoad;
     endmethod
@@ -2267,7 +2394,7 @@ module mkIM2PCoreWithArray#(
         Vector#(arrayDim, weight_t) weights
     ) if (
         matrixStateReg == MatrixIdle
-        && engine.idle && vectorUnit.ready && !pendingExecutionReg
+        && engine.idle && vectorUnit.ready && !pendingExecutionReg && !executionPreparingReg
     );
         engine.loadWeightRow(row, weights);
     endmethod
@@ -2283,11 +2410,18 @@ module mkIM2PCoreWithArray#(
         && engine.idle
         && vectorUnit.ready
         && engine.weightsReady
-        && !pendingExecutionReg
+        && !pendingExecutionReg && !executionPreparingReg
+        && accumulator.idle
     );
+        UInt#(TAdd#(TLog#(accRows), TLog#(TAdd#(arrayDim, 1)))) baseWide =
+            zeroExtend(command.accumulatorBaseRow);
+        UInt#(TAdd#(TLog#(accRows), TLog#(TAdd#(arrayDim, 1)))) countWide =
+            zeroExtend(command.rowCount);
         dynamicAssert(
-            command.accumulatorBaseRow
-                <= fromInteger(valueOf(freeAccumulatorRows)),
+            command.rowCount > 0
+                && command.rowCount <= fromInteger(valueOf(arrayDim))
+                && baseWide < fromInteger(valueOf(accRows))
+                && countWide <= fromInteger(valueOf(accRows)) - baseWide,
             "accumulator row range exceeds storage"
         );
         dynamicAssert(
@@ -2299,13 +2433,9 @@ module mkIM2PCoreWithArray#(
 
         Bool operationNeedsScale = vectorUnit.scalingSupported
             && vectorOpUsesScale(command.vectorOp);
-        UInt#(32) safeBlockSize = blockSizeReg == 0 ? 1 : blockSizeReg;
         UInt#(32) kCountWide = zeroExtend(kCount);
         UInt#(32) remainingK =
             kStart < totalKReg ? totalKReg - kStart : 0;
-        UInt#(32) blockOffset = kStart % safeBlockSize;
-        UInt#(32) blockRemaining = safeBlockSize - blockOffset;
-        ScaleBlockIndex selectedBlock = kStart / safeBlockSize;
 
         if (operationNeedsScale) begin
             dynamicAssert(
@@ -2316,61 +2446,11 @@ module mkIM2PCoreWithArray#(
                 kCountWide <= remainingK,
                 "execution K range exceeds total K"
             );
-            dynamicAssert(
-                kCountWide <= blockRemaining,
-                "hardware K partial crosses a scale block boundary"
-            );
-
-            Bool currentHit = currentScaleValidReg
-                && currentScaleContextReg == scalingContextReg
-                && currentScaleBlockReg == selectedBlock;
-            Bool nextHit = nextScaleValidReg
-                && nextScaleContextReg == scalingContextReg
-                && nextScaleBlockReg == selectedBlock;
-
-            if (currentHit) begin
-                executionScaleRowReg <= currentScaleRowReg;
-                executionUsesScaleReg <= True;
-                commandReg <= command;
-                acceptedInputRowsReg <= 0;
-                scaleCurrentHitsReg <= scaleCurrentHitsReg + 1;
-                engine.start(command.rowCount);
-            end
-            else if (nextHit) begin
-                executionScaleRowReg <= nextScaleRowReg;
-                executionUsesScaleReg <= True;
-                commandReg <= command;
-                acceptedInputRowsReg <= 0;
-                currentScaleValidReg <= True;
-                currentScaleContextReg <= nextScaleContextReg;
-                currentScaleBlockReg <= nextScaleBlockReg;
-                currentScaleRowReg <= nextScaleRowReg;
-                nextScaleValidReg <= False;
-                prefetchNeededReg <= True;
-                scaleNextHitsReg <= scaleNextHitsReg + 1;
-                engine.start(command.rowCount);
-            end
-            else begin
-                pendingExecutionReg <= True;
-                pendingCommandReg <= command;
-                pendingContextReg <= scalingContextReg;
-                pendingBlockReg <= selectedBlock;
-                scaleDemandMissesReg <= scaleDemandMissesReg + 1;
-
-                if (!scaleOutstandingReg && !scaleRequestValidReg) begin
-                    ScaleRowRequest request = ScaleRowRequest {
-                        contextId: scalingContextReg,
-                        block: selectedBlock,
-                        kind: ScaleDemand
-                    };
-                    scaleRequestReg <= request;
-                    outstandingRequestReg <= request;
-                    scaleRequestValidReg <= True;
-                    scaleOutstandingReg <= True;
-                    scaleDemandRequestsReg <=
-                        scaleDemandRequestsReg + 1;
-                end
-            end
+            executionPosition.start(kStart, blockSizeReg);
+            preparationCommandReg <= command;
+            preparationKStartReg <= kStart;
+            preparationKCountReg <= kCount;
+            executionPreparingReg <= True;
         end
         else begin
             executionScaleRowReg <= replicate(unpack(0));
@@ -2397,8 +2477,9 @@ module mkIM2PCoreWithArray#(
     endmethod
 
     method Bool idle = matrixStateReg == MatrixIdle
-        && engine.idle && vectorUnit.ready && !pendingExecutionReg;
-    method Bool executionDone = engine.done && vectorUnit.ready;
+        && engine.idle && vectorUnit.ready && !pendingExecutionReg && !executionPreparingReg
+        && accumulator.idle;
+    method Bool executionDone = engine.done && vectorUnit.ready && accumulator.idle;
 
     method Action acknowledgeExecution if (
         matrixStateReg == MatrixIdle && engine.done && vectorUnit.ready
@@ -2411,18 +2492,29 @@ module mkIM2PCoreWithArray#(
         Vector#(arrayDim, acc_t) values
     ) if (
         matrixStateReg == MatrixIdle
-        && engine.idle && vectorUnit.ready && !pendingExecutionReg
+        && engine.idle && vectorUnit.ready && !pendingExecutionReg && !executionPreparingReg
     );
         accumulator.writeRow(row, values);
     endmethod
 
-    method Vector#(arrayDim, acc_t) readAccumulatorRow(
-        RowAddress#(accRows) row
-    ) if (
+    method Action requestReadAccumulatorRow(RowAddress#(accRows) row) if (
         matrixStateReg == MatrixIdle
-        && !engine.active && vectorUnit.ready && !pendingExecutionReg
+        && !engine.active && vectorUnit.ready && !pendingExecutionReg && !executionPreparingReg
     );
-        return accumulator.readRow(row);
+        accumulator.requestReadRow(row);
+    endmethod
+
+    method Bool accumulatorReadResponseValid =
+        matrixStateReg == MatrixIdle && accumulator.readResponseValid;
+
+    method Vector#(arrayDim, acc_t) readAccumulatorRowResponse
+            if (matrixStateReg == MatrixIdle);
+        return accumulator.readResponse;
+    endmethod
+
+    method Action consumeAccumulatorReadResponse
+            if (matrixStateReg == MatrixIdle);
+        accumulator.consumeReadResponse;
     endmethod
 
 endmodule

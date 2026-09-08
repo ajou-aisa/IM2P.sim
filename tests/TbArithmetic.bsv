@@ -12,13 +12,13 @@ module mkTbArithmetic(Empty);
         Int#(8) intA = -7;
         Int#(8) intB = 9;
         Int#(16) intProduct = arithmeticMultiply(intA, intB);
-        Int#(DefaultAccumulatorWidth) intAccumulated =
+        Int#(A16AccumulatorWidth) intAccumulated =
             arithmeticAccumulate(100, intProduct);
         Int#(16) positiveOne = 1;
         Int#(16) negativeOne = -1;
-        Int#(DefaultAccumulatorWidth) beyondInt32Max =
+        Int#(A16AccumulatorWidth) beyondInt32Max =
             arithmeticAccumulate(2147483647, positiveOne);
-        Int#(DefaultAccumulatorWidth) beyondInt32Min =
+        Int#(A16AccumulatorWidth) beyondInt32Min =
             arithmeticAccumulate(-2147483648, negativeOne);
 
         Half fpA = fromInteger(2);

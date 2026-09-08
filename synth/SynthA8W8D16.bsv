@@ -8,11 +8,11 @@ module mkSynthA8W8D16(IM2PCoreIfc#(
     16, // Array DIM
     1, // PE latency
     16, // Vector Lane
-    DefaultAccumulatorRows, // Accumulator Rows
-    Int#(8), // input width
-    Int#(8), // weight width
-    Int#(16), // product width
-    Int#(DefaultAccumulatorWidth), // accumulator/output-request width
+    IntegerAccumulatorRows#(16, A8AccumulatorWidth), // Accumulator Rows
+    Int#(A8InputWidth), // input width
+    Int#(A8WeightWidth), // weight width
+    Int#(A8ProductWidth), // product width
+    Int#(A8AccumulatorWidth), // accumulator/output-request width
     Int#(8) // scale width
 ));
     let core <- mkIM2PCore;

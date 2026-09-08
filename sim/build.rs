@@ -49,6 +49,28 @@ fn main() {
         })
         .expect("repository root must be discoverable");
     let artifact_id = format!("a{activation_bits}-w{weight_bits}-d{dim}");
+    let generator = root.join("scripts/im2p_config.py");
+    let python = env::var("PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let generated = Command::new(python)
+        .arg(&generator)
+        .args(["--rust", &activation_bits, &weight_bits, &dim])
+        .output()
+        .expect("profile generator must run");
+    assert!(
+        generated.status.success(),
+        "profile generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
+    fs::write(out_dir.join("im2p_profile.rs"), generated.stdout)
+        .expect("generated Rust profile must be writable");
+    println!("cargo:rerun-if-env-changed=PYTHON");
+    println!("cargo:rerun-if-changed={}", generator.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("config/im2p_profiles.json").display()
+    );
+    println!("cargo:rerun-if-changed=ffi/im2p_config.h");
     let build_dir = env::var_os("IM2P_BUILD_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("build"));

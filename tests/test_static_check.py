@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import shutil
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -191,6 +193,39 @@ def test_contract_diagnostics_render_root_and_sibling_paths() -> None:
         assert f"{label} missing required contract: test" in stderr.getvalue()
 
 
+def test_integer_profile_contracts_reject_width_and_capacity_drift() -> None:
+    static_check.check_integer_width_contracts()
+    mutations = (
+        ("synth/SynthA8W8D16.bsv", "Int#(A8AccumulatorWidth)", "Int#(A16AccumulatorWidth)"),
+        ("synth/SynthA16W16D64.bsv", "Int#(A16AccumulatorWidth)", "Int#(A8AccumulatorWidth)"),
+        ("synth/SynthA4W4D32.bsv", "Int#(A4WeightWidth)", "Int#(A8WeightWidth)"),
+        ("synth/SynthA8W8D16.bsv", "IntegerAccumulatorRows#(16, A8AccumulatorWidth)", "256"),
+        ("synth/SynthA8W8D16.bsv", "16, // Array DIM", "32, // Array DIM"),
+        ("src/array/SystolicArrayInt8x64.bsv", "Int#(A8AccumulatorWidth)", "Int#(64)"),
+        ("src/common/Config.bsv", "typedef 32 A8AccumulatorWidth;", "typedef 64 A8AccumulatorWidth;"),
+    )
+    with tempfile.TemporaryDirectory(prefix="im2p-static-profiles-") as raw:
+        root = Path(raw)
+        shutil.copytree(ROOT / "src", root / "src")
+        shutil.copytree(ROOT / "synth", root / "synth")
+        (root / "sim/ffi").mkdir(parents=True)
+        shutil.copy2(ROOT / "sim/ffi/im2p_config.h", root / "sim/ffi/im2p_config.h")
+        with patch.multiple(static_check, ROOT=root, SRC=root / "src", SYNTH=root / "synth"):
+            for relative, before, after in mutations:
+                path = root / relative
+                original = path.read_text()
+                assert before in original, relative
+                path.write_text(original.replace(before, after, 1))
+                try:
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        static_check.check_integer_width_contracts()
+                except SystemExit as failure:
+                    assert failure.code == 1
+                else:
+                    raise AssertionError(f"invalid profile accepted: {relative}")
+                path.write_text(original)
+
+
 def main() -> int:
     test_current_exsia_lifecycle_contract()
     test_exsia_lifecycle_rejects_member_quantize_wrapper()
@@ -204,6 +239,7 @@ def main() -> int:
     test_exsia_lifecycle_rejects_third_production_mode()
     test_exsia_lifecycle_ignores_nonproduction_duplicate_calls()
     test_contract_diagnostics_render_root_and_sibling_paths()
+    test_integer_profile_contracts_reject_width_and_capacity_drift()
     print("STATIC CHECK REGRESSIONS PASS")
     return 0
 

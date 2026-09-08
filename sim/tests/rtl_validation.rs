@@ -235,10 +235,10 @@ fn accumulator_row_address_is_checked() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
     let values = vec![0_i64; simulator.dim()];
     assert_eq!(
-        simulator.write_accumulator_row(256, &values),
+        simulator.write_accumulator_row(im2p_sim::profile::IM2P_ACCUMULATOR_ROWS, &values),
         Err(SimError::InvalidAccumulatorRow {
-            maximum: 255,
-            actual: 256,
+            maximum: im2p_sim::profile::IM2P_ACCUMULATOR_ROWS - 1,
+            actual: im2p_sim::profile::IM2P_ACCUMULATOR_ROWS,
         })
     );
     Ok(())

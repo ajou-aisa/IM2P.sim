@@ -38,8 +38,8 @@ function Vector#(16, Int#(8)) activationRow(UInt#(1) row);
 endfunction
 
 // Expected accumulator contents after multiplying by the identity matrix.
-function Vector#(16, Int#(DefaultAccumulatorWidth)) expectedRow(UInt#(1) row);
-    Vector#(16, Int#(DefaultAccumulatorWidth)) expected = replicate(0);
+function Vector#(16, Int#(A8AccumulatorWidth)) expectedRow(UInt#(1) row);
+    Vector#(16, Int#(A8AccumulatorWidth)) expected = replicate(0);
 
     if (row == 0) begin
         expected[0] = 5;
@@ -61,6 +61,8 @@ typedef enum {
     FeedRow0,
     FeedRow1,
     Wait,
+    ReadRow0,
+    RequestRow1,
     CheckRow0
 } TbState deriving (Bits, Eq, FShow);
 
@@ -71,17 +73,17 @@ module mkTbSynthA8W8D16(Empty);
         16,
         1,
         16,
-        DefaultAccumulatorRows,
+        IntegerAccumulatorRows#(16, A8AccumulatorWidth),
         Int#(8),
         Int#(8),
         Int#(16),
-        Int#(DefaultAccumulatorWidth),
+        Int#(A8AccumulatorWidth),
         Int#(8)
     ) dut <- mkSynthA8W8D16;
 
     Reg#(TbState) state <- mkReg(BeginWeights);
     Reg#(UInt#(4)) weightRow <- mkReg(0);
-    Reg#(Vector#(16, Int#(DefaultAccumulatorWidth))) observedRow0 <- mkRegU;
+    Reg#(Vector#(16, Int#(A8AccumulatorWidth))) observedRow0 <- mkRegU;
     Reg#(UInt#(11)) watchdog <- mkReg(0);
 
     // Prevent a deadlocked handshake from leaving simulation running forever.
@@ -139,13 +141,25 @@ module mkTbSynthA8W8D16(Empty);
 
     // Wait for all systolic, vector, and accumulator stages to drain.
     rule waitExecution (state == Wait && dut.executionDone);
-        observedRow0 <= dut.readAccumulatorRow(0);
+        dut.requestReadAccumulatorRow(0);
+        state <= ReadRow0;
+    endrule
+
+    rule captureRow0 (state == ReadRow0);
+        observedRow0 <= dut.readAccumulatorRowResponse;
+        dut.consumeAccumulatorReadResponse;
+        state <= RequestRow1;
+    endrule
+
+    rule requestRow1 (state == RequestRow1);
+        dut.requestReadAccumulatorRow(1);
         state <= CheckRow0;
     endrule
 
     // Read row 1 in the following cycle and compare both logical rows.
     rule checkResults (state == CheckRow0);
-        Vector#(16, Int#(DefaultAccumulatorWidth)) observedRow1 = dut.readAccumulatorRow(1);
+        Vector#(16, Int#(A8AccumulatorWidth)) observedRow1 = dut.readAccumulatorRowResponse;
+        dut.consumeAccumulatorReadResponse;
         Bool passed = observedRow0 == expectedRow(0)
             && observedRow1 == expectedRow(1);
 

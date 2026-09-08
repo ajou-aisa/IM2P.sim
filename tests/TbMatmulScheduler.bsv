@@ -36,10 +36,10 @@ function MatmulDescriptor descriptorFor(
     return MatmulDescriptor {
         jobId: 9,
         mode: mode,
-        activationBase: 64'h1000,
-        weightBase: 64'h2000,
-        scaleBase: 64'h3000,
-        outputBase: 64'h4000,
+        activationBase: 64'h100001000,
+        weightBase: 64'h200002000,
+        scaleBase: 64'h300003000,
+        outputBase: 64'h400004000,
         activationRowStride: 16,
         weightRowStride: 16,
         scaleRowStride: 16,
@@ -76,6 +76,18 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule startFull (state == TbStartFull);
+        if (!hostMatrixSpanFits(64'hfffffffffffffffc, 1, 0, 1, 4)
+                || hostMatrixSpanFits(64'hfffffffffffffffd, 1, 0, 1, 4)
+                || hostMatrixSpanFits(1, 32'hffffffff, 64'hffffffffffffffff, 1, 1)
+                || hostMatrixSpanFits(0, 0, 0, 1, 1)
+                || hostMatrixSpanFits(0, 1, 0, 0, 1)
+                || !hostBlockMatrixSpanFits(64'hffffffffffffff00, 3, 64,
+                    2, 32, 8, 4)
+                || hostBlockMatrixSpanFits(64'hffffffffffffff01, 3, 64,
+                    2, 32, 8, 4)) begin
+            $display("MATMUL SCHEDULER: FAIL widened address bounds");
+            $finish(1);
+        end
         dut.start(descriptorFor(FullMatrix, 6, 5));
         state <= TbWaitFullWork;
     endrule
@@ -94,7 +106,12 @@ module mkTbMatmulScheduler(Empty);
         if (work.iStart != expectedI
                 || work.jStart != expectedJ
                 || work.iCount != expectedICount
-                || work.jCount != expectedJCount) begin
+                || work.jCount != expectedJCount
+                || work.activationBase != 64'h100001000 + zeroExtend(expectedI) * 16
+                || work.weightBase != 64'h200002000 + zeroExtend(expectedJ)
+                || work.scaleBase != 64'h300003000 + zeroExtend(expectedJ)
+                || work.outputBase != 64'h400004000 + zeroExtend(expectedI) * 32
+                    + zeroExtend(expectedJ) * 4) begin
             $display(
                 "MATMUL SCHEDULER: FAIL work=%0d i=%0d/%0d j=%0d/%0d",
                 fullWorkCount,
@@ -108,6 +125,20 @@ module mkTbMatmulScheduler(Empty);
 
         dut.acceptWork;
         state <= TbCompleteFullWork;
+    endrule
+
+    rule inspectFullLookahead (
+        state == TbWaitFullWork && fullWorkCount < 2 && dut.lookaheadValid
+    );
+        MatmulWork#(4) lookahead = dut.lookaheadWork;
+        if (lookahead.iStart != 4
+                || lookahead.activationBase != 64'h100001040
+                || lookahead.outputBase != 64'h400004080
+                || lookahead.weightBase != 64'h200002000
+                || lookahead.scaleBase != 64'h300003000) begin
+            $display("MATMUL SCHEDULER: FAIL full lookahead address sequence");
+            $finish(1);
+        end
     endrule
 
     rule completeFullWork (state == TbCompleteFullWork);
@@ -211,7 +242,9 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule inspectSecondWork (state == TbWaitSecondWork && dut.workValid);
-        if (dut.work.stripeId != 4 || dut.work.iStart != 1) begin
+        if (dut.work.stripeId != 4 || dut.work.iStart != 1
+                || dut.work.activationBase != 64'h5100
+                || dut.work.outputBase != 64'h400004020) begin
             $display("MATMUL SCHEDULER: FAIL lookahead promotion");
             $finish(1);
         end
@@ -225,7 +258,9 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule inspectThirdWork (state == TbWaitThirdWork && dut.workValid);
-        if (dut.work.stripeId != 5 || dut.work.iStart != 2) begin
+        if (dut.work.stripeId != 5 || dut.work.iStart != 2
+                || dut.work.activationBase != 64'h5200
+                || dut.work.outputBase != 64'h400004040) begin
             $display("MATMUL SCHEDULER: FAIL second lookahead promotion");
             $finish(1);
         end
@@ -300,7 +335,9 @@ module mkTbMatmulScheduler(Empty);
     endrule
 
     rule inspectFinalWork (state == TbWaitFinalWork && dut.workValid);
-        if (dut.work.stripeId != 6 || dut.work.iStart != 3) begin
+        if (dut.work.stripeId != 6 || dut.work.iStart != 3
+                || dut.work.activationBase != 64'h5300
+                || dut.work.outputBase != 64'h400004060) begin
             $display("MATMUL SCHEDULER: FAIL final stripe promotion");
             $finish(1);
         end

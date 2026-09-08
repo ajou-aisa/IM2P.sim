@@ -2,6 +2,8 @@ package SystolicArrayInt8x64;
 
 import Vector::*;
 
+import Config::*;
+
 import SystolicArray::*;
 import SystolicArrayTiled::*;
 
@@ -9,10 +11,10 @@ import SystolicArrayTiled::*;
 module mkSystolicArrayTileInt8x16(SystolicArrayIfc#(
     16,
     1,
-    Int#(8),
-    Int#(8),
-    Int#(16),
-    Int#(64)
+    Int#(A8InputWidth),
+    Int#(A8WeightWidth),
+    Int#(A8ProductWidth),
+    Int#(A8AccumulatorWidth)
 ));
     let array <- mkSystolicArray;
     return array;
@@ -22,10 +24,10 @@ endmodule
 module mkSystolicArrayInt8x64(SystolicArrayIfc#(
     64,
     1,
-    Int#(8),
-    Int#(8),
-    Int#(16),
-    Int#(64)
+    Int#(A8InputWidth),
+    Int#(A8WeightWidth),
+    Int#(A8ProductWidth),
+    Int#(A8AccumulatorWidth)
 ));
     Vector#(
         4,
@@ -34,10 +36,10 @@ module mkSystolicArrayInt8x64(SystolicArrayIfc#(
             SystolicArrayIfc#(
                 16,
                 1,
-                Int#(8),
-                Int#(8),
-                Int#(16),
-                Int#(64)
+                Int#(A8InputWidth),
+                Int#(A8WeightWidth),
+                Int#(A8ProductWidth),
+                Int#(A8AccumulatorWidth)
             )
         )
     ) tiles <- replicateM(replicateM(mkSystolicArrayTileInt8x16));

@@ -11,21 +11,19 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.real_lib_manifest import ArtifactRow, read_manifest_summary
+from scripts.im2p_config import ProfileConfig, profile_config
+from scripts.real_lib_manifest import ArtifactRow, read_manifest_summary, verify_manifest
+from scripts.real_lib_materialize import SELECTED_ARTIFACTS
 
 IDENTITIES = tuple((bits, bits, dim) for bits in (4, 8, 16) for dim in (16, 32, 64))
 
 
-class MatrixRow(TypedDict):
+class MatrixRow(ProfileConfig):
     id: str
-    activation_bits: int
-    weight_bits: int
-    dim: int
     returncode: int
     manifest: str
     fingerprint: str
@@ -66,11 +64,19 @@ def run_one(
         args.build_dir / "selected" / identity / "current" / "real-lib.json"
     )
     row: MatrixRow = {
-        "id": identity, "activation_bits": bits, "weight_bits": weight_bits,
-        "dim": dim, "returncode": result.returncode, "manifest": str(manifest.resolve()),
+        **profile_config(bits, weight_bits, dim),
+        "id": identity, "returncode": result.returncode, "manifest": str(manifest.resolve()),
         "fingerprint": "", "manifest_sha256": "", "artifacts": [],
     }
     if result.returncode == 0:
+        valid, detail = verify_manifest(
+            manifest.resolve(), expected_identity=identity,
+            expected_block_size=args.block_size, expected_artifacts=SELECTED_ARTIFACTS,
+        )
+        if not valid:
+            row["returncode"] = 1
+            print(f"REAL_LIB_MATRIX_VERIFY FAIL id={identity} detail={detail}", file=sys.stderr)
+            return row
         data = manifest.read_bytes()
         fingerprint, artifacts = read_manifest_summary(manifest)
         row.update({

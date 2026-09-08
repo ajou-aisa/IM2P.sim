@@ -19,13 +19,21 @@ fn stripe(id: u32, row: usize) -> ActivationStripe {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SecondPublish {
+    Scheduled,
+    AtCycle(u64),
+    DuringFinalOutput,
+}
+use SecondPublish::{AtCycle, DuringFinalOutput, Scheduled};
+
 fn run(
     publish_cycles: &[u64],
     padded: bool,
     reduction: usize,
     tile_j_columns: usize,
     scaled: bool,
-    exact_second_publish_cycle: Option<u64>,
+    second_publish: SecondPublish,
 ) -> Result<
     (
         Vec<i32>,
@@ -90,12 +98,25 @@ fn run(
     // is intentionally an iteration, not cycle, cap.
     let iteration_limit = publish_cycles.iter().copied().max().unwrap_or(0)
         + scheduled_work * (16 * dim as u64 + 2 * reduction as u64 + 128);
+    let exact_second_publish_cycle = match second_publish {
+        AtCycle(cycle) => Some(cycle),
+        Scheduled | DuringFinalOutput => None,
+    };
+    let mut release_output_at = None;
     let mut next = 0;
     let mut written = 0;
     let mut prepared_ids = Vec::new();
     let mut completions = Vec::with_capacity(shape.m);
     for cycle in 0..iteration_limit {
         while next < publish_cycles.len() && publish_cycles[next] <= cycle && job.npu_ready() {
+            if next == 1
+                && matches!(second_publish, DuringFinalOutput)
+                && !job
+                    .pending_output_region()
+                    .is_some_and(|(row, column)| row == 0 && column + tile_j_columns >= shape.n)
+            {
+                break;
+            }
             if next == 1 {
                 if let Some(target) = exact_second_publish_cycle {
                     job.publish_stripe_layout_at_cycle(
@@ -113,8 +134,19 @@ fn run(
         }
         if let Some(row) = job.pending_activation_row() {
             job.supply_activation_row(row, &activations[row * a_stride..][..shape.k])?;
+            if row == 1
+                && matches!(second_publish, DuringFinalOutput)
+                && release_output_at.is_none()
+            {
+                release_output_at = Some(cycle + u64::try_from(dim / 2).unwrap());
+            }
         }
-        if let Some((row, column)) = job.pending_output_region() {
+        if let Some((row, column)) = job.pending_output_region().filter(|(row, _)| {
+            *row != 0
+                || next < 2
+                || !matches!(second_publish, DuringFinalOutput)
+                || release_output_at.is_some_and(|release| cycle >= release)
+        }) {
             let values = job.take_output_region(row, column)?;
             output[row * c_stride + column..][..values.len()].copy_from_slice(&values);
             written += values.len();
@@ -173,8 +205,8 @@ fn run(
 
 #[test]
 fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Result<(), SimError> {
-    let (_, stats, _, completions) = run(&[0, 13], false, 35, 2, false, Some(40))?;
-    let (_, repeated, _, repeated_completions) = run(&[0, 13], false, 35, 2, false, Some(40))?;
+    let (_, stats, _, completions) = run(&[0, 13], false, 35, 2, false, AtCycle(40))?;
+    let (_, repeated, _, repeated_completions) = run(&[0, 13], false, 35, 2, false, AtCycle(40))?;
     assert!(stats.current_stripe_completion_cycle > 100);
     assert_eq!(stats.lookahead_publish_cycle, 40);
     assert!(stats.lookahead_publish_cycle < stats.lookahead_first_activation_cycle);
@@ -238,9 +270,9 @@ fn publish_starts_immediate_a_w_preparation_before_current_completion() -> Resul
 
 #[test]
 fn published_lookahead_has_no_host_wait_and_late_publish_waits() -> Result<(), SimError> {
-    let (padded, stats, _, _) = run(&[0, 37, 151, 200], true, 35, 2, false, None)?;
-    let (packed, _, _, _) = run(&[0, 1, 2, 3], false, 35, 2, false, None)?;
-    let (_, late, _, _) = run(&[0, 800, 801, 802], false, 35, 2, false, None)?;
+    let (padded, stats, _, _) = run(&[0, 37, 151, 200], true, 35, 2, false, Scheduled)?;
+    let (packed, _, _, _) = run(&[0, 1, 2, 3], false, 35, 2, false, Scheduled)?;
+    let (_, late, _, _) = run(&[0, 800, 801, 802], false, 35, 2, false, Scheduled)?;
     assert_eq!(padded, packed);
     assert_eq!(stats.stripe_host_wait_cycles, 0);
     assert!(late.stripe_host_wait_cycles > 0);
@@ -258,7 +290,7 @@ fn published_lookahead_has_no_host_wait_and_late_publish_waits() -> Result<(), S
 
 #[test]
 fn only_one_immediate_stripe_is_prepared_and_weights_are_reused() -> Result<(), SimError> {
-    let (_, stats, prepared_ids, _) = run(&[0, 20, 21, 22], false, 16, 3, true, None)?;
+    let (_, stats, prepared_ids, _) = run(&[0, 20, 21, 22], false, 16, 3, true, Scheduled)?;
     assert_eq!(stats.stripes_published, 4);
     assert!(stats.lookahead_weight_reuse_hits > 0);
     assert!(stats.lookahead_weight_requests < stats.weight_read_requests);
@@ -285,7 +317,7 @@ fn scale_miss_is_requested_before_current_completion() -> Result<(), SimError> {
         .expect("valid test dimension");
     let reduction = (dim + 3).max(35);
     let publish = if dim == 64 { 1500 } else { 300 };
-    let (_, stats, _, _) = run(&[0, publish], false, reduction, 2, true, None)?;
+    let (_, stats, _, _) = run(&[0, publish], false, reduction, 2, true, Scheduled)?;
     println!(
         "scale miss requests={} reuses={} publish={} request={} complete={}",
         stats.lookahead_scale_requests,
@@ -302,22 +334,16 @@ fn scale_miss_is_requested_before_current_completion() -> Result<(), SimError> {
 
 #[test]
 fn partial_preparation_reuses_every_fetched_weight_row() -> Result<(), SimError> {
-    // `publish_cycles` is the host service-loop index, not the RTL cycle
-    // counter. Batched response service commits W on the budgeted edge instead
-    // of adding a second pulse edge, so publish late enough to leave a strict
-    // nonzero subset of lookahead rows fetched before current completion.
+    // Publish on the current final output, then hold its ACK until the next
+    // activation request plus DIM/2 service edges. This leaves a real partial
+    // weight fetch without assuming any fixed pipeline latency.
     let dim = option_env!("IM2P_DIM")
         .unwrap_or("16")
         .parse::<u64>()
         .expect("valid test dimension");
     let reduction = usize::try_from((dim + 3).max(35)).expect("test reduction fits usize");
-    let partial_publish = match dim {
-        64 => 1020,
-        32 => 535,
-        _ => 380,
-    };
-    let (_, partial, _, _) = run(&[0, partial_publish], false, reduction, 2, false, None)?;
-    let (_, complete, _, _) = run(&[0, 13], false, reduction, 2, false, None)?;
+    let (_, partial, _, _) = run(&[0, 0], false, reduction, 2, false, DuringFinalOutput)?;
+    let (_, complete, _, _) = run(&[0, 13], false, reduction, 2, false, Scheduled)?;
     println!(
         "partial prefetch={} total={} full_total={} first_w={} complete={}",
         partial.lookahead_weight_requests,

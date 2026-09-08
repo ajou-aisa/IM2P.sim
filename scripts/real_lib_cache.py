@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.im2p_config import profile_config
 from scripts.real_lib_manifest import (
     SCHEMA,
     CacheError,
@@ -93,8 +94,8 @@ def ensure(args: argparse.Namespace) -> int:
     tools, build_config = collect_toolchain(args)
     fingerprint = identity_fingerprint(args, tools, build_config)
     identity_data: IdentityData = {
-        "id": identity, "activation_bits": args.bits, "weight_bits": args.weight_bits,
-        "dim": args.dim, "block_size": args.block_size,
+        **profile_config(args.bits, args.weight_bits, args.dim),
+        "id": identity, "block_size": args.block_size,
         "platform": platform.system(), "platform_release": platform.release(),
         "arch": platform.machine(),
     }

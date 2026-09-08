@@ -8,6 +8,10 @@ mod stats;
 mod stripe;
 mod weight;
 
+pub mod profile {
+    include!(concat!(env!("OUT_DIR"), "/im2p_profile.rs"));
+}
+
 pub use activation::{
     activation_bytes_to_elements, activation_elements_to_bytes, activation_to_i32, activation_view,
     activation_view_from_bytes, parse_activation, validate_activation_values, ActivationError,
@@ -23,4 +27,9 @@ pub use weight::{
     parse_weight, validate_weight_values, weight_bytes_to_elements, weight_elements_to_bytes,
     weight_to_i32, weight_view, WeightError, WeightMatrixView, WeightValue, WEIGHT_BITS,
     WEIGHT_STORAGE_BYTES,
+};
+
+const _: () = {
+    assert!(ACTIVATION_BITS == profile::IM2P_ACTIVATION_BITS);
+    assert!(WEIGHT_BITS == profile::IM2P_WEIGHT_BITS);
 };

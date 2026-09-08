@@ -21,12 +21,12 @@ pub fn golden_output(
                 for k in fragment.start..fragment.start + fragment.count {
                     let activation = i64::from(activation_to_i32(activations[row * shape.k + k]));
                     let weight = i64::from(weight_to_i32(weights[k * shape.n + column]));
-                    partial = partial.wrapping_add(activation.wrapping_mul(weight));
+                    partial = wrap(partial.wrapping_add(wrap(activation.wrapping_mul(weight))));
                 }
                 let scale = scales.map_or(0, |matrix| matrix.get(fragment.block, column));
                 let contribution = transform(partial, scale, operation);
                 let index = row * valid_columns + local_column;
-                output[index] = output[index].wrapping_add(contribution);
+                output[index] = wrap(output[index].wrapping_add(contribution));
             }
         }
     }
@@ -36,15 +36,16 @@ pub fn golden_output(
 fn transform(partial: i64, scale: i8, operation: VectorOp) -> i64 {
     match operation {
         VectorOp::Bypass | VectorOp::External => partial,
-        VectorOp::Multiply => partial.wrapping_mul(i64::from(scale)),
+        VectorOp::Multiply => wrap(partial.wrapping_mul(i64::from(scale))),
         VectorOp::Shift => signed_shift(partial, scale),
     }
 }
 
 fn signed_shift(value: i64, exponent: i8) -> i64 {
     let amount = u32::from(exponent.unsigned_abs());
+    let width = u32::try_from(im2p_sim::profile::IM2P_ACCUMULATOR_BITS).expect("width fits u32");
     if exponent < 0 {
-        if amount >= i64::BITS {
+        if amount >= width {
             if value < 0 {
                 -1
             } else {
@@ -53,9 +54,18 @@ fn signed_shift(value: i64, exponent: i8) -> i64 {
         } else {
             value >> amount
         }
-    } else if amount >= i64::BITS {
+    } else if amount >= width {
         0
     } else {
-        value.wrapping_shl(amount)
+        wrap(value.wrapping_shl(amount))
+    }
+}
+
+fn wrap(value: i64) -> i64 {
+    if im2p_sim::profile::IM2P_ACCUMULATOR_BITS == 32 {
+        let bytes = value.to_le_bytes();
+        i64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    } else {
+        value
     }
 }

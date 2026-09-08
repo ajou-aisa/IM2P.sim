@@ -37,8 +37,11 @@ def main() -> int:
         fake_make = temp / "make.py"
         fake_make.write_text(
             """#!/usr/bin/env python3
-import json, os, sys
+import hashlib, json, os, sys
 from pathlib import Path
+sys.path.insert(0, os.getcwd())
+from scripts.im2p_config import profile_config
+from scripts.real_lib_manifest import SCHEMA, artifact_rows
 values = dict(arg.split('=', 1) for arg in sys.argv[1:] if '=' in arg)
 identity = f"a{values['IM2P_ACTIVATION_BITS']}-w{values['IM2P_WEIGHT_BITS']}-d{values['IM2P_DIM']}"
 build = Path(values['BUILD_DIR'])
@@ -46,7 +49,16 @@ selected = build / 'selected' / identity
 generation = selected / 'generations' / identity
 generation.mkdir(parents=True, exist_ok=True)
 manifest = generation / 'real-lib.json'
-manifest.write_text(json.dumps({'fingerprint': identity, 'artifacts': []}))
+profile = profile_config(int(values['IM2P_ACTIVATION_BITS']), int(values['IM2P_WEIGHT_BITS']), int(values['IM2P_DIM']))
+profile.update({'id': identity, 'block_size': int(values['GEMMINI_FRONTEND_BLOCK_SIZE'])})
+if os.environ.get('IM2P_MATRIX_LEGACY'):
+    del profile['numerical_semantics_revision']
+artifacts = (Path('libim2p_gemmini_frontend.a'), Path('libim2p_sim.a'))
+for artifact in artifacts:
+    (generation / artifact).write_bytes(artifact.name.encode())
+manifest.write_text(json.dumps({'schema': SCHEMA, 'fingerprint': hashlib.sha256(identity.encode()).hexdigest(),
+    'identity': profile, 'build_config': {}, 'toolchains': {}, 'artifact_root': '.',
+    'artifacts': artifact_rows(generation, artifacts)}))
 current = selected / 'current'
 if not current.exists():
     current.symlink_to(Path('generations') / identity, target_is_directory=True)
@@ -97,6 +109,12 @@ else:
         assert matrix_hit.returncode == 0, matrix_hit.stdout
         assert matrix_hit.stdout.count("state=hit") == 9
         assert len((temp / "builds").read_text().splitlines()) == 9
+
+        legacy_env = {**matrix_env, "IM2P_MATRIX_LEGACY": "1"}
+        legacy = run(*matrix_args, env=legacy_env)
+        assert legacy.returncode != 0, legacy.stdout
+        assert legacy.stdout.count("detail=identity.numerical_semantics_revision") == 9
+        assert not json.loads((build / "manifests/real-lib-all.json").read_text())["ok"]
 
     with tempfile.TemporaryDirectory(prefix="im2p-real-lib-dry-parent-") as parent:
         dry_root = Path(parent) / "absent"

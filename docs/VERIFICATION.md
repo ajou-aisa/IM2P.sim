@@ -164,7 +164,9 @@ ASan+UBSan target은 ownership, producer/worker, 실패 및 teardown lifecycle�
 
 ## Signed output width 및 ABI 경계
 
-Production integer RTL의 partial, Accumulator, bridge output request와 Rust provider service는 signed 64-bit다. 단일 canonical ABI의 provider callback은 signed-64 lane을 그대로 받는다. Raw output은 signed 32-bit이며 최종 write 경계에서만 saturation한다. Stripe completion이나 quantization/RMD staging 전에는 narrowing하지 않는다.
+Production A4/A8 RTL partial/contribution/Accumulator는 signed32, A16은 signed64다. Bridge는 A4/A8 lane을 sign-extend해 canonical ABI의 기존 signed64 provider callback으로 전달한다. Raw output은 signed32이며 기존 최종 saturation을 유지한다. 중간 연산은 선택한 폭에서 wrap하므로 ABI 유지가 기존 INT64 수치 결과 보존을 뜻하지 않는다. `scripts/numerical_reference.py`는 PE/vector/update/provider 정수 경계를 확인한다. 실제 double/float32 provider 재구성과 residual merge는 `scripts/host_reconstruction.py`의 Fraction oracle로 별도 확인하며, 정수 oracle의 External 재구성은 진단용으로 명시한다. 고의 overflow 통과는 모델 품질 보존 증거가 아니며 floating overflow-free도 무한정밀도와 exact equality를 뜻하지 않는다.
+
+새 profile/BRAM 검증은 `make check`, `make cache-contract-test`, `make bsv-test`에 포함된다. `TbAccumulator`는 sparse bank 주소, RMW ordering, 응답 backpressure와 pending reset을, `TbCoreBramBoundary`는 마지막 row/base/count, INT32 wrap, held C payload와 acknowledgement 이후 완료를 확인한다. `TbBlockPosition`/`TbWorkSchedulerProgress`는 arbitrary block size, unaligned origin, current/lookahead 및 실제 divider 준비 cycle을 확인한다. FPGA 재현 flow와 미실행 항목 구분은 `FPGA_FLOW.md`를 따른다.
 
 W8 frontend artifact는 DIM16/DIM32에서 block size 32, DIM64에서 64를
 사용한다. Matched W4/W16 artifact는 GGUF block layout 때문에 모든 DIM에서

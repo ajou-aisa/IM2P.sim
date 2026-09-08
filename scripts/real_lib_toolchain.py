@@ -102,7 +102,7 @@ def collect_toolchain(
     args: argparse.Namespace,
 ) -> tuple[dict[str, ToolIdentity], BuildConfig]:
     bsc_inputs = tuple(
-        Path(args.bsc_verilog) / name for name in ("RegFile.v", "FIFO2.v")
+        Path(args.bsc_verilog) / name for name in ("RegFile.v", "FIFO2.v", "BRAM1.v")
     )
     cargo_home = Path(
         os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))

@@ -13,6 +13,11 @@ extern "C" {
 typedef struct im2p_sim im2p_sim_t;
 typedef struct im2p_stream im2p_stream_t;
 
+uint32_t im2p_compiled_accumulator_bits(void);
+uint32_t im2p_compiled_accumulator_rows(void);
+uint32_t im2p_compiled_partial_bits(void);
+const char *im2p_compiled_numerical_semantics_revision(void);
+
 /*
  * Raw handles are single-thread/thread-affine. The thread that starts an
  * operation or stream must perform all progress, poll, finish, and destroy
@@ -40,7 +45,7 @@ enum {
  * The public ABI uses the selected activation/weight artifact identity.
  * A4/W4 values occupy one signed byte each; A16/W16 values occupy int16_t.
  * Activation and weight strides are bytes. Raw output storage remains signed
- * 32-bit; provider output transport preserves signed 64-bit accumulator lanes.
+ * 32-bit; provider transport sign-extends INT32 lanes for A4/A8 and preserves INT64 for A16.
  */
 typedef int (*im2p_read_weight_i8_fn)(
     void *context, size_t row, size_t column, size_t count, int8_t *out

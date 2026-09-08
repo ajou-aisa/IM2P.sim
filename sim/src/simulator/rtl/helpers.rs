@@ -100,7 +100,7 @@ impl Im2pSimulator {
         operation: &'static str,
         ready: i32,
     ) -> Result<(), Error> {
-        if ready == 0 {
+        if ready != 1 {
             return Err(Error::RtlNotReady { operation });
         }
         self.tick_raw();

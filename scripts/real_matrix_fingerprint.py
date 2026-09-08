@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scripts.im2p_config import profile_config
 
 
 def files_under(root: Path, patterns: tuple[str, ...]) -> list[Path]:
@@ -47,6 +52,10 @@ def main() -> int:
         ROOT / "sim/Cargo.toml",
         ROOT / "sim/Cargo.lock",
         ROOT / "sim/build.rs",
+        ROOT / "config/im2p_profiles.json",
+        ROOT / "scripts/im2p_config.py",
+        ROOT / "src/common/Config.bsv",
+        ROOT / "sim/ffi/im2p_config.h",
         selected_top,
         params_root.parent / "gemmini_params.h",
         gemmini_root / "ggml/src/ggml-gemmini/ggml-gemmini-args.h",
@@ -63,6 +72,8 @@ def main() -> int:
             "Makefile",
             "scripts/real_matrix_fingerprint.py",
             "scripts/real_lib_*.py",
+            "config/*.json",
+            "scripts/im2p_config.py",
             ".cargo/config*",
             "frontend/include/*.hpp",
             "frontend/src/*.cpp",
@@ -96,7 +107,8 @@ def main() -> int:
     digest = hashlib.sha256()
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     for value in (
-        "real-matrix-fingerprint-v2",
+        "real-matrix-fingerprint-v3",
+        json.dumps(profile_config(args.bits, args.weight_bits, args.dim), sort_keys=True),
         f"identity={identity}",
         f"block_size={args.block_size}",
         f"top=mk{selected_stem}",

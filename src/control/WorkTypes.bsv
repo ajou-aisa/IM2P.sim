@@ -3,6 +3,30 @@ package WorkTypes;
 import Types::*;
 import HostMemoryTypes::*;
 
+function Bool hostMatrixSpanFits(
+    HostAddress base, MatrixExtent rows, HostStride rowStride,
+    MatrixExtent columns, ElementBytes elementBytes
+);
+    UInt#(97) rowOffset = zeroExtend(rows - 1) * zeroExtend(rowStride);
+    UInt#(97) rowBytes = zeroExtend(columns) * zeroExtend(elementBytes);
+    UInt#(97) lastByte = zeroExtend(base) + rowOffset + rowBytes - 1;
+    return rows > 0 && columns > 0 && elementBytes > 0
+        && lastByte <= 97'hffffffffffffffff;
+endfunction
+
+function Bool hostBlockMatrixSpanFits(
+    HostAddress base, MatrixExtent block, HostStride blockStride,
+    MatrixExtent rows, HostStride rowStride,
+    MatrixExtent columns, ElementBytes elementBytes
+);
+    UInt#(98) blockOffset = zeroExtend(block) * zeroExtend(blockStride);
+    UInt#(98) rowOffset = zeroExtend(rows - 1) * zeroExtend(rowStride);
+    UInt#(98) rowBytes = zeroExtend(columns) * zeroExtend(elementBytes);
+    UInt#(98) lastByte = zeroExtend(base) + blockOffset + rowOffset + rowBytes - 1;
+    return rows > 0 && columns > 0 && elementBytes > 0
+        && lastByte <= 98'hffffffffffffffff;
+endfunction
+
 typedef enum {
     FullMatrix,
     AsyncStripes

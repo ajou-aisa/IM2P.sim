@@ -71,7 +71,9 @@ function HostAddress columnAddress(
     return base + truncate(wideOffset);
 endfunction
 
-module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
+module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim)) provisos (
+    Add#(TLog#(TAdd#(arrayDim, 1)), countPadding, 32)
+);
     Reg#(MatmulSchedulerState) stateReg <- mkReg(MatmulIdle);
     Reg#(MatmulDescriptor) descriptorReg <- mkRegU;
     Reg#(Bool) startPendingReg <- mkReg(False);
@@ -94,12 +96,28 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
     Reg#(MatrixExtent) jStartReg <- mkReg(0);
     Reg#(Bool) completionPendingReg <- mkReg(False);
     Reg#(UInt#(64)) completionCycleReg <- mkReg(0);
+    Reg#(HostAddress) weightBaseReg <- mkReg(0);
+    Reg#(HostAddress) scaleBaseReg <- mkReg(0);
+    Reg#(HostAddress) outputRowBaseReg <- mkReg(0);
+    Reg#(HostAddress) outputBaseReg <- mkReg(0);
+
+    function HostAddress advanceTileAddress(
+        HostAddress base, MatrixExtent count, HostStride stride
+    );
+        BoundedCount#(arrayDim) tileCount = truncate(count);
+        MatrixExtent boundedCount = zeroExtend(tileCount);
+        return base + zeroExtend(boundedCount) * stride;
+    endfunction
 
     rule beginMatmul (stateReg == MatmulIdle && startPendingReg);
         MatmulDescriptor descriptor = descriptorReg;
 
         iStartReg <= 0;
         jStartReg <= 0;
+        weightBaseReg <= descriptor.weightBase;
+        scaleBaseReg <= descriptor.scaleBase;
+        outputRowBaseReg <= descriptor.outputBase;
+        outputBaseReg <= descriptor.outputBase;
         startPendingReg <= False;
         if (descriptor.mode == FullMatrix) begin
             stripeIdReg <= 0;
@@ -140,6 +158,12 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         stripePublishCycleReg <= stripe.publishCycle;
         iStartReg <= stripe.rowBegin;
         jStartReg <= 0;
+        weightBaseReg <= descriptorReg.weightBase;
+        scaleBaseReg <= descriptorReg.scaleBase;
+        HostAddress outputBase = rowAddress(descriptorReg.outputBase,
+            stripe.rowBegin, descriptorReg.outputRowStride);
+        outputRowBaseReg <= outputBase;
+        outputBaseReg <= outputBase;
         stateReg <= MatmulOfferWork;
     endrule
 
@@ -178,11 +202,25 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
         completionPendingReg <= False;
         if (nextJ < descriptorReg.columnCount) begin
             jStartReg <= nextJ;
+            weightBaseReg <= advanceTileAddress(weightBaseReg, jCount,
+                zeroExtend(descriptorReg.weightElementBytes));
+            scaleBaseReg <= advanceTileAddress(scaleBaseReg, jCount,
+                zeroExtend(descriptorReg.scaleElementBytes));
+            outputBaseReg <= advanceTileAddress(outputBaseReg, jCount,
+                zeroExtend(descriptorReg.outputElementBytes));
             stateReg <= MatmulOfferWork;
         end
         else if (nextI < stripeEnd) begin
             iStartReg <= nextI;
             jStartReg <= 0;
+            stripeActivationBaseReg <= advanceTileAddress(stripeActivationBaseReg,
+                iCount, stripeActivationStrideReg);
+            weightBaseReg <= descriptorReg.weightBase;
+            scaleBaseReg <= descriptorReg.scaleBase;
+            HostAddress nextOutput = advanceTileAddress(outputRowBaseReg,
+                iCount, descriptorReg.outputRowStride);
+            outputRowBaseReg <= nextOutput;
+            outputBaseReg <= nextOutput;
             stateReg <= MatmulOfferWork;
         end
         else if (descriptorReg.mode == FullMatrix
@@ -220,6 +258,12 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                 stripePublishCycleReg <= stripe.publishCycle;
                 iStartReg <= stripe.rowBegin;
                 jStartReg <= 0;
+                weightBaseReg <= descriptorReg.weightBase;
+                scaleBaseReg <= descriptorReg.scaleBase;
+                HostAddress outputBase = rowAddress(descriptorReg.outputBase,
+                    stripe.rowBegin, descriptorReg.outputRowStride);
+                outputRowBaseReg <= outputBase;
+                outputBaseReg <= outputBase;
                 lookaheadStripeValidReg <= False;
                 stateReg <= MatmulOfferWork;
             end
@@ -258,6 +302,22 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                 && descriptor.tileJColumns <= dimension,
             "tile J must fit the array"
         );
+        dynamicAssert(descriptor.mode != FullMatrix || hostMatrixSpanFits(
+            descriptor.activationBase, descriptor.rowCount,
+            descriptor.activationRowStride, descriptor.reductionCount,
+            descriptor.activationElementBytes), "activation address range overflows");
+        dynamicAssert(hostMatrixSpanFits(descriptor.weightBase,
+            descriptor.reductionCount, descriptor.weightRowStride,
+            descriptor.columnCount, descriptor.weightElementBytes),
+            "weight address range overflows");
+        dynamicAssert(hostMatrixSpanFits(descriptor.outputBase,
+            descriptor.rowCount, descriptor.outputRowStride,
+            descriptor.columnCount, descriptor.outputElementBytes),
+            "output address range overflows");
+        dynamicAssert(!vectorOpUsesScale(descriptor.vectorOp) || hostMatrixSpanFits(
+            descriptor.scaleBase, 1, descriptor.scaleRowStride,
+            descriptor.columnCount, descriptor.scaleElementBytes),
+            "scale column address range overflows");
 
         descriptorReg <= descriptor;
         startPendingReg <= True;
@@ -274,9 +334,13 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             "stripes must be contiguous and ordered"
         );
         dynamicAssert(
-            stripe.rowBegin + stripe.rowCount <= descriptorReg.rowCount,
+            stripe.rowBegin <= descriptorReg.rowCount
+                && stripe.rowCount <= descriptorReg.rowCount - stripe.rowBegin,
             "stripe exceeds matmul M"
         );
+        dynamicAssert(hostMatrixSpanFits(stripe.activationBase, stripe.rowCount,
+            stripe.activationRowStride, descriptorReg.reductionCount,
+            descriptorReg.activationElementBytes), "stripe activation address range overflows");
 
         stripeFifo.enq(stripe);
         publishedRowsReg <= publishedRowsReg + stripe.rowCount;
@@ -298,32 +362,6 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             descriptorReg.columnCount,
             descriptorReg.tileJColumns
         );
-        MatrixExtent stripeLocalRow = iStartReg - stripeRowBeginReg;
-        HostAddress activationBase = rowAddress(
-            stripeActivationBaseReg,
-            stripeLocalRow,
-            stripeActivationStrideReg
-        );
-        HostAddress weightBase = columnAddress(
-            descriptorReg.weightBase,
-            jStartReg,
-            descriptorReg.weightElementBytes
-        );
-        HostAddress scaleBase = columnAddress(
-            descriptorReg.scaleBase,
-            jStartReg,
-            descriptorReg.scaleElementBytes
-        );
-        HostAddress outputRowBase = rowAddress(
-            descriptorReg.outputBase,
-            iStartReg,
-            descriptorReg.outputRowStride
-        );
-        HostAddress outputBase = columnAddress(
-            outputRowBase,
-            jStartReg,
-            descriptorReg.outputElementBytes
-        );
 
         return MatmulWork {
             jobId: descriptorReg.jobId,
@@ -333,10 +371,10 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             jStart: jStartReg,
             iCount: iCount,
             jCount: jCount,
-            activationBase: activationBase,
-            weightBase: weightBase,
-            scaleBase: scaleBase,
-            outputBase: outputBase,
+            activationBase: stripeActivationBaseReg,
+            weightBase: weightBaseReg,
+            scaleBase: scaleBaseReg,
+            outputBase: outputBaseReg,
             activationRowStride: stripeActivationStrideReg,
             weightRowStride: descriptorReg.weightRowStride,
             scaleRowStride: descriptorReg.scaleRowStride,
@@ -362,8 +400,8 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
             ? lookaheadStripeReg.rowBegin + lookaheadStripeReg.rowCount
             : descriptorReg.rowCount;
         HostAddress aBase = async ? lookaheadStripeReg.activationBase
-            : rowAddress(descriptorReg.activationBase, nextI,
-                         descriptorReg.activationRowStride);
+            : advanceTileAddress(stripeActivationBaseReg, currentICount,
+                                 descriptorReg.activationRowStride);
         HostStride aStride = async ? lookaheadStripeReg.activationRowStride
                                    : descriptorReg.activationRowStride;
         return MatmulWork {
@@ -378,8 +416,10 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim));
                                      descriptorReg.tileJColumns),
             activationBase: aBase, weightBase: descriptorReg.weightBase,
             scaleBase: descriptorReg.scaleBase,
-            outputBase: rowAddress(descriptorReg.outputBase, nextI,
-                                   descriptorReg.outputRowStride),
+            outputBase: async
+                ? rowAddress(descriptorReg.outputBase, nextI, descriptorReg.outputRowStride)
+                : advanceTileAddress(outputRowBaseReg, currentICount,
+                                     descriptorReg.outputRowStride),
             activationRowStride: aStride,
             weightRowStride: descriptorReg.weightRowStride,
             scaleRowStride: descriptorReg.scaleRowStride,

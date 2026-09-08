@@ -9,11 +9,11 @@ module mkSynthA8W8D64(IM2PCoreIfc#(
     64, // Array DIM
     1, // PE latency
     64, // Vector Lane
-    DefaultAccumulatorRows, // Accumulator Rows
-    Int#(8), // input width
-    Int#(8), // weight width
-    Int#(16), // product width
-    Int#(DefaultAccumulatorWidth), // accumulator/output-request width
+    IntegerAccumulatorRows#(64, A8AccumulatorWidth), // Accumulator Rows
+    Int#(A8InputWidth), // input width
+    Int#(A8WeightWidth), // weight width
+    Int#(A8ProductWidth), // product width
+    Int#(A8AccumulatorWidth), // accumulator/output-request width
     Int#(8) // scale width
 ));
     let array <- mkSystolicArrayInt8x64;

@@ -175,11 +175,13 @@ module mkTbIM2PCore(Empty);
     endrule
 
     rule waitExecution (state == TbWait && core.executionDone);
+        core.requestReadAccumulatorRow(3);
         state <= TbCheck;
     endrule
 
     rule checkExecution (state == TbCheck);
-        Vector#(2, Int#(64)) observed = core.readAccumulatorRow(3);
+        Vector#(2, Int#(64)) observed = core.readAccumulatorRowResponse;
+        core.consumeAccumulatorReadResponse;
 
         if (observed != expectedFor(executionIndex)) begin
             $display(

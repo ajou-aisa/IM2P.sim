@@ -9,11 +9,11 @@ module mkSynthA4W4D64(IM2PCoreIfc#(
     64, // Array DIM
     1, // PE latency
     64, // Vector Lane
-    DefaultAccumulatorRows, // Accumulator Rows
-    Int#(4), // input width
-    Int#(4), // weight width
-    Int#(8), // product width
-    Int#(DefaultAccumulatorWidth), // accumulator/output-request width
+    IntegerAccumulatorRows#(64, A4AccumulatorWidth), // Accumulator Rows
+    Int#(A4InputWidth), // input width
+    Int#(A4WeightWidth), // weight width
+    Int#(A4ProductWidth), // product width
+    Int#(A4AccumulatorWidth), // accumulator/output-request width
     Int#(8) // scale width
 ));
     let array <- mkSystolicArrayA4W4D64;
