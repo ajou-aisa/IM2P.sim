@@ -85,7 +85,9 @@ class PortablePlan(unittest.TestCase):
         self.assertNotIn('preservation_mapping', plan)
         for name in ('build.py', 'deployment-lock.json', 'fixtures/m16n16k32/input-f32.bin'):
             self.assertIn(str(self.here / name), plan['files'])
-        self.assertFalse(any('route.dcp' in path or 'experiments' in path for path in plan['files']))
+        self.assertTrue(all(Path(path).is_relative_to(self.temporary.name) or
+                            Path(path) == Path(prepare.__file__).resolve()
+                            for path in plan['files']))
         with self.assertRaisesRegex(ValueError, 'overwrite'):
             self.create()
         self.source.write_text('changed after seal')
