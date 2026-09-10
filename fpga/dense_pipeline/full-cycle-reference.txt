@@ -1,0 +1,10 @@
+IFR2_FULL_REFERENCE_V1
+hardware_sha256 8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca
+production_rtl_sha256 b29147ce384e9384b3821c358863350f03c0696cbc8b8e286a768f2e7155b853
+backend FPGA_UART
+protocol 2
+profile 0810
+mode FULL
+fixture m16n16k32 16 16 32 361
+fixture m321n48k64 321 48 64 39907
+fixture m321n48k96 321 48 96 58695

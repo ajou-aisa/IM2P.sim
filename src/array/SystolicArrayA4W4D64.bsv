@@ -14,7 +14,7 @@ module mkSystolicArrayTileA4W4D16(SystolicArrayIfc#(
     Int#(A4InputWidth),
     Int#(A4WeightWidth),
     Int#(A4ProductWidth),
-    Int#(A4AccumulatorWidth)
+    Int#(IntegerPartialWidth#(64, A4ProductWidth))
 ));
     let array <- mkSystolicArray;
     return array;
@@ -27,7 +27,7 @@ module mkSystolicArrayA4W4D64(SystolicArrayIfc#(
     Int#(A4InputWidth),
     Int#(A4WeightWidth),
     Int#(A4ProductWidth),
-    Int#(A4AccumulatorWidth)
+    Int#(IntegerPartialWidth#(64, A4ProductWidth))
 ));
     Vector#(
         4,
@@ -39,7 +39,7 @@ module mkSystolicArrayA4W4D64(SystolicArrayIfc#(
                 Int#(A4InputWidth),
                 Int#(A4WeightWidth),
                 Int#(A4ProductWidth),
-                Int#(A4AccumulatorWidth)
+                Int#(IntegerPartialWidth#(64, A4ProductWidth))
             )
         )
     ) tiles <- replicateM(replicateM(mkSystolicArrayTileA4W4D16));

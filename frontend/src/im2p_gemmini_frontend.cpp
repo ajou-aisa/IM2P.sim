@@ -1238,14 +1238,19 @@ struct Run::Impl {
   };
 
   void run_full() {
-    std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
-    if (!sim) {
-      set_error(make_status(StatusCode::execution_failure, route, false,
-                            "failed to create IM2P simulator"));
-      return;
-    }
     auto d = full_descriptor();
-    const int result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+    int result = IM2P_ERROR;
+    if (options.full_executor) {
+      result = options.full_executor(options.full_executor_context, &d, &stats);
+    } else {
+      std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
+      if (!sim) {
+        set_error(make_status(StatusCode::execution_failure, route, false,
+                              "failed to create IM2P simulator"));
+        return;
+      }
+      result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+    }
     if (provider_failed)
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -1272,7 +1277,9 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
-    const int result = im2p_publish_stripe(stream, &s);
+    const int result = options.stream_executor
+        ? options.stream_executor->publish(options.stream_executor->context, &s)
+        : im2p_publish_stripe(stream, &s);
     if (result == IM2P_OK) {
       std::lock_guard lock(mutex);
       in_flight.emplace(s.stripe_id, e);
@@ -1310,7 +1317,9 @@ struct Run::Impl {
 #endif
     for (;;) {
       im2p_stripe_completion_extended_t extended{};
-      const int result = im2p_poll_completed_extended(stream, &extended);
+      const int result = options.stream_executor
+          ? options.stream_executor->poll(options.stream_executor->context, &extended)
+          : im2p_poll_completed_extended(stream, &extended);
       const auto &c = extended.base;
       if (result < 0) {
         set_error(from_c_status(result, route, "IM2P completion poll failed",
@@ -1466,6 +1475,11 @@ struct Run::Impl {
     }
 #endif
     size_t completion_count = 0;
+    if (options.stream_executor) {
+      // The device runs autonomously. Physical timeouts belong to the adapter;
+      // poll counts and normal producer waits are not logical RTL stall cycles.
+      return poll(stream, residual_simulator, completion_count);
+    }
     if (im2p_progress_stream(stream, 1) != IM2P_OK ||
         !poll(stream, residual_simulator, completion_count)) {
       set_error(
@@ -1494,25 +1508,38 @@ struct Run::Impl {
   }
 
   void run_pipeline() {
-    std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
+    std::unique_ptr<im2p_sim_t, SimDelete> sim;
     std::unique_ptr<im2p_sim_t, SimDelete> residual_simulator;
-    if (sim && options.residual_stage_mode == ResidualStageMode::im2p_compact)
-      residual_simulator.reset(im2p_sim_create());
     im2p_stream_t *raw = nullptr;
-    if (!sim) {
-      set_error(make_status(StatusCode::execution_failure, route, false,
-                            "failed to create IM2P simulator"));
-    } else if (options.residual_stage_mode ==
-                   ResidualStageMode::im2p_compact &&
-               !residual_simulator) {
-      set_error(make_status(StatusCode::execution_failure, route, false,
-                            "failed to create residual IM2P simulator"));
-    } else {
+    bool started = false;
+    if (options.stream_executor) {
       auto d = stripe_descriptor();
-      const int result = im2p_begin_striped_matmul(sim.get(), &d, &raw);
-      if (result != IM2P_OK)
-        set_error(from_c_status(result, route, "failed to start IM2P stream",
+      const int result = options.stream_executor->begin(
+          options.stream_executor->context, &d);
+      started = result == IM2P_OK;
+      if (!started)
+        set_error(from_c_status(result, route, "failed to start physical IM2P stream",
                                 native));
+    } else {
+      sim.reset(im2p_sim_create());
+      if (sim && options.residual_stage_mode == ResidualStageMode::im2p_compact)
+        residual_simulator.reset(im2p_sim_create());
+      if (!sim) {
+        set_error(make_status(StatusCode::execution_failure, route, false,
+                              "failed to create IM2P simulator"));
+      } else if (options.residual_stage_mode ==
+                     ResidualStageMode::im2p_compact &&
+                 !residual_simulator) {
+        set_error(make_status(StatusCode::execution_failure, route, false,
+                              "failed to create residual IM2P simulator"));
+      } else {
+        auto d = stripe_descriptor();
+        const int result = im2p_begin_striped_matmul(sim.get(), &d, &raw);
+        if (result != IM2P_OK)
+          set_error(from_c_status(result, route, "failed to start IM2P stream",
+                                  native));
+        started = raw != nullptr;
+      }
     }
     {
       std::lock_guard lock(mutex);
@@ -1525,11 +1552,12 @@ struct Run::Impl {
       changed.notify_all();
     }
     std::unique_ptr<im2p_stream_t, StreamDelete> stream(raw);
-    if (!stream)
+    if (!started)
       return;
     uint64_t stalled = 0;
     uint64_t observed_generation = 0;
-    uint64_t observed_progress = im2p_stream_progress_count(stream.get());
+    uint64_t observed_progress = options.stream_executor
+        ? 0 : im2p_stream_progress_count(stream.get());
     for (;;) {
       DenseEvent event{};
       bool have = false;
@@ -1610,7 +1638,9 @@ struct Run::Impl {
                  semantic_coverage_complete();
     }
     if (complete) {
-      const int result = im2p_finish_stream_extended(stream.get(), &stats);
+      const int result = options.stream_executor
+          ? options.stream_executor->finish(options.stream_executor->context, &stats)
+          : im2p_finish_stream_extended(stream.get(), &stats);
       if (provider_failed)
         set_error(make_status(StatusCode::execution_failure, route, native,
                               "IM2P provider callback failed"));
@@ -1676,6 +1706,24 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "invalid IM2P invocation mode"),
             {}};
   }
+  if (options.stream_executor) {
+    if (mode != Mode::stripe_pipeline || options.full_executor ||
+        options.residual_stage_mode != ResidualStageMode::none)
+      return {make_status(StatusCode::unsupported_route, Route::unknown, false,
+                          "physical stream adapter requires dense PIPELINE without FULL or residual hooks"),
+              {}};
+    const auto &executor = *options.stream_executor;
+    if (!executor.begin || !executor.publish || !executor.poll || !executor.finish)
+      return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                          "incomplete physical stream executor callbacks"),
+              {}};
+  }
+  if (options.full_executor &&
+      (mode != Mode::full ||
+       options.residual_stage_mode != ResidualStageMode::none))
+    return {make_status(StatusCode::unsupported_route, Route::unknown, false,
+                        "FULL execution adapter does not support pipeline or residual stages"),
+            {}};
   switch (options.residual_stage_mode) {
   case ResidualStageMode::none:
     if (options.residual_stage_fn != nullptr)

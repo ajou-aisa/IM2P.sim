@@ -1,0 +1,2558 @@
+{
+  "schema_version": 1,
+  "review_utc": "2026-09-09T16:34:07.066362+00:00",
+  "title_ko": "최종 Dense PIPELINE source provenance: routed stream-02 + host stream-08",
+  "repository_status": {
+    "core": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim",
+      "HEAD": "dc4a1a621f63834d64df42ae8c24152747d97971",
+      "branch": "exp/pe-local-partial-int20",
+      "begin_status_evidence": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/core/00.txt",
+        "sha256": "74081d36e68f1a0309b1f9a5269e09ff6a275198fdfee52bedc2d503133ba330",
+        "bytes": 959
+      },
+      "current_status_short": " M frontend/include/im2p_gemmini_frontend.hpp\n M frontend/src/im2p_gemmini_frontend.cpp\n M frontend/tests/test_frontend.cpp\n M scripts/im2p_config.py\n M scripts/static_check.py\n M sim/ffi/im2p_config.h\n M sim/tests/rtl_numerical_profile.rs\n M src/array/InputSkew.bsv\n M src/array/PE.bsv\n M src/array/SystolicArray.bsv\n M src/array/SystolicArrayA16W16D64.bsv\n M src/array/SystolicArrayA4W4D64.bsv\n M src/array/SystolicArrayInt8x64.bsv\n M src/array/SystolicArrayTiled.bsv\n M src/array/SystolicEngine.bsv\n M src/common/Arithmetic.bsv\n M src/common/Config.bsv\n M src/core/IM2PCore.bsv\n M tests/TbProfileConfig.bsv\n M tests/test_static_check.py\n?? docs/ACTIVATION_PUBLICATION_ASSERTION.md\n?? docs/FPGA_DENSE_PIPELINE_INTEGRATION.md\n?? docs/FPGA_HOST_FULL_BOARD_MEASUREMENT.md\n?? docs/FPGA_HOST_FULL_REPLAY.md\n?? docs/FPGA_P2_BATCHING.md\n?? docs/FPGA_P2_BOARD_MEASUREMENT.md\n?? docs/FPGA_P3A_RESEARCH.md\n?? docs/FPGA_SCALABILITY_RESEARCH.md\n?? docs/PE_LOCAL_PARTIAL_INT20.md\n?? fpga/\n?? output/\n?? synth/DensePipeline.bsv\n?? synth/FullReplay.bsv\n",
+      "diff_check_exit": 0
+    },
+    "host": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini",
+      "HEAD": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+      "branch": "develop",
+      "begin_status_evidence": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/host/00.txt",
+        "sha256": "e1a0035a3af1fbee5af2f98eb6db8bc692b62a6443a5f268a6413cfd2ecff610",
+        "bytes": 39
+      },
+      "current_status_short": "?? models/gpt2/\n?? models/llama3.2-1B/\n",
+      "diff_check_exit": 0
+    },
+    "params": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/RISC-V-DynDNN-gemmini-include",
+      "HEAD": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+      "branch": "develop",
+      "begin_status_evidence": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/params/00.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "current_status_short": "",
+      "diff_check_exit": 0
+    }
+  },
+  "source_sets": {
+    "A": "각 실제 repository의 커밋된 HEAD",
+    "B": "작업 시작 dirty root snapshot/manifest 및 이번 read-only 검토 시점 root",
+    "C": "실보드 검증 FULL candidate-01 board 및 host-source-03/host-build-03",
+    "D": "실제 routed board stream-02 및 최종 host stream-08; 별도 입력 집합"
+  },
+  "selection_order_ko": [
+    "FULL baseline HEAD archive",
+    "fixed-core.patch 적용 후 frozen core 각 hash 검증",
+    "명시 frontend/FULL source replacements",
+    "명시 DensePipeline provider와 fpga/dense_pipeline integration files",
+    "llama host pin archive -> host-integration.patch -> producer-observation.patch",
+    "Gemmini params pin archive",
+    "frozen source만 include하여 host/frontend C++20 및 BSC/Vivado 생성; 편집 중 root를 암묵 혼합하지 않음"
+  ],
+  "host_pin": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "params_pin": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+  "board_part": "xc7a100tcsg324-1",
+  "nominal_core_hz": 25000000,
+  "physical_profile": "A8/W8/DIM16",
+  "protocol": "IFR2/v2 profile0x0810",
+  "route_scope": "native Q8_H1 EXSIA RMD OFF Dense FULL/PIPELINE",
+  "files": [
+    {
+      "repository": "IM2P.sim",
+      "path": "src/common/Arithmetic.bsv",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "src/common/Arithmetic.bsv",
+        "sha256": "a73df379438b0e242c680e40cd9e41ca3ecb1a441eebdb0794758f416c39891d"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "a016094ab06f32ffc1914aba88ccc734562be744ddd63e02bb61b28307f9cd27",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "src/common/Arithmetic.bsv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/src/common/Arithmetic.bsv",
+          "sha256": "a016094ab06f32ffc1914aba88ccc734562be744ddd63e02bb61b28307f9cd27",
+          "bytes": 6648
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "src/common/Arithmetic.bsv",
+        "sha256": "a016094ab06f32ffc1914aba88ccc734562be744ddd63e02bb61b28307f9cd27",
+        "bytes": 6648
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/common/Arithmetic.bsv",
+        "sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+        "bytes": 6774
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/src/common/Arithmetic.bsv",
+        "sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+        "bytes": 6774
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/common/Arithmetic.bsv",
+        "sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+        "bytes": 6774
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/src/common/Arithmetic.bsv",
+        "sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+        "bytes": 6774
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/common/Arithmetic.bsv",
+        "sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+        "bytes": 6774
+      },
+      "selection_reason_ko": "FULL에서 검증한 A1 multiply 표현. dirty root arithmetic 실험을 섞지 않음.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "src/common/Config.bsv",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "src/common/Config.bsv",
+        "sha256": "acb5b89d09e993a9dcc8f4e76797e51d66b2481db91c82e7c0fd41dd9fd6f30e"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "src/common/Config.bsv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/src/common/Config.bsv",
+          "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+          "bytes": 1325
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/common/Config.bsv",
+        "sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+        "bytes": 1325
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "scripts/im2p_config.py",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "scripts/im2p_config.py",
+        "sha256": "14d6e5fdfbc856eee592ce195a6d2e832a2e34dfd15902d7470e96a3a80e98c1"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "scripts/im2p_config.py",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/scripts/im2p_config.py",
+          "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+          "bytes": 7921
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/scripts/im2p_config.py",
+        "sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+        "bytes": 7921
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "config/im2p_profiles.json",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "config/im2p_profiles.json"
+      },
+      "B_current_dirty_root": {
+        "path": "config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/config/im2p_profiles.json",
+        "sha256": "f8aa5214f8b0321eb0f2ac39c898fdb772e195b431b1ef133678b51bf9afc7c9",
+        "bytes": 350
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "sim/ffi/im2p_config.h",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "sim/ffi/im2p_config.h",
+        "sha256": "cc5ba9f9ffbdb5c7d54185594ae543d9cc5c3e4ff6dbcc6e1cfd09d5dcf22d83"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "sim/ffi/im2p_config.h",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/sim/ffi/im2p_config.h",
+          "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+          "bytes": 1578
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/sim/ffi/im2p_config.h",
+        "sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+        "bytes": 1578
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "src/core/IM2PCore.bsv",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "src/core/IM2PCore.bsv",
+        "sha256": "408cdb22d39f9a761ef121f22beb987cc01ac479246a3e406f501cae39c59878"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "src/core/IM2PCore.bsv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/src/core/IM2PCore.bsv",
+          "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+          "bytes": 106838
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/core/IM2PCore.bsv",
+        "sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+        "bytes": 106838
+      },
+      "selection_reason_ko": "FULL frozen high-level core와 activation-response capacity guard 유지.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "src/control/MatmulScheduler.bsv",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "src/control/MatmulScheduler.bsv",
+        "sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "src/control/MatmulScheduler.bsv"
+      },
+      "B_current_dirty_root": {
+        "path": "src/control/MatmulScheduler.bsv",
+        "sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957",
+        "bytes": 19531
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/control/MatmulScheduler.bsv",
+        "sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+        "bytes": 19807
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/src/control/MatmulScheduler.bsv",
+        "sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+        "bytes": 19807
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/control/MatmulScheduler.bsv",
+        "sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+        "bytes": 19807
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/src/control/MatmulScheduler.bsv",
+        "sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+        "bytes": 19807
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/control/MatmulScheduler.bsv",
+        "sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+        "bytes": 19807
+      },
+      "selection_reason_ko": "FULL frozen autonomous matrix/AsyncStripes scheduler 유지. root scheduler와 구별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "src/control/WorkScheduler.bsv",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "src/control/WorkScheduler.bsv",
+        "sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "src/control/WorkScheduler.bsv"
+      },
+      "B_current_dirty_root": {
+        "path": "src/control/WorkScheduler.bsv",
+        "sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6",
+        "bytes": 14153
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/control/WorkScheduler.bsv",
+        "sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+        "bytes": 15449
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/src/control/WorkScheduler.bsv",
+        "sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+        "bytes": 15449
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/control/WorkScheduler.bsv",
+        "sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+        "bytes": 15449
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/src/control/WorkScheduler.bsv",
+        "sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+        "bytes": 15449
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/src/control/WorkScheduler.bsv",
+        "sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+        "bytes": 15449
+      },
+      "selection_reason_ko": "FULL frozen DIM16/K32 fragment 및 scale boundary semantics 유지.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "synth/ResidentP0.bsv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": null,
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/synth/ResidentP0.bsv",
+        "sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+        "bytes": 7605
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/synth/ResidentP0.bsv",
+        "sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+        "bytes": 7605
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/ResidentP0.bsv",
+        "sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+        "bytes": 7605
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/synth/ResidentP0.bsv",
+        "sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+        "bytes": 7605
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/ResidentP0.bsv",
+        "sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+        "bytes": 7605
+      },
+      "selection_reason_ko": "기존 resident 이력용 파일; 새 DensePipeline top의 실행 경로 아님.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "synth/FullReplay.bsv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "synth/FullReplay.bsv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/synth/FullReplay.bsv",
+          "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+          "bytes": 7298
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "synth/FullReplay.bsv",
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "bytes": 7298
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/synth/FullReplay.bsv",
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "bytes": 7298
+      },
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/FullReplay.bsv",
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "bytes": 7298
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/synth/FullReplay.bsv",
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "bytes": 7298
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/FullReplay.bsv",
+        "sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+        "bytes": 7298
+      },
+      "selection_reason_ko": "검증된 FULL provider 소스 보존. 새 routed top은 DensePipeline.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "synth/DensePipeline.bsv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "synth/DensePipeline.bsv",
+        "sha256": "37e4a2919f2935759a49497e74631ad25246f7b1b8db5b751c5d7a0cd7e8105b",
+        "bytes": 11878
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/DensePipeline.bsv",
+        "sha256": "37e4a2919f2935759a49497e74631ad25246f7b1b8db5b751c5d7a0cd7e8105b",
+        "bytes": 11878
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/synth/DensePipeline.bsv",
+        "sha256": "37e4a2919f2935759a49497e74631ad25246f7b1b8db5b751c5d7a0cd7e8105b",
+        "bytes": 11878
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/synth/DensePipeline.bsv",
+        "sha256": "37e4a2919f2935759a49497e74631ad25246f7b1b8db5b751c5d7a0cd7e8105b",
+        "bytes": 11878
+      },
+      "selection_reason_ko": "명시적 신규 provider: 같은 core 하나, bounded full A64KiB/C256KiB와 stripe publication.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "frontend/include/im2p_gemmini_frontend.hpp",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "8933d718fd63cdff4003a3fe325324eaebecbc001962f36f4384c033f012e9ce"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "frontend/include/im2p_gemmini_frontend.hpp",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/frontend/include/im2p_gemmini_frontend.hpp",
+          "sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+          "bytes": 9677
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "0316e1a5e12c249a3c4be81cd6c407943860abbda5ba1bad4419790f75c2d970",
+        "bytes": 10989
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+        "bytes": 9677
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+        "bytes": 9677
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "0316e1a5e12c249a3c4be81cd6c407943860abbda5ba1bad4419790f75c2d970",
+        "bytes": 10989
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "0316e1a5e12c249a3c4be81cd6c407943860abbda5ba1bad4419790f75c2d970",
+        "bytes": 10989
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/frontend/include/im2p_gemmini_frontend.hpp",
+        "sha256": "0316e1a5e12c249a3c4be81cd6c407943860abbda5ba1bad4419790f75c2d970",
+        "bytes": 10989
+      },
+      "selection_reason_ko": "기존 frontend FULL executor 유지와 physical stream hook 추가; 새 simulator fallback 없음.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "frontend/src/im2p_gemmini_frontend.cpp",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "94c2fb14f840d457e66ac8ea86becd886c1f0a0ce621681848eba59c879ed853"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "frontend/src/im2p_gemmini_frontend.cpp",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/frontend/src/im2p_gemmini_frontend.cpp",
+          "sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+          "bytes": 87416
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "f0cb0aabc33838a7073d169194d5f7fb7ab838017f8c8d7816dbd5ce988ea97b",
+        "bytes": 89259
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+        "bytes": 87416
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+        "bytes": 87416
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "f0cb0aabc33838a7073d169194d5f7fb7ab838017f8c8d7816dbd5ce988ea97b",
+        "bytes": 89259
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "f0cb0aabc33838a7073d169194d5f7fb7ab838017f8c8d7816dbd5ce988ea97b",
+        "bytes": 89259
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/frontend/src/im2p_gemmini_frontend.cpp",
+        "sha256": "f0cb0aabc33838a7073d169194d5f7fb7ab838017f8c8d7816dbd5ce988ea97b",
+        "bytes": 89259
+      },
+      "selection_reason_ko": "기존 frontend FULL executor 유지와 physical stream hook 추가; 새 simulator fallback 없음.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "sim/include/im2p_sim.h",
+      "A_committed_HEAD": {
+        "commit": "dc4a1a621f63834d64df42ae8c24152747d97971",
+        "path": "sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "sim/include/im2p_sim.h"
+      },
+      "B_current_dirty_root": {
+        "path": "sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/sim/include/im2p_sim.h",
+        "sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+        "bytes": 8174
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/uart.sv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/uart.sv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/uart.sv",
+          "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+          "bytes": 2536
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/uart.sv",
+        "sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+        "bytes": 2536
+      },
+      "selection_reason_ko": "검증된 기존 1Mbaud UART primitive 소스 재사용.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/full_uart.sv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/full_uart.sv",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/full_uart.sv",
+          "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+          "bytes": 11859
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/full_uart.sv",
+        "sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+        "bytes": 11859
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/protocol.py",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/protocol.py",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/protocol.py",
+          "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+          "bytes": 7852
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/protocol.py",
+        "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+        "bytes": 7852
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/protocol.py",
+        "sha256": "83501c1c991ca075efac9ce3544ca5ff23b09f050dd8cca8ba3f533b6ed94c1a",
+        "bytes": 7342
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/protocol.py",
+        "sha256": "271ea74b0db42ae6572f17874f4d9d4dda630271cce028edb2fb021ec66376af",
+        "bytes": 7736
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/protocol.py",
+        "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+        "bytes": 7852
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/protocol.py",
+        "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+        "bytes": 7852
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/protocol.py",
+        "sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+        "bytes": 7852
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/replay.py",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/replay.py",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/replay.py",
+          "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+          "bytes": 3591
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/replay.py",
+        "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+        "bytes": 3591
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/replay.py",
+        "sha256": "262a346e3911d94b9e64255c52a1aaba1b2571eab6a7bc9ab43309d766dc7bcc",
+        "bytes": 3074
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/replay.py",
+        "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+        "bytes": 3591
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/replay.py",
+        "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+        "bytes": 3591
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/replay.py",
+        "sha256": "82404156c328fb4e1caa3dc053c01a30fc218937029582d12ac673ebb4aa14db",
+        "bytes": 3591
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/capture.cpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/capture.cpp",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/capture.cpp",
+          "sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+          "bytes": 17535
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/capture.cpp",
+        "sha256": "660361cdbf2a68a5f618d615f34c87b6cf03ff2c7f4793bcf5e34adab8518195",
+        "bytes": 18891
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/capture.cpp",
+        "sha256": "cfab91f102c955a7e31b88547b75fe7b31e55a58e0eb30c7df46312587363af0",
+        "bytes": 14645
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/capture.cpp",
+        "sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+        "bytes": 17535
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/capture.cpp",
+        "sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+        "bytes": 17535
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/capture.cpp",
+        "sha256": "660361cdbf2a68a5f618d615f34c87b6cf03ff2c7f4793bcf5e34adab8518195",
+        "bytes": 18891
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/capture.cpp",
+        "sha256": "660361cdbf2a68a5f618d615f34c87b6cf03ff2c7f4793bcf5e34adab8518195",
+        "bytes": 18891
+      },
+      "selection_reason_ko": "FULL host-build-03 ggml_init 초기화 보존. Dense용 capacity macro/긴 fixture 지원은 별도 frozen host08 source.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/arty_full.xdc",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/arty_full.xdc",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/arty_full.xdc",
+          "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+          "bytes": 1269
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/arty_full.xdc",
+        "sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+        "bytes": 1269
+      },
+      "selection_reason_ko": "기존 정당한 Arty 100MHz input/MMCM25MHz 및 UART CDC constraint 재사용.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/route.tcl",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/route.tcl",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/route.tcl",
+          "sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+          "bytes": 2250
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/route.tcl",
+        "sha256": "77fa19ac5c20b7362128d07fd7686ece2487482b6ecedea64ebc897d432a2f17",
+        "bytes": 2635
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/route.tcl",
+        "sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+        "bytes": 2250
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/route.tcl",
+        "sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+        "bytes": 2250
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/route.tcl",
+        "sha256": "77fa19ac5c20b7362128d07fd7686ece2487482b6ecedea64ebc897d432a2f17",
+        "bytes": 2635
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/route.tcl",
+        "sha256": "77fa19ac5c20b7362128d07fd7686ece2487482b6ecedea64ebc897d432a2f17",
+        "bytes": 2635
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/route.tcl",
+        "sha256": "77fa19ac5c20b7362128d07fd7686ece2487482b6ecedea64ebc897d432a2f17",
+        "bytes": 2635
+      },
+      "selection_reason_ko": "xc7a100tcsg324-1 합성/route recipe. 실제 routed snapshot B02 경로 사용.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/fixed-core.patch",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/fixed-core.patch",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/fixed-core.patch",
+          "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+          "bytes": 65973
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/fixed-core.patch",
+        "sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+        "bytes": 65973
+      },
+      "selection_reason_ko": "HEAD archive를 실제 frozen FULL core로 재현하는 명시 patch; patch 직후 core hashes 검사.",
+      "current_root_equals_frozen_FULL": true,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/full_replay/build.py",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": {
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "core",
+        "key": "fpga/full_replay/build.py",
+        "preserved_snapshot": {
+          "path": "build/experiments/dense-pipeline-20260909T141302Z/baseline/root-files/fpga/full_replay/build.py",
+          "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+          "bytes": 5743
+        }
+      },
+      "B_current_dirty_root": {
+        "path": "fpga/full_replay/build.py",
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "bytes": 5743
+      },
+      "C_frozen_FULL_board": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/build.py",
+        "sha256": "00b141e0b5b02713f52affbc18efe08695f67f1e55d344e4317dc0b780393d40",
+        "bytes": 4638
+      },
+      "C_frozen_FULL_host_build03_source": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/build.py",
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "bytes": 5743
+      },
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/full_replay/build.py",
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "bytes": 5743
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/build.py",
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "bytes": 5743
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/full_replay/build.py",
+        "sha256": "8ce4da927437eac8055c0a21fd28cc69fde1adbf124ae5352cbefdd731e29a12",
+        "bytes": 5743
+      },
+      "selection_reason_ko": "기존 FULL source freeze/build helper 재사용. 편집 중 root의 암묵적 include 없음.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/dense_uart.sv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/dense_uart.sv",
+        "sha256": "11b4095f3f37408917135f2254566efc3560bf73ed3d5ce4bf6d106e8b704667",
+        "bytes": 18509
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/dense_uart.sv",
+        "sha256": "11b4095f3f37408917135f2254566efc3560bf73ed3d5ce4bf6d106e8b704667",
+        "bytes": 18509
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/dense_uart.sv",
+        "sha256": "11b4095f3f37408917135f2254566efc3560bf73ed3d5ce4bf6d106e8b704667",
+        "bytes": 18509
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/dense_uart.sv",
+        "sha256": "11b4095f3f37408917135f2254566efc3560bf73ed3d5ce4bf6d106e8b704667",
+        "bytes": 18509
+      },
+      "selection_reason_ko": "명시적 IFR2 shell. IFR1 frozen FULL wire와 별도.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/arty_dense_top.sv",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/arty_dense_top.sv",
+        "sha256": "186edd0718b12c41b82119e588f0876fbb76094d3619c61b182d58f1917f7d0b",
+        "bytes": 1136
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/arty_dense_top.sv",
+        "sha256": "186edd0718b12c41b82119e588f0876fbb76094d3619c61b182d58f1917f7d0b",
+        "bytes": 1136
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/arty_dense_top.sv",
+        "sha256": "186edd0718b12c41b82119e588f0876fbb76094d3619c61b182d58f1917f7d0b",
+        "bytes": 1136
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/arty_dense_top.sv",
+        "sha256": "186edd0718b12c41b82119e588f0876fbb76094d3619c61b182d58f1917f7d0b",
+        "bytes": 1136
+      },
+      "selection_reason_ko": "기존 clock/reset/CDC 계약을 유지한 신규 top 및 provider 연결.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/uart.cpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/uart.cpp",
+        "sha256": "e8e354b7564a7083a68239f6d798f87cff5cedb95b6b2e87b75e990e6a8089cc",
+        "bytes": 24673
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/uart.cpp",
+        "sha256": "e8e354b7564a7083a68239f6d798f87cff5cedb95b6b2e87b75e990e6a8089cc",
+        "bytes": 24673
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/uart.cpp",
+        "sha256": "e8e354b7564a7083a68239f6d798f87cff5cedb95b6b2e87b75e990e6a8089cc",
+        "bytes": 24673
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/uart.cpp",
+        "sha256": "e8e354b7564a7083a68239f6d798f87cff5cedb95b6b2e87b75e990e6a8089cc",
+        "bytes": 24673
+      },
+      "selection_reason_ko": "IFR1/IFR2 persistent host transport. CRC/id/count, existing provider callbacks, explicit RELEASE.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/uart.hpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/uart.hpp",
+        "sha256": "1b001cf631e36b4982668022db91c03279b0f13288d2663b7cacf8f6f8334d40",
+        "bytes": 3579
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/uart.hpp",
+        "sha256": "1b001cf631e36b4982668022db91c03279b0f13288d2663b7cacf8f6f8334d40",
+        "bytes": 3579
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/uart.hpp",
+        "sha256": "1b001cf631e36b4982668022db91c03279b0f13288d2663b7cacf8f6f8334d40",
+        "bytes": 3579
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/uart.hpp",
+        "sha256": "1b001cf631e36b4982668022db91c03279b0f13288d2663b7cacf8f6f8334d40",
+        "bytes": 3579
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+        "sha256": "b3cc8f1cc1ed7d51b69accdb4e70d30f36edaae5ae87a20bf575fbd0d10ab86c",
+        "bytes": 17937
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+        "sha256": "a50d5dcf445ae9cd696c897d01ef0dbd7bd0279dbd634ee152938090060c5d3e",
+        "bytes": 12608
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+        "sha256": "b3cc8f1cc1ed7d51b69accdb4e70d30f36edaae5ae87a20bf575fbd0d10ab86c",
+        "bytes": 17937
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+        "sha256": "b3cc8f1cc1ed7d51b69accdb4e70d30f36edaae5ae87a20bf575fbd0d10ab86c",
+        "bytes": 17937
+      },
+      "selection_reason_ko": "최종 host08: 원본 A8/profile/layout와 EXSIA/RMD OFF metadata를 device open 및 runtime replacement 전에 검사. FULL quantization 이후 metadata 재검사. low_D 거부 후에만 int32 bias read. accepted A 독립 복사/host checkpoint/output rollback 유지.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/ggml-gemmini-fpga.hpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/ggml-gemmini-fpga.hpp",
+        "sha256": "81cd40d721e7ed1b6da0b7f61022ec88e13c183d9fab834c6d2659275ea5f25c",
+        "bytes": 1078
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/ggml-gemmini-fpga.hpp",
+        "sha256": "2009f1f982a15d34e183c6539f994d5f6883bd08f9b512cc5409a0fb67b95828",
+        "bytes": 1003
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/ggml-gemmini-fpga.hpp",
+        "sha256": "81cd40d721e7ed1b6da0b7f61022ec88e13c183d9fab834c6d2659275ea5f25c",
+        "bytes": 1078
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/ggml-gemmini-fpga.hpp",
+        "sha256": "81cd40d721e7ed1b6da0b7f61022ec88e13c183d9fab834c6d2659275ea5f25c",
+        "bytes": 1078
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/host-integration.patch",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/host-integration.patch",
+        "sha256": "f51b5eab3d24d40df9b527348dc7c4f83a5cebf6c4e3ee7734a5b7a32471c648",
+        "bytes": 10178
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/host-integration.patch",
+        "sha256": "f51b5eab3d24d40df9b527348dc7c4f83a5cebf6c4e3ee7734a5b7a32471c648",
+        "bytes": 10178
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/host-integration.patch",
+        "sha256": "f51b5eab3d24d40df9b527348dc7c4f83a5cebf6c4e3ee7734a5b7a32471c648",
+        "bytes": 10178
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/host-integration.patch",
+        "sha256": "f51b5eab3d24d40df9b527348dc7c4f83a5cebf6c4e3ee7734a5b7a32471c648",
+        "bytes": 10178
+      },
+      "selection_reason_ko": "Pinned host CMake selector 및 실제 ggml dispatch에서 FPGA_UART 명시 선택.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": true
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/producer-observation.patch",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/producer-observation.patch",
+        "sha256": "084816280506e1b07c589e4acd0fac1eb9776da05df9c959badcb71d6e122859",
+        "bytes": 1020
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": null,
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/producer-observation.patch",
+        "sha256": "084816280506e1b07c589e4acd0fac1eb9776da05df9c959badcb71d6e122859",
+        "bytes": 1020
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/producer-observation.patch",
+        "sha256": "084816280506e1b07c589e4acd0fac1eb9776da05df9c959badcb71d6e122859",
+        "bytes": 1020
+      },
+      "selection_reason_ko": "Pinned ExSIA producer의 기존 시작 지점에 timestamp/optional diagnostic hook만 추가.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": null
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/CMakeLists.txt",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/CMakeLists.txt",
+        "sha256": "46833d97a318c7bdc04040dd635b491113af9a6791c4c3f2a30adf3dd5134b77",
+        "bytes": 3397
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/CMakeLists.txt",
+        "sha256": "f21a023faaf18ba4fa7fb5a03e5f0529160dfe809bb77260f87fd98fda4f6aa9",
+        "bytes": 3313
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/CMakeLists.txt",
+        "sha256": "46833d97a318c7bdc04040dd635b491113af9a6791c4c3f2a30adf3dd5134b77",
+        "bytes": 3397
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/CMakeLists.txt",
+        "sha256": "46833d97a318c7bdc04040dd635b491113af9a6791c4c3f2a30adf3dd5134b77",
+        "bytes": 3397
+      },
+      "selection_reason_ko": "Host/frontend 함께 C++20/ABI4/A8W8DIM16/protocol2로 빌드 및 source fingerprint.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/build.py",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/build.py",
+        "sha256": "e435e068dfc7ae016c79d9d1d6cf9ecabcee035b10accc43908f70a5b6c69c85",
+        "bytes": 11906
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/build.py",
+        "sha256": "2c71fb1760ae997315251953e7c0049dfb88caa0ad69e5d51e2d0b549f795031",
+        "bytes": 7626
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/build.py",
+        "sha256": "e435e068dfc7ae016c79d9d1d6cf9ecabcee035b10accc43908f70a5b6c69c85",
+        "bytes": 11906
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/build.py",
+        "sha256": "e435e068dfc7ae016c79d9d1d6cf9ecabcee035b10accc43908f70a5b6c69c85",
+        "bytes": 11906
+      },
+      "selection_reason_ko": "기존 FULL freeze 재사용; 명시적 replacement와 pinned host patch 순서. 새 blanket overlay 없음.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/host_dispatch.cpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/host_dispatch.cpp",
+        "sha256": "6921a8b4ecc75ffd3d4df77154bfcdfc5afe9795072f6984659d8b4c0971e7be",
+        "bytes": 21634
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/host_dispatch.cpp",
+        "sha256": "f96fb098b1e8221d750efea91283a07107669e2ab185bfe5a521b46798904d2c",
+        "bytes": 11364
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/host_dispatch.cpp",
+        "sha256": "6921a8b4ecc75ffd3d4df77154bfcdfc5afe9795072f6984659d8b4c0971e7be",
+        "bytes": 21634
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/host_dispatch.cpp",
+        "sha256": "6921a8b4ecc75ffd3d4df77154bfcdfc5afe9795072f6984659d8b4c0971e7be",
+        "bytes": 21634
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "IM2P.sim",
+      "path": "fpga/dense_pipeline/persistent_replay.cpp",
+      "A_committed_HEAD": null,
+      "B_begin_dirty_root": null,
+      "B_current_dirty_root": {
+        "path": "fpga/dense_pipeline/persistent_replay.cpp",
+        "sha256": "06d3b5f65be43ea03ebd394436988066d78e0304d1208af611143b49a91cdc09",
+        "bytes": 22683
+      },
+      "C_frozen_FULL_board": null,
+      "C_frozen_FULL_host_build03_source": null,
+      "D_routed_board_stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/source/fpga/dense_pipeline/persistent_replay.cpp",
+        "sha256": "dceb3a951ff8686767fb247f1eb608d381e26362b4dbdae2f58882e12359970c",
+        "bytes": 5097
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/persistent_replay.cpp",
+        "sha256": "06d3b5f65be43ea03ebd394436988066d78e0304d1208af611143b49a91cdc09",
+        "bytes": 22683
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/persistent_replay.cpp",
+        "sha256": "06d3b5f65be43ea03ebd394436988066d78e0304d1208af611143b49a91cdc09",
+        "bytes": 22683
+      },
+      "selection_reason_ko": "고정 A8/W8/DIM16 source/profile를 재사용하며 실제 snapshot hash로 식별.",
+      "current_root_equals_frozen_FULL": false,
+      "stream02_equals_stream08": false
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "CMakeLists.txt",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "CMakeLists.txt",
+        "sha256": "84164aefd4faa2b59f13085366a3e0dae2185800331b97733f270b3af90bf69b"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "84164aefd4faa2b59f13085366a3e0dae2185800331b97733f270b3af90bf69b",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "CMakeLists.txt"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/CMakeLists.txt",
+        "sha256": "84164aefd4faa2b59f13085366a3e0dae2185800331b97733f270b3af90bf69b",
+        "bytes": 44771
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/CMakeLists.txt",
+        "sha256": "84164aefd4faa2b59f13085366a3e0dae2185800331b97733f270b3af90bf69b",
+        "bytes": 44771
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/CMakeLists.txt",
+        "sha256": "6dcf9f4ec58991f8de90c2640746e4c5fc277f7b88518bd258ed3f2bba8b7fbc",
+        "bytes": 46166
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/CMakeLists.txt",
+        "sha256": "6dcf9f4ec58991f8de90c2640746e4c5fc277f7b88518bd258ed3f2bba8b7fbc",
+        "bytes": 46166
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/CMakeLists.txt",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/CMakeLists.txt",
+        "sha256": "c9b4ed9509a42dfec7c63698ac08560797c323fc009a6a7d0b85d73f22852bf3"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "c9b4ed9509a42dfec7c63698ac08560797c323fc009a6a7d0b85d73f22852bf3",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/CMakeLists.txt"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/CMakeLists.txt",
+        "sha256": "c9b4ed9509a42dfec7c63698ac08560797c323fc009a6a7d0b85d73f22852bf3",
+        "bytes": 10535
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/CMakeLists.txt",
+        "sha256": "c9b4ed9509a42dfec7c63698ac08560797c323fc009a6a7d0b85d73f22852bf3",
+        "bytes": 10535
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/CMakeLists.txt",
+        "sha256": "20c249a6862ea36691a63ab59559d4f9bb97b28a30f48e72a2c20e635e68d7cd",
+        "bytes": 10768
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/CMakeLists.txt",
+        "sha256": "20c249a6862ea36691a63ab59559d4f9bb97b28a30f48e72a2c20e635e68d7cd",
+        "bytes": 10768
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+        "sha256": "3a7752dc5319da12aa7dacf6eec03a462158a9e1e2d6304b9217eb9bf4fa3687"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "3a7752dc5319da12aa7dacf6eec03a462158a9e1e2d6304b9217eb9bf4fa3687",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini.cpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+        "sha256": "3a7752dc5319da12aa7dacf6eec03a462158a9e1e2d6304b9217eb9bf4fa3687",
+        "bytes": 135523
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+        "sha256": "3a7752dc5319da12aa7dacf6eec03a462158a9e1e2d6304b9217eb9bf4fa3687",
+        "bytes": 135523
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+        "sha256": "cb17c4041c298cdf6baefcfea345b4124615bb1af8536181b17a274f34320f76",
+        "bytes": 138098
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+        "sha256": "cb17c4041c298cdf6baefcfea345b4124615bb1af8536181b17a274f34320f76",
+        "bytes": 138098
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-args.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317",
+        "bytes": 30131
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317",
+        "bytes": 30131
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317",
+        "bytes": 30131
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+        "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317",
+        "bytes": 30131
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa",
+        "bytes": 3067
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa",
+        "bytes": 3067
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa",
+        "bytes": 3067
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+        "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa",
+        "bytes": 3067
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971",
+        "bytes": 146207
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971",
+        "bytes": 146207
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971",
+        "bytes": 146207
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+        "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971",
+        "bytes": 146207
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e",
+        "bytes": 36782
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e",
+        "bytes": 36782
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e",
+        "bytes": 36782
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+        "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e",
+        "bytes": 36782
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98",
+        "bytes": 76367
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98",
+        "bytes": 76367
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98",
+        "bytes": 76367
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+        "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98",
+        "bytes": 76367
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591",
+        "bytes": 11218
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591",
+        "bytes": 11218
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591",
+        "bytes": 11218
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+        "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591",
+        "bytes": 11218
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+        "sha256": "805197ed0389f0161bdb685c97e7c22a71575e755a4359548c7d306ccce26ef7"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "805197ed0389f0161bdb685c97e7c22a71575e755a4359548c7d306ccce26ef7",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+        "sha256": "805197ed0389f0161bdb685c97e7c22a71575e755a4359548c7d306ccce26ef7",
+        "bytes": 136908
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+        "sha256": "805197ed0389f0161bdb685c97e7c22a71575e755a4359548c7d306ccce26ef7",
+        "bytes": 136908
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+        "sha256": "0557b8e6000e51584afd101aa6b52d2446f316bc4a9b62c6bb3450e725f38146",
+        "bytes": 137248
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+        "sha256": "0557b8e6000e51584afd101aa6b52d2446f316bc4a9b62c6bb3450e725f38146",
+        "bytes": 137248
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d",
+        "bytes": 40895
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d",
+        "bytes": 40895
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d",
+        "bytes": 40895
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+        "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d",
+        "bytes": 40895
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-quants.c",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-quants.c",
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-quants.c"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-quants.c",
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb",
+        "bytes": 248582
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-quants.c",
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb",
+        "bytes": 248582
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-quants.c",
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb",
+        "bytes": 248582
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-quants.c",
+        "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb",
+        "bytes": 248582
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml-common.h",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml-common.h",
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml-common.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml-common.h",
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b",
+        "bytes": 138186
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-common.h",
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b",
+        "bytes": 138186
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-common.h",
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b",
+        "bytes": 138186
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml-common.h",
+        "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b",
+        "bytes": 138186
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "llama.cpp-gemmini",
+      "path": "ggml/src/ggml.c",
+      "A_committed_HEAD": {
+        "commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+        "path": "ggml/src/ggml.c",
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "host",
+        "key": "ggml/src/ggml.c"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/llama.cpp-gemmini/ggml/src/ggml.c",
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb",
+        "bytes": 214333
+      },
+      "C_frozen_FULL_host": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml.c",
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb",
+        "bytes": 214333
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml.c",
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb",
+        "bytes": 214333
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host/ggml/src/ggml.c",
+        "sha256": "dce9a8ca70a2e1ba0ada7ce97567dd3f8e74c77e406644700786a0d3d7d675bb",
+        "bytes": 214333
+      },
+      "selection_reason_ko": "고정 develop pin archive 뒤 host-integration.patch, producer-observation.patch 순서 적용. 기존 quantizer/reader/geometry 수치 의미 유지.",
+      "current_root_equals_frozen_FULL": true
+    },
+    {
+      "repository": "RISC-V-DynDNN-gemmini-include",
+      "path": "include/gemmini.h",
+      "A_committed_HEAD": {
+        "commit": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+        "path": "include/gemmini.h",
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "params",
+        "key": "include/gemmini.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/RISC-V-DynDNN-gemmini-include/include/gemmini.h",
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196",
+        "bytes": 38
+      },
+      "C_frozen_FULL_params": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/params/include/gemmini.h",
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196",
+        "bytes": 38
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/include/gemmini.h",
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196",
+        "bytes": 38
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/include/gemmini.h",
+        "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196",
+        "bytes": 38
+      },
+      "selection_reason_ko": "동일 include pin의 실제 DIM16/bank parameters 및 기존 gemmini_set_tile_ws 재사용."
+    },
+    {
+      "repository": "RISC-V-DynDNN-gemmini-include",
+      "path": "include/gemmini_params.h",
+      "A_committed_HEAD": {
+        "commit": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+        "path": "include/gemmini_params.h",
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "params",
+        "key": "include/gemmini_params.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/RISC-V-DynDNN-gemmini-include/include/gemmini_params.h",
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b",
+        "bytes": 45
+      },
+      "C_frozen_FULL_params": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/params/include/gemmini_params.h",
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b",
+        "bytes": 45
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/include/gemmini_params.h",
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b",
+        "bytes": 45
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/include/gemmini_params.h",
+        "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b",
+        "bytes": 45
+      },
+      "selection_reason_ko": "동일 include pin의 실제 DIM16/bank parameters 및 기존 gemmini_set_tile_ws 재사용."
+    },
+    {
+      "repository": "RISC-V-DynDNN-gemmini-include",
+      "path": "gemmini.h",
+      "A_committed_HEAD": {
+        "commit": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+        "path": "gemmini.h",
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "params",
+        "key": "gemmini.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/RISC-V-DynDNN-gemmini-include/gemmini.h",
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70",
+        "bytes": 204522
+      },
+      "C_frozen_FULL_params": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/params/gemmini.h",
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70",
+        "bytes": 204522
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/gemmini.h",
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70",
+        "bytes": 204522
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/gemmini.h",
+        "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70",
+        "bytes": 204522
+      },
+      "selection_reason_ko": "동일 include pin의 실제 DIM16/bank parameters 및 기존 gemmini_set_tile_ws 재사용."
+    },
+    {
+      "repository": "RISC-V-DynDNN-gemmini-include",
+      "path": "gemmini_params.h",
+      "A_committed_HEAD": {
+        "commit": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+        "path": "gemmini_params.h",
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5"
+      },
+      "B_begin_dirty_root": {
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+        "manifest": "build/experiments/dense-pipeline-20260909T141302Z/baseline/repository-sha256.json",
+        "group": "params",
+        "key": "gemmini_params.h"
+      },
+      "B_current_dirty_root": {
+        "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/RISC-V-DynDNN-gemmini-include/gemmini_params.h",
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+        "bytes": 2686
+      },
+      "C_frozen_FULL_params": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/params/gemmini_params.h",
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+        "bytes": 2686
+      },
+      "D_host_stream08": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/gemmini_params.h",
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+        "bytes": 2686
+      },
+      "selected_for_execution": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/params/gemmini_params.h",
+        "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+        "bytes": 2686
+      },
+      "selection_reason_ko": "동일 include pin의 실제 DIM16/bank parameters 및 기존 gemmini_set_tile_ws 재사용."
+    }
+  ],
+  "immutable_artifacts": [
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/dense-pipeline.bit",
+      "sha256": "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca",
+      "bytes": 3825915
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/route.dcp",
+      "sha256": "6141a245e4c2ca88b8147ae864974abc14c3b858a276c2a5f5beee42f5a92bd4",
+      "bytes": 63706275
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/generated-sha256.json",
+      "sha256": "7e7a5ad00dc4dade0e4753b82ca589df2458c4dfc25246ed742c062e194cad65",
+      "bytes": 468
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/build.command.json",
+      "sha256": "310a1960d7915d9a8db5e479dd8d5b0f74cd70c6dbdf077b0f185db0f7cf3379",
+      "bytes": 930
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/dense_host_dispatch",
+      "sha256": "f5cd48e36e6dab5566b2ea438e265541884539eec70dcd1b1c6059fd77c3ba10",
+      "bytes": 8637640
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/persistent_replay",
+      "sha256": "f057b99fc188673cbfad29bd9957616143ad89458e5d4c5de0d583595cfd6e03",
+      "bytes": 8579136
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/compile_commands.json",
+      "sha256": "0b9fcee1930ec45f9e71ebb2663c56ddfff417e3850e66510cf45fc575677183",
+      "bytes": 268054
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/CMakeCache.txt",
+      "sha256": "488b9c134742a88714c45bd6b8208326660d7525e396b74080fe41e997a48e0a",
+      "bytes": 33901
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-configure.command.json",
+      "sha256": "052867e27428e7a67718ed67a0619739e52b7995db7b197a118f85e152606b0d",
+      "bytes": 1140
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build-command.command.json",
+      "sha256": "9fec5b0a58d90a3676710d1f84561e0acdd5bfd97d95d427151f165248ca335c",
+      "bytes": 380
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/identity.json",
+      "sha256": "717402c6129c4cb06f036936f25828740ced213a57666d34c0b962f5f042b258",
+      "bytes": 2167
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/identity.json",
+      "sha256": "e39994a06ace1de37ef52d6ec319fbf5373d46e0fbd6a0e445422909df7d1746",
+      "bytes": 1406
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/measure.py",
+      "sha256": "eb2f6e3fa6ea6dcd5d05558fbb5322b158c4d8b2c965d6a520e80e34e0fa491f",
+      "bytes": 9012
+    },
+    {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/run_pty.py",
+      "sha256": "08895942c2c5c24f743849fba72051989d7ae97826603f30317d4597eb37f671",
+      "bytes": 2890
+    },
+    {
+      "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/full-replay.bit",
+      "sha256": "c3713784732eb9f88221d921278b102589f7834499f7ca1c0eaa1307f9f02f78",
+      "bytes": 3825914
+    },
+    {
+      "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/route.dcp",
+      "sha256": "aa47dab9a5f52acfbb2760aa8696af69e8642462bb078d4859eab2f477342f1f",
+      "bytes": 59429514
+    },
+    {
+      "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/production/rtl/mkFullReplay.v",
+      "sha256": "553c2339bd0f3df421a63b62ef27342f7d41694bdf1abe4caf69c0eb06f158bb",
+      "bytes": 5839438
+    },
+    {
+      "path": "build/experiments/host-full-replay-20260909T103729Z/host-build-03/full_replay",
+      "sha256": "02fc99b417016edc5efb34967eb2cb473bb9ef471436a560c607c2c4b7fc768a",
+      "bytes": 8490320
+    },
+    {
+      "path": "build/experiments/host-full-replay-20260909T103729Z/final-tools/sha256.json",
+      "sha256": "a20d4df4929c29cb3210f8aad4f79a7242ec798cc326ebb61ee2d851f96af69c",
+      "bytes": 1199
+    },
+    {
+      "path": "fpga/dense_pipeline/prepare_measurement.py",
+      "sha256": "9faa566712a1801dcf6295281c151ee2bfdbc6fd1f8aabec1053ab7039445407",
+      "bytes": 8934
+    },
+    {
+      "path": "fpga/dense_pipeline/measure.py",
+      "sha256": "eb2f6e3fa6ea6dcd5d05558fbb5322b158c4d8b2c965d6a520e80e34e0fa491f",
+      "bytes": 9012
+    },
+    {
+      "path": "fpga/dense_pipeline/test_measure.py",
+      "sha256": "436942f6fdfb4bb66d90f243f7b2b02d7a010050f343230e88c0a84600136d08",
+      "bytes": 2288
+    }
+  ],
+  "tool_entries": [
+    {
+      "name": "bsc",
+      "resolved_entry": {
+        "path": "/home/youngshin/.local/opt/bsc-2026.01-ubuntu-22.04/bin/bsc",
+        "sha256": "4e8b29bedbf4d27f146c28e6b56bf4d8dec59c7bf133276267575286ca57e4e8",
+        "bytes": 913
+      }
+    },
+    {
+      "name": "verilator",
+      "resolved_entry": {
+        "path": "/home/youngshin/.local/opt/oss-cad-suite/bin/verilator",
+        "sha256": "fb2cc573b1055cf096c90e1efc9966fe56bdb4b265c83590cf2a49f7a0defcdf",
+        "bytes": 32093
+      }
+    },
+    {
+      "name": "g++",
+      "resolved_entry": {
+        "path": "/usr/bin/x86_64-linux-gnu-g++-11",
+        "sha256": "2360901d864cf10bfd6296e261cb2c14053552a80377761ab07146ec9ec9a2c0",
+        "bytes": 932680
+      }
+    },
+    {
+      "name": "cmake",
+      "resolved_entry": {
+        "path": "/usr/bin/cmake",
+        "sha256": "fd22547781b64bb2db04370970b93db1f3fada1e41e60873b015ee0747009fc0",
+        "bytes": 6747024
+      }
+    }
+  ],
+  "verified_manifests": [
+    {
+      "manifest": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/integration-sha256.json",
+        "sha256": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7",
+        "bytes": 198228
+      },
+      "checked_files": 1693,
+      "status": "PASS"
+    },
+    {
+      "manifest": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/integration-sha256.json",
+        "sha256": "0bf50916cd891c766f4ef372c68d9c07494a419606bdd44c289e98954bf81454",
+        "bytes": 200230
+      },
+      "checked_files": 1710,
+      "status": "PASS"
+    },
+    {
+      "manifest": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source-sha256.json",
+        "sha256": "0a82d0e307dd9cf55a6a42428a58b9b2d927352877de1607982fbdc57a26825e",
+        "bytes": 20739
+      },
+      "checked_files": 205,
+      "status": "PASS"
+    },
+    {
+      "manifest": {
+        "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03-sha256.json",
+        "sha256": "f201bfe94239ed867e9a12ece5be4d0fb2cda0079c9e8a3b4d89a75564ab4f3c",
+        "bytes": 21158
+      },
+      "checked_files": 209,
+      "status": "PASS"
+    }
+  ],
+  "generated_rtl_comparison": {
+    "stream02": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/rtl/mkDensePipeline.v",
+      "sha256": "b29147ce384e9384b3821c358863350f03c0696cbc8b8e286a768f2e7155b853",
+      "bytes": 5856497
+    },
+    "stream04": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/rtl/mkDensePipeline.v",
+      "sha256": "9b50f3404237df257874b5258369b832b245f8f907f1b29e5fe938c29b269c14",
+      "bytes": 5856497
+    },
+    "raw_equal": false,
+    "different_lines": [
+      {
+        "line": 4,
+        "stream02": "// On Wed Sep  9 23:49:29 KST 2026",
+        "stream04": "// On Thu Sep 10 00:20:00 KST 2026"
+      }
+    ],
+    "comparison_rule": "Remove only lines starting exactly // On ; all remaining bytes identical",
+    "normalized_sha256": "9c150123cbdc4411dec2c5f0daa6e81e6a12edc045736615de32a7d484d6c359",
+    "non_date_bytes_equal": true,
+    "unified_diff": "--- build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/rtl/mkDensePipeline.v\n+++ build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/rtl/mkDensePipeline.v\n@@ -1,7 +1,7 @@\n //\n // Generated by Bluespec Compiler, version 2026.01 (build 9bd39e6f)\n //\n-// On Wed Sep  9 23:49:29 KST 2026\n+// On Thu Sep 10 00:20:00 KST 2026\n //\n //\n // Ports:\n"
+  },
+  "primitive_comparison": [
+    {
+      "stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/primitives/BRAM1.v",
+        "sha256": "e5f0aeabcdcc0f5788abfc0786f4178fea1ab3e931eff24be408c6229555e5d4",
+        "bytes": 1613
+      },
+      "stream04": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/primitives/BRAM1.v",
+        "sha256": "e5f0aeabcdcc0f5788abfc0786f4178fea1ab3e931eff24be408c6229555e5d4",
+        "bytes": 1613
+      },
+      "raw_equal": true
+    },
+    {
+      "stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/primitives/BRAM2.v",
+        "sha256": "cd70c2576f949231975373b60270b1428c4fe7b247e0213796edd7893cbd5bbf",
+        "bytes": 2616
+      },
+      "stream04": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/primitives/BRAM2.v",
+        "sha256": "cd70c2576f949231975373b60270b1428c4fe7b247e0213796edd7893cbd5bbf",
+        "bytes": 2616
+      },
+      "raw_equal": true
+    },
+    {
+      "stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/primitives/FIFO2.v",
+        "sha256": "bae0481cc69aabde2254b50e3d80bf0a7b6af6ccf27cd981c4b1154c7a848384",
+        "bytes": 4427
+      },
+      "stream04": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/primitives/FIFO2.v",
+        "sha256": "bae0481cc69aabde2254b50e3d80bf0a7b6af6ccf27cd981c4b1154c7a848384",
+        "bytes": 4427
+      },
+      "raw_equal": true
+    },
+    {
+      "stream02": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-02/production/primitives/RegFile.v",
+        "sha256": "7de616d2aff8b2411994abadf3876aba8bd64e753741c73d2c0ea19fff0a7db8",
+        "bytes": 3103
+      },
+      "stream04": {
+        "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-04/production/primitives/RegFile.v",
+        "sha256": "7de616d2aff8b2411994abadf3876aba8bd64e753741c73d2c0ea19fff0a7db8",
+        "bytes": 3103
+      },
+      "raw_equal": true
+    }
+  ],
+  "ownership_update": {
+    "source": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/stream-08/source/fpga/dense_pipeline/ggml-gemmini-fpga.cpp",
+      "sha256": "b3cc8f1cc1ed7d51b69accdb4e70d30f36edaae5ae87a20bf575fbd0d10ab86c",
+      "bytes": 17937
+    },
+    "accepted_A_allocation_line": 214,
+    "postfold_copy_lines": [
+      95,
+      100
+    ],
+    "host_quantization_checkpoint_line": 129,
+    "checkpoint_to_postfold_end_line": 106,
+    "M321K64_additional_accepted_A_bytes": 20544,
+    "M321K96_additional_accepted_A_bytes": 30816,
+    "copy_cost_in_service_timer": true,
+    "FULL_extra_accepted_A_copy": false,
+    "existing_reducer_double_payload_bytes": 2048,
+    "reason_ko": "ExSIA 실패가 producer A를 초기화해도 수락된 in-flight A 복사본은 불변 유지.",
+    "original_A8_view_validation_lines": [
+      169,
+      173
+    ],
+    "original_view_gate_precedes_device_open_and_owned_replacement": true,
+    "dense_metadata_validation_helper_line": 33,
+    "original_metadata_validation_before_device_open_line": 174,
+    "FULL_postquant_metadata_gate_before_execution_line": 210,
+    "PIPELINE_metadata_gate_before_fence_line": 238,
+    "low_D_rejection_before_int32_read_line": 179
+  },
+  "physical_hardware_access": false,
+  "running_logs_hashed_as_final": false,
+  "auto_git_mutation": false,
+  "document": {
+    "path": "fpga/dense_pipeline/CONTRACT.md",
+    "sha256": "7ebfaacdda3410a572f69508abd7afdd658898c87b93de78820f05007489901e",
+    "bytes": 17745
+  },
+  "measurement_plan": {
+    "path": "build/experiments/dense-pipeline-20260909T141302Z/measurement-plan-host08.json",
+    "sha256": "07e29d51e7ac5c027499b39289cf07e85349e0779bc24d7b6fd27917e041899d",
+    "bytes": 1136025
+  },
+  "preservation_mapping": {
+    "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/measurement-plan-host08-preservation.json",
+    "sha256": "f6bf0350ff442e5f171cafca4c736962d921714a9f41a473771f1afd8d62dffd",
+    "bytes": 4021
+  },
+  "measurement_preparer_scope_ko": "Versionable prepare_measurement.py는 workload를 실행하지 않는 계획 생성 도구다. Host08 frozen source에 포함되고, plan은 실행할 root prepare/measure/test_measure hashes도 별도 seal. 기존 host07 plan/samples는 변경하지 않음.",
+  "previous_host06_review": {
+    "review": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/final-provenance-review.json",
+      "sha256": "6c9c50ce79b16936506e305a249f3f1e01b1865f86dec9a005cd36ef01734c80",
+      "bytes": 2197
+    },
+    "source_provenance_snapshot": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/source-provenance-host06.json",
+      "sha256": "a733630a5fa36b0e4b89451c19f80d759106b2815555707faca3caa443156dd2",
+      "bytes": 121664
+    },
+    "contract_snapshot": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/CONTRACT-host06.md",
+      "sha256": "52eb4b41b63966f818033a55c0309b63e533d4fe9bbaa808301ffbfd493e8afa",
+      "bytes": 17100
+    }
+  },
+  "previous_host07_review": {
+    "review": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/final-provenance-review-host07.json",
+      "sha256": "dda7bb9df57d32dc0d861f82619036c464db74966d2895b4199259df63c3ddb0",
+      "bytes": 3321
+    },
+    "source_provenance_snapshot": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/source-provenance-host07.json",
+      "sha256": "c6ac233884a275f0a5bf281339d88b153375bb77a5db389c972473c853f68e07",
+      "bytes": 123847
+    },
+    "contract_snapshot": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/evidence/CONTRACT-host07.md",
+      "sha256": "f6e54caaeb1a5a2bf822e155814591043c50f2dffcb29fc5f3e2043db8e5ed4a",
+      "bytes": 17344
+    },
+    "measurement_plan": {
+      "path": "build/experiments/dense-pipeline-20260909T141302Z/measurement-plan.json",
+      "sha256": "89ab23035c6040ad32f986ae96368abf68c4c9ce493f81adfaa851148e508882",
+      "bytes": 1135543
+    }
+  }
+}

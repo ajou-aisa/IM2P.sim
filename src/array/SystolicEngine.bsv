@@ -77,7 +77,7 @@ module mkSystolicEngineWithArray#(
         input_t,
         weight_t,
         product_t,
-        acc_t
+        partial_t
     ) systolicArray
 )(SystolicEngineIfc#(
     arrayDim,
@@ -93,10 +93,13 @@ module mkSystolicEngineWithArray#(
     Bits#(weight_t, weightBits),
     Bits#(acc_t, accBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t),
-    AccumulatorArithmetic#(acc_t)
+    Bits#(partial_t, partialBits),
+    SystolicPartial#(arrayDim, product_t, partial_t),
+    ProductAccumulator#(product_t, partial_t),
+    AccumulatorArithmetic#(partial_t),
+    PartialAccumulatorConversion#(partial_t, acc_t)
 );
-    InputSkewIfc#(arrayDim, peLatency, input_t, acc_t) inputSkew <-
+    InputSkewIfc#(arrayDim, peLatency, input_t, partial_t) inputSkew <-
         mkInputSkew;
 
     ExecuteControllerIfc#(arrayDim) controller <- mkExecuteController;
@@ -113,7 +116,7 @@ module mkSystolicEngineWithArray#(
     // 상대 timing을 유지한다.
     rule advanceArray (controller.active && results.notFull);
         // step 전에 읽는 값은 이전 cycle에 PE pipeline이 만든 bottom-row output이다.
-        Vector#(arrayDim, Maybe#(acc_t)) outputs =
+        Vector#(arrayDim, Maybe#(partial_t)) outputs =
             systolicArray.partialSums;
 
         Vector#(arrayDim, Bool) valids = newVector;
@@ -123,10 +126,10 @@ module mkSystolicEngineWithArray#(
                 column < valueOf(arrayDim);
                 column = column + 1) begin
             valids[column] = isValid(outputs[column]);
-            partials[column] = fromMaybe(
+            partials[column] = widenPartial(fromMaybe(
                 accumulatorZero(),
                 outputs[column]
-            );
+            ));
         end
 
         if (anyTrue(valids)) begin
@@ -264,8 +267,11 @@ module mkSystolicEngine(SystolicEngineIfc#(
     Bits#(weight_t, weightBits),
     Bits#(acc_t, accBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t),
-    AccumulatorArithmetic#(acc_t)
+    Bits#(partial_t, partialBits),
+    SystolicPartial#(arrayDim, product_t, partial_t),
+    ProductAccumulator#(product_t, partial_t),
+    AccumulatorArithmetic#(partial_t),
+    PartialAccumulatorConversion#(partial_t, acc_t)
 );
     SystolicArrayIfc#(
         arrayDim,
@@ -273,7 +279,7 @@ module mkSystolicEngine(SystolicEngineIfc#(
         input_t,
         weight_t,
         product_t,
-        acc_t
+        partial_t
     ) systolicArray <- mkSystolicArray;
 
     let engine <- mkSystolicEngineWithArray(systolicArray);

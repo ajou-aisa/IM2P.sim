@@ -1,0 +1,7 @@
+{
+  "fixture.bin": "4151b909110f658d64c5e5e248a1db0e8b1a1e6d929172c1ab7370f7adea380d",
+  "staging.bin": "025becc200541c25794ad327a9b6a772dd8b322f2ad66c1f359a4c6bcba2b2f2",
+  "expected-raw.bin": "99fde2ddc48bfce7625066c648e78f8388f600e5e89d228c00a75d2806635acc",
+  "expected-fout.bin": "b7f3d0f41d939660ea2d9f0f5823d6b2e9682c104fa2fb254e4c02b85f9a1248",
+  "manifest.json": "f747e12b7f917c4af598130aed8c0565857ec65a82e04214d6ba36db5a0ca4c6"
+}

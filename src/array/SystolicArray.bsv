@@ -24,7 +24,7 @@ interface SystolicArrayIfc#(
     type input_t,
     type weight_t,
     type product_t,
-    type acc_t
+    type partial_t
 );
     // 새로운 B tile을 적재하기 전에 row-loaded 상태를 지운다. 같은 B tile을 여러
     // activation execution에서 재사용할 때는 다시 호출하지 않아도 된다.
@@ -51,7 +51,7 @@ interface SystolicArrayIfc#(
 
     method Action step(
         Vector#(arrayDim, Maybe#(input_t)) activationInputs,
-        Vector#(arrayDim, Maybe#(acc_t)) partialInputs
+        Vector#(arrayDim, Maybe#(partial_t)) partialInputs
     );
 
     // 각 row의 마지막 PE가 전달한 activation이다. Flat array에서는 외부에서
@@ -62,7 +62,7 @@ interface SystolicArrayIfc#(
     // 전체 GEMM의 K가 arrayDim보다 크면 이 값은 full GEMM 관점의 partial sum이며,
     // 후속 execution이 Accumulator에 추가로 누산된다. Column별 systolic 지연은
     // 그대로 유지하므로 같은 cycle에는 일부 column만 Valid일 수 있다.
-    method Vector#(arrayDim, Maybe#(acc_t)) partialSums;
+    method Vector#(arrayDim, Maybe#(partial_t)) partialSums;
 endinterface
 
 module mkSystolicArray(SystolicArrayIfc#(
@@ -71,21 +71,21 @@ module mkSystolicArray(SystolicArrayIfc#(
     input_t,
     weight_t,
     product_t,
-    acc_t
+    partial_t
 )) provisos (
     Add#(1, arrayDimMinusOne, arrayDim),
     Add#(1, peLatencyMinusOne, peLatency),
     Bits#(input_t, inputBits),
     Bits#(weight_t, weightBits),
-    Bits#(acc_t, accBits),
+    Bits#(partial_t, partialBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t)
+    ProductAccumulator#(product_t, partial_t)
 );
     Vector#(
         arrayDim,
         Vector#(
             arrayDim,
-            PEIfc#(peLatency, input_t, weight_t, product_t, acc_t)
+            PEIfc#(peLatency, input_t, weight_t, product_t, partial_t)
         )
     ) processingElements <- replicateM(replicateM(mkPE));
 
@@ -240,14 +240,14 @@ module mkSystolicArray(SystolicArrayIfc#(
 
     method Action step(
         Vector#(arrayDim, Maybe#(input_t)) activationInputs,
-        Vector#(arrayDim, Maybe#(acc_t)) partialInputs
+        Vector#(arrayDim, Maybe#(partial_t)) partialInputs
     );
         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
             for (Integer column = 0;
                     column < valueOf(arrayDim);
                     column = column + 1) begin
                 Maybe#(input_t) activation = activationInputs[row];
-                Maybe#(acc_t) partial = partialInputs[column];
+                Maybe#(partial_t) partial = partialInputs[column];
 
                 if (column > 0) begin
                     activation =
@@ -274,8 +274,8 @@ module mkSystolicArray(SystolicArrayIfc#(
         return outputs;
     endmethod
 
-    method Vector#(arrayDim, Maybe#(acc_t)) partialSums;
-        Vector#(arrayDim, Maybe#(acc_t)) outputs = newVector;
+    method Vector#(arrayDim, Maybe#(partial_t)) partialSums;
+        Vector#(arrayDim, Maybe#(partial_t)) outputs = newVector;
         for (Integer column = 0;
                 column < valueOf(arrayDim);
                 column = column + 1) begin

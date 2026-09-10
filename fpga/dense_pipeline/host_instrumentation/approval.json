@@ -1,0 +1,542 @@
+{
+  "schema": 2,
+  "status": "Awaiting NEW approval",
+  "title": "A8/W8/DIM16/native Q8_H1/EXSIA/RMD OFF Dense FULL + live PIPELINE",
+  "board_measured": false,
+  "programming_executed": false,
+  "uart_physical_access": false,
+  "flash_write_permitted": false,
+  "board": "Arty A7-100T",
+  "jtag_device": "xc7a100t_0",
+  "jtag_die_part": "xc7a100t",
+  "implementation_part": "xc7a100tcsg324-1",
+  "jtag_note": "Die identity does not prove physical package or speed grade. Implementation part is checked in routed DCP.",
+  "nominal_clock_hz": 25000000,
+  "uart": {
+    "baud": 1000000,
+    "format": "8N1",
+    "protocol": "IFR2",
+    "version": 2,
+    "profile_hex": "0810",
+    "capacity": {
+      "M": 336,
+      "N": 48,
+      "K": 96
+    }
+  },
+  "bitstream": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/dense-pipeline.bit",
+    "sha256": "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca"
+  },
+  "routed_dcp": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/route.dcp",
+    "sha256": "6141a245e4c2ca88b8147ae864974abc14c3b858a276c2a5f5beee42f5a92bd4"
+  },
+  "selected_hardware": "stream-02",
+  "selected_host_frontend": "host-09-02",
+  "host_pin": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "params_pin": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+  "executables": {
+    "ggml_host": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/host-build/dense_host_dispatch",
+      "sha256": "d8e602a0f102c289f19ae6e681e02c723f1b7649f16fd92ef70a012969c2e2ea"
+    },
+    "persistent_host": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/host-build/persistent_replay",
+      "sha256": "5536f7025f0d640014e867283111c97f4c24344e88ca4d0667b6f8fd09c48e85"
+    }
+  },
+  "measurement_plan": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/measurement-plan-host09-02.json",
+    "sha256": "15d7d247ae09b51fcefd904f2a42559816d018250d3a9bc93066c4abebe5f448",
+    "sealed_files": 4983
+  },
+  "source_manifests": {
+    "stream-02": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/integration-sha256.json",
+      "sha256": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7"
+    },
+    "host-09-02": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/integration-sha256.json",
+      "sha256": "71d526ceab9ca9d955cc04e442a6938cdd2682309c5ab8475b07015d6bd8a07c"
+    }
+  },
+  "programming": {
+    "count": 1,
+    "storage": "Configuration SRAM only",
+    "script": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/approval-package/program_sram_once.tcl",
+    "sha256": "321abeb0f3a5ff702b93bdc7c0e0a59cd632af4aa9c53d46b3024de3d7e26ccb",
+    "verification": "full bit/DCP SHA, routed part, JTAG chain/die, configuration CRC/EOS/PLL/DONE/error registers",
+    "automatic_restore": false,
+    "retry": false,
+    "verification_note": "Programming/configuration status is not independent full configuration SRAM readback verification."
+  },
+  "stages": [
+    {
+      "order": 1,
+      "action": "Read-only sealed plan preflight; no device access",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/measurement-plan-host09-02.json"
+      ]
+    },
+    {
+      "order": 2,
+      "action": "After NEW approval only: one SRAM programming and verification",
+      "argv": [
+        "vivado",
+        "-mode",
+        "batch",
+        "-source",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/approval-package/program_sram_once.tcl",
+        "-tclargs",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/dense-pipeline.bit",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/route.dcp"
+      ]
+    },
+    {
+      "order": 3,
+      "action": "CAP and small actual ggml FULL smoke; compare all output before continuing",
+      "env": {
+        "IM2P_FPGA_DEVICE": "APPROVED_UART_DEVICE",
+        "IM2P_FPGA_TIMEOUT_SECONDS": "30",
+        "IM2P_FPGA_FULL_REFERENCE": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/full-cycle-reference.txt"
+      },
+      "argv": [
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/host-build/dense_host_dispatch",
+        "run",
+        "16",
+        "16",
+        "32",
+        "1",
+        "1",
+        "FULL"
+      ],
+      "logical_jobs": 1,
+      "performance_sample": false
+    },
+    {
+      "order": 4,
+      "action": "Actual ggml live producer diagnostic with causal preparation delay, three stripes 160/160/1, slots0/1/0",
+      "env": {
+        "IM2P_FPGA_DEVICE": "APPROVED_UART_DEVICE",
+        "IM2P_FPGA_TIMEOUT_SECONDS": "30",
+        "IM2P_FPGA_TEST_PRODUCER_OVERLAP": "1",
+        "IM2P_FPGA_FULL_REFERENCE": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/full-cycle-reference.txt"
+      },
+      "argv": [
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/host-build/dense_host_dispatch",
+        "run",
+        "321",
+        "48",
+        "64",
+        "7",
+        "1",
+        "STRIPE_PIPELINE"
+      ],
+      "logical_jobs": 1,
+      "performance_sample": false
+    },
+    {
+      "order": 5,
+      "action": "Remove diagnostic environment; persistent four-condition FPGA sweep. Every warm-up is checked.",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/measurement-plan-host09-02.json",
+        "--run",
+        "board",
+        "--device",
+        "APPROVED_UART_DEVICE",
+        "--approved-bitstream-sha256",
+        "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca",
+        "--out",
+        "FRESH_BOARD_OUTPUT"
+      ],
+      "logical_jobs": 54
+    },
+    {
+      "order": 6,
+      "action": "Matched persistent simulator, same fixtures/quantization/reconstruction/service, no diagnostic delays",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/measurement-plan-host09-02.json",
+        "--run",
+        "simulator",
+        "--out",
+        "FRESH_MATCHED_SIMULATOR_OUTPUT"
+      ],
+      "logical_jobs": 54
+    },
+    {
+      "order": 7,
+      "action": "Postflight full hash preservation and save all original logs/samples, no further programming"
+    }
+  ],
+  "planned_board_logical_jobs": 56,
+  "planned_matched_simulator_jobs": 54,
+  "expected_comparisons_including_warmups": {
+    "fpga_performance_sweep": {
+      "raw": 1850496,
+      "f_out": 741120,
+      "padding": 46512
+    },
+    "fpga_two_diagnostic_jobs": {
+      "raw": 31072,
+      "f_out": 15664,
+      "padding": 0
+    },
+    "fpga_total": {
+      "raw": 1881568,
+      "f_out": 756784,
+      "padding": 46512
+    }
+  },
+  "counts_note": "Repeated comparisons, not unique values; graph diagnostics use contiguous output, portable sweep tests padding.",
+  "shapes": [
+    {
+      "M": 16,
+      "N": 16,
+      "K": 32,
+      "seed": 1,
+      "tiles": [
+        1,
+        1,
+        2
+      ],
+      "stripe_rows": 16,
+      "stripes": [
+        16
+      ]
+    },
+    {
+      "M": 321,
+      "N": 48,
+      "K": 64,
+      "seed": 7,
+      "tiles": [
+        10,
+        3,
+        4
+      ],
+      "stripe_rows": 160,
+      "stripes": [
+        160,
+        160,
+        1
+      ]
+    },
+    {
+      "M": 321,
+      "N": 48,
+      "K": 96,
+      "seed": 8,
+      "tiles": [
+        10,
+        3,
+        6
+      ],
+      "stripe_rows": 160,
+      "stripes": [
+        160,
+        160,
+        1
+      ]
+    }
+  ],
+  "core_reference": {
+    "full_16_16_32": 361,
+    "full_321_48_64": 39907,
+    "pipeline_note": "Elapsed cycles include legitimate publication/raw-drain wait. Log and explain differences; never replace expected raw/f_out or treat polls as cycles.",
+    "full_321_48_96": 58695
+  },
+  "timeouts": {
+    "host_transport_seconds": 30,
+    "performance_process_seconds": 900,
+    "diagnostic_process_seconds": 900,
+    "core_interbyte_cycles": 1048576,
+    "nominal_core_interbyte_ms": 41.94304,
+    "publication_wait": "Core watchdog pauses only at legal unpublished/data-drain waits. Host transport timeout stays enabled.",
+    "diagnostic_checkpoint_seconds": 300
+  },
+  "stop_on": [
+    "hash/source/profile/capacity mismatch",
+    "programming verification failure",
+    "CRC/length/run/generation/count/order mismatch",
+    "raw signed32 or f_out float32 bit mismatch",
+    "padding corruption",
+    "timeout/unexpected reset",
+    "stale/duplicate completion",
+    "unexplained cycle difference",
+    "FPGA simulator/reference fallback"
+  ],
+  "prohibited": [
+    "flash/non-volatile write",
+    "different bitstream",
+    "automatic retry/reset/reprogramming/restore",
+    "source/host/fixture edits during measurement",
+    "commit/push"
+  ],
+  "overlap_scope": "Previous host08 RTL diagnosed injected preparation overlap. New host09 uninjected live producer RTL checks are listed separately; no new injected diagnostic result is claimed. Physical natural overlap and speedup NOT RUN; newly approved diagnostic must be executed separately from sweep.",
+  "unsupported": [
+    "residual-enabled/hybrid",
+    "weight streaming",
+    "physical DIM32/DIM64",
+    "model capture/full model/TTFT/TPOT"
+  ],
+  "implementation": {
+    "part": "xc7a100tcsg324-1",
+    "nominal_clock_MHz": 25,
+    "protocol": "IFR2",
+    "hardware_programmed": false,
+    "board_measured": false,
+    "lut": 47986,
+    "ff": 32032,
+    "ramb36": 89,
+    "ramb18": 1,
+    "bram_tiles": 89.5,
+    "dsp": 85,
+    "occupied_slices": 15596,
+    "available_slices": 15850,
+    "control_sets": 625,
+    "max_nonclock_fanout": 10723,
+    "setup_WNS_ns": 12.517,
+    "hold_WHS_ns": 0.018,
+    "pulse_width_slack_ns": 3.0,
+    "fully_routed_nets": 81452,
+    "route_errors": 0,
+    "unconstrained_internal_endpoints": 0,
+    "drc": {
+      "DPIP-1": 22,
+      "DPOP-1": 78,
+      "DPOP-2": 78,
+      "errors": 0,
+      "critical": 0
+    },
+    "hashes": {
+      "stream-02/source-sha256.json": "f5b396d8d3fcd16b49ab4fef660ec2d9424581eb784fdabf234a2fe50131e24f",
+      "stream-02/integration-sha256.json": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7",
+      "stream-02/production/rtl/mkDensePipeline.v": "b29147ce384e9384b3821c358863350f03c0696cbc8b8e286a768f2e7155b853",
+      "stream-02/route/dense-pipeline.bit": "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca",
+      "stream-02/route/route.dcp": "6141a245e4c2ca88b8147ae864974abc14c3b858a276c2a5f5beee42f5a92bd4",
+      "stream-02/route/cdc.rpt": "473e6a4b098ac40ef98a8be2f6c96a166550fcfd1a24fd8681c29bb038a11203",
+      "stream-02/route/check-timing.rpt": "22e656667cf84aec123a7831df86347b54f4d8e20f75b9250bd5f550c33f562b",
+      "stream-02/route/clocks.rpt": "51fbfb6c21502799e8036076c063ce1cacb21da42bf1d3dd54f5bb11de75aee9",
+      "stream-02/route/congestion.rpt": "48cffd3745d64673cf4153ed46b379d2a522731738c821376c7e86b642ac23e8",
+      "stream-02/route/control-sets.rpt": "74cfb008732304243f2c0415dc41c034c95ed46516c020ec2fdc0324b0c09186",
+      "stream-02/route/drc.rpt": "0fcdd6c0339b509d59aa91902d80c0239907fcb621a16a7bffb626dc17d1e9f9",
+      "stream-02/route/high-fanout.rpt": "8543e725f96f0dbc2dd0a05d1fc51cad67c979c2f1502c4e732b6940d6de0c63",
+      "stream-02/route/opt-utilization.rpt": "466b3282e56883708231350f13be4894be50e5afa38d9890d5c8a0f8b14a7e1b",
+      "stream-02/route/place-utilization.rpt": "45e3b50a42adb7da49a9bb58ae59246c27c4b70c6b4040b467089e2da8c87b2a",
+      "stream-02/route/route-status.rpt": "c3ff833a984e61f16eb8fff29cb113bca3d3a9bdca61d5a26a8bc8e69e91e35b",
+      "stream-02/route/route-utilization.rpt": "62c4c77c79dafe3d0120f69b5903287b4fa681c155ef0ae43a46cc453dbd9f1a",
+      "stream-02/route/timing.rpt": "ced3fd753c9d1e3a04491e0b093882fe42dad401d64912e17695b651bf1646bc"
+    }
+  },
+  "portable_fixtures": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/fixtures/sha256.json",
+    "sha256": "f0f50ece0e1aa8c05fd9d468498e6d8e6f3520d9b8e271bf556cb1e0c7e5c9a1"
+  },
+  "final_fixtures": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/final-fixtures/all-files-sha256.json",
+    "sha256": "d6c7d131b64b908153130032491e8312fa4c2b9a6daf59c0d32af8445f2d0403"
+  },
+  "hardware_identity": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/evidence/final-hardware-identity.json",
+    "sha256": "9d9a8114c1d7602b48456b885c873dab070769bb4cfb1e2968f680f996221f15"
+  },
+  "transport_budget": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/TRANSPORT_BUDGET.md",
+    "sha256": "94430aed42551499c7ffd844eb3ed42a2f755d8851b9f2cba60825c9ce1ede89"
+  },
+  "evidence": {
+    "full_cycle_guard": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/host09-02-guard-02/summary.json",
+    "uart_framing_lifetime": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/uart-agent-snapshot-final/status.json",
+    "new_simulator_54": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/simulator-54/summary.json",
+    "new_simulator_telemetry": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/simulator-54/telemetry-validation.json",
+    "new_software_summary": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/validation-summary.json",
+    "previous_hardware_regression_154": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/regression-154",
+    "previous_hardware_assertions": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/evidence/assertions-new/summary.json",
+    "rtl-ggml-small": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-ggml-small/numerical-validation.json",
+    "rtl-persistent-small": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-persistent-small/numerical-validation.json",
+    "rtl-ggml-live-k64": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-ggml-live-k64/numerical-validation.json",
+    "rtl-ggml-live-k96": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-ggml-live-k96/numerical-validation.json",
+    "rtl-ggml-full-k96": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-ggml-full-k96/numerical-validation.json",
+    "rtl-persistent-full-long": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-persistent-full-long/numerical-validation.json",
+    "rtl-persistent-pipeline-long": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-persistent-pipeline-long/numerical-validation.json",
+    "new_full_owned_telemetry": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-persistent-full-long/cycle-telemetry-validation.json",
+    "new_pipeline_owned_telemetry": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/rtl-persistent-pipeline-long/owned-telemetry-validation.json",
+    "final_ifr1_mock": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/uart-final-09.log",
+    "first_responder_failure": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/tests/host09-02-guard/attempt-counts.json"
+  },
+  "transport_budget_per_invocation_excluding_CAP_including_RELEASE": [
+    {
+      "shape": "16/16/32",
+      "mode": "FULL",
+      "request_bytes": 4168,
+      "response_bytes": 1320,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/64",
+      "mode": "FULL",
+      "request_bytes": 45256,
+      "response_bytes": 123560,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/96",
+      "mode": "FULL",
+      "request_bytes": 47304,
+      "response_bytes": 185192,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/64",
+      "mode": "PIPELINE actual RTL p=5 empty polls",
+      "request_bytes": 45688,
+      "response_bytes": 125336,
+      "transactions": 14
+    },
+    {
+      "shape": "321/48/96",
+      "mode": "PIPELINE actual RTL p=5 empty polls",
+      "request_bytes": 47736,
+      "response_bytes": 186968,
+      "transactions": 14
+    }
+  ],
+  "transport_budget_note": "Each process CAP adds36 request/148 response bytes. Empty poll count is observed, not fixed by contract. Watchdog/poll clocks are not hardware execution cycles.",
+  "selected_host_experiment": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z",
+  "supersedes_host_only": "stream-08; original approval/artifacts preserved",
+  "requires_new_approval": true,
+  "full_cycle_reference": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/full-cycle-reference.txt",
+    "sha256": "de3f8d8e39bfacdca7d7ac3a53efefe2443f49a46d162e807438d5a5811723da"
+  },
+  "full_cycle_gate": {
+    "implementation": "UART::full after response CRC/profile/run/generation/shape/count validation, before reconstruction callback/output commit/RELEASE",
+    "mandatory_callers": [
+      "dense_host_dispatch FULL, including smoke and warm-up",
+      "persistent_replay uart and uart-live, all iterations"
+    ],
+    "reference_missing_or_mismatch": "reject before UART open/CAP",
+    "on_mismatch": "sticky failure, nonzero process exit; no RELEASE/ABORT/reset/retry or next invocation/condition",
+    "simulator": "board cycle gate not applied",
+    "pipeline": "FULL cycle gate not applied; device work/count/identity/completion checks retained"
+  },
+  "validation_markers": {
+    "persistent_all_iterations": "validation=expected_files_exact; stored expected files only, including warm-up",
+    "persistent_cpu_reference": "cpu_reference_calls=not_instrumented; cpu_reference_path=not_called_source_audit; no literal runtime zero claim",
+    "ggml_run": "validation=cpu_reference_after_fpga; existing CPU reference used after FPGA result for validation; runtime dot/matmul counters printed",
+    "ggml_benchmark": "warm-up validation=reference, measured validation=check; actual reference-call deltas checked",
+    "dense_fallback": "simulator create/execute/stream begin wrapper counters must be zero on selected FPGA path; classification fallback text is separate"
+  },
+  "telemetry_limitations_requiring_approval": {
+    "not_exposed": [
+      "pure compute_cycles",
+      "per-stripe first-A cycle",
+      "independent device publication total",
+      "independent device stripe-ACK total",
+      "detailed wait/individual overlap/scale-cache/lookahead counters"
+    ],
+    "available_direct_device": [
+      "elapsed cycles including legal waits",
+      "fragment/output-work/A/W/C-write/C-ACK counts",
+      "host-wait and engine/provider-overlap counters with limited definitions",
+      "per-stripe publication/raw-completion cycles",
+      "global first-A cycle and published-row prefix"
+    ],
+    "available_host": [
+      "validated publication/raw-completion reply counts/order",
+      "retained run/stripe/slot/row/context identity",
+      "existing producer ready/acceptance timestamps",
+      "existing request send/receive/validation boundaries"
+    ],
+    "retirement_evidence": "FINISH success requires retired_stripes == next_stripe; not an independent transmitted ACK counter",
+    "decision_requested": "Approve the same fixed IFR2 wire with these explicit availability limits, without RTL/protocol changes."
+  },
+  "telemetry_contract": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/host_instrumentation/TELEMETRY.md",
+    "sha256": "3e0c9ee4714221dbd00c5d853f65024bc9fa8a7559cbe12c41393eed051efdaa"
+  },
+  "performance_contract": {
+    "service": "input preparation through f_out commit",
+    "sustained": "service through normal RELEASE and Run retirement",
+    "snapshot_cost": "included where incurred; no post-hoc subtraction",
+    "formatting": "detailed telemetry/files after service and sustained timestamps",
+    "hashes": "complete sweep outside repeated service/sustained timers",
+    "clock_domains": "host steady ns and device cycles kept separate; no cross-domain subtraction",
+    "execution_order": "FPGA and fresh matched simulator sequential, no concurrent synthesis/RTL simulation/benchmark",
+    "reference_measurement": "new software simulator54 is not the final speedup denominator",
+    "overall_process_throughput": false
+  },
+  "evidence_note": "Previous hardware regression/assertion/route evidence applies to unchanged hardware; new host regression results are separately identified. Mock parser tests are not RTL numerical tests.",
+  "physical_execution_this_task": {
+    "programming": 0,
+    "uart_open_or_CAP": 0,
+    "logical_GEMM": 0,
+    "matched_board_performance_simulator": 0,
+    "flash_write": 0
+  },
+  "software_regression_counts": {
+    "actual_production_rtl_jobs": 15,
+    "raw_comparisons": 432448,
+    "f_out_comparisons": 170512,
+    "padding_comparisons": 7800,
+    "simulator_suite_invocations": 54,
+    "additional_simulator_mode_guard_invocations": 2,
+    "final_guard_cases": 39,
+    "physical_board_jobs": 0
+  },
+  "original_artifacts_preservation": {
+    "previous_package": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/approval-package",
+    "host08": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08",
+    "preflight_failure": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/board-preflight-20260909T170306Z",
+    "changed_root_original_blobs": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/baseline",
+    "audit": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/preservation-final-audit.json",
+    "note": "Unchanged current paths and original blobs retained under other paths are reported separately."
+  },
+  "previous_source_provenance": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/source_provenance.json",
+    "sha256": "70e9b8d1a6ae0a88a04fa502663d46d4d721d3225dc4ac2ba902fc9a611ba13d"
+  },
+  "current_source_provenance": {
+    "host09": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-09-02/integration-sha256.json",
+      "sha256": "71d526ceab9ca9d955cc04e442a6938cdd2682309c5ab8475b07015d6bd8a07c"
+    },
+    "hardware": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/integration-sha256.json",
+      "sha256": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7"
+    },
+    "changes": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/host-only-diff.patch",
+    "preservation_audit": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/preservation-final-audit.json"
+  },
+  "final_test_tools": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/final-tools-sha256.json",
+    "sha256": "0c261340f6ae36ded762cff8ba8fcd504d9a73ff74ccd6de23446fadc5d85ae6",
+    "note": "Final test_measurement_guard.py responder fix postdates build snapshot; executable source/build identity remains host09-02. Final runtime test tool identity is separately sealed."
+  },
+  "software_verification_complete": true,
+  "software_validation": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/validation-summary.json",
+    "sha256": "d04424de165a2f5f37890d5f34ce54c004f9515336c916ce21a907cac9beb0f0"
+  },
+  "report": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/docs/FPGA_DENSE_PIPELINE_HOST_INSTRUMENTATION.md",
+    "sha256": "bf2e422e25b658c3f48e13f2ca5d756cc62d1c7131772f52a4fb11477548e388"
+  },
+  "new_test_evidence_manifest": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/test-evidence-sha256.json",
+    "sha256": "2d2697fd0c7e5facfe379a930dad8338b681f003815938b05435c5de66f1241e"
+  },
+  "new_versionable_source_manifest": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-host-instrumentation-20260909T174219Z/versionable-source-sha256.json",
+    "sha256": "c371e5c25f8b5caf4b9c8aebd4209fb19c0be7944618a9bcf5f53c934b09cbf5"
+  },
+  "telemetry_authority_note": "Use owned RUN_TELEMETRY for first-A; legacy PASS atomic fields reflect the latest reply and may become zero after RELEASE. Prequantized quantization timestamp zero is not applicable; simulator UART component durations are not collected.",
+  "software_injected_diagnostic": "NOT RUN with new host09; previous host08 evidence is historical. Planned post-approval diagnostic remains 1 invocation."
+}

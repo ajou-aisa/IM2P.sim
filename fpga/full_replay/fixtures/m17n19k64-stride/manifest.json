@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "host_commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "profile": "A8/W8/D16",
+  "route": "q8_h1",
+  "residual": "OFF (dense ablation)",
+  "mode": "FULL",
+  "block_size_k": 32,
+  "comparison": "exact bits, padding unchanged",
+  "I": 17,
+  "J": 19,
+  "K": 64,
+  "run_id": 5,
+  "tile_factors": [
+    2,
+    2,
+    4
+  ],
+  "outer_counts": [
+    1,
+    1,
+    1
+  ],
+  "ws_inner_calls": 1,
+  "logical_invocations": 1,
+  "output_stride": 41,
+  "output_column_stride": 2,
+  "activation_rows_per_stripe": 32,
+  "host_build": "CPU+HARDWARE reference libraries; explicit FPGA_REPLAY_V1 executor; EXSIA RMD=OFF",
+  "host_executable_sha256": "02fc99b417016edc5efb34967eb2cb473bb9ef471436a560c607c2c4b7fc768a",
+  "canonical_abi": 4,
+  "core_source_head": "dc4a1a621f63834d64df42ae8c24152747d97971",
+  "fixed_core_patch_sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+  "board_source_manifest_sha256": "0a82d0e307dd9cf55a6a42428a58b9b2d927352877de1607982fbdc57a26825e",
+  "raw_domain": "signed32 per K32 block, sign-extended to canonical signed64 callback; no cross-block integer reduction",
+  "host_domain": "existing double block reconstruction, final float32; bit-exact including untouched stride padding",
+  "activation_layout": {
+    "row_stride_bytes": 64,
+    "row_offset": 0,
+    "metadata_row_offset": 0,
+    "storage_bits": 8,
+    "storage_bytes": 1
+  },
+  "weight_layout": "Q8_H1 blocks [J][K/32], portable fields qs[32] i8, c_b u8, s_rf f32le, R u16le (39 bytes); owned native block 44 bytes",
+  "payloads": {
+    "fixture.bin": {
+      "bytes": 2688,
+      "sha256": "3f9f1924d68ef85c2d37d8a6d816cc8aab9d4f0cca7e892a2671eed017832485"
+    },
+    "staging.bin": {
+      "bytes": 6272,
+      "sha256": "4cd11ef42235f3b846dffb26162585483ea4bea8bb9fee3fde8e2bbfeb8b8aa3"
+    },
+    "expected-raw.bin": {
+      "bytes": 2584,
+      "sha256": "376a0afad173ccf726410a40c79bc28cb02e481f15c9a0ebb74d7b8143f5cf62"
+    },
+    "expected-fout.bin": {
+      "bytes": 2788,
+      "sha256": "7b5e5052155b1edb75752b23a4f8c169afa2924c53788df353e65f4401d7d3d8"
+    }
+  },
+  "storage_bytes": {
+    "resident_A": 2176,
+    "resident_W": 4096,
+    "device_scale": 0,
+    "architectural_accumulator_allocated": 65536,
+    "live_accumulator": 1024,
+    "raw_output_valid": 2584,
+    "raw_output_padded_wire": 4352,
+    "host_output_with_padding": 2788,
+    "descriptor": 32
+  },
+  "quantizer_weight_scales_column0": [
+    0.007162939247791655,
+    0.03028381909825839
+  ]
+}

@@ -23,18 +23,18 @@ import Arithmetic::*;
 
 typedef struct {
     Vector#(arrayDim, Maybe#(input_t)) activations;
-    Vector#(arrayDim, Maybe#(acc_t)) partials;
+    Vector#(arrayDim, Maybe#(partial_t)) partials;
 } SkewedArrayInputs#(
     numeric type arrayDim,
     type input_t,
-    type acc_t
+    type partial_t
 ) deriving (Bits);
 
 interface InputSkewIfc#(
     numeric type arrayDim,
     numeric type peLatency,
     type input_t,
-    type acc_t
+    type partial_t
 );
     method Action clear;
 
@@ -43,7 +43,7 @@ interface InputSkewIfc#(
     method ActionValue#(SkewedArrayInputs#(
         arrayDim,
         input_t,
-        acc_t
+        partial_t
     )) step(Maybe#(Vector#(arrayDim, input_t)) activationRow);
 endinterface
 
@@ -51,14 +51,14 @@ module mkInputSkew(InputSkewIfc#(
     arrayDim,
     peLatency,
     input_t,
-    acc_t
+    partial_t
 )) provisos (
     Add#(1, arrayDimMinusOne, arrayDim),
     Add#(1, peLatencyMinusOne, peLatency),
     Mul#(arrayDim, peLatency, skewDepth),
     Bits#(input_t, inputBits),
-    Bits#(acc_t, accBits),
-    AccumulatorArithmetic#(acc_t)
+    Bits#(partial_t, partialBits),
+    AccumulatorArithmetic#(partial_t)
 );
     // 모든 boundary token은 같은 logical row에서 나오므로 row 전체를 한 번만
     // 지연한다. Boundary별 scalar pipeline은 동일 row를 arrayDim번 복제하고
@@ -79,10 +79,10 @@ module mkInputSkew(InputSkewIfc#(
     method ActionValue#(SkewedArrayInputs#(
         arrayDim,
         input_t,
-        acc_t
+        partial_t
     )) step(Maybe#(Vector#(arrayDim, input_t)) activationRow);
         Vector#(arrayDim, Maybe#(input_t)) skewedActivations = newVector;
-        Vector#(arrayDim, Maybe#(acc_t)) skewedPartials = newVector;
+        Vector#(arrayDim, Maybe#(partial_t)) skewedPartials = newVector;
 
         for (Integer boundaryIndex = 0;
                 boundaryIndex < valueOf(arrayDim);

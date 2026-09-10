@@ -521,8 +521,8 @@ def check_integer_width_contracts() -> None:
                                 ("SystolicArrayInt8x64.bsv", 8),
                                 ("SystolicArrayA16W16D64.bsv", 16)):
         tile = strip_comments((SRC / "array" / filename).read_text(encoding="utf-8"))
-        if tile.count(f"Int#(A{precision}AccumulatorWidth)") != 3:
-            fail(f"DIM64 tile accumulator widths must match the profile: {filename}")
+        if tile.count(f"Int#(IntegerPartialWidth#(64, A{precision}ProductWidth))") != 3:
+            fail(f"DIM64 tile partial widths must cover the full 64-term dot product: {filename}")
 
     for stem in ("A4W4", "A16W16"):
         path = SRC / f"array/SystolicArray{stem}D64.bsv"

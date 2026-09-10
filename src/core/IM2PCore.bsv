@@ -239,7 +239,7 @@ module mkIM2PCoreWithArray#(
         input_t,
         weight_t,
         product_t,
-        acc_t
+        partial_t
     ) systolicArray
 )(IM2PCoreIfc#(
     arrayDim,
@@ -280,7 +280,11 @@ module mkIM2PCoreWithArray#(
     Bits#(acc_t, accBits),
     Bits#(scale_t, scaleBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t),
+    Bits#(partial_t, partialBits),
+    SystolicPartial#(arrayDim, product_t, partial_t),
+    ProductAccumulator#(product_t, partial_t),
+    AccumulatorArithmetic#(partial_t),
+    PartialAccumulatorConversion#(partial_t, acc_t),
     AccumulatorArithmetic#(acc_t),
     VectorScaleCapability#(input_t),
     VectorTransform#(input_t, acc_t, scale_t)
@@ -2040,7 +2044,8 @@ module mkIM2PCoreWithArray#(
     method Action putActivationReadResponse(
         HostRequestTag tag,
         Vector#(arrayDim, input_t) values
-    ) if (activationRequestValidReg || lookaheadActivationRequestValidReg);
+    ) if ((activationRequestValidReg || lookaheadActivationRequestValidReg)
+            && !activationResponsePendingReg);
         if (lookaheadActivationRequestValidReg
                 && tag == lookaheadActivationTagReg) begin
             Vector#(arrayDim, input_t) padded = replicate(unpack(0));
@@ -2558,7 +2563,11 @@ module mkIM2PCore(IM2PCoreIfc#(
     Bits#(acc_t, accBits),
     Bits#(scale_t, scaleBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t),
+    Bits#(partial_t, partialBits),
+    SystolicPartial#(arrayDim, product_t, partial_t),
+    ProductAccumulator#(product_t, partial_t),
+    AccumulatorArithmetic#(partial_t),
+    PartialAccumulatorConversion#(partial_t, acc_t),
     AccumulatorArithmetic#(acc_t),
     VectorScaleCapability#(input_t),
     VectorTransform#(input_t, acc_t, scale_t)
@@ -2569,7 +2578,7 @@ module mkIM2PCore(IM2PCoreIfc#(
         input_t,
         weight_t,
         product_t,
-        acc_t
+        partial_t
     ) systolicArray <- mkSystolicArray;
 
     let core <- mkIM2PCoreWithArray(systolicArray);

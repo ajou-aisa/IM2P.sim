@@ -24,7 +24,7 @@ interface PEIfc#(
     type input_t,
     type weight_t,
     type product_t,
-    type acc_t
+    type partial_t
 );
     method Action loadWeight(weight_t weight);
     method Action loadWeightBank(Bool bank, weight_t weight);
@@ -37,11 +37,11 @@ interface PEIfc#(
 
     method Action step(
         Maybe#(input_t) activationIn,
-        Maybe#(acc_t) partialIn
+        Maybe#(partial_t) partialIn
     );
 
     method Maybe#(input_t) activationOut;
-    method Maybe#(acc_t) partialOut;
+    method Maybe#(partial_t) partialOut;
     method Bool weightLoaded;
     method Bool weightBankLoaded(Bool bank);
     method Bool activeWeightBank;
@@ -52,14 +52,14 @@ module mkPE(PEIfc#(
     input_t,
     weight_t,
     product_t,
-    acc_t
+    partial_t
 )) provisos (
     Add#(1, peLatencyMinusOne, peLatency),
     Bits#(input_t, inputBits),
     Bits#(weight_t, weightBits),
-    Bits#(acc_t, accBits),
+    Bits#(partial_t, partialBits),
     Multiplier#(input_t, weight_t, product_t),
-    ProductAccumulator#(product_t, acc_t)
+    ProductAccumulator#(product_t, partial_t)
 );
     Vector#(2, Reg#(weight_t)) weightRegs <- replicateM(mkRegU);
     Vector#(2, Reg#(Bool)) weightValidRegs <- replicateM(mkReg(False));
@@ -67,7 +67,7 @@ module mkPE(PEIfc#(
 
     Vector#(peLatency, Reg#(Maybe#(input_t))) activationPipe <-
         replicateM(mkReg(tagged Invalid));
-    Vector#(peLatency, Reg#(Maybe#(acc_t))) partialPipe <-
+    Vector#(peLatency, Reg#(Maybe#(partial_t))) partialPipe <-
         replicateM(mkReg(tagged Invalid));
 
     method Action loadWeight(weight_t weight);
@@ -121,9 +121,9 @@ module mkPE(PEIfc#(
 
     method Action step(
         Maybe#(input_t) activationIn,
-        Maybe#(acc_t) partialIn
+        Maybe#(partial_t) partialIn
     );
-        Maybe#(acc_t) nextPartial = tagged Invalid;
+        Maybe#(partial_t) nextPartial = tagged Invalid;
 
         Bool activeWeightValid = activeWeightBankReg
             ? weightValidRegs[1]
@@ -134,7 +134,7 @@ module mkPE(PEIfc#(
 
         if (isValid(activationIn) && isValid(partialIn) && activeWeightValid) begin
             input_t activation = fromMaybe(?, activationIn);
-            acc_t partial = fromMaybe(?, partialIn);
+            partial_t partial = fromMaybe(?, partialIn);
             product_t product = arithmeticMultiply(activation, activeWeight);
             nextPartial = tagged Valid arithmeticAccumulate(partial, product);
         end
@@ -153,7 +153,7 @@ module mkPE(PEIfc#(
     method Maybe#(input_t) activationOut =
         activationPipe[valueOf(peLatency) - 1];
 
-    method Maybe#(acc_t) partialOut =
+    method Maybe#(partial_t) partialOut =
         partialPipe[valueOf(peLatency) - 1];
 
     method Bool weightLoaded = activeWeightBankReg

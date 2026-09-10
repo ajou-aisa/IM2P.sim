@@ -5,6 +5,7 @@ build/
 *.vcd
 __pycache__/
 *.pyc
+output/log/
 build/verilator/
 sim/target/
 # Library lockfile is a cache-identity input and must remain versioned.

@@ -1,0 +1,3 @@
+{
+"schema":1,"host_commit":"7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9","profile":"A8/W8/D16","route":"q8_h1","residual":"OFF (dense ablation)","mode":"FULL","block_size_k":32,"comparison":"exact bits, padding unchanged",
+"I":321,"J":48,"K":64,"run_id":7,"tile_factors":[10,3,4],"outer_counts":[3,1,1],"ws_inner_calls":3,"logical_invocations":1,"output_stride":51,"output_column_stride":1,"activation_rows_per_stripe":160}

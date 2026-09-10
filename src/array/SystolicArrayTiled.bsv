@@ -25,7 +25,7 @@ module mkSystolicArray64WithTiles#(
                 input_t,
                 weight_t,
                 product_t,
-                acc_t
+                partial_t
             )
         )
     ) tiles
@@ -35,11 +35,11 @@ module mkSystolicArray64WithTiles#(
     input_t,
     weight_t,
     product_t,
-    acc_t
+    partial_t
 )) provisos (
     Bits#(input_t, inputBits),
     Bits#(weight_t, weightBits),
-    Bits#(acc_t, accBits)
+    Bits#(partial_t, partialBits)
 );
     method Action beginWeightLoad;
         for (Integer tileRow = 0; tileRow < 4; tileRow = tileRow + 1) begin
@@ -176,14 +176,14 @@ module mkSystolicArray64WithTiles#(
 
     method Action step(
         Vector#(64, Maybe#(input_t)) activationInputs,
-        Vector#(64, Maybe#(acc_t)) partialInputs
+        Vector#(64, Maybe#(partial_t)) partialInputs
     );
         for (Integer tileRow = 0; tileRow < 4; tileRow = tileRow + 1) begin
             for (Integer tileColumn = 0;
                     tileColumn < 4;
                     tileColumn = tileColumn + 1) begin
                 Vector#(16, Maybe#(input_t)) activations = newVector;
-                Vector#(16, Maybe#(acc_t)) partials = newVector;
+                Vector#(16, Maybe#(partial_t)) partials = newVector;
 
                 for (Integer localIndex = 0;
                         localIndex < 16;
@@ -227,8 +227,8 @@ module mkSystolicArray64WithTiles#(
         return outputs;
     endmethod
 
-    method Vector#(64, Maybe#(acc_t)) partialSums;
-        Vector#(64, Maybe#(acc_t)) outputs = newVector;
+    method Vector#(64, Maybe#(partial_t)) partialSums;
+        Vector#(64, Maybe#(partial_t)) outputs = newVector;
         for (Integer tileColumn = 0;
                 tileColumn < 4;
                 tileColumn = tileColumn + 1) begin

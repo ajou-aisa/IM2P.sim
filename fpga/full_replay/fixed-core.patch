@@ -1,0 +1,1542 @@
+--- /dev/null
++++ b/docs/PE_LOCAL_PARTIAL_INT20.md
+@@ -0,0 +1,152 @@
++# Exact local partial width experiment
++
++## Baseline
++
++- Source branch: `fpga/arty-a7-100t`.
++- Local and fetched remote SHA: `dc4a1a621f63834d64df42ae8c24152747d97971`.
++- Initial working tree: clean, including untracked files.
++- Experiment branch: `exp/pe-local-partial-int20`, created from the remote baseline.
++- Target: A8/W8 DIM16, PE latency 1, `xc7a100tcsg324-1`, Vivado 2025.2, OOC area, rebuilt hierarchy.
++- Original FPGA artifact: `build/fpga/a8-w8-d16-int32-bram-area-20260908-225141`.
++- New FPGA artifact: `build/fpga/a8-w8-d16-partial20-area-20260909-015233`.
++
++The original FPGA artifact records an older commit with a dirty snapshot. Its 21 source files, 14 synthesis files, 13 scripts, and profile JSON are byte-identical to the archived baseline commit. The comparison is saved in `build/experiments/partial20/baseline-fpga-source-comparison.txt`.
++
++## Architectural proof
++
++1. `InputSkew.step` creates each valid top partial with `accumulatorZero()`. No architectural accumulator value enters this boundary.
++2. `SystolicArray.step` sends each partial down exactly one PE row per hop. `PE.step` adds one full signed product. By induction, row r contains at most r+1 products; DIM16 contains at most 16.
++3. Matrix loading pads weight rows from KCount to DIM with zero. This also applies to preload and lookahead. Host activation responses zero lanes beyond KCount. The low-level row interface retains its existing caller-managed padding contract.
++4. Engine results pass through VectorUnit, then `Accumulator.commit`. Cross-fragment addition occurs in the architectural BRAM RMW using `accumulatorAdd`. Only committed valid bits return to the engine.
++5. Every engine start requires idle control and empty input/result FIFOs, then clears InputSkew and every PE pipeline. Fragment completion waits for engine completion and architectural commit. Scale-block changes use the same start path.
++
++Signed INT8 products range from -16256 to 16384. At most 16 terms therefore lie in [-260096, 262144], including every intermediate partial. Signed INT19 ends at 262143 and fails for sixteen (-128)×(-128) products. Signed INT20 covers [-524288, 524287]. No rounding, saturation, quantization, or wrap-policy change is introduced. Removed upper bits are redundant sign bits, including ones for negative values.
++
++## Code changes
++
++- `scripts/im2p_config.py`, generated `src/common/Config.bsv`: define `IntegerPartialWidth(dim, productWidth) = productWidth + TLog(dim)`.
++- Generated `sim/ffi/im2p_config.h`: configuration fingerprint refresh only. Public `IM2P_PARTIAL_BITS` remains the architectural engine-boundary width, 32 for A8; it does not describe the new local PE storage.
++- `src/common/Arithmetic.bsv`: infer the local type with `SystolicPartial`; widen signed integers with `signExtend` and an `Add` proviso requiring accumulator width at least partial width. Homogeneous floating point uses identity conversion.
++- `src/array/PE.bsv`, `InputSkew.bsv`, `SystolicArray.bsv`, `SystolicArrayTiled.bsv`: name the existing local type parameter `partial_t`; preserve all methods, control, and pipeline behavior.
++- `src/array/SystolicEngine.bsv`: use local partials inside the array; widen before enqueuing the unchanged architectural result FIFO.
++- `src/core/IM2PCore.bsv`: constructor types/provisos only. Public interface, runtime actions, VectorUnit, and accumulator remain unchanged.
++- `src/array/SystolicArray{A4W4D64,Int8x64,A16W16D64}.bsv`: use the full DIM64 width in every DIM16 tile because partials cross tile boundaries: 14, 22, and 38 bits respectively.
++- `tests/TbProfileConfig.bsv`: assert all nine local widths and existing architectural widths/capacities.
++- `scripts/static_check.py`, `tests/test_static_check.py`: preserve the tiled-width check using the new full DIM64 type; reject accidentally using DIM16 width.
++- `sim/tests/rtl_numerical_profile.rs`: one RTL test with 24 direct vectors and cycle telemetry, including totals outside signed INT20.
++
++Generated A8/D16 RTL has identical public ports and 2246 register names. Only 256 PE partialPipe register widths change, from 33 to 21 bits including the Maybe valid bit. All 20 FIFO2/BRAM1 instances retain identical parameters and wiring. Engine results remain 608 bits. All 16 BRAM banks retain DATA_WIDTH=32, MEMSIZE=1024, PIPELINED=0. See `build/experiments/partial20/rtl-width-comparison.txt`.
++
++## Numerical verification
++
++- `git diff --check`: PASS.
++- `make check`: PASS (architecture static checks, C++ reference, numerical reference, host reconstruction).
++- `python3 tests/test_profile_config.py`: PASS, all nine profiles and generated C++/Rust contracts.
++- `python3 tests/test_static_check.py`: PASS, including rejection of a DIM64 tile narrowed to DIM16 width.
++- `make bsv-test-one TOP=mkTbProfileConfig`: PASS, all nine local widths.
++- `make bsv-test-one TOP=mkTbFloatCore BUILD_DIR=build/experiments/partial20/compat`: PASS, existing homogeneous floating-point behavior.
++- `make rtl-one TOP=mkSynthA4W4D64 BUILD_DIR=build/experiments/partial20/compat-d64`: PASS; repeated with `TOP=mkSynthA8W8D64` and `TOP=mkSynthA16W16D64`, also PASS. Specialized tile, D64 wrapper, and Core top elaborate with INT14/22/38 local partials.
++- `rustfmt --check --edition 2021 sim/tests/rtl_numerical_profile.rs`: PASS.
++- `make sim-test-a8-w8-d16`: PASS, 154 tests, 0 failures, 0 ignored, exit 0.
++- Fresh archived baseline with the same added test: PASS, 154 tests, 0 failures, 0 ignored, exit 0. Original cached regression: 153 PASS.
++
++| Vector | K | Exact result |
++|---|---:|---:|
++| -128 × -128 | 16 | 262144 |
++| -128 × 127 | 16 | -260096 |
++| 127 × 127 | 16 | 258064 |
++| Both vectors alternate -128,127 | 16 | 260104 |
++| -128 × -128 with zero padding | 7 | 114688 |
++| -128 × -128, two fragments | 32 | 524288 |
++| -128 × -128, three fragments | 33 | 540672 |
++| -128 × 127, three fragments | 33 | -536448 |
++| 16 deterministic full-range random vectors | 7/16/32/33 | All exact |
++
++K32 and K33 positive totals and the K33 negative total exceed signed INT20. Their exact architectural results verify accumulation after widening. Existing scaled/wrap/output tests remain unchanged and pass.
++
++## Cycle verification
++
++All 24 records match between a fresh baseline build and INT20, including numerical result, total/work/compute/drain/preload cycles, fragment count, and work start/completion cycles.
++
++| Transaction | Total before/after | Work before/after | Compute before/after |
++|---|---:|---:|---:|
++| K7 | 108 / 108 | 105 / 105 | 68 / 68 |
++| K16 | 117 / 117 | 114 / 114 | 68 / 68 |
++| K32 | 190 / 190 | 187 / 187 | 136 / 136 |
++| K33 | 263 / 263 | 260 / 260 | 204 / 204 |
++
++Evidence: `build/experiments/partial20/{baseline-fresh-sim-test.log,sim-int20-build.log,cycle-comparison.txt}`. This is RTL cycle telemetry, not host wall-clock timing.
++
++## FPGA resource comparison
++
++| Resource | Baseline | INT20 | Delta |
++|---|---:|---:|---:|
++| Slice LUT | 62476 | 57782 | -4694 |
++| Logic LUT | 62388 | 57694 | -4694 |
++| LUT as Memory | 88 | 88 | 0 |
++| FF | 37638 | 34363 | -3275 |
++| DSP48E1 | 128 | 128 | 0 |
++| RAMB36E1 | 16 | 16 | 0 |
++| RAMB18 | 0 | 0 | 0 |
++| Blackboxes | 0 | 0 | 0 |
++
++Physical LUT/FF/DSP/BRAM values come from Vivado `reports/opt-utilization.rpt`. Status is `VIVADO_COMPLETE`, resource-fit is `fits=1`, and `reports/opt-blackboxes.txt` reports `count=0`. The final BRAM mapping table in `vivado.log` lists banks 0–15 as 1K×32 WRITE_FIRST, one RAMB36 and no RAMB18 each.
++
++The fresh run used:
++
++```bash
++OUT="$PWD/build/fpga/a8-w8-d16-partial20-area-20260909-015233"
++VIVADO=/tools/Xilinx/2025.2/Vivado/bin/vivado \
++  scripts/fpga_build.sh --mode area --bits 8 --dim 16 \
++  --hierarchy rebuilt --out "$OUT"
++```
++
++For a rerun, select a new output directory. The flow records its source snapshot, diff, tool versions, command lines, reports, and checkpoints.
++
++## PE diagnostic comparison
++
++| Diagnostic | Baseline | INT20 | Delta |
++|---|---:|---:|---:|
++| processingElements LUT/MUX | 49019 | 46111 | -2908 |
++| processingElements FF | 14449 | 11387 | -3062 |
++| processingElements CARRY4 | 4544 | 3824 | -720 |
++| partialPipe LUT/MUX | 38072 | 35874 | -2198 |
++| partialPipe FF | 8208 | 5328 | -2880 |
++| partialPipe CARRY4 | 4544 | 3824 | -720 |
++| weightRegs LUT/MUX | 10937 | 10225 | -712 |
++| weightRegs FF | 4096 | 4096 | 0 |
++
++Both processingElements and partialPipe retain zero DSP48E1 instances. Total optimized-design CARRY4 count changes from 6314 to 5578 (-736).
++
++The original diagnostic Tcl runs on the new `checkpoints/opt.dcp` using identical primitive filters: LUT1–6/MUXF7–8, FD*, DSP48E1, and CARRY4. Name filters are `*processingElements*`, `*processingElements*partialPipe*`, and `*processingElements*weightRegs*`. Groups overlap; do not sum them. Diagnostic LUT/MUX totals are not physical Slice LUT totals.
++
++Reproduction:
++
++```bash
++IM2P_OPT_DCP="$OUT/checkpoints/opt.dcp" \
++  /tools/Xilinx/2025.2/Vivado/bin/vivado -mode batch -nojournal \
++  -log "$OUT/reports/pe-attribution.log" -source "$OUT/pe-attribution.tcl"
++```
++
++The original diagnostic Tcl/log are also preserved under `build/experiments/partial20/`.
++
++## Interpretation
++
++Local partial narrowing reduces physical Slice LUT use by 4694 (7.51%) and FF use by 3275 (8.70%). The partialPipe attribution shows 2880 fewer FFs (35.09%) and 720 fewer CARRY4s (15.85%), directly supporting the intended mechanism. Source and generated-RTL checks identify no second architectural optimization.
++
++Weight register FF count remains 4096. Its name-based LUT/MUX attribution decreases by 712 (6.51%) even though the weight RTL/control is unchanged. ActivationPipe and loadedRows attribution also change under synthesis optimization. These diagnostic name groups cannot isolate a physical LUT saving per source register. The 4694-LUT result is the measured whole-core delta for the single width change, including consequent synthesis optimization.
++
++Device LUT margin increases from 924 to 5618. The core still exceeds the 50000-LUT integration-margin goal by 7782. Numerical exactness, tested cycle behavior, BRAM architecture, and DSP mapping policy are preserved. The experiment validates a useful area reduction without claiming timing or board closure.
++
++Follow-up candidates, recorded only: dual-bank weight datapath, common active-bank control, engine_results wide FIFO, remaining PE-local duplicated control, scheduler/address logic, selective DSP mapping.
++
++## Remaining issues
++
++- BSV `-check-assert`: existing flow unchanged; no assertion-flow fix included.
++- G0117 action-shadowing: existing warnings remain; no suppression or scheduling change.
++- Timing and route closure: not evaluated by this OOC area experiment.
++- Board shell/system integration: not performed.
++
++## Git state
++
++Work remains uncommitted on `exp/pe-local-partial-int20`. Baseline branch remains at `dc4a1a621f63834d64df42ae8c24152747d97971`. No commit, push, merge, rebase, or PR creation is performed.
+--- a/scripts/im2p_config.py
++++ b/scripts/im2p_config.py
+@@ -83,6 +83,8 @@
+     bsv = ["// Generated by scripts/im2p_config.py; edit config/im2p_profiles.json.",
+            f"// Configuration SHA256: {fingerprint}", "package Config;", "",
+            "typedef 16 DefaultArrayDim;", "typedef 1 DefaultPeLatency;", "typedef 16 DefaultVectorLanes;",
++           "// Exact local dot-product width; architectural accumulator widths stay separate.",
++           "typedef TAdd#(productWidth, TLog#(dim)) IntegerPartialWidth#(numeric type dim, numeric type productWidth);",
+            f"typedef {capacity} IntegerAccumulatorCapacityBytes;",
+            "typedef TDiv#(TMul#(IntegerAccumulatorCapacityBytes, 8), TMul#(dim, width)) IntegerAccumulatorRows#(numeric type dim, numeric type width);",
+            f"typedef {source['fp_accumulator_rows']} FloatingAccumulatorRows;", ""]
+--- a/scripts/static_check.py
++++ b/scripts/static_check.py
+@@ -521,8 +521,8 @@
+                                 ("SystolicArrayInt8x64.bsv", 8),
+                                 ("SystolicArrayA16W16D64.bsv", 16)):
+         tile = strip_comments((SRC / "array" / filename).read_text(encoding="utf-8"))
+-        if tile.count(f"Int#(A{precision}AccumulatorWidth)") != 3:
+-            fail(f"DIM64 tile accumulator widths must match the profile: {filename}")
++        if tile.count(f"Int#(IntegerPartialWidth#(64, A{precision}ProductWidth))") != 3:
++            fail(f"DIM64 tile partial widths must cover the full 64-term dot product: {filename}")
+ 
+     for stem in ("A4W4", "A16W16"):
+         path = SRC / f"array/SystolicArray{stem}D64.bsv"
+--- a/sim/ffi/im2p_config.h
++++ b/sim/ffi/im2p_config.h
+@@ -2,7 +2,7 @@
+ #ifndef IM2P_GENERATED_CONFIG_H
+ #define IM2P_GENERATED_CONFIG_H
+ 
+-#define IM2P_CONFIG_SHA256 "ad9b2c2d6244c037405f03cb7fc74fc7f129a59d4a055879e972ed6f7abe8ad0"
++#define IM2P_CONFIG_SHA256 "fb46d020bfec46bd08f16f500f0c9ede698bac13683336a3e33aa50870f8c3c2"
+ #define IM2P_LOGICAL_CAPACITY_BYTES 65536
+ #define IM2P_MEMORY_BACKEND "column-banked-sync-bram"
+ #define IM2P_MEMORY_READ_LATENCY 1
+--- a/sim/tests/rtl_numerical_profile.rs
++++ b/sim/tests/rtl_numerical_profile.rs
+@@ -1,10 +1,113 @@
+ pub mod common;
+-use common::{golden_output, k_fragments, KBlockScaleMatrix, Shape};
++use common::{golden_output, k_fragments, KBlockScaleMatrix, Lcg, Shape};
+ use im2p_sim::profile::IM2P_ACCUMULATOR_BITS;
+ use im2p_sim::{
+     parse_activation, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut, SimError, VectorOp,
+     WeightValue,
+ };
++
++#[test]
++fn a8_local_partial_extrema_padding_and_fragments_are_exact() -> Result<(), SimError> {
++    if im2p_sim::ACTIVATION_BITS != 8 || im2p_sim::profile::IM2P_DIM != 16 {
++        return Ok(());
++    }
++    let alternating: Vec<i32> = (0..16)
++        .map(|index| if index % 2 == 0 { -128 } else { 127 })
++        .collect();
++    let mut cases = vec![
++        (
++            "min_min".to_owned(),
++            vec![-128; 16],
++            vec![-128; 16],
++            262_144,
++        ),
++        (
++            "min_max".to_owned(),
++            vec![-128; 16],
++            vec![127; 16],
++            -260_096,
++        ),
++        ("max_max".to_owned(), vec![127; 16], vec![127; 16], 258_064),
++        (
++            "alternating".to_owned(),
++            alternating.clone(),
++            alternating,
++            260_104,
++        ),
++        (
++            "padding_k7".to_owned(),
++            vec![-128; 7],
++            vec![-128; 7],
++            114_688,
++        ),
++        // Both totals exceed signed INT20: accumulation must occur after widening.
++        (
++            "fragments_k32".to_owned(),
++            vec![-128; 32],
++            vec![-128; 32],
++            524_288,
++        ),
++        (
++            "fragments_k33".to_owned(),
++            vec![-128; 33],
++            vec![-128; 33],
++            540_672,
++        ),
++        (
++            "negative_k33".to_owned(),
++            vec![-128; 33],
++            vec![127; 33],
++            -536_448,
++        ),
++    ];
++    let mut random = Lcg::new(0x20_08_16);
++    for index in 0..16 {
++        let k = [7, 16, 32, 33][index % 4];
++        let activations: Vec<i32> = (0..k)
++            .map(|_| i32::from(random.signed(i8::MIN, i8::MAX)))
++            .collect();
++        let weights: Vec<i32> = (0..k)
++            .map(|_| i32::from(random.signed(i8::MIN, i8::MAX)))
++            .collect();
++        let expected = activations.iter().zip(&weights).map(|(a, w)| a * w).sum();
++        cases.push((format!("random_{index:02}"), activations, weights, expected));
++    }
++    for (name, activations, weights, expected) in cases {
++        let k = activations.len();
++        let activations: Vec<_> = activations
++            .into_iter()
++            .map(|value| parse_activation(value).unwrap())
++            .collect();
++        let weights: Vec<_> = weights
++            .into_iter()
++            .map(|value| im2p_sim::parse_weight(value).unwrap())
++            .collect();
++        let work = MatmulWork {
++            activations: MatrixView::new(&activations, 1, k, k)?,
++            weights: MatrixView::new(&weights, k, 1, 1)?,
++            scales: None,
++            vector_op: VectorOp::Bypass,
++        };
++        let mut simulator = Im2pSimulator::new()?;
++        let before = simulator.cycles();
++        let mut output = [0_i32];
++        let stats =
++            simulator.execute_matmul(&work, &mut MatrixViewMut::new(&mut output, 1, 1, 1)?)?;
++        assert_eq!(output, [expected], "{name}, K={k}");
++        assert_eq!(stats.completed_fragments, k.div_ceil(16) as u64, "{name}");
++        let (start, completion) = simulator.work_interval();
++        println!(
++            "PARTIAL_VECTOR name={name} k={k} output={expected} total={} work={} compute={} drain={} preload={} fragments={} start={start} completion={completion}",
++            simulator.cycles() - before,
++            stats.work_total_cycles,
++            stats.compute_cycles,
++            stats.drain_cycles,
++            stats.weight_preload_cycles,
++            stats.completed_fragments,
++        );
++    }
++    Ok(())
++}
+ 
+ #[test]
+ fn full_arithmetic_wraps_at_profile_width_before_final_output() -> Result<(), SimError> {
+--- a/src/array/InputSkew.bsv
++++ b/src/array/InputSkew.bsv
+@@ -23,18 +23,18 @@
+ 
+ typedef struct {
+     Vector#(arrayDim, Maybe#(input_t)) activations;
+-    Vector#(arrayDim, Maybe#(acc_t)) partials;
++    Vector#(arrayDim, Maybe#(partial_t)) partials;
+ } SkewedArrayInputs#(
+     numeric type arrayDim,
+     type input_t,
+-    type acc_t
++    type partial_t
+ ) deriving (Bits);
+ 
+ interface InputSkewIfc#(
+     numeric type arrayDim,
+     numeric type peLatency,
+     type input_t,
+-    type acc_t
++    type partial_t
+ );
+     method Action clear;
+ 
+@@ -43,7 +43,7 @@
+     method ActionValue#(SkewedArrayInputs#(
+         arrayDim,
+         input_t,
+-        acc_t
++        partial_t
+     )) step(Maybe#(Vector#(arrayDim, input_t)) activationRow);
+ endinterface
+ 
+@@ -51,14 +51,14 @@
+     arrayDim,
+     peLatency,
+     input_t,
+-    acc_t
++    partial_t
+ )) provisos (
+     Add#(1, arrayDimMinusOne, arrayDim),
+     Add#(1, peLatencyMinusOne, peLatency),
+     Mul#(arrayDim, peLatency, skewDepth),
+     Bits#(input_t, inputBits),
+-    Bits#(acc_t, accBits),
+-    AccumulatorArithmetic#(acc_t)
++    Bits#(partial_t, partialBits),
++    AccumulatorArithmetic#(partial_t)
+ );
+     // 모든 boundary token은 같은 logical row에서 나오므로 row 전체를 한 번만
+     // 지연한다. Boundary별 scalar pipeline은 동일 row를 arrayDim번 복제하고
+@@ -79,10 +79,10 @@
+     method ActionValue#(SkewedArrayInputs#(
+         arrayDim,
+         input_t,
+-        acc_t
++        partial_t
+     )) step(Maybe#(Vector#(arrayDim, input_t)) activationRow);
+         Vector#(arrayDim, Maybe#(input_t)) skewedActivations = newVector;
+-        Vector#(arrayDim, Maybe#(acc_t)) skewedPartials = newVector;
++        Vector#(arrayDim, Maybe#(partial_t)) skewedPartials = newVector;
+ 
+         for (Integer boundaryIndex = 0;
+                 boundaryIndex < valueOf(arrayDim);
+--- a/src/array/PE.bsv
++++ b/src/array/PE.bsv
+@@ -24,7 +24,7 @@
+     type input_t,
+     type weight_t,
+     type product_t,
+-    type acc_t
++    type partial_t
+ );
+     method Action loadWeight(weight_t weight);
+     method Action loadWeightBank(Bool bank, weight_t weight);
+@@ -37,11 +37,11 @@
+ 
+     method Action step(
+         Maybe#(input_t) activationIn,
+-        Maybe#(acc_t) partialIn
++        Maybe#(partial_t) partialIn
+     );
+ 
+     method Maybe#(input_t) activationOut;
+-    method Maybe#(acc_t) partialOut;
++    method Maybe#(partial_t) partialOut;
+     method Bool weightLoaded;
+     method Bool weightBankLoaded(Bool bank);
+     method Bool activeWeightBank;
+@@ -52,14 +52,14 @@
+     input_t,
+     weight_t,
+     product_t,
+-    acc_t
++    partial_t
+ )) provisos (
+     Add#(1, peLatencyMinusOne, peLatency),
+     Bits#(input_t, inputBits),
+     Bits#(weight_t, weightBits),
+-    Bits#(acc_t, accBits),
++    Bits#(partial_t, partialBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t)
++    ProductAccumulator#(product_t, partial_t)
+ );
+     Vector#(2, Reg#(weight_t)) weightRegs <- replicateM(mkRegU);
+     Vector#(2, Reg#(Bool)) weightValidRegs <- replicateM(mkReg(False));
+@@ -67,7 +67,7 @@
+ 
+     Vector#(peLatency, Reg#(Maybe#(input_t))) activationPipe <-
+         replicateM(mkReg(tagged Invalid));
+-    Vector#(peLatency, Reg#(Maybe#(acc_t))) partialPipe <-
++    Vector#(peLatency, Reg#(Maybe#(partial_t))) partialPipe <-
+         replicateM(mkReg(tagged Invalid));
+ 
+     method Action loadWeight(weight_t weight);
+@@ -121,9 +121,9 @@
+ 
+     method Action step(
+         Maybe#(input_t) activationIn,
+-        Maybe#(acc_t) partialIn
++        Maybe#(partial_t) partialIn
+     );
+-        Maybe#(acc_t) nextPartial = tagged Invalid;
++        Maybe#(partial_t) nextPartial = tagged Invalid;
+ 
+         Bool activeWeightValid = activeWeightBankReg
+             ? weightValidRegs[1]
+@@ -134,7 +134,7 @@
+ 
+         if (isValid(activationIn) && isValid(partialIn) && activeWeightValid) begin
+             input_t activation = fromMaybe(?, activationIn);
+-            acc_t partial = fromMaybe(?, partialIn);
++            partial_t partial = fromMaybe(?, partialIn);
+             product_t product = arithmeticMultiply(activation, activeWeight);
+             nextPartial = tagged Valid arithmeticAccumulate(partial, product);
+         end
+@@ -153,7 +153,7 @@
+     method Maybe#(input_t) activationOut =
+         activationPipe[valueOf(peLatency) - 1];
+ 
+-    method Maybe#(acc_t) partialOut =
++    method Maybe#(partial_t) partialOut =
+         partialPipe[valueOf(peLatency) - 1];
+ 
+     method Bool weightLoaded = activeWeightBankReg
+--- a/src/array/SystolicArray.bsv
++++ b/src/array/SystolicArray.bsv
+@@ -24,7 +24,7 @@
+     type input_t,
+     type weight_t,
+     type product_t,
+-    type acc_t
++    type partial_t
+ );
+     // 새로운 B tile을 적재하기 전에 row-loaded 상태를 지운다. 같은 B tile을 여러
+     // activation execution에서 재사용할 때는 다시 호출하지 않아도 된다.
+@@ -51,7 +51,7 @@
+ 
+     method Action step(
+         Vector#(arrayDim, Maybe#(input_t)) activationInputs,
+-        Vector#(arrayDim, Maybe#(acc_t)) partialInputs
++        Vector#(arrayDim, Maybe#(partial_t)) partialInputs
+     );
+ 
+     // 각 row의 마지막 PE가 전달한 activation이다. Flat array에서는 외부에서
+@@ -62,7 +62,7 @@
+     // 전체 GEMM의 K가 arrayDim보다 크면 이 값은 full GEMM 관점의 partial sum이며,
+     // 후속 execution이 Accumulator에 추가로 누산된다. Column별 systolic 지연은
+     // 그대로 유지하므로 같은 cycle에는 일부 column만 Valid일 수 있다.
+-    method Vector#(arrayDim, Maybe#(acc_t)) partialSums;
++    method Vector#(arrayDim, Maybe#(partial_t)) partialSums;
+ endinterface
+ 
+ module mkSystolicArray(SystolicArrayIfc#(
+@@ -71,21 +71,21 @@
+     input_t,
+     weight_t,
+     product_t,
+-    acc_t
++    partial_t
+ )) provisos (
+     Add#(1, arrayDimMinusOne, arrayDim),
+     Add#(1, peLatencyMinusOne, peLatency),
+     Bits#(input_t, inputBits),
+     Bits#(weight_t, weightBits),
+-    Bits#(acc_t, accBits),
++    Bits#(partial_t, partialBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t)
++    ProductAccumulator#(product_t, partial_t)
+ );
+     Vector#(
+         arrayDim,
+         Vector#(
+             arrayDim,
+-            PEIfc#(peLatency, input_t, weight_t, product_t, acc_t)
++            PEIfc#(peLatency, input_t, weight_t, product_t, partial_t)
+         )
+     ) processingElements <- replicateM(replicateM(mkPE));
+ 
+@@ -240,14 +240,14 @@
+ 
+     method Action step(
+         Vector#(arrayDim, Maybe#(input_t)) activationInputs,
+-        Vector#(arrayDim, Maybe#(acc_t)) partialInputs
++        Vector#(arrayDim, Maybe#(partial_t)) partialInputs
+     );
+         for (Integer row = 0; row < valueOf(arrayDim); row = row + 1) begin
+             for (Integer column = 0;
+                     column < valueOf(arrayDim);
+                     column = column + 1) begin
+                 Maybe#(input_t) activation = activationInputs[row];
+-                Maybe#(acc_t) partial = partialInputs[column];
++                Maybe#(partial_t) partial = partialInputs[column];
+ 
+                 if (column > 0) begin
+                     activation =
+@@ -274,8 +274,8 @@
+         return outputs;
+     endmethod
+ 
+-    method Vector#(arrayDim, Maybe#(acc_t)) partialSums;
+-        Vector#(arrayDim, Maybe#(acc_t)) outputs = newVector;
++    method Vector#(arrayDim, Maybe#(partial_t)) partialSums;
++        Vector#(arrayDim, Maybe#(partial_t)) outputs = newVector;
+         for (Integer column = 0;
+                 column < valueOf(arrayDim);
+                 column = column + 1) begin
+--- a/src/array/SystolicArrayA16W16D64.bsv
++++ b/src/array/SystolicArrayA16W16D64.bsv
+@@ -14,7 +14,7 @@
+     Int#(A16InputWidth),
+     Int#(A16WeightWidth),
+     Int#(A16ProductWidth),
+-    Int#(A16AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A16ProductWidth))
+ ));
+     let array <- mkSystolicArray;
+     return array;
+@@ -27,7 +27,7 @@
+     Int#(A16InputWidth),
+     Int#(A16WeightWidth),
+     Int#(A16ProductWidth),
+-    Int#(A16AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A16ProductWidth))
+ ));
+     Vector#(
+         4,
+@@ -39,7 +39,7 @@
+                 Int#(A16InputWidth),
+                 Int#(A16WeightWidth),
+                 Int#(A16ProductWidth),
+-                Int#(A16AccumulatorWidth)
++                Int#(IntegerPartialWidth#(64, A16ProductWidth))
+             )
+         )
+     ) tiles <- replicateM(replicateM(mkSystolicArrayTileA16W16D16));
+--- a/src/array/SystolicArrayA4W4D64.bsv
++++ b/src/array/SystolicArrayA4W4D64.bsv
+@@ -14,7 +14,7 @@
+     Int#(A4InputWidth),
+     Int#(A4WeightWidth),
+     Int#(A4ProductWidth),
+-    Int#(A4AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A4ProductWidth))
+ ));
+     let array <- mkSystolicArray;
+     return array;
+@@ -27,7 +27,7 @@
+     Int#(A4InputWidth),
+     Int#(A4WeightWidth),
+     Int#(A4ProductWidth),
+-    Int#(A4AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A4ProductWidth))
+ ));
+     Vector#(
+         4,
+@@ -39,7 +39,7 @@
+                 Int#(A4InputWidth),
+                 Int#(A4WeightWidth),
+                 Int#(A4ProductWidth),
+-                Int#(A4AccumulatorWidth)
++                Int#(IntegerPartialWidth#(64, A4ProductWidth))
+             )
+         )
+     ) tiles <- replicateM(replicateM(mkSystolicArrayTileA4W4D16));
+--- a/src/array/SystolicArrayInt8x64.bsv
++++ b/src/array/SystolicArrayInt8x64.bsv
+@@ -14,7 +14,7 @@
+     Int#(A8InputWidth),
+     Int#(A8WeightWidth),
+     Int#(A8ProductWidth),
+-    Int#(A8AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A8ProductWidth))
+ ));
+     let array <- mkSystolicArray;
+     return array;
+@@ -27,7 +27,7 @@
+     Int#(A8InputWidth),
+     Int#(A8WeightWidth),
+     Int#(A8ProductWidth),
+-    Int#(A8AccumulatorWidth)
++    Int#(IntegerPartialWidth#(64, A8ProductWidth))
+ ));
+     Vector#(
+         4,
+@@ -39,7 +39,7 @@
+                 Int#(A8InputWidth),
+                 Int#(A8WeightWidth),
+                 Int#(A8ProductWidth),
+-                Int#(A8AccumulatorWidth)
++                Int#(IntegerPartialWidth#(64, A8ProductWidth))
+             )
+         )
+     ) tiles <- replicateM(replicateM(mkSystolicArrayTileInt8x16));
+--- a/src/array/SystolicArrayTiled.bsv
++++ b/src/array/SystolicArrayTiled.bsv
+@@ -25,7 +25,7 @@
+                 input_t,
+                 weight_t,
+                 product_t,
+-                acc_t
++                partial_t
+             )
+         )
+     ) tiles
+@@ -35,11 +35,11 @@
+     input_t,
+     weight_t,
+     product_t,
+-    acc_t
++    partial_t
+ )) provisos (
+     Bits#(input_t, inputBits),
+     Bits#(weight_t, weightBits),
+-    Bits#(acc_t, accBits)
++    Bits#(partial_t, partialBits)
+ );
+     method Action beginWeightLoad;
+         for (Integer tileRow = 0; tileRow < 4; tileRow = tileRow + 1) begin
+@@ -176,14 +176,14 @@
+ 
+     method Action step(
+         Vector#(64, Maybe#(input_t)) activationInputs,
+-        Vector#(64, Maybe#(acc_t)) partialInputs
++        Vector#(64, Maybe#(partial_t)) partialInputs
+     );
+         for (Integer tileRow = 0; tileRow < 4; tileRow = tileRow + 1) begin
+             for (Integer tileColumn = 0;
+                     tileColumn < 4;
+                     tileColumn = tileColumn + 1) begin
+                 Vector#(16, Maybe#(input_t)) activations = newVector;
+-                Vector#(16, Maybe#(acc_t)) partials = newVector;
++                Vector#(16, Maybe#(partial_t)) partials = newVector;
+ 
+                 for (Integer localIndex = 0;
+                         localIndex < 16;
+@@ -227,8 +227,8 @@
+         return outputs;
+     endmethod
+ 
+-    method Vector#(64, Maybe#(acc_t)) partialSums;
+-        Vector#(64, Maybe#(acc_t)) outputs = newVector;
++    method Vector#(64, Maybe#(partial_t)) partialSums;
++        Vector#(64, Maybe#(partial_t)) outputs = newVector;
+         for (Integer tileColumn = 0;
+                 tileColumn < 4;
+                 tileColumn = tileColumn + 1) begin
+--- a/src/array/SystolicEngine.bsv
++++ b/src/array/SystolicEngine.bsv
+@@ -77,7 +77,7 @@
+         input_t,
+         weight_t,
+         product_t,
+-        acc_t
++        partial_t
+     ) systolicArray
+ )(SystolicEngineIfc#(
+     arrayDim,
+@@ -93,10 +93,13 @@
+     Bits#(weight_t, weightBits),
+     Bits#(acc_t, accBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t),
+-    AccumulatorArithmetic#(acc_t)
++    Bits#(partial_t, partialBits),
++    SystolicPartial#(arrayDim, product_t, partial_t),
++    ProductAccumulator#(product_t, partial_t),
++    AccumulatorArithmetic#(partial_t),
++    PartialAccumulatorConversion#(partial_t, acc_t)
+ );
+-    InputSkewIfc#(arrayDim, peLatency, input_t, acc_t) inputSkew <-
++    InputSkewIfc#(arrayDim, peLatency, input_t, partial_t) inputSkew <-
+         mkInputSkew;
+ 
+     ExecuteControllerIfc#(arrayDim) controller <- mkExecuteController;
+@@ -113,7 +116,7 @@
+     // 상대 timing을 유지한다.
+     rule advanceArray (controller.active && results.notFull);
+         // step 전에 읽는 값은 이전 cycle에 PE pipeline이 만든 bottom-row output이다.
+-        Vector#(arrayDim, Maybe#(acc_t)) outputs =
++        Vector#(arrayDim, Maybe#(partial_t)) outputs =
+             systolicArray.partialSums;
+ 
+         Vector#(arrayDim, Bool) valids = newVector;
+@@ -123,10 +126,10 @@
+                 column < valueOf(arrayDim);
+                 column = column + 1) begin
+             valids[column] = isValid(outputs[column]);
+-            partials[column] = fromMaybe(
++            partials[column] = widenPartial(fromMaybe(
+                 accumulatorZero(),
+                 outputs[column]
+-            );
++            ));
+         end
+ 
+         if (anyTrue(valids)) begin
+@@ -264,8 +267,11 @@
+     Bits#(weight_t, weightBits),
+     Bits#(acc_t, accBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t),
+-    AccumulatorArithmetic#(acc_t)
++    Bits#(partial_t, partialBits),
++    SystolicPartial#(arrayDim, product_t, partial_t),
++    ProductAccumulator#(product_t, partial_t),
++    AccumulatorArithmetic#(partial_t),
++    PartialAccumulatorConversion#(partial_t, acc_t)
+ );
+     SystolicArrayIfc#(
+         arrayDim,
+@@ -273,7 +279,7 @@
+         input_t,
+         weight_t,
+         product_t,
+-        acc_t
++        partial_t
+     ) systolicArray <- mkSystolicArray;
+ 
+     let engine <- mkSystolicEngineWithArray(systolicArray);
+--- a/src/common/Arithmetic.bsv
++++ b/src/common/Arithmetic.bsv
+@@ -1,14 +1,15 @@
+ package Arithmetic;
+ 
+ import FloatingPoint::*;
++import Config::*;
+ 
+ // -----------------------------------------------------------------------------
+ // Systolic datapath 산술 추상화
+ // -----------------------------------------------------------------------------
+ //
+-// activation, weight, product, accumulator를 서로 다른 타입으로 분리한다.
++// activation, weight, product, local partial, accumulator를 서로 다른 타입으로 분리한다.
+ // 따라서 INT8 x INT8 configuration은 실제 8x8 multiplier, 16-bit full product,
+-// 32-bit partial/accumulator를 표현할 수 있다.
++// DIM16에서는 exact INT20 local partial과 architectural INT32 accumulator를 사용한다.
+ //
+ // Runtime vector scaling은 array 밖 VectorUnit의 책임이다. FLOAT arithmetic을
+ // 선택해도 scale multiplier나 shifter가 이 패키지에서 따라오지 않는다.
+@@ -22,6 +23,18 @@
+     function product_t arithmeticMultiply(input_t activation, weight_t weight);
+ endtypeclass
+ 
++// Infer the local type without adding a parameter to the architectural interface.
++typeclass SystolicPartial#(
++    numeric type arrayDim,
++    type product_t,
++    type partial_t
++) dependencies ((arrayDim, product_t) determines partial_t);
++endtypeclass
++
++typeclass PartialAccumulatorConversion#(type partial_t, type acc_t);
++    function acc_t widenPartial(partial_t partial);
++endtypeclass
++
+ // 위쪽에서 전달된 partial D에 product를 더해 C를 만든다.
+ typeclass ProductAccumulator#(
+     type product_t,
+@@ -40,6 +53,18 @@
+ // Signed integer instances
+ // -----------------------------------------------------------------------------
+ 
++instance SystolicPartial#(
++    arrayDim, Int#(productWidth), Int#(IntegerPartialWidth#(arrayDim, productWidth))
++);
++endinstance
++
++instance PartialAccumulatorConversion#(Int#(partialWidth), Int#(accWidth))
++    provisos (Add#(partialWidth, partialPadding, accWidth));
++    function Int#(accWidth) widenPartial(Int#(partialWidth) partial);
++        return signExtend(partial);
++    endfunction
++endinstance
++
+ instance Multiplier#(
+     Int#(inputWidth),
+     Int#(weightWidth),
+@@ -51,7 +76,9 @@
+         Int#(inputWidth) activation,
+         Int#(weightWidth) weight
+     );
+-        return signedMul(activation, weight);
++        Int#(productWidth) wideActivation = signExtend(activation);
++        Int#(productWidth) wideWeight = signExtend(weight);
++        return wideActivation * wideWeight;
+     endfunction
+ endinstance
+ 
+@@ -94,6 +121,24 @@
+ // multFP/addFP는 조합 함수다. PE의 peLatency를 늘리는 것만으로 이 조합 연산이
+ // 자동 pipeline되지 않는다. 실제 Fmax/area 평가에서는 vendor FPU 또는 명시적인
+ // pipelined operator로 이 instance를 교체해야 한다.
++
++instance SystolicPartial#(
++    arrayDim,
++    FloatingPoint#(exponentWidth, fractionWidth),
++    FloatingPoint#(exponentWidth, fractionWidth)
++);
++endinstance
++
++instance PartialAccumulatorConversion#(
++    FloatingPoint#(exponentWidth, fractionWidth),
++    FloatingPoint#(exponentWidth, fractionWidth)
++);
++    function FloatingPoint#(exponentWidth, fractionWidth) widenPartial(
++        FloatingPoint#(exponentWidth, fractionWidth) partial
++    );
++        return partial;
++    endfunction
++endinstance
+ 
+ instance Multiplier#(
+     FloatingPoint#(exponentWidth, fractionWidth),
+--- a/src/common/Config.bsv
++++ b/src/common/Config.bsv
+@@ -1,10 +1,12 @@
+ // Generated by scripts/im2p_config.py; edit config/im2p_profiles.json.
+-// Configuration SHA256: ad9b2c2d6244c037405f03cb7fc74fc7f129a59d4a055879e972ed6f7abe8ad0
++// Configuration SHA256: fb46d020bfec46bd08f16f500f0c9ede698bac13683336a3e33aa50870f8c3c2
+ package Config;
+ 
+ typedef 16 DefaultArrayDim;
+ typedef 1 DefaultPeLatency;
+ typedef 16 DefaultVectorLanes;
++// Exact local dot-product width; architectural accumulator widths stay separate.
++typedef TAdd#(productWidth, TLog#(dim)) IntegerPartialWidth#(numeric type dim, numeric type productWidth);
+ typedef 65536 IntegerAccumulatorCapacityBytes;
+ typedef TDiv#(TMul#(IntegerAccumulatorCapacityBytes, 8), TMul#(dim, width)) IntegerAccumulatorRows#(numeric type dim, numeric type width);
+ typedef 256 FloatingAccumulatorRows;
+--- a/src/control/MatmulScheduler.bsv
++++ b/src/control/MatmulScheduler.bsv
+@@ -94,6 +94,10 @@
+ 
+     Reg#(MatrixExtent) iStartReg <- mkReg(0);
+     Reg#(MatrixExtent) jStartReg <- mkReg(0);
++    // Store work remaining to keep stripe extent arithmetic out of each
++    // bounded tile count and its dependent address update.
++    Reg#(MatrixExtent) remainingRowsReg <- mkReg(0);
++    Reg#(MatrixExtent) remainingColumnsReg <- mkReg(0);
+     Reg#(Bool) completionPendingReg <- mkReg(False);
+     Reg#(UInt#(64)) completionCycleReg <- mkReg(0);
+     Reg#(HostAddress) weightBaseReg <- mkReg(0);
+@@ -114,6 +118,7 @@
+ 
+         iStartReg <= 0;
+         jStartReg <= 0;
++        remainingColumnsReg <= descriptorReg.columnCount;
+         weightBaseReg <= descriptor.weightBase;
+         scaleBaseReg <= descriptor.scaleBase;
+         outputRowBaseReg <= descriptor.outputBase;
+@@ -124,6 +129,7 @@
+             stripeContextReg <= descriptor.workContext;
+             stripeRowBeginReg <= 0;
+             stripeRowCountReg <= descriptor.rowCount;
++            remainingRowsReg <= descriptor.rowCount;
+             stripeActivationBaseReg <= descriptor.activationBase;
+             stripeActivationStrideReg <= descriptor.activationRowStride;
+             stripePublishCycleReg <= 0;
+@@ -153,11 +159,13 @@
+         stripeContextReg <= stripe.stripeContext;
+         stripeRowBeginReg <= stripe.rowBegin;
+         stripeRowCountReg <= stripe.rowCount;
++        remainingRowsReg <= stripe.rowCount;
+         stripeActivationBaseReg <= stripe.activationBase;
+         stripeActivationStrideReg <= stripe.activationRowStride;
+         stripePublishCycleReg <= stripe.publishCycle;
+         iStartReg <= stripe.rowBegin;
+         jStartReg <= 0;
++        remainingColumnsReg <= descriptorReg.columnCount;
+         weightBaseReg <= descriptorReg.weightBase;
+         scaleBaseReg <= descriptorReg.scaleBase;
+         HostAddress outputBase = rowAddress(descriptorReg.outputBase,
+@@ -184,24 +192,18 @@
+         && (descriptorReg.mode == FullMatrix || completionFifo.notFull)
+     );
+         MatrixExtent iCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)),
+-            iStartReg,
+-            stripeRowBeginReg + stripeRowCountReg,
+-            descriptorReg.tileIRows
+-        );
++            fromInteger(valueOf(arrayDim)), 0, remainingRowsReg,
++            descriptorReg.tileIRows);
+         MatrixExtent jCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)),
+-            jStartReg,
+-            descriptorReg.columnCount,
+-            descriptorReg.tileJColumns
+-        );
++            fromInteger(valueOf(arrayDim)), 0, remainingColumnsReg,
++            descriptorReg.tileJColumns);
+         MatrixExtent nextI = iStartReg + iCount;
+         MatrixExtent nextJ = jStartReg + jCount;
+-        MatrixExtent stripeEnd = stripeRowBeginReg + stripeRowCountReg;
+ 
+         completionPendingReg <= False;
+-        if (nextJ < descriptorReg.columnCount) begin
++        if (jCount < remainingColumnsReg) begin
+             jStartReg <= nextJ;
++            remainingColumnsReg <= remainingColumnsReg - jCount;
+             weightBaseReg <= advanceTileAddress(weightBaseReg, jCount,
+                 zeroExtend(descriptorReg.weightElementBytes));
+             scaleBaseReg <= advanceTileAddress(scaleBaseReg, jCount,
+@@ -210,9 +212,11 @@
+                 zeroExtend(descriptorReg.outputElementBytes));
+             stateReg <= MatmulOfferWork;
+         end
+-        else if (nextI < stripeEnd) begin
++        else if (iCount < remainingRowsReg) begin
+             iStartReg <= nextI;
++            remainingRowsReg <= remainingRowsReg - iCount;
+             jStartReg <= 0;
++            remainingColumnsReg <= descriptorReg.columnCount;
+             stripeActivationBaseReg <= advanceTileAddress(stripeActivationBaseReg,
+                 iCount, stripeActivationStrideReg);
+             weightBaseReg <= descriptorReg.weightBase;
+@@ -253,11 +257,13 @@
+                 stripeContextReg <= stripe.stripeContext;
+                 stripeRowBeginReg <= stripe.rowBegin;
+                 stripeRowCountReg <= stripe.rowCount;
++                remainingRowsReg <= stripe.rowCount;
+                 stripeActivationBaseReg <= stripe.activationBase;
+                 stripeActivationStrideReg <= stripe.activationRowStride;
+                 stripePublishCycleReg <= stripe.publishCycle;
+                 iStartReg <= stripe.rowBegin;
+                 jStartReg <= 0;
++                remainingColumnsReg <= descriptorReg.columnCount;
+                 weightBaseReg <= descriptorReg.weightBase;
+                 scaleBaseReg <= descriptorReg.scaleBase;
+                 HostAddress outputBase = rowAddress(descriptorReg.outputBase,
+@@ -275,11 +281,11 @@
+ 
+     function Bool hasLookahead();
+         MatrixExtent iCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)), iStartReg,
+-            stripeRowBeginReg + stripeRowCountReg, descriptorReg.tileIRows);
++            fromInteger(valueOf(arrayDim)), 0, remainingRowsReg,
++            descriptorReg.tileIRows);
+         return (descriptorReg.mode == FullMatrix
+                 && stateReg != MatmulIdle && stateReg != MatmulDone
+-                && iStartReg + iCount < descriptorReg.rowCount)
++                && iCount < remainingRowsReg)
+             || (descriptorReg.mode == AsyncStripes && lookaheadStripeValidReg);
+     endfunction
+ 
+@@ -351,17 +357,11 @@
+     method MatmulWork#(arrayDim) work
+             if (stateReg == MatmulOfferWork);
+         MatrixExtent iCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)),
+-            iStartReg,
+-            stripeRowBeginReg + stripeRowCountReg,
+-            descriptorReg.tileIRows
+-        );
++            fromInteger(valueOf(arrayDim)), 0, remainingRowsReg,
++            descriptorReg.tileIRows);
+         MatrixExtent jCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)),
+-            jStartReg,
+-            descriptorReg.columnCount,
+-            descriptorReg.tileJColumns
+-        );
++            fromInteger(valueOf(arrayDim)), 0, remainingColumnsReg,
++            descriptorReg.tileJColumns);
+ 
+         return MatmulWork {
+             jobId: descriptorReg.jobId,
+@@ -392,13 +392,11 @@
+         MatrixExtent dimension = fromInteger(valueOf(arrayDim));
+         Bool async = descriptorReg.mode == AsyncStripes;
+         MatrixExtent currentICount = boundedTileCount(
+-            dimension, iStartReg, stripeRowBeginReg + stripeRowCountReg,
+-            descriptorReg.tileIRows);
++            dimension, 0, remainingRowsReg, descriptorReg.tileIRows);
+         MatrixExtent nextI = async ? lookaheadStripeReg.rowBegin
+                                    : iStartReg + currentICount;
+-        MatrixExtent nextEnd = async
+-            ? lookaheadStripeReg.rowBegin + lookaheadStripeReg.rowCount
+-            : descriptorReg.rowCount;
++        MatrixExtent nextRemainingRows = async
++            ? lookaheadStripeReg.rowCount : remainingRowsReg - currentICount;
+         HostAddress aBase = async ? lookaheadStripeReg.activationBase
+             : advanceTileAddress(stripeActivationBaseReg, currentICount,
+                                  descriptorReg.activationRowStride);
+@@ -410,7 +408,7 @@
+             stripeContext: async ? lookaheadStripeReg.stripeContext
+                                  : descriptorReg.workContext,
+             iStart: nextI, jStart: 0,
+-            iCount: boundedTileCount(dimension, nextI, nextEnd,
++            iCount: boundedTileCount(dimension, 0, nextRemainingRows,
+                                      descriptorReg.tileIRows),
+             jCount: boundedTileCount(dimension, 0, descriptorReg.columnCount,
+                                      descriptorReg.tileJColumns),
+@@ -433,14 +431,14 @@
+ 
+     method Bool lookaheadPreloadSafe if (hasLookahead);
+         MatrixExtent iCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)), iStartReg,
+-            stripeRowBeginReg + stripeRowCountReg, descriptorReg.tileIRows);
++            fromInteger(valueOf(arrayDim)), 0, remainingRowsReg,
++            descriptorReg.tileIRows);
+         MatrixExtent jCount = boundedTileCount(
+-            fromInteger(valueOf(arrayDim)), jStartReg,
+-            descriptorReg.columnCount, descriptorReg.tileJColumns);
+-        return jStartReg + jCount >= descriptorReg.columnCount
++            fromInteger(valueOf(arrayDim)), 0, remainingColumnsReg,
++            descriptorReg.tileJColumns);
++        return jCount >= remainingColumnsReg
+             && (descriptorReg.mode == FullMatrix
+-                || iStartReg + iCount >= stripeRowBeginReg + stripeRowCountReg);
++                || iCount >= remainingRowsReg);
+     endmethod
+ 
+     method Action acceptWork if (stateReg == MatmulOfferWork);
+--- a/src/control/WorkScheduler.bsv
++++ b/src/control/WorkScheduler.bsv
+@@ -9,7 +9,10 @@
+     WorkOfferFragment,
+     WorkWaitFragment,
+     WorkDone,
+-    WorkPrepare
++    WorkPrepare,
++    WorkPrepareCount,
++    WorkPrepareNext,
++    WorkPrepareNextCount
+ } WorkSchedulerState deriving (Bits, Eq, FShow);
+ 
+ interface WorkSchedulerIfc#(numeric type arrayDim);
+@@ -151,7 +154,9 @@
+     )
+ );
+     Reg#(WorkSchedulerState) stateReg <- mkReg(WorkIdle);
+-    Reg#(MatrixExtent) totalKReg <- mkReg(0);
++    // Remaining K is stored directly to avoid a serial subtract/add/subtract
++    // chain in current and next fragment metadata. Width and cycles are unchanged.
++    Reg#(MatrixExtent) remainingKReg <- mkReg(0);
+     Reg#(MatrixExtent) blockSizeReg <- mkReg(0);
+     Reg#(Bool) usesScaleReg <- mkReg(False);
+     Reg#(Bool) firstFragmentReg <- mkReg(True);
+@@ -173,19 +178,55 @@
+     Reg#(ScaleBlockIndex) lookaheadBlockIndexReg <- mkReg(0);
+     Reg#(MatrixExtent) lookaheadBlockRemainingReg <- mkReg(0);
+ 
++    Reg#(BoundedCount#(arrayDim)) fragmentCountReg <- mkReg(0);
++    Reg#(MatrixExtent) nextStartReg <- mkReg(0);
++    Reg#(MatrixExtent) nextRemainingKReg <- mkReg(0);
++    Reg#(MatrixExtent) nextBlockRemainingReg <- mkReg(0);
++    Reg#(BoundedCount#(arrayDim)) nextCountReg <- mkReg(0);
++    Reg#(Bool) hasNextReg <- mkReg(False);
++    Reg#(Bool) endsBlockReg <- mkReg(False);
++
+     function MatrixExtent currentCount();
+         return boundedFragmentCount(
+             fromInteger(valueOf(arrayDim)),
+-            totalKReg - kStartReg,
++            remainingKReg,
+             blockRemainingReg,
+             usesScaleReg
+         );
+     endfunction
+ 
++    // Descriptor arithmetic crosses real register boundaries. The first
++    // fragment takes three preparation cycles; promotion reuses nextCountReg
++    // and takes two. This experiment does not yet overlap the preparation
++    // with array execution, so the cycle cost is measured explicitly.
++    rule prepareCount (stateReg == WorkPrepareCount);
++        fragmentCountReg <= truncate(currentCount);
++        stateReg <= WorkPrepareNext;
++    endrule
++
++    rule prepareNext (stateReg == WorkPrepareNext);
++        MatrixExtent count = zeroExtend(fragmentCountReg);
++        nextStartReg <= kStartReg + count;
++        nextRemainingKReg <= remainingKReg - count;
++        nextBlockRemainingReg <= count == blockRemainingReg
++            ? blockSizeReg : blockRemainingReg - count;
++        hasNextReg <= count < remainingKReg;
++        endsBlockReg <= usesScaleReg
++            && (count >= remainingKReg || count == blockRemainingReg);
++        stateReg <= WorkPrepareNextCount;
++    endrule
++
++    rule prepareNextCount (stateReg == WorkPrepareNextCount);
++        nextCountReg <= truncate(boundedFragmentCount(
++            fromInteger(valueOf(arrayDim)), nextRemainingKReg,
++            nextBlockRemainingReg, usesScaleReg));
++        stateReg <= WorkOfferFragment;
++    endrule
++
+     rule finishPreparation (stateReg == WorkPrepare && initialPosition.ready);
+         blockIndexReg <= initialPosition.blockIndex;
+         blockRemainingReg <= blockSizeReg - initialPosition.offset;
+-        stateReg <= WorkOfferFragment;
++        stateReg <= WorkPrepareCount;
+     endrule
+ 
+     rule finishLookaheadPreparation (
+@@ -241,7 +282,7 @@
+     endmethod
+     method Action startPrepared if (stateReg == WorkIdle);
+         dynamicAssert(lookaheadValidReg, "no prepared lookahead fragment");
+-        totalKReg <= lookaheadKOriginReg + lookaheadReductionReg;
++        remainingKReg <= lookaheadReductionReg;
+         blockSizeReg <= lookaheadBlockSizeReg;
+         usesScaleReg <= lookaheadUsesScaleReg;
+         firstFragmentReg <= True;
+@@ -251,7 +292,7 @@
+         blockIndexReg <= lookaheadBlockIndexReg;
+         blockRemainingReg <= lookaheadBlockRemainingReg;
+         lookaheadValidReg <= False;
+-        stateReg <= WorkOfferFragment;
++        stateReg <= WorkPrepareCount;
+     endmethod
+ 
+     method Action start(
+@@ -270,7 +311,7 @@
+ 
+         dynamicAssert(reductionCount <= maxBound - kOrigin,
+                       "work K extent overflows");
+-        totalKReg <= kOrigin + reductionCount;
++        remainingKReg <= reductionCount;
+         blockSizeReg <= blockSize;
+         usesScaleReg <= usesScale;
+         firstFragmentReg <= True;
+@@ -281,7 +322,7 @@
+         blockRemainingReg <= usesScale ? blockSize - kOrigin : 0;
+         Bool prepare = usesScale && kOrigin >= blockSize;
+         if (prepare) initialPosition.start(kOrigin, blockSize);
+-        stateReg <= prepare ? WorkPrepare : WorkOfferFragment;
++        stateReg <= prepare ? WorkPrepare : WorkPrepareCount;
+     endmethod
+ 
+     method Bool fragmentValid = stateReg == WorkOfferFragment;
+@@ -290,8 +331,7 @@
+     endmethod
+     method BoundedCount#(arrayDim) fragmentKCount
+             if (stateReg == WorkOfferFragment);
+-        MatrixExtent count = currentCount;
+-        return truncate(count);
++        return fragmentCountReg;
+     endmethod
+     method Bool fragmentAccumulate if (stateReg == WorkOfferFragment);
+         Bool startsBlock = usesScaleReg
+@@ -302,10 +342,7 @@
+     endmethod
+ 
+     method Bool fragmentEndsBlock if (stateReg == WorkOfferFragment);
+-        MatrixExtent count = currentCount;
+-        MatrixExtent nextStart = kStartReg + count;
+-        return usesScaleReg
+-            && (nextStart >= totalKReg || count == blockRemainingReg);
++        return endsBlockReg;
+     endmethod
+ 
+     method ScaleBlockIndex fragmentBlockIndex
+@@ -320,28 +357,23 @@
+     method Bool hasNextFragment
+             if (stateReg == WorkOfferFragment
+                 || stateReg == WorkWaitFragment);
+-        MatrixExtent nextStart = kStartReg + currentCount;
+-        return nextStart < totalKReg;
++        return hasNextReg;
+     endmethod
+ 
+     method MatrixExtent nextFragmentKStart
+             if (stateReg == WorkOfferFragment
+                 || stateReg == WorkWaitFragment);
+-        return kStartReg + currentCount;
++        return nextStartReg;
+     endmethod
+ 
+     method BoundedCount#(arrayDim) nextFragmentKCount
+             if (stateReg == WorkOfferFragment
+                 || stateReg == WorkWaitFragment);
+-        MatrixExtent count = currentCount;
+-        MatrixExtent nextRemaining = count == blockRemainingReg
+-            ? blockSizeReg : blockRemainingReg - count;
+-        return truncate(boundedFragmentCount(fromInteger(valueOf(arrayDim)),
+-            totalKReg - (kStartReg + count), nextRemaining, usesScaleReg));
++        return nextCountReg;
+     endmethod
+ 
+     method Action acceptFragment if (stateReg == WorkOfferFragment);
+-        MatrixExtent count = currentCount;
++        MatrixExtent count = zeroExtend(fragmentCountReg);
+         dynamicAssert(count > 0, "K fragment must be positive");
+         dynamicAssert(
+             !usesScaleReg
+@@ -352,18 +384,18 @@
+     endmethod
+ 
+     method Action completeFragment if (stateReg == WorkWaitFragment);
+-        MatrixExtent count = currentCount;
+-        MatrixExtent nextStart = kStartReg + count;
+-
+-        if (nextStart < totalKReg) begin
+-            kStartReg <= nextStart;
++        MatrixExtent count = zeroExtend(fragmentCountReg);
++        if (hasNextReg) begin
++            kStartReg <= nextStartReg;
++            remainingKReg <= nextRemainingKReg;
++            fragmentCountReg <= nextCountReg;
+             if (usesScaleReg) begin
+                 Bool endsBlock = count == blockRemainingReg;
+                 blockIndexReg <= endsBlock ? blockIndexReg + 1 : blockIndexReg;
+-                blockRemainingReg <= endsBlock ? blockSizeReg : blockRemainingReg - count;
++                blockRemainingReg <= nextBlockRemainingReg;
+             end
+             firstFragmentReg <= False;
+-            stateReg <= WorkOfferFragment;
++            stateReg <= WorkPrepareNext;
+         end
+         else begin
+             stateReg <= WorkDone;
+--- a/src/core/IM2PCore.bsv
++++ b/src/core/IM2PCore.bsv
+@@ -239,7 +239,7 @@
+         input_t,
+         weight_t,
+         product_t,
+-        acc_t
++        partial_t
+     ) systolicArray
+ )(IM2PCoreIfc#(
+     arrayDim,
+@@ -280,7 +280,11 @@
+     Bits#(acc_t, accBits),
+     Bits#(scale_t, scaleBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t),
++    Bits#(partial_t, partialBits),
++    SystolicPartial#(arrayDim, product_t, partial_t),
++    ProductAccumulator#(product_t, partial_t),
++    AccumulatorArithmetic#(partial_t),
++    PartialAccumulatorConversion#(partial_t, acc_t),
+     AccumulatorArithmetic#(acc_t),
+     VectorScaleCapability#(input_t),
+     VectorTransform#(input_t, acc_t, scale_t)
+@@ -2040,7 +2044,8 @@
+     method Action putActivationReadResponse(
+         HostRequestTag tag,
+         Vector#(arrayDim, input_t) values
+-    ) if (activationRequestValidReg || lookaheadActivationRequestValidReg);
++    ) if ((activationRequestValidReg || lookaheadActivationRequestValidReg)
++            && !activationResponsePendingReg);
+         if (lookaheadActivationRequestValidReg
+                 && tag == lookaheadActivationTagReg) begin
+             Vector#(arrayDim, input_t) padded = replicate(unpack(0));
+@@ -2558,7 +2563,11 @@
+     Bits#(acc_t, accBits),
+     Bits#(scale_t, scaleBits),
+     Multiplier#(input_t, weight_t, product_t),
+-    ProductAccumulator#(product_t, acc_t),
++    Bits#(partial_t, partialBits),
++    SystolicPartial#(arrayDim, product_t, partial_t),
++    ProductAccumulator#(product_t, partial_t),
++    AccumulatorArithmetic#(partial_t),
++    PartialAccumulatorConversion#(partial_t, acc_t),
+     AccumulatorArithmetic#(acc_t),
+     VectorScaleCapability#(input_t),
+     VectorTransform#(input_t, acc_t, scale_t)
+@@ -2569,7 +2578,7 @@
+         input_t,
+         weight_t,
+         product_t,
+-        acc_t
++        partial_t
+     ) systolicArray <- mkSystolicArray;
+ 
+     let core <- mkIM2PCoreWithArray(systolicArray);
+--- /dev/null
++++ b/synth/ResidentP0.bsv
+@@ -0,0 +1,197 @@
++package ResidentP0;
++
++import BRAMCore::*;
++import Vector::*;
++import Types::*;
++import HostMemoryTypes::*;
++import WorkTypes::*;
++import IM2PCore::*;
++import SynthA8W8D16::*;
++
++typedef Vector#(16, Int#(8)) InputRow;
++typedef Vector#(16, Int#(32)) OutputRow;
++
++interface ResidentP0Ifc;
++    // A is row-major 16x32, grouped into two 16-byte words per row.
++    // B is row-major 32x16, one 16-byte word per row.
++    method Action loadActivation(UInt#(5) word, InputRow values);
++    method Action loadWeight(UInt#(5) word, InputRow values);
++    method Action loadScale(InputRow values);
++    method Action start(Bool shift);
++    method Bool done;
++    method UInt#(64) cycles;
++    method UInt#(64) fragments;
++    method Bool protocolError;
++    method Action requestOutput(UInt#(4) row);
++    method Bool outputValid;
++    method OutputRow outputResponse;
++    method Action consumeOutput;
++    method Action acknowledge;
++endinterface
++
++// ponytail: fixed M=N=16, K=32 and one scale block; add descriptors only after
++// resident execution and the physical transport have measured throughput.
++(* synthesize *)
++module mkResidentP0(ResidentP0Ifc);
++    let core <- mkSynthA8W8D16;
++    BRAM_PORT#(UInt#(5), InputRow) activations <- mkBRAMCore1(32, False);
++    BRAM_PORT#(UInt#(5), InputRow) weights <- mkBRAMCore1(32, False);
++    BRAM_PORT#(UInt#(4), OutputRow) outputs <- mkBRAMCore1(16, False);
++    Reg#(InputRow) scales <- mkRegU;
++    Reg#(Bit#(32)) activationLoaded <- mkReg(0);
++    Reg#(Bit#(32)) weightLoaded <- mkReg(0);
++    Reg#(Bool) scaleLoaded <- mkReg(False);
++    Reg#(Bool) running <- mkReg(False);
++    Reg#(Bool) doneReg <- mkReg(False);
++    Reg#(Bool) errorReg <- mkReg(False);
++    Reg#(UInt#(64)) startCycle <- mkReg(0);
++    Reg#(UInt#(64)) cyclesReg <- mkReg(0);
++    Reg#(Bool) activationPending <- mkReg(False);
++    Reg#(HostRequestTag) activationTag <- mkRegU;
++    Reg#(Bool) weightPending <- mkReg(False);
++    Reg#(HostRequestTag) weightTag <- mkRegU;
++    Reg#(Bool) outputPending <- mkReg(False);
++    Reg#(Bool) outputValidReg <- mkReg(False);
++    Reg#(OutputRow) outputReg <- mkRegU;
++
++    rule issueActivation (running && !activationPending
++            && core.activationReadRequestValid);
++        HostAddress address = core.activationReadRequestAddress;
++        if (address >= 'h1000 && address < 'h1200
++                && (address & 15) == 0
++                && core.activationReadRequestElementCount == 16) begin
++            activations.put(False, truncate((address - 'h1000) >> 4), ?);
++            activationTag <= core.activationReadRequestTag;
++            activationPending <= True;
++        end
++    endrule
++
++    rule returnActivation (activationPending);
++        core.putActivationReadResponse(activationTag, activations.read);
++        activationPending <= False;
++    endrule
++
++    rule issueWeight (running && !weightPending && core.weightReadRequestValid);
++        HostAddress address = core.weightReadRequestAddress;
++        if (address >= 'h2000 && address < 'h2200
++                && (address & 15) == 0
++                && core.weightReadRequestElementCount == 16) begin
++            weights.put(False, truncate((address - 'h2000) >> 4), ?);
++            weightTag <= core.weightReadRequestTag;
++            weightPending <= True;
++        end
++    endrule
++
++    rule returnWeight (weightPending);
++        core.putWeightReadResponse(weightTag, weights.read);
++        weightPending <= False;
++    endrule
++
++    rule returnScale (running && core.scaleReadRequestValid
++            && core.scaleReadRequestAddress == 'h3000
++            && core.scaleReadRequestElementCount == 16);
++        core.putScaleReadResponse(core.scaleReadRequestTag, scales);
++    endrule
++
++    rule writeOutput (running && core.outputWriteRequestValid);
++        HostAddress address = core.outputWriteRequestAddress;
++        if (address >= 'h4000 && address < 'h4400
++                && (address & 63) == 0
++                && core.outputWriteRequestElementCount == 16) begin
++            outputs.put(True, truncate((address - 'h4000) >> 6),
++                core.outputWriteRequestValues);
++            // The response acknowledges the same edge that makes the local
++            // BRAM write durable; completion cannot precede this edge.
++            core.putOutputWriteResponse(core.outputWriteRequestTag);
++        end
++    endrule
++
++    rule checkProtocol (running);
++        Bool bad = False;
++        if (core.activationReadRequestValid) begin
++            HostAddress address = core.activationReadRequestAddress;
++            bad = bad || address < 'h1000 || address >= 'h1200
++                || (address & 15) != 0 || core.activationReadRequestElementCount != 16;
++        end
++        if (core.weightReadRequestValid) begin
++            HostAddress address = core.weightReadRequestAddress;
++            bad = bad || address < 'h2000 || address >= 'h2200
++                || (address & 15) != 0 || core.weightReadRequestElementCount != 16;
++        end
++        if (core.scaleReadRequestValid)
++            bad = bad || core.scaleReadRequestAddress != 'h3000
++                || core.scaleReadRequestElementCount != 16;
++        if (core.outputWriteRequestValid) begin
++            HostAddress address = core.outputWriteRequestAddress;
++            bad = bad || address < 'h4000 || address >= 'h4400
++                || (address & 63) != 0 || core.outputWriteRequestElementCount != 16;
++        end
++        errorReg <= errorReg || bad;
++    endrule
++
++    rule finish (running && core.matmulDone);
++        cyclesReg <= core.rtlCycleCount - startCycle;
++        running <= False;
++        doneReg <= True;
++        core.acknowledgeMatmul;
++    endrule
++
++    rule captureOutput (outputPending && !outputValidReg);
++        outputReg <= outputs.read;
++        outputPending <= False;
++        outputValidReg <= True;
++    endrule
++
++    method Action loadActivation(UInt#(5) word, InputRow values)
++            if (!running && !doneReg);
++        activations.put(True, word, values);
++        activationLoaded <= activationLoaded | (1 << word);
++    endmethod
++
++    method Action loadWeight(UInt#(5) word, InputRow values)
++            if (!running && !doneReg);
++        weights.put(True, word, values);
++        weightLoaded <= weightLoaded | (1 << word);
++    endmethod
++
++    method Action loadScale(InputRow values) if (!running && !doneReg);
++        scales <= values;
++        scaleLoaded <= True;
++    endmethod
++
++    method Action start(Bool shift) if (!running && !doneReg
++            && activationLoaded == '1 && weightLoaded == '1 && scaleLoaded
++            && !outputPending && !outputValidReg);
++        core.startMatmul(1, FullMatrix, 'h1000, 'h2000, 'h3000, 'h4000,
++            32, 16, 16, 64, 16, 16, 32, 16, 16, 0, 32, 32, 1, False,
++            shift ? VectorShift : VectorMultiply);
++        startCycle <= core.rtlCycleCount;
++        cyclesReg <= 0;
++        errorReg <= False;
++        running <= True;
++    endmethod
++
++    method Bool done = doneReg;
++    method UInt#(64) cycles = cyclesReg;
++    method UInt#(64) fragments = core.matmulFragmentsCompleted;
++    method Bool protocolError = errorReg;
++
++    method Action requestOutput(UInt#(4) row)
++            if (doneReg && !outputPending && !outputValidReg);
++        outputs.put(False, row, ?);
++        outputPending <= True;
++    endmethod
++
++    method Bool outputValid = outputValidReg;
++    method OutputRow outputResponse if (outputValidReg);
++        return outputReg;
++    endmethod
++    method Action consumeOutput if (outputValidReg);
++        outputValidReg <= False;
++    endmethod
++    method Action acknowledge if (doneReg && !outputPending && !outputValidReg);
++        doneReg <= False;
++    endmethod
++endmodule
++
++endpackage
+--- a/tests/TbProfileConfig.bsv
++++ b/tests/TbProfileConfig.bsv
+@@ -4,9 +4,9 @@
+ import Config::*;
+ 
+ module mkTbProfileConfig(Empty);
+-    staticAssert(valueOf(A4AccumulatorWidth) == 32, "A4 partial/accumulator width");
+-    staticAssert(valueOf(A8AccumulatorWidth) == 32, "A8 partial/accumulator width");
+-    staticAssert(valueOf(A16AccumulatorWidth) == 64, "A16 partial/accumulator width");
++    staticAssert(valueOf(A4AccumulatorWidth) == 32, "A4 architectural accumulator width");
++    staticAssert(valueOf(A8AccumulatorWidth) == 32, "A8 architectural accumulator width");
++    staticAssert(valueOf(A16AccumulatorWidth) == 64, "A16 architectural accumulator width");
+     staticAssert(valueOf(IntegerAccumulatorRows#(16, A4AccumulatorWidth)) == 1024, "A4D16 rows");
+     staticAssert(valueOf(IntegerAccumulatorRows#(32, A4AccumulatorWidth)) == 512, "A4D32 rows");
+     staticAssert(valueOf(IntegerAccumulatorRows#(64, A4AccumulatorWidth)) == 256, "A4D64 rows");
+@@ -16,6 +16,15 @@
+     staticAssert(valueOf(IntegerAccumulatorRows#(16, A16AccumulatorWidth)) == 512, "A16D16 rows");
+     staticAssert(valueOf(IntegerAccumulatorRows#(32, A16AccumulatorWidth)) == 256, "A16D32 rows");
+     staticAssert(valueOf(IntegerAccumulatorRows#(64, A16AccumulatorWidth)) == 128, "A16D64 rows");
++    staticAssert(valueOf(IntegerPartialWidth#(16, A4ProductWidth)) == 12, "A4D16 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(32, A4ProductWidth)) == 13, "A4D32 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(64, A4ProductWidth)) == 14, "A4D64 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(16, A8ProductWidth)) == 20, "A8D16 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(32, A8ProductWidth)) == 21, "A8D32 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(64, A8ProductWidth)) == 22, "A8D64 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(16, A16ProductWidth)) == 36, "A16D16 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(32, A16ProductWidth)) == 37, "A16D32 local partial width");
++    staticAssert(valueOf(IntegerPartialWidth#(64, A16ProductWidth)) == 38, "A16D64 local partial width");
+     staticAssert(valueOf(IntegerAccumulatorCapacityBytes) == 65536, "integer capacity");
+     staticAssert(valueOf(FloatingAccumulatorRows) == 256, "preserve FP depth");
+ 
+--- a/tests/test_static_check.py
++++ b/tests/test_static_check.py
+@@ -201,7 +201,7 @@
+         ("synth/SynthA4W4D32.bsv", "Int#(A4WeightWidth)", "Int#(A8WeightWidth)"),
+         ("synth/SynthA8W8D16.bsv", "IntegerAccumulatorRows#(16, A8AccumulatorWidth)", "256"),
+         ("synth/SynthA8W8D16.bsv", "16, // Array DIM", "32, // Array DIM"),
+-        ("src/array/SystolicArrayInt8x64.bsv", "Int#(A8AccumulatorWidth)", "Int#(64)"),
++        ("src/array/SystolicArrayInt8x64.bsv", "Int#(IntegerPartialWidth#(64, A8ProductWidth))", "Int#(IntegerPartialWidth#(16, A8ProductWidth))"),
+         ("src/common/Config.bsv", "typedef 32 A8AccumulatorWidth;", "typedef 64 A8AccumulatorWidth;"),
+     )
+     with tempfile.TemporaryDirectory(prefix="im2p-static-profiles-") as raw:

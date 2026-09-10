@@ -1,0 +1,482 @@
+{
+  "schema": 1,
+  "run": "build/experiments/host-full-replay-20260909T103729Z",
+  "head": "dc4a1a621f63834d64df42ae8c24152747d97971",
+  "branch": "exp/pe-local-partial-int20",
+  "upstream": "origin/fpga/arty-a7-100t",
+  "host_develop_commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "host_remote_verified": "build/experiments/host-full-replay-20260909T103729Z/baseline/remote-develop.txt",
+  "gemmini_include_commit": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+  "fixed_core_patch_sha256": "edc4e9eab7d66adb23ffee88c30a41c087b6c73b19f41127605ee1b99c0a1c5c",
+  "board_source_manifest": {
+    "path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source-sha256.json",
+    "sha256": "0a82d0e307dd9cf55a6a42428a58b9b2d927352877de1607982fbdc57a26825e"
+  },
+  "host_source_manifest": {
+    "path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03-sha256.json",
+    "sha256": "f201bfe94239ed867e9a12ece5be4d0fb2cda0079c9e8a3b4d89a75564ab4f3c"
+  },
+  "host_executable": {
+    "path": "build/experiments/host-full-replay-20260909T103729Z/host-build-03/full_replay",
+    "sha256": "02fc99b417016edc5efb34967eb2cb473bb9ef471436a560c607c2c4b7fc768a"
+  },
+  "core_and_adapter": [
+    {
+      "path": "src/common/Arithmetic.bsv",
+      "A_HEAD_sha256": "a73df379438b0e242c680e40cd9e41ca3ecb1a441eebdb0794758f416c39891d",
+      "B_initial_dirty_root_sha256": "a016094ab06f32ffc1914aba88ccc734562be744ddd63e02bb61b28307f9cd27",
+      "C_fixed_frozen_sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/common/Arithmetic.bsv",
+      "D_selected_sha256": "be54894777f7b3966244dfe8b1ba83f27d6fbdce02ecda87b3a427a7da58a93c",
+      "current_root_sha256": "a016094ab06f32ffc1914aba88ccc734562be744ddd63e02bb61b28307f9cd27",
+      "reason": "fixed A1 multiply expression differs from dirty root signedMul"
+    },
+    {
+      "path": "src/common/Config.bsv",
+      "A_HEAD_sha256": "acb5b89d09e993a9dcc8f4e76797e51d66b2481db91c82e7c0fd41dd9fd6f30e",
+      "B_initial_dirty_root_sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+      "C_fixed_frozen_sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/common/Config.bsv",
+      "D_selected_sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+      "current_root_sha256": "1bdf8ea789ca6b662e3b757752b72e12cdbb7509b7a1e08941157b9ea9ee4f25",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "scripts/im2p_config.py",
+      "A_HEAD_sha256": "14d6e5fdfbc856eee592ce195a6d2e832a2e34dfd15902d7470e96a3a80e98c1",
+      "B_initial_dirty_root_sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+      "C_fixed_frozen_sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/scripts/im2p_config.py",
+      "D_selected_sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+      "current_root_sha256": "2342e2a375f7696c3ed719735af8b23f016977d9a3adcb3f1be1de97b6b57d21",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "sim/ffi/im2p_config.h",
+      "A_HEAD_sha256": "cc5ba9f9ffbdb5c7d54185594ae543d9cc5c3e4ff6dbcc6e1cfd09d5dcf22d83",
+      "B_initial_dirty_root_sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+      "C_fixed_frozen_sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/ffi/im2p_config.h",
+      "D_selected_sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+      "current_root_sha256": "f13a7d536475264b83f1ccc6800c399723bd10c43feb4ace3c6bb6ca6cd55d93",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "src/core/IM2PCore.bsv",
+      "A_HEAD_sha256": "408cdb22d39f9a761ef121f22beb987cc01ac479246a3e406f501cae39c59878",
+      "B_initial_dirty_root_sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+      "C_fixed_frozen_sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/core/IM2PCore.bsv",
+      "D_selected_sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+      "current_root_sha256": "8613eb740ceb58758c168a613ab4c1846302341014b91abaed39bafc81fff9f2",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "src/control/MatmulScheduler.bsv",
+      "A_HEAD_sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957",
+      "B_initial_dirty_root_sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957",
+      "C_fixed_frozen_sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/control/MatmulScheduler.bsv",
+      "D_selected_sha256": "9425338cb4ddd12a1cc5b9aa6e62a0743500fe650c8be1ee02afe8c824ed3fa1",
+      "current_root_sha256": "c642113308fdee2e7bfd86f5aa4982f387fdf56e1c3629460436108bd3585957",
+      "reason": "fixed board scheduler differs from root"
+    },
+    {
+      "path": "src/control/WorkScheduler.bsv",
+      "A_HEAD_sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6",
+      "B_initial_dirty_root_sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6",
+      "C_fixed_frozen_sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/control/WorkScheduler.bsv",
+      "D_selected_sha256": "61844e9d29989d7b86f2585a1a8b9e4b9352041448883df7aa752d20fa028f82",
+      "current_root_sha256": "a3c5268a7fa58ebf31bcf478593c6b60c14aae4588f597f3f02e3af15e428cc6",
+      "reason": "fixed board scheduler differs from root"
+    },
+    {
+      "path": "synth/SynthA8W8D16.bsv",
+      "A_HEAD_sha256": "25a6e4d7bad9f97d91fba1e8c69d8c52902485ea04014286bb71d6e7775fbc60",
+      "B_initial_dirty_root_sha256": "25a6e4d7bad9f97d91fba1e8c69d8c52902485ea04014286bb71d6e7775fbc60",
+      "C_fixed_frozen_sha256": "25a6e4d7bad9f97d91fba1e8c69d8c52902485ea04014286bb71d6e7775fbc60",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/synth/SynthA8W8D16.bsv",
+      "D_selected_sha256": "25a6e4d7bad9f97d91fba1e8c69d8c52902485ea04014286bb71d6e7775fbc60",
+      "current_root_sha256": "25a6e4d7bad9f97d91fba1e8c69d8c52902485ea04014286bb71d6e7775fbc60",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "synth/ResidentP0.bsv",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/synth/ResidentP0.bsv",
+      "D_selected_sha256": "5d30a18c2ed529fff64852b35a5e4eb1ddc34da2078720cac95879168ba29d57",
+      "current_root_sha256": null,
+      "reason": "absent in root; preserve baseline, not instantiated by new top"
+    },
+    {
+      "path": "synth/FullReplay.bsv",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_sha256": null,
+      "initial_root_equals_frozen": null,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/synth/FullReplay.bsv",
+      "D_selected_sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+      "current_root_sha256": "e9f856366a8726c65222decfd34a8bc669bd6784f9197decc8aa60ced38d35a1",
+      "reason": "new bounded autonomous provider, no repeat API"
+    },
+    {
+      "path": "Makefile",
+      "A_HEAD_sha256": "3b6199cc98f4695f4c6242e4f89d19183161f67cb6949d15edac49a9ed52e37e",
+      "B_initial_dirty_root_sha256": "3b6199cc98f4695f4c6242e4f89d19183161f67cb6949d15edac49a9ed52e37e",
+      "C_fixed_frozen_sha256": "3b6199cc98f4695f4c6242e4f89d19183161f67cb6949d15edac49a9ed52e37e",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/Makefile",
+      "D_selected_sha256": "3b6199cc98f4695f4c6242e4f89d19183161f67cb6949d15edac49a9ed52e37e",
+      "current_root_sha256": "3b6199cc98f4695f4c6242e4f89d19183161f67cb6949d15edac49a9ed52e37e",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "frontend/include/im2p_gemmini_frontend.hpp",
+      "A_HEAD_sha256": "8933d718fd63cdff4003a3fe325324eaebecbc001962f36f4384c033f012e9ce",
+      "B_initial_dirty_root_sha256": "8933d718fd63cdff4003a3fe325324eaebecbc001962f36f4384c033f012e9ce",
+      "C_fixed_frozen_sha256": "8933d718fd63cdff4003a3fe325324eaebecbc001962f36f4384c033f012e9ce",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/frontend/include/im2p_gemmini_frontend.hpp",
+      "D_selected_sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+      "current_root_sha256": "2a04fc70a49b6afe5411f2b97d3bd6d015b40ed49ac8141ed2b6b4159ba961ea",
+      "reason": "explicit FULL executor Options; C++ rebuild required"
+    },
+    {
+      "path": "frontend/src/im2p_gemmini_frontend.cpp",
+      "A_HEAD_sha256": "94c2fb14f840d457e66ac8ea86becd886c1f0a0ce621681848eba59c879ed853",
+      "B_initial_dirty_root_sha256": "94c2fb14f840d457e66ac8ea86becd886c1f0a0ce621681848eba59c879ed853",
+      "C_fixed_frozen_sha256": "94c2fb14f840d457e66ac8ea86becd886c1f0a0ce621681848eba59c879ed853",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/frontend/src/im2p_gemmini_frontend.cpp",
+      "D_selected_sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+      "current_root_sha256": "bf30905ee20da04b0718eb216b5065ebc4803999523ed9bcfa9c8eb6f5a99597",
+      "reason": "explicit executor before sim creation; unsupported rejects"
+    },
+    {
+      "path": "frontend/tests/test_frontend.cpp",
+      "A_HEAD_sha256": "62a6f3efe35791c183a22006c7218fbdeeb9f882080bca4b895fd28840630a65",
+      "B_initial_dirty_root_sha256": "62a6f3efe35791c183a22006c7218fbdeeb9f882080bca4b895fd28840630a65",
+      "C_fixed_frozen_sha256": "62a6f3efe35791c183a22006c7218fbdeeb9f882080bca4b895fd28840630a65",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/frontend/tests/test_frontend.cpp",
+      "D_selected_sha256": "ea606c734250e2aec388f54745e2b366e8dcae1e6af2e3b7982a4120f7fb3e57",
+      "current_root_sha256": "ea606c734250e2aec388f54745e2b366e8dcae1e6af2e3b7982a4120f7fb3e57",
+      "reason": "four timestamp field names matched to pinned host header"
+    },
+    {
+      "path": "sim/include/im2p_sim.h",
+      "A_HEAD_sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+      "B_initial_dirty_root_sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+      "C_fixed_frozen_sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/include/im2p_sim.h",
+      "D_selected_sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+      "current_root_sha256": "81702cd65888a698bf9e8e0a8acff3613eeaa9dfa6af29ec4880b54d6c8e19c9",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "sim/src/c_api.rs",
+      "A_HEAD_sha256": "fd0c923eaa4e9e8bbb1fd69b47b3a719011900b2c39e563b9f5e576fb7fcfa0c",
+      "B_initial_dirty_root_sha256": "fd0c923eaa4e9e8bbb1fd69b47b3a719011900b2c39e563b9f5e576fb7fcfa0c",
+      "C_fixed_frozen_sha256": "fd0c923eaa4e9e8bbb1fd69b47b3a719011900b2c39e563b9f5e576fb7fcfa0c",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/src/c_api.rs",
+      "D_selected_sha256": "fd0c923eaa4e9e8bbb1fd69b47b3a719011900b2c39e563b9f5e576fb7fcfa0c",
+      "current_root_sha256": "fd0c923eaa4e9e8bbb1fd69b47b3a719011900b2c39e563b9f5e576fb7fcfa0c",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "sim/src/simulator/matmul.rs",
+      "A_HEAD_sha256": "852782b63ff16a9f936f0e6d1769381541e6d18b7879622c066d29f81932fa19",
+      "B_initial_dirty_root_sha256": "852782b63ff16a9f936f0e6d1769381541e6d18b7879622c066d29f81932fa19",
+      "C_fixed_frozen_sha256": "852782b63ff16a9f936f0e6d1769381541e6d18b7879622c066d29f81932fa19",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/src/simulator/matmul.rs",
+      "D_selected_sha256": "852782b63ff16a9f936f0e6d1769381541e6d18b7879622c066d29f81932fa19",
+      "current_root_sha256": "852782b63ff16a9f936f0e6d1769381541e6d18b7879622c066d29f81932fa19",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "sim/ffi/im2p_verilator.cpp",
+      "A_HEAD_sha256": "6c81d131e8407d41610303d0da6c065699a1691f8c1b44f64b7d73139ee2d672",
+      "B_initial_dirty_root_sha256": "6c81d131e8407d41610303d0da6c065699a1691f8c1b44f64b7d73139ee2d672",
+      "C_fixed_frozen_sha256": "6c81d131e8407d41610303d0da6c065699a1691f8c1b44f64b7d73139ee2d672",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/sim/ffi/im2p_verilator.cpp",
+      "D_selected_sha256": "6c81d131e8407d41610303d0da6c065699a1691f8c1b44f64b7d73139ee2d672",
+      "current_root_sha256": "6c81d131e8407d41610303d0da6c065699a1691f8c1b44f64b7d73139ee2d672",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "src/vector/Scale.bsv",
+      "A_HEAD_sha256": "525255c77a3122ef686d54a8907243dd9b31632946025f74341f1e875389d6ac",
+      "B_initial_dirty_root_sha256": "525255c77a3122ef686d54a8907243dd9b31632946025f74341f1e875389d6ac",
+      "C_fixed_frozen_sha256": "525255c77a3122ef686d54a8907243dd9b31632946025f74341f1e875389d6ac",
+      "initial_root_equals_frozen": true,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/src/vector/Scale.bsv",
+      "D_selected_sha256": "525255c77a3122ef686d54a8907243dd9b31632946025f74341f1e875389d6ac",
+      "current_root_sha256": "525255c77a3122ef686d54a8907243dd9b31632946025f74341f1e875389d6ac",
+      "reason": "preserve verified fixed P3A bytes"
+    },
+    {
+      "path": "fpga/full_replay/capture.cpp",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_sha256": null,
+      "initial_root_equals_frozen": null,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/capture.cpp",
+      "D_selected_sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+      "current_root_sha256": "bdabbc7a97b8a5094f5a8deb321bccb334d3073216f5e3e8dea5a3f8b9da317e",
+      "reason": "new capture/replay using existing host quantizer, tiler, reference, frontend"
+    },
+    {
+      "path": "fpga/full_replay/CMakeLists.txt",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_sha256": null,
+      "initial_root_equals_frozen": null,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-source-03/fpga/full_replay/CMakeLists.txt",
+      "D_selected_sha256": "c7e730ac6a8e4b82eef6f8ebdcf5c4d6e0be3df6743feca6ee453d864e2baca2",
+      "current_root_sha256": "c7e730ac6a8e4b82eef6f8ebdcf5c4d6e0be3df6743feca6ee453d864e2baca2",
+      "reason": "new parent target links pinned host CMake targets"
+    },
+    {
+      "path": "fpga/full_replay/uart.sv",
+      "role": "UART PHY",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/inputs/board-source/resident_uart.sv",
+      "C_fixed_frozen_sha256": "955ce0fc3eca6b76b9db33f110ba37aaed28b45ed80b6426a30dcf7a8e784222",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/uart.sv",
+      "D_selected_sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+      "current_root_sha256": "b127a9c72a7d0eb7986e28d57a7dd0c2a52932e3d01f29996fc3176fce2d9447",
+      "reason": "exact p0_uart module extraction; shell separate"
+    },
+    {
+      "path": "fpga/full_replay/full_uart.sv",
+      "role": "UART shell",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/inputs/board-source/resident_uart.sv",
+      "C_fixed_frozen_sha256": "955ce0fc3eca6b76b9db33f110ba37aaed28b45ed80b6426a30dcf7a8e784222",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/full_uart.sv",
+      "D_selected_sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+      "current_root_sha256": "1b1e737a6adc77acf5b004e3c64224f1c813c24f6f95f3b09048f477b5c29b4f",
+      "reason": "new IFR1 FULL logical-matrix protocol"
+    },
+    {
+      "path": "fpga/full_replay/arty_full_top.sv",
+      "role": "board top",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/inputs/board-source/arty_resident_top.sv",
+      "C_fixed_frozen_sha256": "6c8385b69818484744d8c102ee3bb4cd48ae969d43ce7fcca16d9616d9b206cf",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/arty_full_top.sv",
+      "D_selected_sha256": "467b32d702a7789fde9c13c826db922472e6d1fd102ef38d7f09bed24e29ff7f",
+      "current_root_sha256": "467b32d702a7789fde9c13c826db922472e6d1fd102ef38d7f09bed24e29ff7f",
+      "reason": "preserve MMCM/reset/I/O; new shell module"
+    },
+    {
+      "path": "fpga/full_replay/arty_full.xdc",
+      "role": "XDC",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/inputs/board-source/arty_resident.xdc",
+      "C_fixed_frozen_sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/arty_full.xdc",
+      "D_selected_sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+      "current_root_sha256": "8f9797530db5b6042d9ba9cd21db9843d6cb87f6c1b845fee808dc73e532bfb3",
+      "reason": "byte-identical fixed constraints"
+    },
+    {
+      "path": "fpga/full_replay/protocol.py",
+      "role": "host client",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/host_p3a.py",
+      "C_fixed_frozen_sha256": "e92ee0a3881a5e1cf8e45fc525321bbb8e22728db0fba7152cf4340b9cc5258f",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/final-tools/protocol.py",
+      "D_selected_sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+      "current_root_sha256": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+      "reason": "new bounded FULL framing; no numerical reference"
+    },
+    {
+      "path": "fpga/full_replay/route.tcl",
+      "role": "build flow",
+      "A_HEAD_sha256": null,
+      "B_initial_dirty_root_sha256": null,
+      "C_fixed_frozen_path": "build/experiments/activation-publication-20260909-154059/candidate-fixed-01/inputs/board_build.tcl",
+      "C_fixed_frozen_sha256": "a9b1e5a8f2545275cb35932518b4e3262b5fd6e06b02b3c1a689d646b500e09d",
+      "initial_root_equals_frozen": false,
+      "D_selected_path": "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source/fpga/full_replay/route.tcl",
+      "D_selected_sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+      "current_root_sha256": "eeee8dbd9f301fed2ed8575185365898f3e445bb4e4bc26e866052cbf9aeb39d",
+      "reason": "fresh implementation/report flow; no hardware access"
+    }
+  ],
+  "host_contract": [
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+      "sha256": "489274ac178ce39a5c24526584b9f8e41487cef033142d89b5a63336483e3317"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-geometry.hpp",
+      "sha256": "035410a33c93666d04829996adb3b5c387e19ad02e593694cf1b5f16881fcffa"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.cpp",
+      "sha256": "eb561395dcfc345bef3a64d3af1d32c6571ecce1e325e521a7b3fbd3fdec8c98"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-im2p.hpp",
+      "sha256": "2a4ebf7cccea75b2a9fd48053f769b46a404841c4cd7aee9df99750f6cef3591"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.cpp",
+      "sha256": "693fed294094279d8a9de71becda2628f7ed0f8fe4c13a267707a8f13eaa8971"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-matmul.hpp",
+      "sha256": "40f78ff9ad53d1407d9aecc22c1cf67f718a8054503ff15997889f0d3b89131e"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/CMakeLists.txt",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/CMakeLists.txt",
+      "sha256": "c9b4ed9509a42dfec7c63698ac08560797c323fc009a6a7d0b85d73f22852bf3"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/common/weight_reader.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/common/weight_reader.cpp",
+      "sha256": "fa77576e88f1188e93d7cdc37fc0648a0deac6f1de409f6fcc4ef6c1d887e66e"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/common/weight_route.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/common/weight_route.hpp",
+      "sha256": "3f9fb033013757fe196c57ce81b5a3598e88c09b0e414aeba08d8cfcd11c91e5"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-q8-h1-artifact-reader.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-q8-h1-artifact-reader.cpp",
+      "sha256": "53534703193e7d170e78dbb65a6fefac7f4ba9e866eb32f8192d3b21e738f388"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/act/exsia/types.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/exsia/types.hpp",
+      "sha256": "d1920a2801eb657ac6e6bf12ab4cac9c35931a15126ae2ac5da28e72f80577c8"
+    },
+    {
+      "path": "GEMMINI_SW_PATH/gemmini.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/params/gemmini.h",
+      "sha256": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70"
+    },
+    {
+      "path": "GEMMINI_SW_PATH/gemmini_params.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/params/gemmini_params.h",
+      "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5"
+    },
+    {
+      "path": "GEMMINI_SW_PATH/include/gemmini.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/params/include/gemmini.h",
+      "sha256": "ae86482d6f4c10a11eecd7e013a970b69c55db36fe254867940ff8e5cc564196"
+    },
+    {
+      "path": "GEMMINI_SW_PATH/include/gemmini_params.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/params/include/gemmini_params.h",
+      "sha256": "63e1142f624bbfc70759de87576229f2318fa40a89fa4cadccc149e7a95c1b4b"
+    },
+    {
+      "path": "generated/ggml-gemmini-matmul-config.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-build-03/host-build/generated/ggml-gemmini-matmul-config.hpp",
+      "sha256": "ed14a68beedffa8e443004fcd165bb12814dec8dabc21033eadfddc0aa9dfbec"
+    },
+    {
+      "path": "generated/gemmini_params.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host-build-03/host-build/generated/gemmini_params.h",
+      "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/CMakeLists.txt",
+      "sha256": "84164aefd4faa2b59f13085366a3e0dae2185800331b97733f270b3af90bf69b"
+    },
+    {
+      "path": "tests/CMakeLists.txt",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/tests/CMakeLists.txt",
+      "sha256": "e26e4d1fe85b3e7ec155596dfa820c22d91de6ae2d87f0cc8e4b3dec91d0ea9f"
+    },
+    {
+      "path": "tests/test-gemmini-im2p-routing.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/tests/test-gemmini-im2p-routing.cpp",
+      "sha256": "1ca72f651f57ccfcff060728bd6ad6db5d42eecfe81cbce6a0dcd4558e48c47a"
+    },
+    {
+      "path": "ggml/src/ggml-common.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-common.h",
+      "sha256": "9a28d32ae357c53136146a5e9ad556c4d3c1b00259b28d92304c8a521fde7a7b"
+    },
+    {
+      "path": "ggml/src/ggml-quants.c",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-quants.c",
+      "sha256": "df97f675f5b4b6262092c408b5525b655b184505b29dd7583b9ddb7033c660cb"
+    },
+    {
+      "path": "ggml/src/ggml-quants.h",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-quants.h",
+      "sha256": "9b88b6c0b7bfbd2971ad9540ac359009d7faa749eec65dd092f9e26b76d4dac2"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+      "sha256": "3a7752dc5319da12aa7dacf6eec03a462158a9e1e2d6304b9217eb9bf4fa3687"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/ggml-gemmini-config.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/ggml-gemmini-config.hpp",
+      "sha256": "e2de8752cc17739c4b65f6d2ac1c3d9c1e23bed75cea46f1f30e037028dcfae1"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/act/quantize.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/quantize.cpp",
+      "sha256": "ce96e1dc4ed1ddbe418f1e1100dba431c8f3221854de4033d41cdb344402806b"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/act/dispatch.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/dispatch.cpp",
+      "sha256": "7ca3804808e3ae0b98338ba0cd4bfa9e30e200789c90d78b1784239b6992b5c6"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp",
+      "sha256": "805197ed0389f0161bdb685c97e7c22a71575e755a4359548c7d306ccce26ef7"
+    },
+    {
+      "path": "ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+      "selected_path": "build/experiments/host-full-replay-20260909T103729Z/host/ggml/src/ggml-gemmini/quants/act/exsia/exsia.hpp",
+      "sha256": "1218c6c5c514a65c9bbf8fb7c5992a8b69595f12da2c1e0100f91f4eaca70e3d"
+    }
+  ],
+  "hardware_programmed": false
+}

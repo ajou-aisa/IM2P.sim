@@ -2439,8 +2439,8 @@ exsia::StripeReadyEvent semantic_event(size_t id) {
   ready.activation_metadata->theta = 0;
   ready.quantization_start = 1000 + id;
   ready.quantization_end = 1100 + id;
-  ready.local_start_cycle = 1200 + id;
-  ready.local_end_cycle = 1300 + id;
+  ready.local_start_ns = 1200 + id;
+  ready.local_end_ns = 1300 + id;
   ready.folding_commit_ns = 1400 + id;
   return ready;
 }
@@ -2500,8 +2500,8 @@ Status semantic_scheduler_callback(void *opaque, im2p_sim_t *simulator,
         ready.activation_metadata->theta == 0 &&
         ready.quantization_start == 1000 + ready.stripe_id &&
         ready.quantization_end == 1100 + ready.stripe_id &&
-        ready.local_start_cycle == 1200 + ready.stripe_id &&
-        ready.local_end_cycle == 1300 + ready.stripe_id &&
+        ready.local_start_ns == 1200 + ready.stripe_id &&
+        ready.local_end_ns == 1300 + ready.stripe_id &&
         ready.folding_commit_ns == 1400 + ready.stripe_id;
     probe.stage_ok &= stage.data != nullptr &&
                       stage.data != probe.caller_destination &&
@@ -3071,6 +3071,162 @@ bool test_residual_stage_invalid_options() {
   return true;
 }
 
+// These callbacks are protocol/ownership stubs, not RTL numerical evidence.
+struct StreamExecutorProbe {
+  im2p_stripe_work_desc_t descriptor{};
+  std::deque<im2p_activation_stripe_t> pending;
+  std::vector<size_t> consumed_rows;
+  size_t begins = 0, attempts = 0, accepted = 0, polls = 0, completed = 0, finishes = 0;
+  bool pressure_once = true, fail_after_first = false, stale_after_first = false;
+  size_t delayed_polls = 70000;
+
+  static int begin(void *opaque, const im2p_stripe_work_desc_t *descriptor) {
+    auto &self = *static_cast<StreamExecutorProbe *>(opaque);
+    self.descriptor = *descriptor;
+    ++self.begins;
+    return IM2P_OK;
+  }
+  static int publish(void *opaque, const im2p_activation_stripe_t *stripe) {
+    auto &self = *static_cast<StreamExecutorProbe *>(opaque);
+    ++self.attempts;
+    if (self.pressure_once) {
+      self.pressure_once = false;
+      return IM2P_BACKPRESSURE;
+    }
+    self.pending.push_back(*stripe);
+    ++self.accepted;
+    return IM2P_OK;
+  }
+  static int poll(void *opaque, im2p_stripe_completion_extended_t *completion) {
+    auto &self = *static_cast<StreamExecutorProbe *>(opaque);
+    ++self.polls;
+    if (self.completed == 1 && self.fail_after_first) return IM2P_ERROR;
+    if (self.pending.empty()) return 0;
+    if (self.delayed_polls != 0) { --self.delayed_polls; return 0; }
+    const auto stripe = self.pending.front(); self.pending.pop_front();
+    if (fake::activation(stripe.activations, stripe.activation_row_stride_bytes,
+                         stripe.activation_bits, 0, 0) != int(stripe.i_start + 1))
+      return IM2P_ERROR;
+    self.consumed_rows.push_back(stripe.i_start);
+    if (fake::provider_outputs(self.descriptor, stripe.i_start, stripe.rows) != IM2P_OK)
+      return IM2P_ERROR;
+    const uint64_t publish_cycle = 100 + stripe.stripe_id * 10;
+    const uint64_t completion_cycle = publish_cycle + 7;
+    *completion = {{stripe.stripe_id, stripe.i_start, stripe.rows,
+                    stripe.context + (self.stale_after_first && self.completed == 1 ? 1 : 0)},
+                   publish_cycle, completion_cycle, 7};
+    ++self.completed;
+    return 1;
+  }
+  static int finish(void *opaque, im2p_work_stats_extended_t *stats) {
+    auto &self = *static_cast<StreamExecutorProbe *>(opaque);
+    ++self.finishes;
+    *stats = {};
+    stats->base.work_total_cycles = 137;
+    return self.completed == 3 && self.pending.empty() ? IM2P_OK : IM2P_ERROR;
+  }
+  StreamExecutor table() {
+    return {this, begin, publish, poll, finish};
+  }
+};
+
+bool test_stream_executor_options() {
+  fake::reset();
+  ggml_gemmini_args_t args;
+  std::vector<block_q8_h1> weights;
+  std::vector<float> destination(6, 73.0f);
+  if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
+  StreamExecutorProbe probe;
+  auto table = probe.table();
+  for (size_t missing = 0; missing < 4; ++missing) {
+    auto incomplete = table;
+    if (missing == 0) incomplete.begin = nullptr;
+    if (missing == 1) incomplete.publish = nullptr;
+    if (missing == 2) incomplete.poll = nullptr;
+    if (missing == 3) incomplete.finish = nullptr;
+    Options options; options.stream_executor = &incomplete;
+    auto rejected = execute(&args, Mode::stripe_pipeline, options);
+    if (!expect(rejected.status.code == StatusCode::invalid_argument && !rejected.run,
+                "partial physical stream table rejects before start")) return false;
+  }
+  for (size_t invalid = 0; invalid < 3; ++invalid) {
+    Options options; options.stream_executor = &table;
+    const auto mode = invalid == 0 ? Mode::full : Mode::stripe_pipeline;
+    if (invalid == 1) options.residual_stage_mode = ResidualStageMode::host_direct;
+    if (invalid == 2) options.full_executor = [](void *, const im2p_matmul_desc_t *, im2p_work_stats_extended_t *) -> int { return IM2P_OK; };
+    auto rejected = execute(&args, mode, options);
+    if (!expect(rejected.status.code == StatusCode::unsupported_route && !rejected.run,
+                "physical stream mode/residual/FULL conflict rejects before start")) return false;
+  }
+  return expect(probe.begins == 0 && fake::sim_created == 0 && fake::stream_created == 0 &&
+                    destination == std::vector<float>(6, 73.0f),
+                "invalid physical options do not execute or publish output");
+}
+
+bool test_stream_executor_lifecycle() {
+  for (size_t scenario = 0; scenario < 3; ++scenario) {
+    fake::reset();
+    fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
+    StreamExecutorProbe probe;
+    probe.fail_after_first = scenario == 1;
+    probe.stale_after_first = scenario == 2;
+    auto table = probe.table();
+    std::vector<float> destination(6, 73.0f);
+    ExecuteResult started;
+    {
+      ggml_gemmini_args_t args;
+      std::vector<block_q8_h1> weights;
+      if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
+      for (size_t row = 0; row < args.I; ++row)
+        if (!args.A.set(row, 0, int32_t(row + 1))) return false;
+      Options options; options.max_stalled_cycles = 1; options.stream_executor = &table;
+      started = execute(&args, Mode::stripe_pipeline, options);
+      // execute retains A ownership and copies native weight/metadata storage.
+      for (auto &weight : weights) weight.s_rf = 99.0f;
+    }
+    if (!expect(started.status.ok() && started.run && probe.begins == 1,
+                "physical stream begins without a simulator")) return false;
+    if (!expect(authorize_output_commit(*started.run, true).code == StatusCode::invalid_state,
+                "physical stream forbids early output authorization")) return false;
+    for (size_t stripe = 0; stripe < 3; ++stripe) {
+      auto ready = semantic_event(stripe);
+      ready.slot = stripe % 2;
+      ready.activation_metadata->theta = int16_t(stripe);
+      const auto status = submit_stripe(*started.run, ready, {true, int16_t(stripe)});
+      if (!status.ok()) {
+        if (scenario == 0) return false;
+        break;
+      }
+      ready.activation_metadata->theta = 15;
+    }
+    const auto fenced = fence(*started.run);
+    if (!expect(destination == std::vector<float>(6, 73.0f),
+                "physical fence leaves caller output unpublished")) return false;
+    if (scenario == 0) {
+      if (!expect(fenced.status.ok() && probe.accepted == 3 && probe.attempts == 4 &&
+                      probe.completed == 3 && probe.finishes == 1 && probe.polls > 65536 &&
+                      probe.consumed_rows == std::vector<size_t>({0, 1, 2}) &&
+                      fenced.stats.base.work_total_cycles == 137 && fenced.stripe_rtl_timings.size == 3 &&
+                      fenced.stripe_rtl_timings[0].slot == 0 && fenced.stripe_rtl_timings[1].slot == 1 &&
+                      fenced.stripe_rtl_timings[2].slot == 0,
+                  "physical callbacks preserve retry/row/slot identity without poll-cycle watchdog")) return false;
+      if (!expect(authorize_output_commit(*started.run, true).ok() &&
+                      destination == std::vector<float>({1, 2, 6, 8, 20, 24}),
+                  "immutable per-stripe scale and retained weights commit exactly")) return false;
+    } else {
+      if (!expect(fenced.status.code == StatusCode::execution_failure && probe.finishes == 0 &&
+                      authorize_output_commit(*started.run, true).code == StatusCode::execution_failure &&
+                      fence(*started.run).status.code == StatusCode::execution_failure,
+                  "physical partial-output failure/stale completion stays sticky without finish")) return false;
+    }
+    started.run.reset();
+    if (!expect(fake::sim_created == 0 && fake::sim_destroyed == 0 && fake::stream_created == 0 &&
+                    fake::stream_destroyed == 0 && fake::progress_calls == 0,
+                "physical worker never calls simulator create/progress/destroy")) return false;
+  }
+  return true;
+}
+
 bool test_compiled_identity() {
   return expect(compiled_activation_bits() ==
                     IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
@@ -3119,6 +3275,8 @@ int main(int argc, char **argv) {
             ? test_provider_int64_scaling_full_pipeline()
         : selected == "publication_counter_separation"
             ? test_publication_geometry_and_counter_separation()
+        : selected == "stream_executor_options" ? test_stream_executor_options()
+        : selected == "stream_executor_lifecycle" ? test_stream_executor_lifecycle()
         : selected == "legacy_options_aggregate"
             ? test_legacy_options_aggregate()
         : selected == "residual_stage_contract"
@@ -3148,7 +3306,8 @@ int main(int argc, char **argv) {
          test_provider_int64_scaling_full_pipeline() &&
       test_publication_geometry_and_counter_separation() &&
       test_rejected_routes_do_not_execute() &&
-      test_legacy_options_aggregate() && test_mode_and_raw_scale_contract() &&
+      test_legacy_options_aggregate() && test_stream_executor_options() &&
+      test_stream_executor_lifecycle() && test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&
       test_multiwidth_activation_snapshot_validation() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&

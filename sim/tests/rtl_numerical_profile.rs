@@ -1,10 +1,113 @@
 pub mod common;
-use common::{golden_output, k_fragments, KBlockScaleMatrix, Shape};
+use common::{golden_output, k_fragments, KBlockScaleMatrix, Lcg, Shape};
 use im2p_sim::profile::IM2P_ACCUMULATOR_BITS;
 use im2p_sim::{
     parse_activation, Im2pSimulator, MatmulWork, MatrixView, MatrixViewMut, SimError, VectorOp,
     WeightValue,
 };
+
+#[test]
+fn a8_local_partial_extrema_padding_and_fragments_are_exact() -> Result<(), SimError> {
+    if im2p_sim::ACTIVATION_BITS != 8 || im2p_sim::profile::IM2P_DIM != 16 {
+        return Ok(());
+    }
+    let alternating: Vec<i32> = (0..16)
+        .map(|index| if index % 2 == 0 { -128 } else { 127 })
+        .collect();
+    let mut cases = vec![
+        (
+            "min_min".to_owned(),
+            vec![-128; 16],
+            vec![-128; 16],
+            262_144,
+        ),
+        (
+            "min_max".to_owned(),
+            vec![-128; 16],
+            vec![127; 16],
+            -260_096,
+        ),
+        ("max_max".to_owned(), vec![127; 16], vec![127; 16], 258_064),
+        (
+            "alternating".to_owned(),
+            alternating.clone(),
+            alternating,
+            260_104,
+        ),
+        (
+            "padding_k7".to_owned(),
+            vec![-128; 7],
+            vec![-128; 7],
+            114_688,
+        ),
+        // Both totals exceed signed INT20: accumulation must occur after widening.
+        (
+            "fragments_k32".to_owned(),
+            vec![-128; 32],
+            vec![-128; 32],
+            524_288,
+        ),
+        (
+            "fragments_k33".to_owned(),
+            vec![-128; 33],
+            vec![-128; 33],
+            540_672,
+        ),
+        (
+            "negative_k33".to_owned(),
+            vec![-128; 33],
+            vec![127; 33],
+            -536_448,
+        ),
+    ];
+    let mut random = Lcg::new(0x20_08_16);
+    for index in 0..16 {
+        let k = [7, 16, 32, 33][index % 4];
+        let activations: Vec<i32> = (0..k)
+            .map(|_| i32::from(random.signed(i8::MIN, i8::MAX)))
+            .collect();
+        let weights: Vec<i32> = (0..k)
+            .map(|_| i32::from(random.signed(i8::MIN, i8::MAX)))
+            .collect();
+        let expected = activations.iter().zip(&weights).map(|(a, w)| a * w).sum();
+        cases.push((format!("random_{index:02}"), activations, weights, expected));
+    }
+    for (name, activations, weights, expected) in cases {
+        let k = activations.len();
+        let activations: Vec<_> = activations
+            .into_iter()
+            .map(|value| parse_activation(value).unwrap())
+            .collect();
+        let weights: Vec<_> = weights
+            .into_iter()
+            .map(|value| im2p_sim::parse_weight(value).unwrap())
+            .collect();
+        let work = MatmulWork {
+            activations: MatrixView::new(&activations, 1, k, k)?,
+            weights: MatrixView::new(&weights, k, 1, 1)?,
+            scales: None,
+            vector_op: VectorOp::Bypass,
+        };
+        let mut simulator = Im2pSimulator::new()?;
+        let before = simulator.cycles();
+        let mut output = [0_i32];
+        let stats =
+            simulator.execute_matmul(&work, &mut MatrixViewMut::new(&mut output, 1, 1, 1)?)?;
+        assert_eq!(output, [expected], "{name}, K={k}");
+        assert_eq!(stats.completed_fragments, k.div_ceil(16) as u64, "{name}");
+        let (start, completion) = simulator.work_interval();
+        println!(
+            "PARTIAL_VECTOR name={name} k={k} output={expected} total={} work={} compute={} drain={} preload={} fragments={} start={start} completion={completion}",
+            simulator.cycles() - before,
+            stats.work_total_cycles,
+            stats.compute_cycles,
+            stats.drain_cycles,
+            stats.weight_preload_cycles,
+            stats.completed_fragments,
+        );
+    }
+    Ok(())
+}
 
 #[test]
 fn full_arithmetic_wraps_at_profile_width_before_final_output() -> Result<(), SimError> {

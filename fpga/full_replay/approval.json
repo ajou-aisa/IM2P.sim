@@ -1,0 +1,171 @@
+{
+  "schema": 1,
+  "status": "Awaiting approval",
+  "physical_hardware_accessed": false,
+  "programmed": false,
+  "measured": false,
+  "part": "xc7a100tcsg324-1",
+  "board": "Arty A7-100T",
+  "clock_hz_nominal": 25000000,
+  "host_architecture": "x86_64 Linux",
+  "host_commit": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "backend": "FPGA_REPLAY_V1",
+  "dense_route": "native Q8_H1 EXSIA RMD OFF",
+  "bitstream_sha256": "c3713784732eb9f88221d921278b102589f7834499f7ca1c0eaa1307f9f02f78",
+  "timing_ns": {
+    "setup_wns": 10.87,
+    "hold_whs": 0.024,
+    "pulse_width": 3.0
+  },
+  "postroute": {
+    "lut": 46124,
+    "ff": 30126,
+    "ramb36": 27,
+    "ramb18": 1,
+    "dsp": 72,
+    "occupied_slices": 15589,
+    "available_slices": 15850,
+    "control_sets": 787,
+    "route_errors": 0,
+    "unconstrained_internal_endpoints": 0,
+    "black_boxes": 0,
+    "drc_warnings": 159,
+    "drc_critical_or_error": 0
+  },
+  "fixtures": [
+    {
+      "fixture": "fpga/full_replay/fixtures/m16n16k32",
+      "manifest_sha256": "2a162d6c1e2b91ed55cc354842e33c4e039ef2dfc358364d55d7ebb48752add0",
+      "members_hashes_sha256": "20b05e6f15bf3610dfc5b9c15d6b97917d7f71490494d3cf99b54f4f7a9d7b4d",
+      "shape": [
+        16,
+        16,
+        32
+      ],
+      "run_id": 1,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 4168,
+      "run_plus_release_response_bytes": 1224
+    },
+    {
+      "fixture": "fpga/full_replay/fixtures/m16n16k64",
+      "manifest_sha256": "62ff746070f378dfc03d16a15dcd6a691203079e593c113da7de9d8afe849311",
+      "members_hashes_sha256": "7a817d8aea62fd18605f8040d567d4a996c1432d0a82ecfc14a0641b65374752",
+      "shape": [
+        16,
+        16,
+        64
+      ],
+      "run_id": 2,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 6216,
+      "run_plus_release_response_bytes": 2248
+    },
+    {
+      "fixture": "fpga/full_replay/fixtures/m16n16k96",
+      "manifest_sha256": "f747e12b7f917c4af598130aed8c0565857ec65a82e04214d6ba36db5a0ca4c6",
+      "members_hashes_sha256": "16c36f4cd974e5262f685bdf5e7c86c7eb50757b067f2a1d5903cc25321bb752",
+      "shape": [
+        16,
+        16,
+        96
+      ],
+      "run_id": 3,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 8264,
+      "run_plus_release_response_bytes": 3272
+    },
+    {
+      "fixture": "fpga/full_replay/fixtures/m32n48k64",
+      "manifest_sha256": "4d1b014d8f008e514e332bc799da9967b1ae90d1aac5d41a61d0d2f9e6f2cf2a",
+      "members_hashes_sha256": "f6cff62808d4a2028605de242996c6cced0e6ae088c934772ef41396905145ba",
+      "shape": [
+        32,
+        48,
+        64
+      ],
+      "run_id": 4,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 8264,
+      "run_plus_release_response_bytes": 12488
+    },
+    {
+      "fixture": "fpga/full_replay/fixtures/m17n19k64-stride",
+      "manifest_sha256": "77ee73136b147791c3fb45b7b023235ffcec70c2031d4614ebf5ac44b0d33f1f",
+      "members_hashes_sha256": "524de0df3af6a18f1f7533bb019849ff5a4eddd030ae4b4c99dbe2f1748ac2e5",
+      "shape": [
+        17,
+        19,
+        64
+      ],
+      "run_id": 5,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 6344,
+      "run_plus_release_response_bytes": 4552
+    },
+    {
+      "fixture": "fpga/full_replay/fixtures/m16n16k32-changed",
+      "manifest_sha256": "6ff65220df3d9aff6b6ec7a843f3e982aaa08e40dc30f7e4af236575844290e9",
+      "members_hashes_sha256": "7e70dc0c1569d638848f80877601827c77466c123f9e50df67e03efc5c54722e",
+      "shape": [
+        16,
+        16,
+        32
+      ],
+      "run_id": 6,
+      "warmups": 1,
+      "measured_repetitions": 5,
+      "run_plus_release_request_bytes": 4168,
+      "run_plus_release_response_bytes": 1224
+    }
+  ],
+  "logical_invocations_total": 36,
+  "uart_8n1_baud": 1000000,
+  "uart_bytes_including_capability": 374728,
+  "host_transaction_timeout_seconds": 5,
+  "stop_conditions": [
+    "CRC/profile/run/generation/count mismatch",
+    "raw/f_out exact mismatch",
+    "timeout/transport error",
+    "unexpected reset",
+    "source/bitstream/host/fixture hash changes"
+  ],
+  "programming_policy": "Separate explicit user approval required; approved hash only, configuration SRAM and verification; no flash/nonvolatile write, automatic restore or retry",
+  "measurement_scope": "prequantized FULL plus existing host reconstruction/commit; subprocess/file overhead included; quantization capture excluded; no speedup claim before measurement",
+  "artifacts_sha256": {
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/source-sha256.json": "0a82d0e307dd9cf55a6a42428a58b9b2d927352877de1607982fbdc57a26825e",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/production/generated-sha256.json": "6a80d9cf47a0e30dce2cc7993058fc577ac502d89ade643a276da463c6dcb9aa",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/production/rtl/mkFullReplay.v": "553c2339bd0f3df421a63b62ef27342f7d41694bdf1abe4caf69c0eb06f158bb",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/full-replay.bit": "c3713784732eb9f88221d921278b102589f7834499f7ca1c0eaa1307f9f02f78",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/route.dcp": "aa47dab9a5f52acfbb2760aa8696af69e8642462bb078d4859eab2f477342f1f",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/route-utilization.rpt": "beaed5ab713fb9fc97672b62af9dcb6ff7e8dbf52f1ee55ba7e450b2a2972942",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/timing.rpt": "02e9a123c5f11dc780f9a590ccfc4589feb8e4bb589ba85dfb0d8c981e4f0369",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/check-timing.rpt": "71283a56b3dbfe0de26e50bd6ee014450379e4e7de6c2c360f1360eb234e3d52",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/cdc.rpt": "9a9e254a794ff25b24fdc7d9658b2d1070b49376223ce0b970ce50bc2b248a47",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/drc.rpt": "194f987f439fbfafb3f340985d9f47b59225b8f96e285e24c9ef951b68e6c302",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/route-status.rpt": "402c081a2a1e491ccb9d6aa7abcc3c290aa8adc3c74334a667d8e85141fed5e7",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/control-sets.rpt": "ba9362a60fffb84da0413b6c74e7674d093297ee2a2aca272b6664da1ec704fb",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/high-fanout.rpt": "4acd00110b179f6a9fcf0c66335044ca97ab5a2d3dcaaaf5a00c34aa452f972d",
+    "build/experiments/host-full-replay-20260909T103729Z/candidate-01/route/congestion.rpt": "4114d3f8d4f672ee379a821cadb1ce4eabd6c8d0f95e87f71e68694b294a697d",
+    "build/experiments/host-full-replay-20260909T103729Z/host-source-03-sha256.json": "f201bfe94239ed867e9a12ece5be4d0fb2cda0079c9e8a3b4d89a75564ab4f3c",
+    "build/experiments/host-full-replay-20260909T103729Z/host-build-03/full_replay": "02fc99b417016edc5efb34967eb2cb473bb9ef471436a560c607c2c4b7fc768a",
+    "build/experiments/host-full-replay-20260909T103729Z/host-build-03/CMakeCache.txt": "80034c571448e0bbd944177bb7dda4718d8d08b9b5c0ccf6277e0a99496929e4",
+    "build/experiments/host-full-replay-20260909T103729Z/production-final/summary.json": "6474ce881fe4910bf5b60114f42eb45021c02fdac3da39acd162355082280454",
+    "build/experiments/host-full-replay-20260909T103729Z/asserted-final/summary.json": "ca264211e9312c7eabaa506904a3b936e92bcdbe6bcf464ef41c8f4d00291589",
+    "build/experiments/host-full-replay-20260909T103729Z/board-top-fixed-reconstruction/status.json": "24227c756d6b64ef84d1084d7758ddd9b3fdf11583a3c298a9d4a453b3dd7102",
+    "build/experiments/host-full-replay-20260909T103729Z/regression-154/summary.json": "b1c46cdf31f0334f735ca825d447b7246928958b07285e04d53bc8c01a497b65",
+    "build/experiments/host-full-replay-20260909T103729Z/evidence-legacy/summary.json": "03a32b355442273c6a610cad6509dfa2e0114017e357403a3b5698d27f6c4fde",
+    "build/experiments/host-full-replay-20260909T103729Z/faults-01/summary.json": "1e74bda8bf678030be0921d9131033614d06720d447dbf812d7f82373a2b6dcb",
+    "build/experiments/host-full-replay-20260909T103729Z/final-tools/sha256.json": "a20d4df4929c29cb3210f8aad4f79a7242ec798cc326ebb61ee2d851f96af69c",
+    "fpga/full_replay/source_provenance.json": "d0cf722c32d2d3b6be8389340e7c32a36b52631e04253bb50a7bb05b5a190651",
+    "fpga/full_replay/measure.py": "718482fe70ce33560007367ee7d2055b2d06ebbab906f87e2f6ef3704d02029b",
+    "fpga/full_replay/protocol.py": "2fcf43f82791c23ed3dd3d3917d016b83caca9e4672ddf02bfe68a7d3e410e63",
+    "docs/FPGA_HOST_FULL_REPLAY.md": "7c1edcb820cafecac1c458192a8953aa80ff98a75cdb59117fcd8cbfa27e51f0",
+    "fpga/full_replay/README.md": "630c8c85edbb56458fcb16a557802f64245e1923eeb1c0a75171f4de60f214e9"
+  }
+}

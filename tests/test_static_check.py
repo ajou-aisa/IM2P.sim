@@ -201,7 +201,7 @@ def test_integer_profile_contracts_reject_width_and_capacity_drift() -> None:
         ("synth/SynthA4W4D32.bsv", "Int#(A4WeightWidth)", "Int#(A8WeightWidth)"),
         ("synth/SynthA8W8D16.bsv", "IntegerAccumulatorRows#(16, A8AccumulatorWidth)", "256"),
         ("synth/SynthA8W8D16.bsv", "16, // Array DIM", "32, // Array DIM"),
-        ("src/array/SystolicArrayInt8x64.bsv", "Int#(A8AccumulatorWidth)", "Int#(64)"),
+        ("src/array/SystolicArrayInt8x64.bsv", "Int#(IntegerPartialWidth#(64, A8ProductWidth))", "Int#(IntegerPartialWidth#(16, A8ProductWidth))"),
         ("src/common/Config.bsv", "typedef 32 A8AccumulatorWidth;", "typedef 64 A8AccumulatorWidth;"),
     )
     with tempfile.TemporaryDirectory(prefix="im2p-static-profiles-") as raw:

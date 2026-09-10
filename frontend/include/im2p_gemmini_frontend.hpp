@@ -92,13 +92,41 @@ using ResidualStageFn =
                const ggml::gemmini::quants::act::exsia::StripeReadyEvent &event,
                ResidualStageView stage, ResidualStripeStats &stats) noexcept;
 
+// Optional autonomous physical execution. The callback table and context are
+// borrowed, immutable, and remain valid through fence (or Run destruction).
+// Descriptor/stripe/output arguments are borrowed for each callback. begin
+// copies any descriptor/provider views needed until finish. publish returning
+// IM2P_BACKPRESSURE accepts nothing. poll returns 0 when no completion is ready,
+// 1 with one ordered completion, or a negative error. It observes hardware and
+// must never treat a host poll as an RTL cycle. The adapter owns transport and
+// device watchdogs; waiting for an unpublished producer stripe is legal.
+struct StreamExecutor {
+  void *context = nullptr;
+  int (*begin)(void *, const im2p_stripe_work_desc_t *) = nullptr;
+  int (*publish)(void *, const im2p_activation_stripe_t *) = nullptr;
+  int (*poll)(void *, im2p_stripe_completion_extended_t *) = nullptr;
+  int (*finish)(void *, im2p_work_stats_extended_t *) = nullptr;
+};
+
 struct Options {
-  // Logical RTL cycles allowed without a completed K fragment or stripe.
+  // Simulator RTL cycles allowed without a completed K fragment or stripe.
   // Runtime applies a 65536-cycle minimum; UINT64_MAX disables the watchdog.
+  // Physical StreamExecutor callbacks own their transport/device timeouts.
   uint64_t max_stalled_cycles = 65536;
   ResidualStageMode residual_stage_mode = ResidualStageMode::none;
   void *residual_stage_context = nullptr;
   ResidualStageFn residual_stage_fn = nullptr;
+  // Optional FULL-only execution adapter. Called synchronously by the worker;
+  // descriptor and provider views are borrowed for this call. The context must
+  // remain valid until fence or Run destruction. Return IM2P_OK only after all
+  // output callbacks and hardware completion; failures never retry in simulator.
+  void *full_executor_context = nullptr;
+  int (*full_executor)(void *, const im2p_matmul_desc_t *,
+                       im2p_work_stats_extended_t *) = nullptr;
+  // PIPELINE only, mutually exclusive with FULL and residual execution hooks.
+  // Failure never destroys/resets the borrowed physical executor or retries in
+  // the simulator. The caller retains device ownership for diagnosis.
+  const StreamExecutor *stream_executor = nullptr;
 };
 
 struct StripeMetadata {
@@ -247,7 +275,7 @@ struct ExecuteResult {
 
 struct FenceResult {
   Status status{};
-  // Dense simulator statistics. Existing meaning and layout are unchanged.
+  // Dense RTL statistics supplied by the selected executor, never host polls.
   im2p_work_stats_extended_t stats{};
   StripeRtlTimingView stripe_rtl_timings{};
   ResidualStripeStatsView residual_stripe_stats{};

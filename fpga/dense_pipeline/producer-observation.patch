@@ -1,0 +1,24 @@
+--- a/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp
++++ b/ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp
+@@ -33,6 +33,11 @@
+ #include <tuple>
+ #include <utility>
+ #include <variant>
++
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++// Diagnostic observation only; disabled unless the host explicitly requests it.
++extern void ggml_gemmini_fpga_test_producer_checkpoint(size_t stripe_index);
++#endif
+ 
+ #if defined(GGML_GEMMINI_HAS_OPENMP)
+ #include <omp.h>
+@@ -2637,6 +2642,9 @@
+                                   state_.K_padded, state_.blocks_per_row);
+             local_workspace_.reset_for_stripe(s, row_start, row_end, state_.blocks_per_row);
+             slot.mark_quantization_started(aggregate_now_tick(), aggregate_now_ns());
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++            ggml_gemmini_fpga_test_producer_checkpoint(s);
++#endif
+             StripeState &stripe = slot.stripe;
+             EXSIA_PROFILE_COLLECT(
+             StripeProfileRecord &profile = stripe_profiles[s];

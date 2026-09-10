@@ -1,14 +1,15 @@
 package Arithmetic;
 
 import FloatingPoint::*;
+import Config::*;
 
 // -----------------------------------------------------------------------------
 // Systolic datapath 산술 추상화
 // -----------------------------------------------------------------------------
 //
-// activation, weight, product, accumulator를 서로 다른 타입으로 분리한다.
+// activation, weight, product, local partial, accumulator를 서로 다른 타입으로 분리한다.
 // 따라서 INT8 x INT8 configuration은 실제 8x8 multiplier, 16-bit full product,
-// 32-bit partial/accumulator를 표현할 수 있다.
+// DIM16에서는 exact INT20 local partial과 architectural INT32 accumulator를 사용한다.
 //
 // Runtime vector scaling은 array 밖 VectorUnit의 책임이다. FLOAT arithmetic을
 // 선택해도 scale multiplier나 shifter가 이 패키지에서 따라오지 않는다.
@@ -20,6 +21,18 @@ typeclass Multiplier#(
     type product_t
 );
     function product_t arithmeticMultiply(input_t activation, weight_t weight);
+endtypeclass
+
+// Infer the local type without adding a parameter to the architectural interface.
+typeclass SystolicPartial#(
+    numeric type arrayDim,
+    type product_t,
+    type partial_t
+) dependencies ((arrayDim, product_t) determines partial_t);
+endtypeclass
+
+typeclass PartialAccumulatorConversion#(type partial_t, type acc_t);
+    function acc_t widenPartial(partial_t partial);
 endtypeclass
 
 // 위쪽에서 전달된 partial D에 product를 더해 C를 만든다.
@@ -39,6 +52,18 @@ endtypeclass
 // -----------------------------------------------------------------------------
 // Signed integer instances
 // -----------------------------------------------------------------------------
+
+instance SystolicPartial#(
+    arrayDim, Int#(productWidth), Int#(IntegerPartialWidth#(arrayDim, productWidth))
+);
+endinstance
+
+instance PartialAccumulatorConversion#(Int#(partialWidth), Int#(accWidth))
+    provisos (Add#(partialWidth, partialPadding, accWidth));
+    function Int#(accWidth) widenPartial(Int#(partialWidth) partial);
+        return signExtend(partial);
+    endfunction
+endinstance
 
 instance Multiplier#(
     Int#(inputWidth),
@@ -94,6 +119,24 @@ endinstance
 // multFP/addFP는 조합 함수다. PE의 peLatency를 늘리는 것만으로 이 조합 연산이
 // 자동 pipeline되지 않는다. 실제 Fmax/area 평가에서는 vendor FPU 또는 명시적인
 // pipelined operator로 이 instance를 교체해야 한다.
+
+instance SystolicPartial#(
+    arrayDim,
+    FloatingPoint#(exponentWidth, fractionWidth),
+    FloatingPoint#(exponentWidth, fractionWidth)
+);
+endinstance
+
+instance PartialAccumulatorConversion#(
+    FloatingPoint#(exponentWidth, fractionWidth),
+    FloatingPoint#(exponentWidth, fractionWidth)
+);
+    function FloatingPoint#(exponentWidth, fractionWidth) widenPartial(
+        FloatingPoint#(exponentWidth, fractionWidth) partial
+    );
+        return partial;
+    endfunction
+endinstance
 
 instance Multiplier#(
     FloatingPoint#(exponentWidth, fractionWidth),

@@ -1,0 +1,404 @@
+{
+  "schema": 1,
+  "status": "Awaiting approval",
+  "title": "A8/W8/DIM16/native Q8_H1/EXSIA/RMD OFF Dense FULL + live PIPELINE",
+  "board_measured": false,
+  "programming_executed": false,
+  "uart_physical_access": false,
+  "flash_write_permitted": false,
+  "board": "Arty A7-100T",
+  "jtag_device": "xc7a100t_0",
+  "jtag_die_part": "xc7a100t",
+  "implementation_part": "xc7a100tcsg324-1",
+  "jtag_note": "Die identity does not prove physical package or speed grade. Implementation part is checked in routed DCP.",
+  "nominal_clock_hz": 25000000,
+  "uart": {
+    "baud": 1000000,
+    "format": "8N1",
+    "protocol": "IFR2",
+    "version": 2,
+    "profile_hex": "0810",
+    "capacity": {
+      "M": 336,
+      "N": 48,
+      "K": 96
+    }
+  },
+  "bitstream": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/dense-pipeline.bit",
+    "sha256": "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca"
+  },
+  "routed_dcp": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/route.dcp",
+    "sha256": "6141a245e4c2ca88b8147ae864974abc14c3b858a276c2a5f5beee42f5a92bd4"
+  },
+  "selected_hardware": "stream-02",
+  "selected_host_frontend": "stream-08",
+  "host_pin": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+  "params_pin": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+  "executables": {
+    "ggml_host": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/dense_host_dispatch",
+      "sha256": "f5cd48e36e6dab5566b2ea438e265541884539eec70dcd1b1c6059fd77c3ba10"
+    },
+    "persistent_host": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/persistent_replay",
+      "sha256": "f057b99fc188673cbfad29bd9957616143ad89458e5d4c5de0d583595cfd6e03"
+    }
+  },
+  "measurement_plan": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/measurement-plan-host08.json",
+    "sha256": "07e29d51e7ac5c027499b39289cf07e85349e0779bc24d7b6fd27917e041899d",
+    "sealed_files": 4961
+  },
+  "source_manifests": {
+    "stream-02": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/integration-sha256.json",
+      "sha256": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7"
+    },
+    "stream-08": {
+      "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08/integration-sha256.json",
+      "sha256": "0bf50916cd891c766f4ef372c68d9c07494a419606bdd44c289e98954bf81454"
+    }
+  },
+  "programming": {
+    "count": 1,
+    "storage": "Configuration SRAM only",
+    "script": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/approval-package/program_sram_once.tcl",
+    "sha256": "321abeb0f3a5ff702b93bdc7c0e0a59cd632af4aa9c53d46b3024de3d7e26ccb",
+    "verification": "full bit/DCP SHA, routed part, JTAG chain/die, configuration CRC/EOS/PLL/DONE/error registers",
+    "automatic_restore": false,
+    "retry": false
+  },
+  "stages": [
+    {
+      "order": 1,
+      "action": "Read-only sealed plan preflight; no device access",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/measurement-plan-host08.json"
+      ]
+    },
+    {
+      "order": 2,
+      "action": "After NEW approval only: one SRAM programming and verification",
+      "argv": [
+        "vivado",
+        "-mode",
+        "batch",
+        "-source",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/approval-package/program_sram_once.tcl",
+        "-tclargs",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/dense-pipeline.bit",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-02/route/route.dcp"
+      ]
+    },
+    {
+      "order": 3,
+      "action": "CAP and small actual ggml FULL smoke; compare all output before continuing",
+      "env": {
+        "IM2P_FPGA_DEVICE": "APPROVED_UART_DEVICE",
+        "IM2P_FPGA_TIMEOUT_SECONDS": "30"
+      },
+      "argv": [
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/dense_host_dispatch",
+        "run",
+        "16",
+        "16",
+        "32",
+        "1",
+        "1",
+        "FULL"
+      ],
+      "logical_jobs": 1,
+      "performance_sample": false
+    },
+    {
+      "order": 4,
+      "action": "Actual ggml live producer diagnostic with causal preparation delay, three stripes 160/160/1, slots0/1/0",
+      "env": {
+        "IM2P_FPGA_DEVICE": "APPROVED_UART_DEVICE",
+        "IM2P_FPGA_TIMEOUT_SECONDS": "30",
+        "IM2P_FPGA_TEST_PRODUCER_OVERLAP": "1"
+      },
+      "argv": [
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/stream-08/host-build/dense_host_dispatch",
+        "run",
+        "321",
+        "48",
+        "64",
+        "7",
+        "1",
+        "STRIPE_PIPELINE"
+      ],
+      "logical_jobs": 1,
+      "performance_sample": false
+    },
+    {
+      "order": 5,
+      "action": "Remove diagnostic environment; persistent four-condition FPGA sweep. Every warm-up is checked.",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/measurement-plan-host08.json",
+        "--run",
+        "board",
+        "--device",
+        "APPROVED_UART_DEVICE",
+        "--approved-bitstream-sha256",
+        "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca",
+        "--out",
+        "FRESH_BOARD_OUTPUT"
+      ],
+      "logical_jobs": 54
+    },
+    {
+      "order": 6,
+      "action": "Matched persistent simulator, same fixtures/quantization/reconstruction/service, no diagnostic delays",
+      "argv": [
+        "python3",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/measure.py",
+        "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/measurement-plan-host08.json",
+        "--run",
+        "simulator",
+        "--out",
+        "FRESH_MATCHED_SIMULATOR_OUTPUT"
+      ],
+      "logical_jobs": 54
+    },
+    {
+      "order": 7,
+      "action": "Postflight full hash preservation and save all original logs/samples, no further programming"
+    }
+  ],
+  "planned_board_logical_jobs": 56,
+  "planned_matched_simulator_jobs": 54,
+  "expected_comparisons_including_warmups": {
+    "fpga_performance_sweep": {
+      "raw": 1850496,
+      "f_out": 741120,
+      "padding": 46512
+    },
+    "fpga_two_diagnostic_jobs": {
+      "raw": 31072,
+      "f_out": 15664,
+      "padding": 0
+    },
+    "fpga_total": {
+      "raw": 1881568,
+      "f_out": 756784,
+      "padding": 46512
+    }
+  },
+  "counts_note": "Repeated comparisons, not unique values; graph diagnostics use contiguous output, portable sweep tests padding.",
+  "shapes": [
+    {
+      "M": 16,
+      "N": 16,
+      "K": 32,
+      "seed": 1,
+      "tiles": [
+        1,
+        1,
+        2
+      ],
+      "stripe_rows": 16,
+      "stripes": [
+        16
+      ]
+    },
+    {
+      "M": 321,
+      "N": 48,
+      "K": 64,
+      "seed": 7,
+      "tiles": [
+        10,
+        3,
+        4
+      ],
+      "stripe_rows": 160,
+      "stripes": [
+        160,
+        160,
+        1
+      ]
+    },
+    {
+      "M": 321,
+      "N": 48,
+      "K": 96,
+      "seed": 8,
+      "tiles": [
+        10,
+        3,
+        6
+      ],
+      "stripe_rows": 160,
+      "stripes": [
+        160,
+        160,
+        1
+      ]
+    }
+  ],
+  "core_reference": {
+    "full_16_16_32": 361,
+    "full_321_48_64": 39907,
+    "pipeline_note": "Elapsed cycles include legitimate publication/raw-drain wait. Log and explain differences; never replace expected raw/f_out or treat polls as cycles.",
+    "full_321_48_96": 58695
+  },
+  "timeouts": {
+    "host_transport_seconds": 30,
+    "performance_process_seconds": 900,
+    "diagnostic_process_seconds": 900,
+    "core_interbyte_cycles": 1048576,
+    "nominal_core_interbyte_ms": 41.94304,
+    "publication_wait": "Core watchdog pauses only at legal unpublished/data-drain waits. Host transport timeout stays enabled.",
+    "diagnostic_checkpoint_seconds": 300
+  },
+  "stop_on": [
+    "hash/source/profile/capacity mismatch",
+    "programming verification failure",
+    "CRC/length/run/generation/count/order mismatch",
+    "raw signed32 or f_out float32 bit mismatch",
+    "padding corruption",
+    "timeout/unexpected reset",
+    "stale/duplicate completion",
+    "unexplained cycle difference",
+    "FPGA simulator/reference fallback"
+  ],
+  "prohibited": [
+    "flash/non-volatile write",
+    "different bitstream",
+    "automatic retry/reset/reprogramming/restore",
+    "source/host/fixture edits during measurement",
+    "commit/push"
+  ],
+  "overlap_scope": "Live submission/three stripes/backpressure/fence verified. Injected CPU preparation overlap verified in RTL. Uninjected quantization/FPGA compute overlap not observed. Board performance and speedup NOT RUN.",
+  "unsupported": [
+    "residual-enabled/hybrid",
+    "weight streaming",
+    "physical DIM32/DIM64",
+    "model capture/full model/TTFT/TPOT"
+  ],
+  "implementation": {
+    "part": "xc7a100tcsg324-1",
+    "nominal_clock_MHz": 25,
+    "protocol": "IFR2",
+    "hardware_programmed": false,
+    "board_measured": false,
+    "lut": 47986,
+    "ff": 32032,
+    "ramb36": 89,
+    "ramb18": 1,
+    "bram_tiles": 89.5,
+    "dsp": 85,
+    "occupied_slices": 15596,
+    "available_slices": 15850,
+    "control_sets": 625,
+    "max_nonclock_fanout": 10723,
+    "setup_WNS_ns": 12.517,
+    "hold_WHS_ns": 0.018,
+    "pulse_width_slack_ns": 3.0,
+    "fully_routed_nets": 81452,
+    "route_errors": 0,
+    "unconstrained_internal_endpoints": 0,
+    "drc": {
+      "DPIP-1": 22,
+      "DPOP-1": 78,
+      "DPOP-2": 78,
+      "errors": 0,
+      "critical": 0
+    },
+    "hashes": {
+      "stream-02/source-sha256.json": "f5b396d8d3fcd16b49ab4fef660ec2d9424581eb784fdabf234a2fe50131e24f",
+      "stream-02/integration-sha256.json": "797e0eda08a28f7eaaf738bc4566e63792e02d3492079b4fc1d70028d38845f7",
+      "stream-02/production/rtl/mkDensePipeline.v": "b29147ce384e9384b3821c358863350f03c0696cbc8b8e286a768f2e7155b853",
+      "stream-02/route/dense-pipeline.bit": "8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca",
+      "stream-02/route/route.dcp": "6141a245e4c2ca88b8147ae864974abc14c3b858a276c2a5f5beee42f5a92bd4",
+      "stream-02/route/cdc.rpt": "473e6a4b098ac40ef98a8be2f6c96a166550fcfd1a24fd8681c29bb038a11203",
+      "stream-02/route/check-timing.rpt": "22e656667cf84aec123a7831df86347b54f4d8e20f75b9250bd5f550c33f562b",
+      "stream-02/route/clocks.rpt": "51fbfb6c21502799e8036076c063ce1cacb21da42bf1d3dd54f5bb11de75aee9",
+      "stream-02/route/congestion.rpt": "48cffd3745d64673cf4153ed46b379d2a522731738c821376c7e86b642ac23e8",
+      "stream-02/route/control-sets.rpt": "74cfb008732304243f2c0415dc41c034c95ed46516c020ec2fdc0324b0c09186",
+      "stream-02/route/drc.rpt": "0fcdd6c0339b509d59aa91902d80c0239907fcb621a16a7bffb626dc17d1e9f9",
+      "stream-02/route/high-fanout.rpt": "8543e725f96f0dbc2dd0a05d1fc51cad67c979c2f1502c4e732b6940d6de0c63",
+      "stream-02/route/opt-utilization.rpt": "466b3282e56883708231350f13be4894be50e5afa38d9890d5c8a0f8b14a7e1b",
+      "stream-02/route/place-utilization.rpt": "45e3b50a42adb7da49a9bb58ae59246c27c4b70c6b4040b467089e2da8c87b2a",
+      "stream-02/route/route-status.rpt": "c3ff833a984e61f16eb8fff29cb113bca3d3a9bdca61d5a26a8bc8e69e91e35b",
+      "stream-02/route/route-utilization.rpt": "62c4c77c79dafe3d0120f69b5903287b4fa681c155ef0ae43a46cc453dbd9f1a",
+      "stream-02/route/timing.rpt": "ced3fd753c9d1e3a04491e0b093882fe42dad401d64912e17695b651bf1646bc"
+    }
+  },
+  "portable_fixtures": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/fixtures/sha256.json",
+    "sha256": "f0f50ece0e1aa8c05fd9d468498e6d8e6f3520d9b8e271bf556cb1e0c7e5c9a1"
+  },
+  "final_fixtures": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/final-fixtures/all-files-sha256.json",
+    "sha256": "d6c7d131b64b908153130032491e8312fa4c2b9a6daf59c0d32af8445f2d0403"
+  },
+  "source_provenance": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/source_provenance.json",
+    "sha256": "70e9b8d1a6ae0a88a04fa502663d46d4d721d3225dc4ac2ba902fc9a611ba13d"
+  },
+  "hardware_identity": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/evidence/final-hardware-identity.json",
+    "sha256": "9d9a8114c1d7602b48456b885c873dab070769bb4cfb1e2968f680f996221f15"
+  },
+  "transport_budget": {
+    "path": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/fpga/dense_pipeline/TRANSPORT_BUDGET.md",
+    "sha256": "94430aed42551499c7ffd844eb3ed42a2f755d8851b9f2cba60825c9ce1ede89"
+  },
+  "evidence": {
+    "final_actual_ggml_pipeline": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/final08-host-pipeline/numerical-validation.json",
+    "final_actual_ggml_full_smoke": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/final08-host-full/numerical-validation.json",
+    "vendor_board_top": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/board-m321k64/numerical-host-complete.json",
+    "matched_persistent_simulator_54": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/final08-persistent-simulator/summary.json",
+    "final_original_args_rejection_26": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/final08-negative/summary.json",
+    "regression_154": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/regression-154",
+    "assertions": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/evidence/assertions-new/summary.json",
+    "final_actual_ggml_full_k96": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/tests/final08-host-full-k96/numerical-validation.json",
+    "same_host_full_pipeline_equality": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/IM2P.sim/build/experiments/dense-pipeline-20260909T141302Z/evidence/final08-full-pipeline-equality.json"
+  },
+  "transport_budget_per_invocation_excluding_CAP_including_RELEASE": [
+    {
+      "shape": "16/16/32",
+      "mode": "FULL",
+      "request_bytes": 4168,
+      "response_bytes": 1320,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/64",
+      "mode": "FULL",
+      "request_bytes": 45256,
+      "response_bytes": 123560,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/96",
+      "mode": "FULL",
+      "request_bytes": 47304,
+      "response_bytes": 185192,
+      "transactions": 2
+    },
+    {
+      "shape": "321/48/64",
+      "mode": "PIPELINE actual RTL p=5 empty polls",
+      "request_bytes": 45688,
+      "response_bytes": 125336,
+      "transactions": 14
+    },
+    {
+      "shape": "321/48/96",
+      "mode": "PIPELINE actual RTL p=5 empty polls",
+      "request_bytes": 47736,
+      "response_bytes": 186968,
+      "transactions": 14
+    }
+  ],
+  "transport_budget_note": "Each process CAP adds36 request/148 response bytes. Empty poll count is observed, not fixed by contract. Watchdog/poll clocks are not hardware execution cycles."
+}

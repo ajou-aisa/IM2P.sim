@@ -1,0 +1,231 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -276,12 +276,13 @@
+ set(_GGML_GEMMINI_WEIGHT_BITS_VALUE "${GGML_GEMMINI_WEIGHT_BITS}")
+ 
+ set(GGML_GEMMINI_EXECUTION_BACKEND "HARDWARE" CACHE STRING
+-    "Gemmini execution backend: HARDWARE or IM2P_SIM")
+-set_property(CACHE GGML_GEMMINI_EXECUTION_BACKEND PROPERTY STRINGS HARDWARE IM2P_SIM)
++    "Gemmini execution backend: HARDWARE, IM2P_SIM, or FPGA_UART")
++set_property(CACHE GGML_GEMMINI_EXECUTION_BACKEND PROPERTY STRINGS HARDWARE IM2P_SIM FPGA_UART)
+ if(NOT GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "HARDWARE" AND
+-   NOT GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "IM2P_SIM")
++   NOT GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "IM2P_SIM" AND
++   NOT GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "FPGA_UART")
+     message(FATAL_ERROR
+-        "GGML_GEMMINI_EXECUTION_BACKEND must be exactly HARDWARE or IM2P_SIM, got '${GGML_GEMMINI_EXECUTION_BACKEND}'")
++        "GGML_GEMMINI_EXECUTION_BACKEND must be exactly HARDWARE, IM2P_SIM, or FPGA_UART, got '${GGML_GEMMINI_EXECUTION_BACKEND}'")
+ endif()
+ if(_GGML_GEMMINI_OPTION_UPPER STREQUAL "OS" OR
+    (_GGML_GEMMINI_OPTION_UPPER STREQUAL "CPU" AND
+@@ -721,6 +722,25 @@
+     ggml_gemmini_require_bool(${_GGML_GEMMINI_MATMUL_BOOL})
+ endforeach()
+ 
++if(GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "FPGA_UART")
++    if(NOT GGML_GEMMINI OR NOT _GGML_GEMMINI_OPTION_UPPER STREQUAL "WS" OR
++       NOT GGML_GEMMINI_ACTIVATION_BITS STREQUAL "8" OR
++       NOT GGML_GEMMINI_WEIGHT_BITS STREQUAL "8" OR
++       NOT GGML_GEMMINI_DIM STREQUAL "16" OR
++       NOT GGML_GEMMINI_BLOCK_SIZE STREQUAL "32" OR
++       NOT _GGML_GEMMINI_COMPUTE_TYPE_UPPER STREQUAL "INT" OR
++       NOT _GGML_GEMMINI_ACTIVATION_QUANT_UPPER STREQUAL "EXSIA" OR
++       GGML_GEMMINI_ENABLE_RMD OR GGML_GEMMINI_DEQUANT_FP_TEST)
++        message(FATAL_ERROR "FPGA_UART requires WS+A8/W8/DIM16/INT/EXSIA/block32/RMD OFF")
++    endif()
++    set(GGML_GEMMINI_FPGA_SOURCE_DIR "" CACHE PATH "Frozen FPGA Dense adapter source directory")
++    if(NOT EXISTS "${GGML_GEMMINI_FPGA_SOURCE_DIR}/ggml-gemmini-fpga.hpp")
++        message(FATAL_ERROR "FPGA_UART requires GGML_GEMMINI_FPGA_SOURCE_DIR with ggml-gemmini-fpga.hpp")
++    endif()
++    file(SHA256 "${GGML_GEMMINI_FPGA_SOURCE_DIR}/ggml-gemmini-fpga.hpp" _GGML_FPGA_API_SHA256)
++    message(STATUS "GEMMINI backend=FPGA_UART profile=A8/W8/DIM16 native=Q8_H1 RMD=OFF API_SHA256=${_GGML_FPGA_API_SHA256}")
++endif()
++
+ if (GGML_GEMMINI_ENABLE_RMD)
+     set(_GGML_GEMMINI_ENABLE_RMD_VALUE 1)
+ else()
+@@ -829,6 +849,8 @@
+ )
+ if(GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "IM2P_SIM")
+     list(APPEND GGML_GEMMINI_COMPILE_DEFS GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM=1)
++elseif(GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "FPGA_UART")
++    list(APPEND GGML_GEMMINI_COMPILE_DEFS GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1)
+ else()
+     list(APPEND GGML_GEMMINI_COMPILE_DEFS GGML_GEMMINI_EXECUTION_BACKEND_HARDWARE=1)
+ endif()
+--- a/ggml/src/ggml-gemmini/CMakeLists.txt
++++ b/ggml/src/ggml-gemmini/CMakeLists.txt
+@@ -178,6 +178,11 @@
+ target_link_libraries(ggml-gemmini PRIVATE
+   ggml-gemmini-utils
+ )
++
++if (GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "FPGA_UART")
++  # The integration parent links the explicitly selected frozen adapter/frontend.
++  target_include_directories(ggml-gemmini PRIVATE "${GGML_GEMMINI_FPGA_SOURCE_DIR}")
++endif()
+ 
+ if (GGML_GEMMINI_EXECUTION_BACKEND STREQUAL "IM2P_SIM")
+   foreach(_IM2P_REQUIRED_VAR IN ITEMS
+--- a/ggml/src/ggml-gemmini/ggml-gemmini.cpp
++++ b/ggml/src/ggml-gemmini/ggml-gemmini.cpp
+@@ -9,6 +9,7 @@
+ #include <cstdlib>
+ 
+ #include <limits>
++#include <stdexcept>
+ 
+ #include <memory>
+ #include <mutex>
+@@ -30,6 +31,9 @@
+ #include <gemmini.h>
+ #include "ggml-gemmini-args.h"
+ #include "ggml-gemmini-matmul.hpp"
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++#include "ggml-gemmini-fpga.hpp"
++#endif
+ #if defined(GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM)
+ #include "ggml-gemmini-im2p.hpp"
+ #endif
+@@ -58,6 +62,12 @@
+ 
+ namespace
+ {
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++    thread_local bool fpga_dispatch_failed = false;
++    constexpr bool fpga_dense = true;
++#else
++    constexpr bool fpga_dense = false;
++#endif
+     bool gemmini_is_extended_dequant_weight_type(ggml_type type) {
+         return type == GGML_TYPE_Q4_0 ||
+                type == GGML_TYPE_Q4_H1 ||
+@@ -1291,6 +1301,14 @@
+         GGML_ABORT("Gemmini mul_mat size overflow");
+     }
+ 
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++    if (src0->type != GGML_TYPE_Q8_H1 || src1->type != GGML_TYPE_F32 ||
++        K == 0 || K % QK8_0 != 0) {
++        GGML_LOG_ERROR("FPGA_UART unsupported native format or K alignment\n");
++        fpga_dispatch_failed = true;
++        return;
++    }
++#endif
+ #if LOG_DUMP
+     ggml::gemmini::log::dump(ggml::gemmini::log::file("log/tensor_data/act.jsonl"), layer, src1);
+ #endif
+@@ -1414,10 +1432,23 @@
+         ggml::gemmini::log::debug(layer,
+             "[matmul.invocation] status=invalid_invocation error=%d",
+             static_cast<int>(matmul_resolution.error));
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++        fpga_dispatch_failed = true;
++        return;
++#else
+         GGML_ABORT("Gemmini invalid matmul options");
++#endif
+     }
+     auto matmul_options = matmul_resolution.options;
+     matmul_options.profiling = LOG_CYCLE != 0;
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++    if (!ggml_gemmini_fpga_supports(I, J, K,
++            matmul_options.mode == ggml::gemmini::MatmulInvocationMode::stripe_pipeline)) {
++        GGML_LOG_ERROR("FPGA_UART unsupported shape/mode before execution\n");
++        fpga_dispatch_failed = true;
++        return;
++    }
++#endif
+ #if defined(GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM)
+     constexpr bool im2p_exsia =
+         ggml::gemmini::config::CURRENT_ACTIVATION_QUANT ==
+@@ -1481,14 +1512,14 @@
+         ggml::gemmini::config::CURRENT_ACTIVATION_QUANT == ggml::gemmini::config::ActivationQuantAlgo::EXSIA;
+     const bool pipeline_enabled = pipeline_requested &&
+                                   exsia_pipeline_supported && I > 1 &&
+-                                  !im2p_non_exsia && !im2p_exsia;
++                                  !im2p_non_exsia && !im2p_exsia && !fpga_dense;
+     const bool legacy_full_dispatch = false;
+     const bool decode_full_dispatch = pipeline_requested &&
+                                       exsia_pipeline_supported && I <= 1 &&
+-                                      !im2p_non_exsia && !im2p_exsia;
++                                      !im2p_non_exsia && !im2p_exsia && !fpga_dense;
+     const bool facade_full_dispatch =
+         (full_requested || decode_full_dispatch) && !im2p_non_exsia &&
+-        !im2p_exsia;
++        !im2p_exsia && !fpga_dense;
+     const size_t pipeline_job_capacity = matmul_options.job_capacity;
+     if (pipeline_requested && !exsia_pipeline_supported && !im2p_non_exsia) {
+       ggml::gemmini::log::debug(
+@@ -1561,10 +1592,10 @@
+     ggml::gemmini::observe_test_i("activation", args.I);
+ #endif
+     bool quantize_ok = false;
+-    const bool deferred_quantization = pipeline_enabled || im2p_exsia;
++    const bool deferred_quantization = pipeline_enabled || im2p_exsia || fpga_dense;
+ #if LOG_CYCLE
+     const bool quantization_overlaps_rtl =
+-        pipeline_enabled || (im2p_exsia && pipeline_requested);
++        pipeline_enabled || ((im2p_exsia || fpga_dense) && pipeline_requested);
+ #endif
+     const auto quantize_activation = [&]() {
+ #if LOG_CYCLE
+@@ -2076,6 +2107,23 @@
+     // This preparation ends before any quantization, submission or execution.
+     ggml::gemmini::log::cycle(layer, "gemmini.output_preparation", start, end);
+ 
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++    try {
++        const bool success = ggml_gemmini_fpga_execute(args, pipeline_requested, [&]() {
++            if (!quantize_activation()) {
++                throw std::runtime_error("existing ExSIA quantizer failed");
++            }
++        }, layer);
++        if (!success) {
++            GGML_LOG_ERROR("FPGA_UART execution failed: %s\n", ggml_gemmini_fpga_last_error().c_str());
++            fpga_dispatch_failed = true;
++        }
++    } catch (const std::exception &error) {
++        GGML_LOG_ERROR("FPGA_UART execution failed: %s\n", error.what());
++        fpga_dispatch_failed = true;
++    }
++    return;
++#endif
+ #if defined(GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM)
+     if constexpr (im2p_exsia) {
+       args.act_quant.storage()
+@@ -2465,6 +2513,9 @@
+ }
+ 
+ static enum ggml_status ggml_backend_gemmini_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++    fpga_dispatch_failed = false;
++#endif
+     ggml_backend_gemmini_context * ctx = (ggml_backend_gemmini_context *)backend->context;
+     setup_gemmini_log_outputs_if_needed();
+ 
+@@ -2544,6 +2595,9 @@
+             ggml::gemmini::log::dump_set_node_idx(node_idx);
+ #endif
+             ggml_backend_gemmini_mul_mat(ctx, node);
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++            if (fpga_dispatch_failed) return GGML_STATUS_FAILED;
++#endif
+ #if defined(GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM) &&                        \
+     defined(GGML_GEMMINI_TESTING)
+             if (ggml::gemmini::im2p_adapter::test_production_failed()) {
+@@ -2711,6 +2765,14 @@
+             if (b->type != GGML_TYPE_F32)
+                 return false;
+ 
++#if defined(GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART)
++            const auto options = ggml::gemmini::resolve_matmul_options();
++            if (!options.ok() || a->type != GGML_TYPE_Q8_H1 || a->ne[0] <= 0 ||
++                a->ne[0] % QK8_0 != 0 || !ggml_gemmini_fpga_supports(
++                    static_cast<size_t>(ggml_nrows(b)), static_cast<size_t>(a->ne[1]),
++                    static_cast<size_t>(a->ne[0]), options.options.mode ==
++                        ggml::gemmini::MatmulInvocationMode::stripe_pipeline)) return false;
++#endif
+             // llama-model probes buffer compatibility with a zero-sized,
+             // data-less tensor. Permit only the selected native artifact's
+             // formats; the real path below still validates backing storage.
