@@ -7,7 +7,8 @@ Usage: scripts/fpga_build.sh [options]
   --mode rtl|area|timing|route   Default: area; timing/route use CLK at 10 ns
   --bits 4|8|16 --dim 16|32|64  Default: A8/W8 DIM16
   --hierarchy rebuilt|none      Default: rebuilt; none preserves RTL hierarchy
-  --diagnostic core|fifo        Default: core; FIFO is A8 DIM16 only
+  --directive Default|AreaOptimized_high  Default: Default
+  --diagnostic core|fifo|scu    Default: core; FIFO/SCU are A8 DIM16 only
   --out NEW_DIRECTORY           Default: unique directory under build/fpga
 Environment: BSC, BSC_VERILOG, VIVADO, VERILATOR, PYTHON (executable paths).
 Part: xc7a100tcsg324-1. Route allowed only for resource-fitting A8 DIM16 core.
@@ -17,12 +18,12 @@ EOF
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-mode=area bits=8 dim=16 hierarchy=rebuilt diagnostic=core out=
+mode=area bits=8 dim=16 hierarchy=rebuilt diagnostic=core directive=Default out=
 original_args=("$@")
 while (($#)); do
     case "$1" in
         --help|-h) usage; exit 0 ;;
-        --mode|--bits|--dim|--hierarchy|--diagnostic|--out)
+        --mode|--bits|--dim|--hierarchy|--diagnostic|--directive|--out)
             (($# >= 2)) || fail "missing value for $1"
             key=${1#--}; printf -v "$key" '%s' "$2"; shift 2 ;;
         *) fail "unknown option: $1" ;;
@@ -32,9 +33,10 @@ case "$mode" in rtl|area|timing|route) ;; *) fail 'invalid mode' ;; esac
 case "$bits" in 4|8|16) ;; *) fail 'bits must be 4, 8, or 16' ;; esac
 case "$dim" in 16|32|64) ;; *) fail 'dim must be 16, 32, or 64' ;; esac
 case "$hierarchy" in rebuilt|none) ;; *) fail 'invalid hierarchy' ;; esac
-case "$diagnostic" in core|fifo) ;; *) fail 'invalid diagnostic' ;; esac
-if [[ "$diagnostic" == fifo && ("$bits" != 8 || "$dim" != 16) ]]; then
-    fail 'FIFO diagnostic matches A8 DIM16 only'
+case "$directive" in Default|AreaOptimized_high) ;; *) fail 'invalid synthesis directive' ;; esac
+case "$diagnostic" in core|fifo|scu) ;; *) fail 'invalid diagnostic' ;; esac
+if [[ "$diagnostic" != core && ("$bits" != 8 || "$dim" != 16) ]]; then
+    fail 'FIFO/SCU diagnostics match A8 DIM16 only'
 fi
 if [[ "$mode" == route && ("$bits" != 8 || "$dim" != 16 || "$diagnostic" != core) ]]; then
     fail 'route requires A8 DIM16 core'
@@ -87,15 +89,19 @@ primitive_dir=$(cd "$primitive_dir" && pwd)
 printf '%s\n' "$primitive_dir" > "$out/bsc-primitive-path.txt"
 package=SynthA${bits}W${bits}D${dim}
 [[ "$diagnostic" != fifo ]] || package=SynthActivationFIFO
+[[ "$diagnostic" != scu ]] || package=ScuPipeline
 top=mk${package}
 printf 'profile=a%s-w%s-d%s\nmode=%s\nhierarchy=%s\ndiagnostic=%s\npart=xc7a100tcsg324-1\nclock_period_ns=%s\n' \
     "$bits" "$bits" "$dim" "$mode" "$hierarchy" "$diagnostic" \
     "$([[ "$mode" == area || "$mode" == rtl ]] && echo none || echo 10)" > "$out/options.txt"
+printf 'synthesis_directive=%s\n' "$directive" >> "$out/options.txt"
 cd "$out/source"
 run "$python" scripts/im2p_config.py --profile "$bits" "$bits" "$dim" > "$out/profile.json"
 find src synth scripts config sim Makefile -type f ! -name '*.pyc' | LC_ALL=C sort | \
     while IFS= read -r file; do "${hash[@]}" "$file"; done > "$out/source.sha256"
-run "$bsc" -u -verilog -p +:src/common:src/io:src/array:src/vector:src/accumulator:src/control:src/core:synth \
+bsc_defines=()
+[[ "$diagnostic" != scu ]] || bsc_defines=(-D IM2P_POWER_OF_TWO_STRIDES -D IM2P_BOUNDED_ONLY)
+run "$bsc" -u -verilog "${bsc_defines[@]}" -p +:src/common:src/io:src/array:src/vector:src/accumulator:src/control:src/core:synth \
     -steps 4000000 -steps-warn-interval 1000000 -steps-max-intervals 20 +RTS -K256M -RTS \
     -bdir "$out/bsc" -info-dir "$out/info" -vdir "$out/rtl" -g "$top" "synth/$package.bsv" \
     2>&1 | tee "$out/bsc.log"
@@ -125,7 +131,7 @@ if [[ "$mode" == rtl ]]; then
 else
     run "$vivado" -version > vivado-version.txt
     run "$vivado" -mode batch -nojournal -log vivado.log -source source/synth/flow/ooc.tcl \
-        -tclargs "$out" "$top" "$mode" "$hierarchy" 2>&1 | tee vivado-console.log
+        -tclargs "$out" "$top" "$mode" "$hierarchy" "$directive" 2>&1 | tee vivado-console.log
     [[ -f vivado-complete.txt ]] || fail 'Vivado returned without completion marker'
     printf 'VIVADO_COMPLETE (inspect timing/DRC reports; no board closure claim)\n' > status.txt
 fi

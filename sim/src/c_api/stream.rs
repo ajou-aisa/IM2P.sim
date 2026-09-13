@@ -6,7 +6,10 @@ use crate::{
 };
 
 use super::{
-    contract::{provider_requested, require_identity, selected_weight_callback, Identity},
+    contract::{
+        provider_requested, require_identity, require_output_domain, selected_weight_callback,
+        Identity,
+    },
     helpers::{
         scale_view, service_stream, status_for_error, vector_op, write_extended_stats, write_stats,
     },
@@ -33,7 +36,16 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul(
     if let Err(status) = require_identity(Identity::from_striped(desc)) {
         return status;
     }
-    if !desc.weights.is_null() && !(desc.weights as usize).is_multiple_of(align_of::<WeightValue>())
+    if let Err(status) = require_output_domain(
+        desc.vector_op,
+        desc.output_domain,
+        provider_requested(desc.provider),
+    ) {
+        return status;
+    }
+    if (!desc.scales.is_null() && !(desc.scales as usize).is_multiple_of(align_of::<u32>()))
+        || (!desc.weights.is_null()
+            && !(desc.weights as usize).is_multiple_of(align_of::<WeightValue>()))
     {
         return -4;
     }
@@ -184,7 +196,7 @@ unsafe fn begin_striped_matmul_value(
         && crate::weight::weight_elements_to_address_bytes(desc.weight_row_stride)
             .map_err(|_| crate::SimError::InvalidWeightStride)
             .and_then(|_| {
-                crate::simulator::descriptor::u64_field(
+                crate::simulator::descriptor::scale_row_stride_bytes(
                     scale.map_or(desc.n, |view| view.row_stride),
                 )
             })
@@ -290,6 +302,7 @@ mod tests {
             scale_values_len: 0,
             stripe_count: 1,
             vector_op: 0,
+            output_domain: 0,
             work_context: 1,
             provider: ProviderC {
                 context: ptr::null_mut(),

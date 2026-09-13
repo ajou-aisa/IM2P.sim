@@ -56,7 +56,7 @@ pub(super) fn validate_provider_rtl_fields(desc: &MatmulDesc) -> Result<(), i32>
             crate::weight::weight_elements_to_address_bytes(desc.weight_row_stride)
                 .map_err(|_| crate::SimError::InvalidWeightStride)
         })
-        .and_then(|_| crate::simulator::descriptor::u64_field(desc.n))
+        .and_then(|_| crate::simulator::descriptor::scale_row_stride_bytes(desc.n))
         .and_then(|_| crate::simulator::descriptor::output_row_stride_bytes(desc.output_row_stride))
         .and_then(|_| crate::simulator::descriptor::u32_field(desc.m))
         .and_then(|_| crate::simulator::descriptor::u32_field(desc.n))
@@ -228,12 +228,14 @@ pub(super) fn vector_op(value: u8) -> Option<VectorOp> {
         1 => Some(VectorOp::Multiply),
         2 => Some(VectorOp::Shift),
         3 => Some(VectorOp::External),
+        4 => Some(VectorOp::UnsignedMultiply),
+        5 => Some(VectorOp::LeftShift),
         _ => None,
     }
 }
 
 pub(super) unsafe fn scale_view(
-    values: *const i8,
+    values: *const u32,
     len: usize,
     block_size: usize,
     total_k: usize,
@@ -243,7 +245,9 @@ pub(super) unsafe fn scale_view(
     valid_columns: usize,
     context: u64,
 ) -> Result<Option<KBlockScaleMatrixView<'static>>, crate::SimError> {
-    if len > isize::MAX as usize {
+    if len > isize::MAX as usize / size_of::<u32>()
+        || (!values.is_null() && !(values as usize).is_multiple_of(std::mem::align_of::<u32>()))
+    {
         return Err(crate::SimError::InvalidScaleMatrixLayout);
     }
     Ok((!values.is_null()).then(|| KBlockScaleMatrixView {

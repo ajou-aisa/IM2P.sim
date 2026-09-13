@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define IM2P_SCU_NUMERICAL_REVISION "signed-scu-sat-v2"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -38,14 +40,24 @@ enum {
   IM2P_VECTOR_MULTIPLY = 1,
   IM2P_VECTOR_SHIFT = 2,
   IM2P_VECTOR_EXTERNAL = 3,
-  IM2P_ABI_VERSION = 4,
+  IM2P_VECTOR_UNSIGNED_MULTIPLY = 4,
+  IM2P_VECTOR_LEFT_SHIFT = 5,
+  IM2P_OUTPUT_LEGACY_FINAL = 0,
+  IM2P_OUTPUT_LEGACY_BLOCK = 1,
+  IM2P_OUTPUT_SCU_FINAL = 2,
+  IM2P_ABI_VERSION = 5,
 };
 
 /*
  * The public ABI uses the selected activation/weight artifact identity.
  * A4/W4 values occupy one signed byte each; A16/W16 values occupy int16_t.
  * Activation and weight strides are bytes. Raw output storage remains signed
- * 32-bit; provider transport sign-extends INT32 lanes for A4/A8 and preserves INT64 for A16.
+ * 32-bit compatibility storage; A16 SCU final requires the provider path.
+ * Scale values are uint32_t carriers; scale strides/offsets count elements
+ * (device addresses use four bytes per element). H1 op4 accepts 0..65790;
+ * HP1 op5 accepts 0..32767 or 0x80000000 (zero). Legacy op1/2 require
+ * sign-extended int8 bit patterns. Output domain must match the selected op.
+ * Provider transport sign-extends INT32 lanes for A4/A8 and preserves INT64 for A16.
  */
 typedef int (*im2p_read_weight_i8_fn)(
     void *context, size_t row, size_t column, size_t count, int8_t *out
@@ -54,7 +66,7 @@ typedef int (*im2p_read_weight_i16_fn)(
     void *context, size_t row, size_t column, size_t count, int16_t *out
 );
 typedef int (*im2p_read_scale_fn)(
-    void *context, size_t row, size_t column, size_t count, int8_t *out
+    void *context, size_t row, size_t column, size_t count, uint32_t *out
 );
 typedef int (*im2p_write_output_fn)(
     void *context,
@@ -62,7 +74,8 @@ typedef int (*im2p_write_output_fn)(
     size_t row,
     size_t column,
     size_t count,
-    const int64_t *values
+    const int64_t *values,
+    uint32_t output_domain
 );
 
 typedef struct {
@@ -82,7 +95,7 @@ typedef struct {
   uint32_t dim;
   const void *activations;
   const void *weights;
-  const int8_t *scales;
+  const uint32_t *scales;
   int32_t *output;
   size_t m;
   size_t n;
@@ -99,6 +112,7 @@ typedef struct {
   size_t scale_valid_columns;
   size_t scale_values_len;
   uint8_t vector_op;
+  uint8_t output_domain;
   uint64_t work_context;
   im2p_provider_t provider;
 } im2p_matmul_desc_t;
@@ -111,7 +125,7 @@ typedef struct {
   uint32_t weight_storage_bytes;
   uint32_t dim;
   const void *weights;
-  const int8_t *scales;
+  const uint32_t *scales;
   int32_t *output;
   size_t m;
   size_t n;
@@ -128,6 +142,7 @@ typedef struct {
   size_t scale_values_len;
   size_t stripe_count;
   uint8_t vector_op;
+  uint8_t output_domain;
   uint64_t work_context;
   im2p_provider_t provider;
 } im2p_stripe_work_desc_t;

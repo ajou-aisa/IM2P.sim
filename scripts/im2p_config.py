@@ -33,6 +33,8 @@ class ProfileConfig(TypedDict):
     memory_read_latency: int
     memory_latency_contract: str
     numerical_semantics_revision: str
+    scale_carrier_bits: int
+    scale_storage_bytes: int
     config_source_sha256: str
     generated_config_sha256: str
 
@@ -70,6 +72,8 @@ def profile_config(activation_bits: int, weight_bits: int, dim: int) -> ProfileC
         memory_read_latency=int(source["memory_read_latency"]),
         memory_latency_contract=str(source["memory_latency_contract"]),
         numerical_semantics_revision=str(source["numerical_semantics_revision"]),
+        scale_carrier_bits=int(source["scale_carrier_bits"]),
+        scale_storage_bytes=int(source["scale_storage_bytes"]),
         config_source_sha256=config_fingerprint(),
         generated_config_sha256=hashlib.sha256("".join(generated.values()).encode()).hexdigest(),
     )
@@ -96,6 +100,8 @@ def generated_files() -> dict[Path, str]:
               f"#define IM2P_MEMORY_READ_LATENCY {source['memory_read_latency']}",
               f"#define IM2P_MEMORY_LATENCY_CONTRACT \"{source['memory_latency_contract']}\"",
               f"#define IM2P_NUMERICAL_SEMANTICS_REVISION \"{source['numerical_semantics_revision']}\"", ""]
+    header.extend([f"#define IM2P_SCALE_CARRIER_BITS {source['scale_carrier_bits']}",
+                   f"#define IM2P_SCALE_STORAGE_BYTES {source['scale_storage_bytes']}", ""])
     for index, (precision, width) in enumerate(widths.items()):
         bsv.extend([f"typedef {precision} A{precision}InputWidth;",
                     f"typedef {precision} A{precision}WeightWidth;",
@@ -105,7 +111,7 @@ def generated_files() -> dict[Path, str]:
                        f"#define IM2P_ACCUMULATOR_BITS {width}"])
     bsv.extend(["typedef A8InputWidth DefaultInputWidth;", "typedef A8WeightWidth DefaultWeightWidth;",
                 "typedef A8ProductWidth DefaultProductWidth;", "typedef A8AccumulatorWidth DefaultAccumulatorWidth;",
-                "typedef 8 DefaultScaleWidth;",
+                f"typedef {source['scale_carrier_bits']} DefaultScaleWidth;",
                 "typedef IntegerAccumulatorRows#(DefaultArrayDim, DefaultAccumulatorWidth) DefaultAccumulatorRows;", "", "endpackage", ""])
     header.extend(["#else", '#error "unsupported IM2P activation/weight profile"', "#endif",
                    "#define IM2P_PARTIAL_BITS IM2P_ACCUMULATOR_BITS",

@@ -1,0 +1,2218 @@
+{
+  "numerical_revision": "signed-scu-sat-v2",
+  "allowed_dut_revisions": [
+    "signed-scu-sat-v2"
+  ],
+  "source": "independent Python arbitrary integers and binary64, never DUT results",
+  "overflow_free_only": false,
+  "cases": {
+    "h1_c0_r0_sign1": {
+      "integer": 0,
+      "float32_bits": 0,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        0,
+        0
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r0_sign-1": {
+      "integer": 0,
+      "float32_bits": 0,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        0,
+        0
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 0,
+          "scaled": 0,
+          "scu_saturated": false,
+          "accumulator": 0,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r1_sign1": {
+      "integer": 64,
+      "float32_bits": 1048576000,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        1,
+        1
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 16,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 48,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 64,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r1_sign-1": {
+      "integer": -64,
+      "float32_bits": 3196059648,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        1,
+        1
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -16,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -48,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -64,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r256_sign1": {
+      "integer": 16384,
+      "float32_bits": 1115684864,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        256,
+        256
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 8192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 16384,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r256_sign-1": {
+      "integer": -16384,
+      "float32_bits": 3263168512,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        256,
+        256
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -8192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -16384,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r65535_sign1": {
+      "integer": 4194240,
+      "float32_bits": 1182793472,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65535,
+        65535
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65535,
+          "scaled": 1048560,
+          "scu_saturated": false,
+          "accumulator": 1048560,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65535,
+          "scaled": 1048560,
+          "scu_saturated": false,
+          "accumulator": 2097120,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65535,
+          "scaled": 1048560,
+          "scu_saturated": false,
+          "accumulator": 3145680,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65535,
+          "scaled": 1048560,
+          "scu_saturated": false,
+          "accumulator": 4194240,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c0_r65535_sign-1": {
+      "integer": -4194240,
+      "float32_bits": 3330277120,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65535,
+        65535
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65535,
+          "scaled": -1048560,
+          "scu_saturated": false,
+          "accumulator": -1048560,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65535,
+          "scaled": -1048560,
+          "scu_saturated": false,
+          "accumulator": -2097120,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65535,
+          "scaled": -1048560,
+          "scu_saturated": false,
+          "accumulator": -3145680,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65535,
+          "scaled": -1048560,
+          "scu_saturated": false,
+          "accumulator": -4194240,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r0_sign1": {
+      "integer": 64,
+      "float32_bits": 1048576000,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        1,
+        1
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 16,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 48,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 1,
+          "scaled": 16,
+          "scu_saturated": false,
+          "accumulator": 64,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r0_sign-1": {
+      "integer": -64,
+      "float32_bits": 3196059648,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        1,
+        1
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -16,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -48,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 1,
+          "scaled": -16,
+          "scu_saturated": false,
+          "accumulator": -64,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r1_sign1": {
+      "integer": 128,
+      "float32_bits": 1056964608,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        2,
+        2
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 2,
+          "scaled": 32,
+          "scu_saturated": false,
+          "accumulator": 32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 2,
+          "scaled": 32,
+          "scu_saturated": false,
+          "accumulator": 64,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 2,
+          "scaled": 32,
+          "scu_saturated": false,
+          "accumulator": 96,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 2,
+          "scaled": 32,
+          "scu_saturated": false,
+          "accumulator": 128,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r1_sign-1": {
+      "integer": -128,
+      "float32_bits": 3204448256,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        2,
+        2
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 2,
+          "scaled": -32,
+          "scu_saturated": false,
+          "accumulator": -32,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 2,
+          "scaled": -32,
+          "scu_saturated": false,
+          "accumulator": -64,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 2,
+          "scaled": -32,
+          "scu_saturated": false,
+          "accumulator": -96,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 2,
+          "scaled": -32,
+          "scu_saturated": false,
+          "accumulator": -128,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r256_sign1": {
+      "integer": 16448,
+      "float32_bits": 1115717632,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        257,
+        257
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 257,
+          "scaled": 4112,
+          "scu_saturated": false,
+          "accumulator": 4112,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 257,
+          "scaled": 4112,
+          "scu_saturated": false,
+          "accumulator": 8224,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 257,
+          "scaled": 4112,
+          "scu_saturated": false,
+          "accumulator": 12336,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 257,
+          "scaled": 4112,
+          "scu_saturated": false,
+          "accumulator": 16448,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r256_sign-1": {
+      "integer": -16448,
+      "float32_bits": 3263201280,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        257,
+        257
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 257,
+          "scaled": -4112,
+          "scu_saturated": false,
+          "accumulator": -4112,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 257,
+          "scaled": -4112,
+          "scu_saturated": false,
+          "accumulator": -8224,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 257,
+          "scaled": -4112,
+          "scu_saturated": false,
+          "accumulator": -12336,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 257,
+          "scaled": -4112,
+          "scu_saturated": false,
+          "accumulator": -16448,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r65535_sign1": {
+      "integer": 4194304,
+      "float32_bits": 1182793728,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65536,
+        65536
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65536,
+          "scaled": 1048576,
+          "scu_saturated": false,
+          "accumulator": 1048576,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65536,
+          "scaled": 1048576,
+          "scu_saturated": false,
+          "accumulator": 2097152,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65536,
+          "scaled": 1048576,
+          "scu_saturated": false,
+          "accumulator": 3145728,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65536,
+          "scaled": 1048576,
+          "scu_saturated": false,
+          "accumulator": 4194304,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c1_r65535_sign-1": {
+      "integer": -4194304,
+      "float32_bits": 3330277376,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65536,
+        65536
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65536,
+          "scaled": -1048576,
+          "scu_saturated": false,
+          "accumulator": -1048576,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65536,
+          "scaled": -1048576,
+          "scu_saturated": false,
+          "accumulator": -2097152,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65536,
+          "scaled": -1048576,
+          "scu_saturated": false,
+          "accumulator": -3145728,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65536,
+          "scaled": -1048576,
+          "scu_saturated": false,
+          "accumulator": -4194304,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r0_sign1": {
+      "integer": 8128,
+      "float32_bits": 1107165184,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        127,
+        127
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 127,
+          "scaled": 2032,
+          "scu_saturated": false,
+          "accumulator": 2032,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 127,
+          "scaled": 2032,
+          "scu_saturated": false,
+          "accumulator": 4064,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 127,
+          "scaled": 2032,
+          "scu_saturated": false,
+          "accumulator": 6096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 127,
+          "scaled": 2032,
+          "scu_saturated": false,
+          "accumulator": 8128,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r0_sign-1": {
+      "integer": -8128,
+      "float32_bits": 3254648832,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        127,
+        127
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 127,
+          "scaled": -2032,
+          "scu_saturated": false,
+          "accumulator": -2032,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 127,
+          "scaled": -2032,
+          "scu_saturated": false,
+          "accumulator": -4064,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 127,
+          "scaled": -2032,
+          "scu_saturated": false,
+          "accumulator": -6096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 127,
+          "scaled": -2032,
+          "scu_saturated": false,
+          "accumulator": -8128,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r1_sign1": {
+      "integer": 8192,
+      "float32_bits": 1107296256,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        128,
+        128
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 2048,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 8192,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r1_sign-1": {
+      "integer": -8192,
+      "float32_bits": 3254779904,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        128,
+        128
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -2048,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -8192,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r256_sign1": {
+      "integer": 24512,
+      "float32_bits": 1119846400,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        383,
+        383
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 383,
+          "scaled": 6128,
+          "scu_saturated": false,
+          "accumulator": 6128,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 383,
+          "scaled": 6128,
+          "scu_saturated": false,
+          "accumulator": 12256,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 383,
+          "scaled": 6128,
+          "scu_saturated": false,
+          "accumulator": 18384,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 383,
+          "scaled": 6128,
+          "scu_saturated": false,
+          "accumulator": 24512,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r256_sign-1": {
+      "integer": -24512,
+      "float32_bits": 3267330048,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        383,
+        383
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 383,
+          "scaled": -6128,
+          "scu_saturated": false,
+          "accumulator": -6128,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 383,
+          "scaled": -6128,
+          "scu_saturated": false,
+          "accumulator": -12256,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 383,
+          "scaled": -6128,
+          "scu_saturated": false,
+          "accumulator": -18384,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 383,
+          "scaled": -6128,
+          "scu_saturated": false,
+          "accumulator": -24512,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r65535_sign1": {
+      "integer": 4202368,
+      "float32_bits": 1182809856,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65662,
+        65662
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65662,
+          "scaled": 1050592,
+          "scu_saturated": false,
+          "accumulator": 1050592,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65662,
+          "scaled": 1050592,
+          "scu_saturated": false,
+          "accumulator": 2101184,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65662,
+          "scaled": 1050592,
+          "scu_saturated": false,
+          "accumulator": 3151776,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65662,
+          "scaled": 1050592,
+          "scu_saturated": false,
+          "accumulator": 4202368,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c127_r65535_sign-1": {
+      "integer": -4202368,
+      "float32_bits": 3330293504,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65662,
+        65662
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65662,
+          "scaled": -1050592,
+          "scu_saturated": false,
+          "accumulator": -1050592,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65662,
+          "scaled": -1050592,
+          "scu_saturated": false,
+          "accumulator": -2101184,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65662,
+          "scaled": -1050592,
+          "scu_saturated": false,
+          "accumulator": -3151776,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65662,
+          "scaled": -1050592,
+          "scu_saturated": false,
+          "accumulator": -4202368,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r0_sign1": {
+      "integer": 8192,
+      "float32_bits": 1107296256,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        128,
+        128
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 2048,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 128,
+          "scaled": 2048,
+          "scu_saturated": false,
+          "accumulator": 8192,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r0_sign-1": {
+      "integer": -8192,
+      "float32_bits": 3254779904,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        128,
+        128
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -2048,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 128,
+          "scaled": -2048,
+          "scu_saturated": false,
+          "accumulator": -8192,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r1_sign1": {
+      "integer": 8256,
+      "float32_bits": 1107361792,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        129,
+        129
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 129,
+          "scaled": 2064,
+          "scu_saturated": false,
+          "accumulator": 2064,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 129,
+          "scaled": 2064,
+          "scu_saturated": false,
+          "accumulator": 4128,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 129,
+          "scaled": 2064,
+          "scu_saturated": false,
+          "accumulator": 6192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 129,
+          "scaled": 2064,
+          "scu_saturated": false,
+          "accumulator": 8256,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r1_sign-1": {
+      "integer": -8256,
+      "float32_bits": 3254845440,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        129,
+        129
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 129,
+          "scaled": -2064,
+          "scu_saturated": false,
+          "accumulator": -2064,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 129,
+          "scaled": -2064,
+          "scu_saturated": false,
+          "accumulator": -4128,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 129,
+          "scaled": -2064,
+          "scu_saturated": false,
+          "accumulator": -6192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 129,
+          "scaled": -2064,
+          "scu_saturated": false,
+          "accumulator": -8256,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r256_sign1": {
+      "integer": 24576,
+      "float32_bits": 1119879168,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        384,
+        384
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 384,
+          "scaled": 6144,
+          "scu_saturated": false,
+          "accumulator": 6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 384,
+          "scaled": 6144,
+          "scu_saturated": false,
+          "accumulator": 12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 384,
+          "scaled": 6144,
+          "scu_saturated": false,
+          "accumulator": 18432,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 384,
+          "scaled": 6144,
+          "scu_saturated": false,
+          "accumulator": 24576,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r256_sign-1": {
+      "integer": -24576,
+      "float32_bits": 3267362816,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        384,
+        384
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 384,
+          "scaled": -6144,
+          "scu_saturated": false,
+          "accumulator": -6144,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 384,
+          "scaled": -6144,
+          "scu_saturated": false,
+          "accumulator": -12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 384,
+          "scaled": -6144,
+          "scu_saturated": false,
+          "accumulator": -18432,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 384,
+          "scaled": -6144,
+          "scu_saturated": false,
+          "accumulator": -24576,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r65535_sign1": {
+      "integer": 4202432,
+      "float32_bits": 1182809984,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65663,
+        65663
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65663,
+          "scaled": 1050608,
+          "scu_saturated": false,
+          "accumulator": 1050608,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65663,
+          "scaled": 1050608,
+          "scu_saturated": false,
+          "accumulator": 2101216,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65663,
+          "scaled": 1050608,
+          "scu_saturated": false,
+          "accumulator": 3151824,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65663,
+          "scaled": 1050608,
+          "scu_saturated": false,
+          "accumulator": 4202432,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c128_r65535_sign-1": {
+      "integer": -4202432,
+      "float32_bits": 3330293632,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65663,
+        65663
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65663,
+          "scaled": -1050608,
+          "scu_saturated": false,
+          "accumulator": -1050608,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65663,
+          "scaled": -1050608,
+          "scu_saturated": false,
+          "accumulator": -2101216,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65663,
+          "scaled": -1050608,
+          "scu_saturated": false,
+          "accumulator": -3151824,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65663,
+          "scaled": -1050608,
+          "scu_saturated": false,
+          "accumulator": -4202432,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r0_sign1": {
+      "integer": 12800,
+      "float32_bits": 1112014848,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        200,
+        200
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 200,
+          "scaled": 3200,
+          "scu_saturated": false,
+          "accumulator": 3200,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 200,
+          "scaled": 3200,
+          "scu_saturated": false,
+          "accumulator": 6400,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 200,
+          "scaled": 3200,
+          "scu_saturated": false,
+          "accumulator": 9600,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 200,
+          "scaled": 3200,
+          "scu_saturated": false,
+          "accumulator": 12800,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r0_sign-1": {
+      "integer": -12800,
+      "float32_bits": 3259498496,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        200,
+        200
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 200,
+          "scaled": -3200,
+          "scu_saturated": false,
+          "accumulator": -3200,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 200,
+          "scaled": -3200,
+          "scu_saturated": false,
+          "accumulator": -6400,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 200,
+          "scaled": -3200,
+          "scu_saturated": false,
+          "accumulator": -9600,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 200,
+          "scaled": -3200,
+          "scu_saturated": false,
+          "accumulator": -12800,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r1_sign1": {
+      "integer": 12864,
+      "float32_bits": 1112080384,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        201,
+        201
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 201,
+          "scaled": 3216,
+          "scu_saturated": false,
+          "accumulator": 3216,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 201,
+          "scaled": 3216,
+          "scu_saturated": false,
+          "accumulator": 6432,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 201,
+          "scaled": 3216,
+          "scu_saturated": false,
+          "accumulator": 9648,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 201,
+          "scaled": 3216,
+          "scu_saturated": false,
+          "accumulator": 12864,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r1_sign-1": {
+      "integer": -12864,
+      "float32_bits": 3259564032,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        201,
+        201
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 201,
+          "scaled": -3216,
+          "scu_saturated": false,
+          "accumulator": -3216,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 201,
+          "scaled": -3216,
+          "scu_saturated": false,
+          "accumulator": -6432,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 201,
+          "scaled": -3216,
+          "scu_saturated": false,
+          "accumulator": -9648,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 201,
+          "scaled": -3216,
+          "scu_saturated": false,
+          "accumulator": -12864,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r256_sign1": {
+      "integer": 29184,
+      "float32_bits": 1122238464,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        456,
+        456
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 456,
+          "scaled": 7296,
+          "scu_saturated": false,
+          "accumulator": 7296,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 456,
+          "scaled": 7296,
+          "scu_saturated": false,
+          "accumulator": 14592,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 456,
+          "scaled": 7296,
+          "scu_saturated": false,
+          "accumulator": 21888,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 456,
+          "scaled": 7296,
+          "scu_saturated": false,
+          "accumulator": 29184,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r256_sign-1": {
+      "integer": -29184,
+      "float32_bits": 3269722112,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        456,
+        456
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 456,
+          "scaled": -7296,
+          "scu_saturated": false,
+          "accumulator": -7296,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 456,
+          "scaled": -7296,
+          "scu_saturated": false,
+          "accumulator": -14592,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 456,
+          "scaled": -7296,
+          "scu_saturated": false,
+          "accumulator": -21888,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 456,
+          "scaled": -7296,
+          "scu_saturated": false,
+          "accumulator": -29184,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r65535_sign1": {
+      "integer": 4207040,
+      "float32_bits": 1182819200,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65735,
+        65735
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65735,
+          "scaled": 1051760,
+          "scu_saturated": false,
+          "accumulator": 1051760,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65735,
+          "scaled": 1051760,
+          "scu_saturated": false,
+          "accumulator": 2103520,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65735,
+          "scaled": 1051760,
+          "scu_saturated": false,
+          "accumulator": 3155280,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65735,
+          "scaled": 1051760,
+          "scu_saturated": false,
+          "accumulator": 4207040,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c200_r65535_sign-1": {
+      "integer": -4207040,
+      "float32_bits": 3330302848,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65735,
+        65735
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65735,
+          "scaled": -1051760,
+          "scu_saturated": false,
+          "accumulator": -1051760,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65735,
+          "scaled": -1051760,
+          "scu_saturated": false,
+          "accumulator": -2103520,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65735,
+          "scaled": -1051760,
+          "scu_saturated": false,
+          "accumulator": -3155280,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65735,
+          "scaled": -1051760,
+          "scu_saturated": false,
+          "accumulator": -4207040,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r0_sign1": {
+      "integer": 16320,
+      "float32_bits": 1115619328,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        255,
+        255
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 255,
+          "scaled": 4080,
+          "scu_saturated": false,
+          "accumulator": 4080,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 255,
+          "scaled": 4080,
+          "scu_saturated": false,
+          "accumulator": 8160,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 255,
+          "scaled": 4080,
+          "scu_saturated": false,
+          "accumulator": 12240,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 255,
+          "scaled": 4080,
+          "scu_saturated": false,
+          "accumulator": 16320,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r0_sign-1": {
+      "integer": -16320,
+      "float32_bits": 3263102976,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        255,
+        255
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 255,
+          "scaled": -4080,
+          "scu_saturated": false,
+          "accumulator": -4080,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 255,
+          "scaled": -4080,
+          "scu_saturated": false,
+          "accumulator": -8160,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 255,
+          "scaled": -4080,
+          "scu_saturated": false,
+          "accumulator": -12240,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 255,
+          "scaled": -4080,
+          "scu_saturated": false,
+          "accumulator": -16320,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r1_sign1": {
+      "integer": 16384,
+      "float32_bits": 1115684864,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        256,
+        256
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 8192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 256,
+          "scaled": 4096,
+          "scu_saturated": false,
+          "accumulator": 16384,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r1_sign-1": {
+      "integer": -16384,
+      "float32_bits": 3263168512,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        256,
+        256
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -4096,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -8192,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -12288,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 256,
+          "scaled": -4096,
+          "scu_saturated": false,
+          "accumulator": -16384,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r256_sign1": {
+      "integer": 32704,
+      "float32_bits": 1124040704,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        511,
+        511
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 511,
+          "scaled": 8176,
+          "scu_saturated": false,
+          "accumulator": 8176,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 511,
+          "scaled": 8176,
+          "scu_saturated": false,
+          "accumulator": 16352,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 511,
+          "scaled": 8176,
+          "scu_saturated": false,
+          "accumulator": 24528,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 511,
+          "scaled": 8176,
+          "scu_saturated": false,
+          "accumulator": 32704,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r256_sign-1": {
+      "integer": -32704,
+      "float32_bits": 3271524352,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        511,
+        511
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 511,
+          "scaled": -8176,
+          "scu_saturated": false,
+          "accumulator": -8176,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 511,
+          "scaled": -8176,
+          "scu_saturated": false,
+          "accumulator": -16352,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 511,
+          "scaled": -8176,
+          "scu_saturated": false,
+          "accumulator": -24528,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 511,
+          "scaled": -8176,
+          "scu_saturated": false,
+          "accumulator": -32704,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r65535_sign1": {
+      "integer": 4210560,
+      "float32_bits": 1182826240,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65790,
+        65790
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": 16,
+          "metadata": 65790,
+          "scaled": 1052640,
+          "scu_saturated": false,
+          "accumulator": 1052640,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65790,
+          "scaled": 1052640,
+          "scu_saturated": false,
+          "accumulator": 2105280,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65790,
+          "scaled": 1052640,
+          "scu_saturated": false,
+          "accumulator": 3157920,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": 16,
+          "metadata": 65790,
+          "scaled": 1052640,
+          "scu_saturated": false,
+          "accumulator": 4210560,
+          "accumulator_saturated": false
+        }
+      ]
+    },
+    "h1_c255_r65535_sign-1": {
+      "integer": -4210560,
+      "float32_bits": 3330309888,
+      "output_domain": 2,
+      "callbacks": 1,
+      "metadata": [
+        65790,
+        65790
+      ],
+      "operation": 4,
+      "overflow_free": true,
+      "trace": [
+        {
+          "partial": -16,
+          "metadata": 65790,
+          "scaled": -1052640,
+          "scu_saturated": false,
+          "accumulator": -1052640,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65790,
+          "scaled": -1052640,
+          "scu_saturated": false,
+          "accumulator": -2105280,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65790,
+          "scaled": -1052640,
+          "scu_saturated": false,
+          "accumulator": -3157920,
+          "accumulator_saturated": false
+        },
+        {
+          "partial": -16,
+          "metadata": 65790,
+          "scaled": -1052640,
+          "scu_saturated": false,
+          "accumulator": -4210560,
+          "accumulator_saturated": false
+        }
+      ]
+    }
+  }
+}

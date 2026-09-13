@@ -9,6 +9,7 @@ pub(super) fn validate_work(
     work: &MatmulWork<'_>,
     output: &MatrixViewMut<'_, i32>,
 ) -> Result<(), Error> {
+    super::super::validation::reject_scu_i32_output(work.vector_op)?;
     crate::activation_validation::validate_work_activations(work)?;
     for row in 0..work.weights.rows {
         let start = row * work.weights.row_stride;
@@ -28,6 +29,7 @@ pub(super) fn validate_work(
     }
     if let Some(scales) = work.scales {
         super::super::validation::validate_scale_matrix(scales, k, n)?;
+        super::super::validation::validate_scale_metadata(scales, work.vector_op)?;
     }
     Ok(())
 }
@@ -73,18 +75,27 @@ pub(super) fn resolve_weight(
 pub(super) fn resolve_scale(
     view: crate::KBlockScaleMatrixView<'_>,
     request: ffi::ReadRequest,
-) -> Result<Vec<i8>, Error> {
+) -> Result<Vec<u32>, Error> {
     let offset = request
         .address
         .checked_sub(SCALE_BASE)
-        .ok_or(Error::InvalidKRange)? as usize;
-    let block = offset / view.row_stride;
-    let column = offset % view.row_stride;
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(Error::InvalidKRange)?;
+    let (block, column) = super::super::descriptor::scale_byte_indices(offset, view.row_stride)?;
     let count = request.element_count as usize;
-    if column + count > view.valid_columns {
+    let logical_column = column
+        .checked_sub(view.column_offset)
+        .ok_or(Error::InvalidScaleMatrixLayout)?;
+    if logical_column
+        .checked_add(count)
+        .is_none_or(|end| end > view.valid_columns)
+    {
         return Err(Error::InvalidScaleMatrixLayout);
     }
-    let start = block * view.row_stride + view.column_offset + column;
+    let start = block
+        .checked_mul(view.row_stride)
+        .and_then(|value| value.checked_add(column))
+        .ok_or(Error::InvalidScaleMatrixLayout)?;
     let end = start
         .checked_add(count)
         .ok_or(Error::InvalidScaleMatrixLayout)?;
@@ -239,5 +250,40 @@ mod activation_boundary_tests {
         let output = MatrixViewMut::new(&mut output, 1, 1, 1).expect("valid output");
 
         assert_eq!(validate_work(&work, &output), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod scale_address_tests {
+    use super::{resolve_scale, SCALE_BASE};
+    #[test]
+    fn scale_request_uses_four_byte_carriers_with_column_offset_and_padding() {
+        let values = [999, 257, 65536, 999, 999, 65790, 0x8000_0000, 999];
+        let view = crate::KBlockScaleMatrixView {
+            values: &values,
+            block_size: 32,
+            total_k: 64,
+            columns: 3,
+            row_stride: 4,
+            column_offset: 1,
+            valid_columns: 2,
+            context: 7,
+        };
+        let request = crate::ffi::ReadRequest {
+            address: SCALE_BASE + 4 * (4 + 1),
+            element_count: 2,
+            ..Default::default()
+        };
+        assert_eq!(resolve_scale(view, request).unwrap(), [65790, 0x8000_0000]);
+        let unaligned = crate::ffi::ReadRequest {
+            address: request.address + 1,
+            ..request
+        };
+        assert!(resolve_scale(view, unaligned).is_err());
+        let padding = crate::ffi::ReadRequest {
+            address: SCALE_BASE + 4 * 4,
+            ..request
+        };
+        assert!(resolve_scale(view, padding).is_err());
     }
 }

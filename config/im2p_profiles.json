@@ -7,5 +7,7 @@
   "memory_backend": "column-banked-sync-bram",
   "memory_read_latency": 1,
   "memory_latency_contract": "serialized-rmw-v1",
-  "numerical_semantics_revision": "signed-wrap-v1"
+  "scale_carrier_bits": 32,
+  "scale_storage_bytes": 4,
+  "numerical_semantics_revision": "signed-scu-sat-v2"
 }

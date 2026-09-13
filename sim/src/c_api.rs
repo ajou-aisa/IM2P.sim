@@ -13,14 +13,16 @@ mod helpers;
 mod stream;
 mod types;
 
-use contract::{provider_requested, require_identity, selected_weight_callback, Identity};
+use contract::{
+    provider_requested, require_identity, require_output_domain, selected_weight_callback, Identity,
+};
 use helpers::{
     execute_full, execute_full_provider, status_for_error, validate_provider_rtl_fields,
     write_extended_stats, write_stats,
 };
 use types::{MatmulDesc, MatmulDescC, WorkStatsC, WorkStatsExtendedC};
 
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
 const CONFIGURATION_MISMATCH: i32 = -7;
 
 fn configured_dim() -> u32 {
@@ -119,7 +121,13 @@ unsafe fn execute_matmul_value(
         return Err(-4);
     };
     require_identity(Identity::from_matmul(desc))?;
-    if desc.activations.is_null()
+    require_output_domain(
+        desc.vector_op,
+        desc.output_domain,
+        provider_requested(desc.provider),
+    )?;
+    if (!desc.scales.is_null() && !(desc.scales as usize).is_multiple_of(align_of::<u32>()))
+        || desc.activations.is_null()
         || !(desc.activations as usize).is_multiple_of(align_of::<ActivationValue>())
         || (!desc.weights.is_null()
             && !(desc.weights as usize).is_multiple_of(align_of::<WeightValue>()))

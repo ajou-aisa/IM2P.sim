@@ -19,6 +19,13 @@ enum class Mode : uint8_t {
   stripe_pipeline,
 };
 
+enum class NumericalContract : uint8_t {
+  // H1/HP1 use RTL SCU op4/op5 and one final integer per output.
+  scu_final_integer,
+  // H1/HP1 use External op3 and reconstruct each block with its own scale.
+  main_external,
+};
+
 enum class Route : uint8_t {
   q8_0_unpacked_to_h1,
   q8_h0,
@@ -123,10 +130,15 @@ struct Options {
   void *full_executor_context = nullptr;
   int (*full_executor)(void *, const im2p_matmul_desc_t *,
                        im2p_work_stats_extended_t *) = nullptr;
-  // PIPELINE only, mutually exclusive with FULL and residual execution hooks.
+  // PIPELINE only, mutually exclusive with the FULL execution hook. Residual
+  // callbacks receive a null simulator and must use their owned transport.
+  // poll must release the completed dense job before a residual callback can
+  // borrow the same physical core. Semantic credit follows residual completion.
   // Failure never destroys/resets the borrowed physical executor or retries in
   // the simulator. The caller retains device ownership for diagnosis.
   const StreamExecutor *stream_executor = nullptr;
+  // Explicit arithmetic selection; existing callers retain the SCU contract.
+  NumericalContract numerical_contract = NumericalContract::scu_final_integer;
 };
 
 struct StripeMetadata {

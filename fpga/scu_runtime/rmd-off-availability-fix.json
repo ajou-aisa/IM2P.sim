@@ -1,0 +1,9 @@
+{
+  "file": "fpga/scu_runtime/host-overlay/ggml/src/ggml-gemmini/ggml-gemmini.cpp",
+  "before_sha256": "3187504f76b95da11556740b14b9bf1ec63ab260c8c11d96e45bb97a70959d88",
+  "after_sha256": "de5a21ce0f42eaa34e976d5791ca66e1bae4384533ea92ec194c7f15d0ea5207",
+  "cause": "RMD WS availability required with FPGA RMD OFF",
+  "preserved": "CPU/SIM condition and WS option; no residual implementation change",
+  "failure_evidence": "/mnt/fpga-build/im2p/llama-fpga-runtime-20260911-02/tests/graph-small-rtl-01",
+  "retest": "pending fresh standard backend graph integration"
+}

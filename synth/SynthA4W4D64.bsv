@@ -14,7 +14,7 @@ module mkSynthA4W4D64(IM2PCoreIfc#(
     Int#(A4WeightWidth), // weight width
     Int#(A4ProductWidth), // product width
     Int#(A4AccumulatorWidth), // accumulator/output-request width
-    Int#(8) // scale width
+    UInt#(32) // ABI5 typed scale metadata
 ));
     let array <- mkSystolicArrayA4W4D64;
     let core <- mkIM2PCoreWithArray(array);

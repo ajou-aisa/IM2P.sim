@@ -74,8 +74,10 @@ proc fifo_attribution {stage} {
 
 proc main {} {
     global argv
-    if {[llength $argv] != 4} { error "Expected output_directory top mode hierarchy" }
-    lassign $argv out top mode hierarchy
+    if {[llength $argv] < 4 || [llength $argv] > 5} { error "Expected output_directory top mode hierarchy ?directive?" }
+    lassign $argv out top mode hierarchy directive
+    if {$directive eq ""} {set directive Default}
+    if {$directive ni {Default AreaOptimized_high}} {error "Invalid synthesis directive"}
     if {$mode ni {area timing route} || $hierarchy ni {rebuilt none}} { error "Invalid synthesis options" }
     if {$mode eq "route" && $top ne "mkSynthA8W8D16"} { error "Route restricted to A8 DIM16 core" }
     cd $out
@@ -91,8 +93,8 @@ proc main {} {
     } else {
         write_text timing-assumptions.txt "Unclocked OOC area attribution; no timing claim."
     }
-    write_text synthesis-options.txt "synth_design -top $top -part xc7a100tcsg324-1 -mode out_of_context -flatten_hierarchy $hierarchy\nopt_design"
-    synth_design -top $top -part xc7a100tcsg324-1 -mode out_of_context -flatten_hierarchy $hierarchy
+    write_text synthesis-options.txt "synth_design -top $top -part xc7a100tcsg324-1 -mode out_of_context -flatten_hierarchy $hierarchy -directive $directive\nopt_design"
+    synth_design -top $top -part xc7a100tcsg324-1 -mode out_of_context -flatten_hierarchy $hierarchy -directive $directive
     if {$timed && [llength [get_clocks -quiet core_clk]] != 1} { error "Real core clock was not created" }
     reports synth $timed
     fifo_attribution synth

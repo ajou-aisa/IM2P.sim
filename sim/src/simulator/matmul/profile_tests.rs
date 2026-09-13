@@ -5,7 +5,8 @@ use crate::{Im2pSimulator, MatmulLayout, MatrixView, SimError, VectorOp};
 
 struct ProviderState {
     weight: i16,
-    scale: i8,
+    scale: u32,
+    domain: crate::OutputDomain,
     output: Vec<(usize, i64)>,
 }
 
@@ -43,7 +44,7 @@ unsafe extern "C" fn scale(
     _row: usize,
     _column: usize,
     count: usize,
-    values: *mut i8,
+    values: *mut u32,
 ) -> i32 {
     // SAFETY: provider owns context; bridge lends count writable scale lanes.
     let state = unsafe { &*context.cast::<ProviderState>() };
@@ -58,12 +59,16 @@ unsafe extern "C" fn output(
     column: usize,
     count: usize,
     values: *const i64,
+    output_domain: u32,
 ) -> i32 {
     if row != 0 || column != 0 || count != 1 {
         return -1;
     }
     // SAFETY: callback runs serially, context lives across execute, one lane is readable.
     let state = unsafe { &mut *context.cast::<ProviderState>() };
+    if output_domain != state.domain as u32 {
+        return -1;
+    }
     state.output.push((block, unsafe { *values }));
     0
 }
@@ -80,7 +85,8 @@ fn run(case: Case) -> Result<Vec<(usize, i64)>, SimError> {
     let _guard = super::PROVIDER_BOUNDARY_TEST_LOCK.lock().unwrap();
     let mut state = ProviderState {
         weight: case.input,
-        scale: case.scale,
+        scale: case.scale as i32 as u32,
+        domain: case.operation.output_domain(),
         output: Vec::new(),
     };
     let activation = crate::parse_activation(i32::from(case.input)).unwrap();
@@ -213,7 +219,7 @@ fn oversized_host_addresses_are_rejected_before_start_edge() -> Result<(), SimEr
             reduction_count: 1,
             scale_total_k: 1,
             scale_block_size: 1,
-            scale_row_stride: 1,
+            scale_row_stride: 4,
             output_row_stride: 1_u64 << 63,
             ..valid
         },

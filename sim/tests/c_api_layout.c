@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-_Static_assert(IM2P_ABI_VERSION == 4, "ABI identity changed");
+_Static_assert(IM2P_ABI_VERSION == 5, "ABI identity changed");
 _Static_assert(sizeof(im2p_work_stats_t) == 27 * sizeof(uint64_t),
                "base stats layout changed");
 _Static_assert(sizeof(im2p_work_stats_extended_t) == 41 * sizeof(uint64_t),
@@ -16,7 +16,10 @@ _Static_assert(
     offsetof(im2p_work_stats_extended_t, lookahead_start_cycle) ==
         40 * sizeof(uint64_t),
     "extended stats tail changed");
-_Static_assert(IM2P_VECTOR_EXTERNAL == 3, "vector encoding changed");
+_Static_assert(IM2P_VECTOR_EXTERNAL == 3, "legacy vector encoding changed");
+_Static_assert(IM2P_VECTOR_UNSIGNED_MULTIPLY == 4 && IM2P_VECTOR_LEFT_SHIFT == 5, "SCU vector encoding");
+_Static_assert(offsetof(im2p_matmul_desc_t, output_domain) == offsetof(im2p_matmul_desc_t, vector_op) + 1, "full output domain layout");
+_Static_assert(offsetof(im2p_stripe_work_desc_t, output_domain) == offsetof(im2p_stripe_work_desc_t, vector_op) + 1, "stripe output domain layout");
 _Static_assert(sizeof(im2p_provider_t) == 40, "provider layout changed");
 _Static_assert(offsetof(im2p_matmul_desc_t, activations) == 24,
                "full descriptor identity prefix changed");

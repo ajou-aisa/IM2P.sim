@@ -1,5 +1,18 @@
 # 선택적 Gemmini C++ 프런트엔드
 
+> 수치 계약은 명시적으로 선택한다. 현재 bounded FPGA의 `main_external`은
+> main의 block raw output·host reconstruction·checked residual merge를 보존한다.
+> 별도 `scu_final_integer` 계약은 ABI5/op4·5에서 RTL block scale을 적용하며
+> residual-enabled 실행을 거부한다. 두 raw domain은 서로 비교하지 않는다.
+> [현재 stripe/provider 계약](../docs/HOST_STRIPE_CONTRACT.md)과
+> [SCU final-integer 보고서](../docs/SCU_BLOCK_SCALE_FIX.md)를 구분한다.
+
+아래 simulator handle·clock 설명은 기존 main/R1 시뮬레이터 경로다.
+Bounded FPGA는 같은 frontend의 dense/residual 순서를 한 physical core에서
+직렬 실행하며, residual dot을 별도 simulator나 CPU dot으로 대체하지 않는다.
+`rtl:`은 synthesis core/provider simulation, `uart4:`는 같은 core의 bulk UART
+transport를 명시적으로 선택한다. 장치 열기는 실제 실행 때만 수행한다.
+
 `frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. 모든 route는 activation/weight width와 storage identity를 포함하는 단일 canonical ABI를 사용한다. Typed provider transport는 W4/W8/W16을 구분하고 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
 
 `im2p::gemmini`가 공개하는 frontend mode는 정확히 두 개다.

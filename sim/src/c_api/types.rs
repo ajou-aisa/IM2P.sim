@@ -7,7 +7,7 @@ use crate::{ActivationValue, Im2pSimulator, StripedMatmul, WeightValue};
 pub struct MatmulDesc {
     pub activations: *const ActivationValue,
     pub weights: *const WeightValue,
-    pub scales: *const i8,
+    pub scales: *const u32,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
@@ -29,7 +29,7 @@ pub struct MatmulDesc {
 
 pub struct StripeWorkDesc {
     pub weights: *const WeightValue,
-    pub scales: *const i8,
+    pub scales: *const u32,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
@@ -87,7 +87,7 @@ pub struct MatmulDescC {
     pub dim: u32,
     pub activations: *const c_void,
     pub weights: *const c_void,
-    pub scales: *const i8,
+    pub scales: *const u32,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
@@ -104,6 +104,7 @@ pub struct MatmulDescC {
     pub scale_valid_columns: usize,
     pub scale_values_len: usize,
     pub vector_op: u8,
+    pub output_domain: u8,
     pub work_context: u64,
     pub provider: ProviderC,
 }
@@ -117,7 +118,7 @@ pub struct StripeWorkDescC {
     pub weight_storage_bytes: u32,
     pub dim: u32,
     pub weights: *const c_void,
-    pub scales: *const i8,
+    pub scales: *const u32,
     pub output: *mut i32,
     pub m: usize,
     pub n: usize,
@@ -134,6 +135,7 @@ pub struct StripeWorkDescC {
     pub scale_values_len: usize,
     pub stripe_count: usize,
     pub vector_op: u8,
+    pub output_domain: u8,
     pub work_context: u64,
     pub provider: ProviderC,
 }
@@ -260,4 +262,68 @@ pub struct StreamBox {
     pub columns: usize,
     pub reduction: usize,
     pub failed: bool,
+}
+
+#[cfg(test)]
+mod abi5_layout_tests {
+    use super::{MatmulDescC, StripeWorkDescC};
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn canonical_descriptors_keep_identity_offsets_and_add_typed_domain() {
+        assert_eq!(
+            offset_of!(MatmulDescC, output_domain),
+            offset_of!(MatmulDescC, vector_op) + 1
+        );
+        assert_eq!(
+            offset_of!(StripeWorkDescC, output_domain),
+            offset_of!(StripeWorkDescC, vector_op) + 1
+        );
+        assert_eq!(size_of::<MatmulDescC>(), 224);
+        assert_eq!(offset_of!(MatmulDescC, provider), 184);
+        assert_eq!(size_of::<StripeWorkDescC>(), 216);
+        assert_eq!(offset_of!(StripeWorkDescC, provider), 176);
+    }
+
+    #[test]
+    fn uint32_carrier_and_output_domain_callback_roundtrip() {
+        unsafe extern "C" fn read(
+            _: *mut std::ffi::c_void,
+            row: usize,
+            col: usize,
+            count: usize,
+            out: *mut u32,
+        ) -> i32 {
+            assert_eq!((row, col, count), (2, 3, 2));
+            unsafe { std::ptr::copy_nonoverlapping([65_790, 0x8000_0000].as_ptr(), out, 2) };
+            0
+        }
+        unsafe extern "C" fn write(
+            context: *mut std::ffi::c_void,
+            block: usize,
+            row: usize,
+            col: usize,
+            count: usize,
+            values: *const i64,
+            domain: u32,
+        ) -> i32 {
+            assert_eq!((block, row, col, count, domain), (0, 7, 9, 1, 2));
+            unsafe { *context.cast::<i64>() = *values };
+            0
+        }
+        let mut exact = 0_i64;
+        let provider = crate::simulator::MemoryProvider {
+            context: std::ptr::from_mut(&mut exact).cast(),
+            read_weight: None,
+            read_scale: Some(read),
+            write_output: Some(write),
+        };
+        let mut metadata = [0_u32; 2];
+        provider.read_scale(2, 3, &mut metadata).unwrap();
+        assert_eq!(metadata, [65_790, 0x8000_0000]);
+        provider
+            .write_output(0, 7, 9, &[i64::MAX], crate::OutputDomain::ScuFinal)
+            .unwrap();
+        assert_eq!(exact, i64::MAX);
+    }
 }

@@ -226,6 +226,43 @@ def test_integer_profile_contracts_reject_width_and_capacity_drift() -> None:
                 path.write_text(original)
 
 
+def test_interface_delimiters_distinguish_members_from_bodies() -> None:
+    path = ROOT / "tests/InterfaceDelimiters.bsv"
+    text = """\
+package InterfaceDelimiters;
+interface ParentIfc;
+    interface ChildIfc#(Bit#(8)) declared;
+    interface ChildIfc aliased;
+endinterface
+module mkParent(ParentIfc);
+    interface aliased = child;
+    interface ChildIfc#(Bit#(8)) declared;
+        method Bool ready = True;
+    endinterface
+endmodule
+endpackage
+"""
+    static_check.check_balanced_delimiters(path, text)
+    for source in (ROOT / "synth/ScuPipeline.bsv", ROOT / "synth/WindowBuffer.bsv"):
+        static_check.check_balanced_delimiters(source, source.read_text())
+    for invalid, diagnostic in (
+        (text.replace("endinterface", "", 1), "interface/endinterface"),
+        (text.replace("    endinterface", "", 1), "interface/endinterface"),
+        (text + "endinterface\n", "interface/endinterface"),
+        (text.replace("endmodule", "", 1), "module/endmodule"),
+        (text + "(\n", "unbalanced delimiter"),
+    ):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            try:
+                static_check.check_balanced_delimiters(path, invalid)
+            except SystemExit as failure:
+                assert failure.code == 1
+            else:
+                raise AssertionError("invalid delimiters were accepted")
+        assert diagnostic in stderr.getvalue()
+
+
 def main() -> int:
     test_current_exsia_lifecycle_contract()
     test_exsia_lifecycle_rejects_member_quantize_wrapper()
@@ -240,6 +277,7 @@ def main() -> int:
     test_exsia_lifecycle_ignores_nonproduction_duplicate_calls()
     test_contract_diagnostics_render_root_and_sibling_paths()
     test_integer_profile_contracts_reject_width_and_capacity_drift()
+    test_interface_delimiters_distinguish_members_from_bodies()
     print("STATIC CHECK REGRESSIONS PASS")
     return 0
 

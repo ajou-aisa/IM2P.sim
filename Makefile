@@ -83,6 +83,7 @@ CPP_SRC  := tools/im2p_reference.cpp
 
 BSV_TEST_TOPS := \
 	mkTbProfileConfig \
+	mkTbHostRowOffset \
 	mkTbBlockPosition \
 	mkTbWorkSchedulerProgress \
 	mkTbCoreBramBoundary \
@@ -98,6 +99,9 @@ BSV_TEST_TOPS := \
 	mkTbInputSkew \
 	mkTbSystolicArray \
 	mkTbVectorUnit \
+	mkTbScuTypedS1 \
+	mkTbScuSaturation \
+	mkTbScuProfile \
 	mkTbAccumulator \
 	mkTbExecuteController \
 	mkTbIM2PCore \
@@ -123,6 +127,9 @@ define run_bluesim
 endef
 
 SYNTH_TOPS := \
+	mkFullReplay \
+	mkDensePipeline \
+	mkScuPipeline \
 	mkSynthA8W8D16 \
 	mkSynthFP16D16 \
 	mkSynthFP32D16
@@ -154,7 +161,12 @@ VERILATOR_COMMON := --cc --assert --Wno-fatal
 
 all: check
 
-check: profile-config-check static-check cpp-test numerical-reference-test
+check: profile-config-check static-check cpp-test numerical-reference-test activation-guard-infrastructure-test
+
+# Harness infrastructure only: no compiler marker is executed as a numerical DUT.
+.PHONY: activation-guard-infrastructure-test
+activation-guard-infrastructure-test:
+	$(PYTHON) tests/scu_block_scale/test_activation_guard_support.py
 
 .PHONY: profile-config-check numerical-reference-test fpga-rtl fpga-area \
         fpga-timing fpga-route fpga-fifo-rtl fpga-flow-test scheduler-rtl

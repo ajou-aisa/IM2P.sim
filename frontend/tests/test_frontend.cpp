@@ -54,6 +54,8 @@ bool throw_create = false;
 size_t create_attempts = 0;
 size_t fail_create_attempt = 0;
 bool provider_force_callback_failure = false;
+bool provider_drop_final = false, provider_duplicate_final = false, provider_wrong_domain = false;
+bool stale_abi = false, stale_revision = false;
 std::vector<int64_t> provider_exact_values;
 std::vector<int64_t> provider_delivered_values;
 std::atomic<size_t> sim_created{0};
@@ -111,6 +113,8 @@ void reset() {
   create_attempts = 0;
   fail_create_attempt = 0;
   provider_force_callback_failure = false;
+  provider_drop_final = provider_duplicate_final = provider_wrong_domain = false;
+  stale_abi = stale_revision = false;
   provider_exact_values.clear();
   provider_delivered_values.clear();
   sim_created = 0;
@@ -171,8 +175,10 @@ void multiply(const void *a, size_t sa, uint32_t bits, const int8_t *b,
 
 template <class Descriptor>
 int provider_outputs(const Descriptor &d, size_t row0, size_t rows) {
-  const size_t blocks = (d.k + d.block_size - 1) / d.block_size;
-  std::array<int8_t, DIM> scratch{};
+  // Explicit mock callback payloads; this helper does not emulate the RTL SCU.
+  const size_t blocks = d.output_domain == IM2P_OUTPUT_SCU_FINAL
+      ? 1 : (d.k + d.block_size - 1) / d.block_size;
+  std::array<uint32_t, DIM> scratch{};
   std::array<int64_t, DIM> exact{};
   for (size_t block = 0; block < blocks; ++block) {
     for (size_t row = row0; row < row0 + rows; ++row) {
@@ -189,11 +195,18 @@ int provider_outputs(const Descriptor &d, size_t row0, size_t rows) {
         }
         provider_delivered_values.insert(provider_delivered_values.end(),
                                          exact.begin(), exact.begin() + count);
+        if (provider_drop_final && d.output_domain == IM2P_OUTPUT_SCU_FINAL)
+          continue;
+        const uint32_t domain = provider_wrong_domain ? uint32_t(IM2P_OUTPUT_LEGACY_BLOCK) : uint32_t(d.output_domain);
         const int status = d.provider.write_output(
             d.provider.context, block, row, column, count,
-            provider_force_callback_failure ? nullptr : exact.data());
+            provider_force_callback_failure ? nullptr : exact.data(), domain);
         if (status != IM2P_OK)
           return status;
+        if (provider_duplicate_final && d.output_domain == IM2P_OUTPUT_SCU_FINAL &&
+            d.provider.write_output(d.provider.context, block, row, column, count,
+                                    exact.data(), domain) != IM2P_OK)
+          return IM2P_ERROR;
       }
     }
   }
@@ -238,7 +251,10 @@ void im2p_sim_destroy(im2p_sim_t *p) {
   ++fake::sim_destroyed;
   delete p;
 }
-uint32_t im2p_sim_abi_version(void) { return IM2P_ABI_VERSION; }
+uint32_t im2p_sim_abi_version(void) { return fake::stale_abi ? 4 : IM2P_ABI_VERSION; }
+const char *im2p_compiled_numerical_semantics_revision(void) {
+  return fake::stale_revision ? "legacy-revision" : IM2P_SCU_NUMERICAL_REVISION;
+}
 uint32_t im2p_sim_activation_bits(void) {
   return IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS;
 }
@@ -463,7 +479,7 @@ ggml_gemmini_args_t raw_args(std::vector<int8_t> &a, std::vector<int8_t> &b,
     for (size_t column = 0; column < 3; ++column)
       if (!x.A.set(row, column, a[row * 3 + column]))
         std::abort();
-  x.B = b.data();
+  x.B = reinterpret_cast<elem_t *>(b.data());
   x.C = c.data();
   x.sA = 3;
   x.sB = 2;
@@ -686,7 +702,8 @@ bool test_q8_hp1_native_extent_contract() {
                   descriptor.weight_row_stride_bytes == 1 &&
                   descriptor.output_row_stride == 1 &&
                   descriptor.block_size == 32 &&
-                  descriptor.vector_op == IM2P_VECTOR_EXTERNAL &&
+                  descriptor.vector_op == IM2P_VECTOR_LEFT_SHIFT &&
+                  descriptor.output_domain == IM2P_OUTPUT_SCU_FINAL &&
                   descriptor.provider.context != nullptr &&
                   descriptor.provider.read_weight_i8 != nullptr &&
                   descriptor.provider.read_weight_i16 == nullptr &&
@@ -758,9 +775,13 @@ bool test_native_q4_q16_provider_golden() {
                           args, 16, 0, 1, lane16.data()) == IM2P_OK &&
                       lane15[0] == -8 && lane16[0] == 7,
                   "Q4 split-half lanes 15/16 decode as signed -8..7") &&
-           expect(RunTestAccess::weight_factor(args, 0, 0, factor) &&
-                      factor == 1.0,
-                  "Q4 provider applies the exact per-block factor");
+           expect(format == ggml_gemmini_args_t::im2p_weight_format_t::q4_h0
+                      ? (RunTestAccess::weight_factor(args, 0, 0, factor) && factor == 1.0)
+                      : !RunTestAccess::weight_factor(args, 0, 0, factor),
+                  "Q4 H0 retains block factor; SCU routes prohibit host block factor") &&
+           expect(RunTestAccess::weight_factor(args, 0, 0, factor,
+                      NumericalContract::main_external) && factor == 1.0,
+                  "explicit main Q4 H0/H1/HP1 factors are preserved");
   };
   if (!check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_h0,
                 &ggml_gemmini_args_t::q4_h0_blocks, &q4_h0,
@@ -799,9 +820,13 @@ bool test_native_q4_q16_provider_golden() {
                           args, 16, 0, 1, lane16.data()) == IM2P_OK &&
                       lane15[0] == INT16_MIN && lane16[0] == INT16_MAX,
                   "Q16 provider preserves signed int16 codes") &&
-           expect(RunTestAccess::weight_factor(args, 0, 0, factor) &&
-                      factor == 1.0,
-                  "Q16 provider applies the exact per-block factor");
+           expect(format == ggml_gemmini_args_t::im2p_weight_format_t::q16_h0
+                      ? (RunTestAccess::weight_factor(args, 0, 0, factor) && factor == 1.0)
+                      : !RunTestAccess::weight_factor(args, 0, 0, factor),
+                  "Q16 H0 retains block factor; SCU routes prohibit host block factor") &&
+           expect(RunTestAccess::weight_factor(args, 0, 0, factor,
+                      NumericalContract::main_external) && factor == 1.0,
+                  "explicit main Q16 H0/H1/HP1 factors are preserved");
   };
   if (!check_q16(ggml_gemmini_args_t::im2p_weight_format_t::q16_h0,
                    &ggml_gemmini_args_t::q16_h0_blocks, &q16_h0,
@@ -937,7 +962,8 @@ bool test_native_h1_provider_start_contract() {
           d.weights == nullptr && d.output == nullptr && d.m == 1 && d.n == 2 &&
           d.k == 32 && d.weight_row_stride_bytes == 2 &&
           d.output_row_stride == 2 &&
-          d.block_size == 32 && d.vector_op == IM2P_VECTOR_EXTERNAL &&
+          d.block_size == 32 && d.vector_op == IM2P_VECTOR_UNSIGNED_MULTIPLY &&
+          d.output_domain == IM2P_OUTPUT_SCU_FINAL &&
           d.provider.context != nullptr &&
           d.provider.read_weight_i8 != nullptr &&
           d.provider.read_weight_i16 == nullptr &&
@@ -946,7 +972,144 @@ bool test_native_h1_provider_start_contract() {
       "native H1 provider descriptor is exact");
 }
 
-bool test_provider_int64_scaling_full_pipeline() {
+bool test_provider_output_extent_overflow() {
+  fake::reset();
+  std::array<float, 2> output = {91, 91};
+  std::array<block_q8_h1, 2> weights{};
+  ggml_gemmini_args_t args{};
+  args.I = 1; args.J = 2; args.K = 32;
+  if (!args.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
+  args.f_out = output.data(); args.stride_f_out = 2;
+  args.col_stride_f_out = std::numeric_limits<size_t>::max();
+  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+  args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = weights.size();
+  args.q8_h1_rows = 2; args.blocks_per_row = 1; args.native_weight_bytes = sizeof(weights);
+  args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1;
+  size_t calls = 0;
+  Options options;
+  options.full_executor_context = &calls;
+  // A safe probe makes the pre-fix regression fail without touching its empty
+  // output stage. Invalid geometry must be rejected before this callback.
+  options.full_executor = [](void *context, const im2p_matmul_desc_t *,
+                             im2p_work_stats_extended_t *) -> int {
+    ++*static_cast<size_t *>(context);
+    return IM2P_ERROR;
+  };
+  auto started = execute(&args, Mode::full, options);
+  if (started.run) (void)fence(*started.run);
+  return expect(!started.status.ok() && calls == 0 && fake::sim_created == 0 &&
+                    output == std::array<float, 2>{91, 91},
+                "overflowing provider output extent rejects before execution");
+}
+
+bool test_provider_final_integer_full_pipeline() {
+  // Supplied mock final integers exercise callback/FP boundaries, not SCU arithmetic.
+  const std::vector<int64_t> final_values = {100, -200, INT32_MAX, INT32_MIN, 0, 8224};
+  constexpr std::array<float, 2> shared_scales = {0.25f, 0.125f};
+  std::array<float, 6> oracle{};
+  for (size_t i = 0; i < oracle.size(); ++i)
+    oracle[i] = float(static_cast<long double>(final_values[i]) * shared_scales[i % 2] * 0.5L);
+  for (Mode mode : {Mode::full, Mode::stripe_pipeline}) {
+    fake::reset();
+    fake::provider_exact_values = final_values;
+    std::array<block_q8_h1, 4> weights{};
+    for (size_t column = 0; column < 2; ++column)
+      for (size_t block = 0; block < 2; ++block) {
+        auto &weight = weights[column * 2 + block];
+        weight.s_rf = shared_scales[column];
+        weight.R = 1;
+        weight.c_b = block ? 255 : 0;
+      }
+    std::array<float, 6> destination = {91, 91, 91, 91, 91, 91};
+    ggml_gemmini_args_t args{};
+    args.I = 3; args.J = 2; args.K = 64;
+    if (!args.A.allocate(3, 64, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
+    args.activation_rows_per_stripe = 1;
+    args.f_out = destination.data(); args.stride_f_out = 2;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+    args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = weights.size();
+    args.q8_h1_rows = 2; args.blocks_per_row = 2; args.native_weight_bytes = sizeof(weights);
+    args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 0.5f;
+    auto started = execute(&args, mode, {64});
+    if (!expect(started.status.ok(), "SCU final mock route starts")) return false;
+    if (mode == Mode::stripe_pipeline)
+      for (size_t row = 0; row < 3; ++row)
+        if (!submit_stripe(*started.run, event(row, row, row + 1)).ok()) return false;
+    const auto done = fence(*started.run);
+    if (!expect(done.status.ok() && fake::provider_delivered_values == final_values,
+                "one final integer per scalar survives FULL/PIPELINE")) return false;
+    if (mode == Mode::stripe_pipeline &&
+        (!expect(destination == std::array<float, 6>{91, 91, 91, 91, 91, 91},
+                 "final SCU output stays private before authorization") ||
+         !authorize_output_commit(*started.run, true).ok())) return false;
+    if (!expect(destination == oracle, "shared channel scale follows final integer exactly")) return false;
+  }
+  std::puts("SCU_FINAL_CALLBACK_MOCK_PASS raw_domain=signed32 callback_domain=2 numerical_rtl_evidence=0");
+  return true;
+}
+
+bool test_scu_output_failures_and_identity() {
+  for (int scenario = 0; scenario < 9; ++scenario) {
+    fake::reset();
+    fake::provider_exact_values = {8224};
+    fake::provider_drop_final = scenario == 0;
+    fake::provider_duplicate_final = scenario == 1;
+    fake::provider_wrong_domain = scenario == 2;
+    fake::provider_force_callback_failure = scenario == 3;
+    fake::stale_abi = scenario == 4;
+    fake::stale_revision = scenario == 5;
+    if (scenario == 6) fake::provider_exact_values = {INT64_C(2147483648)};
+    std::array<block_q8_h1, 2> weights{};
+    std::array<block_q8_hp1, 2> shifted_weights{};
+    for (auto &weight : weights) { weight.R = 1; weight.s_rf = 1.0f / 256; }
+    weights[1].c_b = 255;
+    std::array<float, 3> destination = {73, 73, 73};
+    ggml_gemmini_args_t args{};
+    args.I = args.J = 1; args.K = 64;
+    if (!args.A.allocate(1, 64, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
+    args.f_out = destination.data(); args.stride_f_out = 3;
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
+    args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = 2;
+    args.q8_h1_rows = 1; args.blocks_per_row = 2; args.native_weight_bytes = sizeof(weights);
+    args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1;
+    if (scenario == 8) {
+      for (auto &weight : shifted_weights) weight.channel_scale = 1.0f / 256;
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+      args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+      args.q8_hp1_blocks = shifted_weights.data(); args.q8_hp1_block_count = 2;
+      args.q8_hp1_blocks_per_row = 2; args.native_weight_bytes = sizeof(shifted_weights);
+    }
+    Options options;
+    if (scenario >= 7) {
+      options.residual_stage_mode = ResidualStageMode::host_direct;
+      options.residual_stage_fn = [](void *, im2p_sim_t *, const exsia::StripeReadyEvent &,
+                                    ResidualStageView, ResidualStripeStats &) noexcept { return Status{}; };
+    }
+    auto started = execute(&args, scenario >= 7 ? Mode::stripe_pipeline : Mode::full, options);
+    if (scenario == 4 || scenario == 5 || scenario >= 7) {
+      if (!expect(!started.status.ok() && fake::sim_created == 0 &&
+                  ((scenario >= 7 && (!started.run || !fence(*started.run).status.ok())) ||
+                   (scenario < 7 && !started.run)),
+                  "stale ABI/revision or undefined SCU residual rejects before simulator creation")) return false;
+      if (scenario >= 7 && !expect(started.status.code == StatusCode::unsupported_route,
+                                  "H1/HP1 residual is explicitly unsupported")) return false;
+    } else {
+      if (!started.status.ok() || !started.run) return false;
+      const auto done = fence(*started.run);
+      if (!expect(!done.status.ok() && !fence(*started.run).status.ok(),
+                  "missing/duplicate/domain/null/out-of-range final callback fails sticky")) return false;
+    }
+    if (!expect(destination == std::array<float, 3>{73, 73, 73},
+                "failed final callback never publishes caller output or padding")) return false;
+  }
+  fake::reset();
+  std::puts("SCU_FAILURE_IDENTITY_MOCK_PASS scenarios=9 numerical_rtl_evidence=0");
+  return true;
+}
+
+// Main-compatible block reconstruction remains an explicit ABI5 contract.
+// Large callback values check INT64 transport, not physical A8 K32 dot range.
+bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
   constexpr size_t rows = 3;
   constexpr size_t columns = 2;
   constexpr size_t blocks_per_row = 2;
@@ -958,7 +1121,9 @@ bool test_provider_int64_scaling_full_pipeline() {
       INT64_C(2147504127),  -INT64_C(4294987775),
       INT64_C(4295000063),  -INT64_C(2147516415),
   };
-  const std::array<double, 4> factors = {0.5, 0.75, 1.25, 1.5};
+  const std::array<double, 4> factors = hp1
+      ? std::array<double, 4>{0.5, 1.0, 0.0, 4.0}
+      : std::array<double, 4>{0.5, 0.75, 1.25, 1.5};
   constexpr double activation_scale = 0.5;
   std::array<float, rows * columns> oracle{};
   for (size_t row = 0; row < rows; ++row) {
@@ -980,6 +1145,11 @@ bool test_provider_int64_scaling_full_pipeline() {
     fake::provider_exact_values = exact;
     fake::provider_force_callback_failure = force_callback_failure;
     std::array<block_q8_h1, columns * blocks_per_row> weights{};
+    std::array<block_q8_hp1, columns * blocks_per_row> shifted{};
+    shifted[0].channel_scale = 0.25f; shifted[0].m = 1;
+    shifted[1].channel_scale = 0.25f; shifted[1].m = INT16_MIN;
+    shifted[2].channel_scale = 0.25f; shifted[2].m = 2;
+    shifted[3].channel_scale = 1.0f; shifted[3].m = 2;
     for (size_t column = 0; column < columns; ++column) {
       weights[column * blocks_per_row].s_rf = column == 0 ? 0.25f : 0.125f;
       weights[column * blocks_per_row].c_b = column == 0 ? 1 : 2;
@@ -1003,10 +1173,19 @@ bool test_provider_int64_scaling_full_pipeline() {
     args.q8_h1_rows = columns;
     args.blocks_per_row = blocks_per_row;
     args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+    if (hp1) {
+      args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+      args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+      args.q8_hp1_blocks = shifted.data(); args.q8_hp1_block_count = shifted.size();
+      args.q8_hp1_blocks_per_row = blocks_per_row;
+      args.native_weight_bytes = sizeof(shifted);
+    }
     args.act_quant.storage()
         .emplace<ggml::gemmini::quants::act::tensor::Meta>()
         .scale = static_cast<float>(activation_scale);
-    auto started = execute(&args, mode, {64});
+    Options options{64};
+    options.numerical_contract = NumericalContract::main_external;
+    auto started = execute(&args, mode, options);
     if (!started.status.ok())
       return false;
     if (mode == Mode::stripe_pipeline) {
@@ -1026,6 +1205,14 @@ bool test_provider_int64_scaling_full_pipeline() {
     if (force_callback_failure)
       return done.status.code == StatusCode::execution_failure &&
              done.stripe_rtl_timings.empty();
+    const auto check_descriptor = [](const auto &descriptor) {
+      return descriptor.vector_op == IM2P_VECTOR_EXTERNAL &&
+             descriptor.output_domain == IM2P_OUTPUT_LEGACY_BLOCK &&
+             descriptor.block_size == 32;
+    };
+    if (!(mode == Mode::full ? check_descriptor(fake::full_desc)
+                            : check_descriptor(fake::work_desc)))
+      return false;
     std::vector<int64_t> delivered_oracle;
     if (mode == Mode::full) {
       delivered_oracle = exact;
@@ -1076,12 +1263,14 @@ bool test_provider_int64_scaling_full_pipeline() {
               "FULL/pipeline match long-double int64 scaling oracle"))
     return false;
 
-  std::printf("INT64_QA positive_input=%lld negative_input=%lld "
-              "weight_scales=[0.25,0.125,0.25,0.25] "
+  std::printf("MAIN_EXTERNAL_INT64_QA route=%s positive_input=%lld negative_input=%lld "
+              "block_factors=[%.9g,%.9g,%.9g,%.9g] "
               "activation_scale=0.5 positive_result=%.9g "
               "negative_result=%.9g\n",
+              hp1 ? "HP1" : "H1",
               static_cast<long long>(exact[2]),
-              static_cast<long long>(exact[3]), full[2], full[3]);
+              static_cast<long long>(exact[3]), factors[0], factors[1],
+              factors[2], factors[3], full[2], full[3]);
 
   std::array<float, rows * columns> failed_full = {73, 73, 73, 73, 73, 73};
   std::array<float, rows * columns> failed_pipeline = {74, 74, 74, 74, 74, 74};
@@ -1121,7 +1310,9 @@ bool test_provider_int64_scaling_full_pipeline() {
   one_row_args.act_quant.storage()
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
-  auto one = execute(&one_row_args, Mode::stripe_pipeline, {64});
+  Options one_options{64};
+  one_options.numerical_contract = NumericalContract::main_external;
+  auto one = execute(&one_row_args, Mode::stripe_pipeline, one_options);
   if (!one.status.ok() || !submit_stripe(*one.run, event(0, 0, 1)).ok() ||
       !fence(*one.run).status.ok())
     return false;
@@ -1164,6 +1355,13 @@ bool test_mode_and_raw_scale_contract() {
   if (!expect(invalid.status.code == StatusCode::invalid_argument &&
                   invalid.run == nullptr,
               "invalid mode is rejected before run construction"))
+    return false;
+  Options invalid_contract;
+  invalid_contract.numerical_contract = static_cast<NumericalContract>(0xff);
+  const auto bad_contract = execute(&args, Mode::full, invalid_contract);
+  if (!expect(bad_contract.status.code == StatusCode::invalid_argument &&
+                  bad_contract.run == nullptr,
+              "unknown numerical contract rejects before run construction"))
     return false;
 
   auto reject = [&](auto mutate, const char *message) {
@@ -2292,7 +2490,7 @@ bool test_publication_geometry_and_counter_separation() {
       for (size_t column = 0; column < reduction; ++column)
         if (!args.A.set(row, column, activation[row * reduction + column]))
           return Result{};
-    args.B = weights.data();
+    args.B = reinterpret_cast<elem_t *>(weights.data());
     args.C = output.data();
     args.sA = reduction;
     args.sB = 1;
@@ -2373,7 +2571,7 @@ bool test_publication_geometry_and_counter_separation() {
   if (!args.A.allocate(args.I, args.K,
                        IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
     return false;
-  args.B = weights.data();
+  args.B = reinterpret_cast<elem_t *>(weights.data());
   args.C = output.data();
   args.sA = DIM;
   args.sB = args.sC = 1;
@@ -2402,7 +2600,8 @@ bool test_publication_geometry_and_counter_separation() {
 bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
                                     std::vector<block_q8_h1> &weights,
                                     std::vector<float> &destination,
-                                    size_t rows) {
+                                    size_t rows,
+                                    std::vector<uint8_t> *legacy_channel = nullptr) {
   constexpr size_t columns = 2;
   args.I = rows;
   args.J = columns;
@@ -2426,6 +2625,22 @@ bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
   args.q8_h1_rows = columns;
   args.blocks_per_row = 1;
   args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+  if (legacy_channel) {
+    // Residual scheduler tests remain on the explicit legacy channel route.
+    // SCU H1 residual execution is rejected until its numerical contract exists.
+    const size_t stride = sizeof(float) + args.K;
+    legacy_channel->assign(columns * stride, 0);
+    const float scale = 1;
+    for (size_t column = 0; column < columns; ++column)
+      std::memcpy(legacy_channel->data() + column * stride, &scale, sizeof(scale));
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_channel;
+    args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+    args.blocks_per_row = 0; args.native_weight_bytes = 0;
+    args.q8_channel_row_base = legacy_channel->data();
+    args.q8_channel_row_stride = stride; args.q8_channel_row_count = columns;
+    args.B = reinterpret_cast<elem_t *>(legacy_channel->data() + sizeof(float));
+    args.sB = stride;
+  }
   args.act_quant.storage().emplace<exsia::Meta>();
   return true;
 }
@@ -2472,13 +2687,18 @@ bool wait_for_probe(SemanticSchedulerProbe &probe, Predicate predicate) {
   return probe.changed.wait_for(lock, std::chrono::seconds(5), predicate);
 }
 
-Status semantic_scheduler_callback(void *opaque, im2p_sim_t *simulator,
+[[maybe_unused]] Status semantic_scheduler_callback(void *opaque, im2p_sim_t *simulator,
                                    const exsia::StripeReadyEvent &ready,
                                    ResidualStageView stage,
                                    ResidualStripeStats &stats) noexcept {
   auto &probe = *static_cast<SemanticSchedulerProbe *>(opaque);
-  const bool scheduler_unlocked =
-      probe.run != nullptr && RunTestAccess::try_lock_scheduler(*probe.run);
+  bool scheduler_unlocked = false;
+  const auto lock_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  // The producer may briefly hold the mutex while accepting its next event.
+  // A callback that itself owns the mutex still fails this bounded check.
+  while (probe.run && !(scheduler_unlocked = RunTestAccess::try_lock_scheduler(*probe.run)) &&
+         std::chrono::steady_clock::now() < lock_deadline)
+    std::this_thread::yield();
   {
     std::lock_guard lock(fake::mutex);
     fake::semantic_trace.push_back("R" + std::to_string(ready.stripe_id));
@@ -2536,7 +2756,7 @@ Status semantic_scheduler_callback(void *opaque, im2p_sim_t *simulator,
   return {};
 }
 
-std::string joined_trace(const std::vector<std::string> &events) {
+[[maybe_unused]] std::string joined_trace(const std::vector<std::string> &events) {
   std::string result;
   for (const auto &entry : events) {
     if (!result.empty())
@@ -2561,11 +2781,11 @@ bool test_semantic_dense_rmd_order() {
   SemanticSchedulerProbe probe;
   probe.caller_destination = destination.data();
   probe.stage_elements = destination.size();
-  auto started = execute(
-      &args, Mode::stripe_pipeline,
-      {std::numeric_limits<uint64_t>::max(),
-       ResidualStageMode::im2p_compact, &probe,
-       semantic_scheduler_callback});
+  Options options{std::numeric_limits<uint64_t>::max(),
+                  ResidualStageMode::im2p_compact, &probe,
+                  semantic_scheduler_callback};
+  options.numerical_contract = NumericalContract::main_external;
+  auto started = execute(&args, Mode::stripe_pipeline, options);
   if (!expect(started.status.ok(), "residual pipeline starts"))
     return false;
   probe.run = started.run.get();
@@ -2697,9 +2917,10 @@ bool test_semantic_dense_rmd_order() {
   fake::provider_exact_values = {7, 8};
   std::vector<float> direct_destination(2, 73.0f);
   std::vector<block_q8_h1> direct_weights;
+  std::vector<uint8_t> direct_channel;
   ggml_gemmini_args_t direct_args{};
   if (!prepare_semantic_pipeline_args(direct_args, direct_weights,
-                                      direct_destination, 1))
+                                      direct_destination, 1, &direct_channel))
     return false;
   SemanticSchedulerProbe direct_probe;
   direct_probe.caller_destination = direct_destination.data();
@@ -2774,8 +2995,9 @@ bool test_semantic_blocked_producer_failure() {
   fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
   std::vector<float> destination(6, 67.0f);
   std::vector<block_q8_h1> weights;
+  std::vector<uint8_t> legacy_channel;
   ggml_gemmini_args_t args{};
-  if (!prepare_semantic_pipeline_args(args, weights, destination, 3))
+  if (!prepare_semantic_pipeline_args(args, weights, destination, 3, &legacy_channel))
     return false;
   SemanticSchedulerProbe probe;
   probe.fail_first = true;
@@ -2930,9 +3152,10 @@ bool test_semantic_blocked_producer_failure() {
   fake::fail_create_attempt = 2;
   std::vector<float> create_destination(2, 59.0f);
   std::vector<block_q8_h1> create_weights;
+  std::vector<uint8_t> create_channel;
   ggml_gemmini_args_t create_args{};
   if (!prepare_semantic_pipeline_args(create_args, create_weights,
-                                      create_destination, 1))
+                                      create_destination, 1, &create_channel))
     return false;
   SemanticSchedulerProbe create_probe;
   create_probe.gate_first = false;
@@ -3155,8 +3378,10 @@ bool test_stream_executor_options() {
     if (invalid == 1) options.residual_stage_mode = ResidualStageMode::host_direct;
     if (invalid == 2) options.full_executor = [](void *, const im2p_matmul_desc_t *, im2p_work_stats_extended_t *) -> int { return IM2P_OK; };
     auto rejected = execute(&args, mode, options);
-    if (!expect(rejected.status.code == StatusCode::unsupported_route && !rejected.run,
-                "physical stream mode/residual/FULL conflict rejects before start")) return false;
+    const auto expected = invalid == 1 ? StatusCode::invalid_argument
+                                       : StatusCode::unsupported_route;
+    if (!expect(rejected.status.code == expected && !rejected.run,
+                "physical stream mode/FULL conflict or missing residual callback rejects before start")) return false;
   }
   return expect(probe.begins == 0 && fake::sim_created == 0 && fake::stream_created == 0 &&
                     destination == std::vector<float>(6, 73.0f),
@@ -3227,6 +3452,77 @@ bool test_stream_executor_lifecycle() {
   return true;
 }
 
+bool test_stream_executor_residual() {
+  for (bool fail : {false, true}) {
+    fake::reset();
+    fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
+    StreamExecutorProbe probe;
+    probe.delayed_polls = 0;
+    auto table = probe.table();
+    struct ResidualProbe {
+      StreamExecutorProbe *dense;
+      size_t calls = 0;
+      bool fail = false;
+    } residual{&probe, 0, fail};
+    ggml_gemmini_args_t args;
+    std::vector<block_q8_h1> weights;
+    std::vector<float> destination(6, 73.0f);
+    if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
+    for (size_t row = 0; row < args.I; ++row)
+      if (!args.A.set(row, 0, int32_t(row + 1))) return false;
+    Options options;
+    options.stream_executor = &table;
+    options.numerical_contract = NumericalContract::main_external;
+    options.residual_stage_mode = ResidualStageMode::im2p_compact;
+    options.residual_stage_context = &residual;
+    options.residual_stage_fn = [](void *opaque, im2p_sim_t *sim,
+        const exsia::StripeReadyEvent &event, ResidualStageView stage,
+        ResidualStripeStats &stats) noexcept -> Status {
+      auto &state = *static_cast<ResidualProbe *>(opaque);
+      if (sim || event.stripe_id != state.calls ||
+          state.dense->completed != state.calls + 1 || stage.element_count != 6)
+        return {StatusCode::execution_failure, Route::q8_h1, true,
+                "invalid physical residual ordering"};
+      ++state.calls;
+      if (state.fail && state.calls == 2)
+        return {StatusCode::execution_failure, Route::q8_h1, true,
+                "injected physical residual failure"};
+      for (size_t column = 0; column < 2; ++column)
+        stage[event.row_begin * 2 + column] += 10.0f;
+      stats.rmd_dot_calls = 2;
+      stats.rmd_stats.base.work_total_cycles = 11;
+      return {};
+    };
+    auto started = execute(&args, Mode::stripe_pipeline, options);
+    if (!expect(started.status.ok(), "physical compact residual starts")) return false;
+    for (size_t stripe = 0; stripe < 3; ++stripe) {
+      const auto status = submit_stripe(*started.run, semantic_event(stripe), {true, 0});
+      if (!status.ok()) { if (!fail) return false; break; }
+    }
+    const auto done = fence(*started.run);
+    if (!expect(destination == std::vector<float>(6, 73.0f),
+                "physical residual fence never publishes caller output")) return false;
+    if (fail) {
+      if (!expect(done.status.code == StatusCode::execution_failure && residual.calls == 2 &&
+                      probe.completed == 2 && probe.finishes == 0 &&
+                      !authorize_output_commit(*started.run, true).ok(),
+                  "failed residual stops later dense jobs and output commit")) return false;
+    } else {
+      if (!expect(done.status.ok() && residual.calls == 3 &&
+                      done.semantic_completion_count == 3 && done.rmd_dot_calls == 6 &&
+                      done.rmd_stats.base.work_total_cycles == 33 &&
+                      authorize_output_commit(*started.run, true).ok() &&
+                      destination == std::vector<float>({11, 12, 13, 14, 15, 16}),
+                  "each physical dense completion merges residual exactly once before credit")) return false;
+    }
+    started.run.reset();
+    if (!expect(fake::sim_created == 0 && fake::stream_created == 0 &&
+                    fake::progress_calls == 0,
+                "physical residual callback creates no simulator")) return false;
+  }
+  return true;
+}
+
 bool test_compiled_identity() {
   return expect(compiled_activation_bits() ==
                     IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
@@ -3272,11 +3568,20 @@ int main(int argc, char **argv) {
             ? test_native_q4_q16_provider_golden()
         : selected == "provider_int64_scaling" ||
                   selected == "cross_mode_oracle"
-            ? test_provider_int64_scaling_full_pipeline()
+            ? test_provider_final_integer_full_pipeline()
+        : selected == "legacy_h1_block_scaling" || selected == "main_external_h1"
+            ? test_legacy_h1_block_scaling_full_pipeline()
+        : selected == "main_external_hp1"
+            ? test_legacy_h1_block_scaling_full_pipeline(true)
+        : selected == "scu_output_failure_identity"
+            ? test_scu_output_failures_and_identity()
+        : selected == "provider_output_extent_overflow"
+            ? test_provider_output_extent_overflow()
         : selected == "publication_counter_separation"
             ? test_publication_geometry_and_counter_separation()
         : selected == "stream_executor_options" ? test_stream_executor_options()
         : selected == "stream_executor_lifecycle" ? test_stream_executor_lifecycle()
+        : selected == "stream_executor_residual" ? test_stream_executor_residual()
         : selected == "legacy_options_aggregate"
             ? test_legacy_options_aggregate()
         : selected == "residual_stage_contract"
@@ -3303,11 +3608,16 @@ int main(int argc, char **argv) {
       : (test_compiled_identity() &&
          test_native_q4_q16_provider_golden() &&
          test_native_h1_provider_start_contract() &&
-         test_provider_int64_scaling_full_pipeline() &&
+         test_provider_output_extent_overflow() &&
+         test_provider_final_integer_full_pipeline() &&
+         test_legacy_h1_block_scaling_full_pipeline() &&
+         test_legacy_h1_block_scaling_full_pipeline(true) &&
+         test_scu_output_failures_and_identity() &&
       test_publication_geometry_and_counter_separation() &&
       test_rejected_routes_do_not_execute() &&
       test_legacy_options_aggregate() && test_stream_executor_options() &&
-      test_stream_executor_lifecycle() && test_mode_and_raw_scale_contract() &&
+      test_stream_executor_lifecycle() &&
+      test_stream_executor_residual() && test_mode_and_raw_scale_contract() &&
       test_full_golden_and_scalar_snapshot() &&
       test_multiwidth_activation_snapshot_validation() &&
       test_tile_normalization_validation() && test_pipeline_lifecycle() &&

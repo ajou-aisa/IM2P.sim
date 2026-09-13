@@ -6,7 +6,7 @@ pub struct KBlockScaleMatrix {
     pub total_k: usize,
     pub columns: usize,
     pub row_stride: usize,
-    pub values: Vec<i8>,
+    pub values: Vec<u32>,
 }
 
 impl KBlockScaleMatrix {
@@ -34,10 +34,10 @@ impl KBlockScaleMatrix {
         assert!(row_stride >= columns);
 
         let block_count = total_k.div_ceil(block_size);
-        let mut values = vec![0_i8; block_count * row_stride];
+        let mut values = vec![0_u32; block_count * row_stride];
         for block in 0..block_count {
             for column in 0..columns {
-                values[block * row_stride + column] = value(block, column);
+                values[block * row_stride + column] = value(block, column) as i32 as u32;
             }
         }
         Self {
@@ -50,10 +50,10 @@ impl KBlockScaleMatrix {
     }
 
     pub fn get(&self, block: usize, column: usize) -> i8 {
-        self.values[block * self.row_stride + column]
+        self.values[block * self.row_stride + column] as i8
     }
 
-    pub fn row(&self, block: usize) -> &[i8] {
+    pub fn row(&self, block: usize) -> &[u32] {
         let start = block * self.row_stride;
         &self.values[start..start + self.columns]
     }
@@ -62,7 +62,7 @@ impl KBlockScaleMatrix {
         self.total_k.div_ceil(self.block_size)
     }
 
-    pub fn as_slice(&self) -> &[i8] {
+    pub fn as_slice(&self) -> &[u32] {
         &self.values
     }
 

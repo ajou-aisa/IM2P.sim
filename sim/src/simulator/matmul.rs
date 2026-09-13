@@ -121,7 +121,7 @@ impl Im2pSimulator {
         let weight_row_stride = weight_elements_to_address_bytes(work.weights.row_stride)
             .map_err(|_| Error::InvalidWeightStride)?;
         let scale_row_stride =
-            super::descriptor::u64_field(scale.map_or(1, |view| view.row_stride))?;
+            super::descriptor::scale_row_stride_bytes(scale.map_or(1, |view| view.row_stride))?;
         let output_row_stride = super::descriptor::output_row_stride_bytes(output.row_stride)?;
         let row_count = super::descriptor::u32_field(work.activations.rows)?;
         let column_count = super::descriptor::u32_field(work.weights.columns)?;
@@ -139,7 +139,10 @@ impl Im2pSimulator {
             mode: 0,
             activation_base: ACTIVATION_BASE,
             weight_base: WEIGHT_BASE,
-            scale_base: SCALE_BASE,
+            scale_base: super::descriptor::scale_base_address(
+                SCALE_BASE,
+                scale.map_or(0, |view| view.column_offset),
+            )?,
             output_base: OUTPUT_BASE,
             activation_row_stride: activation_elements_to_address_bytes(
                 work.activations.row_stride,
@@ -223,7 +226,7 @@ impl Im2pSimulator {
         let job_id = super::descriptor::job_id(work_context);
         let rtl_weight_row_stride = weight_elements_to_address_bytes(weight_row_stride)
             .map_err(|_| Error::InvalidWeightStride)?;
-        let rtl_scale_row_stride = super::descriptor::u64_field(columns)?;
+        let rtl_scale_row_stride = super::descriptor::scale_row_stride_bytes(columns)?;
         let rtl_output_row_stride = super::descriptor::output_row_stride_bytes(output_row_stride)?;
         let rtl_row_count = super::descriptor::u32_field(rows)?;
         let rtl_column_count = super::descriptor::u32_field(columns)?;
@@ -271,6 +274,7 @@ impl Im2pSimulator {
                 weight_row_stride,
                 columns,
                 reduction,
+                block_size,
                 vector_op,
             )?;
             self.service_provider_output(provider, rows, columns, output_row_stride, vector_op)?;
@@ -293,11 +297,26 @@ impl Im2pSimulator {
         weight_row_stride: usize,
         columns: usize,
         reduction: usize,
+        block_size: usize,
         vector_op: crate::VectorOp,
     ) -> Result<(), Error> {
-        self.service_provider_read(true, provider, weight_row_stride, reduction, columns)?;
+        self.service_provider_read(
+            true,
+            provider,
+            weight_row_stride,
+            reduction,
+            columns,
+            vector_op,
+        )?;
         if vector_op != crate::VectorOp::Bypass {
-            self.service_provider_read(false, provider, columns, usize::MAX, columns)?;
+            self.service_provider_read(
+                false,
+                provider,
+                columns,
+                reduction.div_ceil(block_size),
+                columns,
+                vector_op,
+            )?;
         }
         Ok(())
     }
@@ -406,6 +425,7 @@ impl Im2pSimulator {
         row_stride: usize,
         row_limit: usize,
         column_limit: usize,
+        vector_op: crate::VectorOp,
     ) -> Result<(), Error> {
         let mut request = ffi::ReadRequest::default();
         type Getter = unsafe extern "C" fn(*mut std::ffi::c_void, *mut ffi::ReadRequest) -> i32;
@@ -429,7 +449,7 @@ impl Im2pSimulator {
         let (row, column) = if weight {
             weight_byte_indices(offset, row_stride).map_err(|_| Error::InvalidWeightStride)?
         } else {
-            (offset / row_stride, offset % row_stride)
+            super::descriptor::scale_byte_indices(offset, row_stride)?
         };
         let count = request.element_count as usize;
         if row >= row_limit || column + count > column_limit {
@@ -447,8 +467,9 @@ impl Im2pSimulator {
                 )
             }
         } else {
-            let mut values = vec![0_i8; count];
+            let mut values = vec![0_u32; count];
             provider.read_scale(row, column, &mut values)?;
+            super::validation::validate_scale_values(vector_op, &values)?;
             unsafe {
                 ffi::im2p_stage_scale_read_response(
                     self.handle.as_ptr(),
@@ -506,7 +527,13 @@ impl Im2pSimulator {
         if row >= rows || column + count > columns {
             return Err(Error::InvalidKRange);
         }
-        provider.write_output(block, row, column, &values[..count])?;
+        provider.write_output(
+            block,
+            row,
+            column,
+            &values[..count],
+            vector_op.output_domain(),
+        )?;
         let accepted =
             unsafe { ffi::im2p_stage_output_write_response(self.handle.as_ptr(), request.tag) };
         self.require_staged("provider_output_write_response", accepted)
@@ -579,6 +606,7 @@ mod activation_boundary_tests {
         _column: usize,
         _count: usize,
         _values: *const i64,
+        _output_domain: u32,
     ) -> i32 {
         0
     }

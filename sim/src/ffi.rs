@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 #[repr(C)]
 pub struct ScaleMatrixView {
-    pub values: *const i8,
+    pub values: *const u32,
     pub values_len: usize,
     pub block_size: usize,
     pub total_k: usize,
@@ -225,7 +225,7 @@ unsafe extern "C" {
     pub fn im2p_stage_scale_read_response(
         handle: *mut c_void,
         tag: u64,
-        values: *const i8,
+        values: *const u32,
         count: u32,
     ) -> i32;
 

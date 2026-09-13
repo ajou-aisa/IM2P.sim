@@ -51,7 +51,8 @@ constexpr uint32_t kActivationStorageBytes = kActivationBits == 16 ? 2 : 1;
 constexpr uint32_t kWeightStorageBytes = kWeightBits == 16 ? 2 : 1;
 constexpr uint32_t kActivationWords = (kActivationBits * kDim + 31) / 32;
 constexpr uint32_t kWeightWords = (kWeightBits * kDim + 31) / 32;
-constexpr uint32_t kByteLaneWords = (8 * kDim + 31) / 32;
+constexpr uint32_t kScaleWords = kDim;
+static_assert(IM2P_SCALE_CARRIER_BITS == 32 && IM2P_SCALE_STORAGE_BYTES == 4);
 constexpr uint32_t kCommandRowBits = IM2P_ROW_COUNT_BITS;
 constexpr uint32_t kAccumulatorBits = IM2P_ACCUMULATOR_BITS;
 constexpr uint32_t kAccumulatorRows = IM2P_ACCUMULATOR_ROWS;
@@ -60,7 +61,7 @@ static_assert(kAccumulatorRows * kDim * kAccumulatorBits == IM2P_LOGICAL_CAPACIT
 static_assert(kAccumulatorRows >= kDim);
 static_assert((1U << IM2P_ROW_ADDRESS_BITS) >= kAccumulatorRows);
 static_assert((1U << kCommandRowBits) > kDim);
-static_assert(sizeof(Top::startExecution_command) * 8 >= IM2P_ROW_ADDRESS_BITS + kCommandRowBits + 3);
+static_assert(sizeof(Top::startExecution_command) * 8 >= IM2P_ROW_ADDRESS_BITS + kCommandRowBits + 4);
 static_assert(sizeof(Top::writeAccumulatorRow_row) * 8 >= IM2P_ROW_ADDRESS_BITS);
 
 struct Simulator {
@@ -75,23 +76,11 @@ struct Simulator {
     uint32_t matrix_rows;
     uint32_t matrix_reduction;
     uint32_t published_rows;
+    uint8_t vector_op;
 };
 
 double sc_time_stamp() {
     return 0.0;
-}
-
-template <size_t Words>
-void set_bytes(VlWide<Words> &signal, const int8_t *values, size_t count) {
-    for (size_t index = 0; index < Words; ++index) {
-        signal[index] = 0U;
-    }
-    for (size_t index = 0; index < count; ++index) {
-        const auto value = static_cast<uint8_t>(values[index]);
-        const size_t word = index / 4;
-        const size_t shift = (index % 4) * 8;
-        signal[word] |= static_cast<uint32_t>(value) << shift;
-    }
 }
 
 template <size_t Words>
@@ -145,13 +134,20 @@ int32_t narrow_i64(int64_t value) {
 }
 
 template <size_t Words>
-void set_i8_lanes(VlWide<Words> &signal, const int8_t *values, size_t count) {
+void set_scale_lanes(VlWide<Words> &signal, const uint32_t *values, size_t count) {
+    static_assert(Words == kScaleWords, "scale carrier must have 32 bits per lane");
     for (size_t index = 0; index < Words; ++index) signal[index] = 0U;
+    for (size_t index = 0; index < count; ++index) signal[index] = values[index];
+}
+
+bool valid_scale_values(const uint32_t *values, size_t count, uint8_t op) {
     for (size_t index = 0; index < count; ++index) {
-        const size_t bit = index * 8;
-        signal[bit / 32] |= static_cast<uint32_t>(static_cast<uint8_t>(values[index]))
-                            << (bit % 32);
+        const uint32_t value = values[index];
+        if (op == 4 && value > 65790U) return false;
+        if (op == 5 && value > 32767U && value != 0x80000000U) return false;
+        if ((op == 1 || op == 2) && value > 127U && value < 0xffffff80U) return false;
     }
+    return true;
 }
 
 int32_t weight_value(const void *values, size_t index) {
@@ -324,8 +320,8 @@ void pulse(Simulator *simulator, CData &enable) {
 
 uint32_t command_bits(uint32_t base_row, uint32_t row_count, int accumulate,
                       uint8_t op) {
-  return (base_row << (kCommandRowBits + 3U)) | (row_count << 3U) |
-         ((accumulate ? 1U : 0U) << 2U) | (static_cast<uint32_t>(op) & 0x3U);
+  return (base_row << (kCommandRowBits + 4U)) | (row_count << 4U) |
+         ((accumulate ? 1U : 0U) << 3U) | (static_cast<uint32_t>(op) & 0x7U);
 }
 
 extern "C" im2p_handle_t im2p_create(void) {
@@ -335,7 +331,7 @@ extern "C" im2p_handle_t im2p_create(void) {
     try {
         context = new VerilatedContext;
         top = new Top(context);
-        simulator = new Simulator{context, top, 0, 0, 0, 0, false, false, 0, 0, 0};
+        simulator = new Simulator{context, top, 0, 0, 0, 0, false, false, 0, 0, 0, 0};
         im2p_reset(simulator);
         return simulator;
     }
@@ -381,6 +377,7 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
     simulator->matrix_rows = 0;
     simulator->matrix_reduction = 0;
     simulator->published_rows = 0;
+    simulator->vector_op = 0;
 }
 
 extern "C" void im2p_tick(im2p_handle_t handle) {
@@ -561,7 +558,9 @@ extern "C" int im2p_service_scale_request(
     if (!top->scaleRequestValid) {
         return IM2P_SCALE_NO_REQUEST;
     }
-    if (view == nullptr || view->values == nullptr) {
+    if (view == nullptr || view->values == nullptr
+        || reinterpret_cast<uintptr_t>(view->values) % alignof(uint32_t) != 0
+        || view->values_len > PTRDIFF_MAX / sizeof(uint32_t)) {
         return IM2P_SCALE_INVALID_VIEW;
     }
     if (!top->RDY_scaleRequestContext || !top->RDY_scaleRequestBlock
@@ -589,7 +588,10 @@ extern "C" int im2p_service_scale_request(
         return IM2P_SCALE_BLOCK_OUT_OF_RANGE;
     }
 
-    int8_t row[kDim] = {};
+    uint32_t row[kDim] = {};
+    if (!valid_scale_values(view->values + row_start, view->valid_columns, simulator->vector_op)) {
+        return IM2P_SCALE_INVALID_VIEW;
+    }
     std::copy_n(view->values + row_start, view->valid_columns, row);
 
     // This call consumes the borrowed pointer into a stack row. Neither the
@@ -599,7 +601,7 @@ extern "C" int im2p_service_scale_request(
     }
     top->putScaleRow_contextId = view->context;
     top->putScaleRow_block = static_cast<uint32_t>(block);
-    set_bytes(top->putScaleRow_columnScales, row, kDim);
+    set_scale_lanes(top->putScaleRow_columnScales, row, kDim);
     pulse(simulator, top->EN_putScaleRow);
     return IM2P_SCALE_ROW_ACCEPTED;
 }
@@ -635,7 +637,7 @@ extern "C" int im2p_start_execution(
     if (handle == nullptr || accumulator_base_row >= kAccumulatorRows
         || row_count == 0 || row_count > kDim
         || row_count > kAccumulatorRows - accumulator_base_row
-        || k_count == 0 || k_count > kDim || vector_op > 3
+        || k_count == 0 || k_count > kDim || vector_op > 5
         || k_count > UINT32_MAX - k_start) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
@@ -644,6 +646,7 @@ extern "C" int im2p_start_execution(
     if (!simulator->top->RDY_startExecution) {
         return 0;
     }
+    simulator->vector_op = vector_op;
     simulator->top->startExecution_command =
         command_bits(accumulator_base_row, row_count, accumulate, vector_op);
     simulator->top->startExecution_kStart = k_start;
@@ -801,7 +804,9 @@ extern "C" int im2p_start_matmul(
     if (handle == nullptr || descriptor == nullptr) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
-    if (descriptor->mode > 1 || descriptor->vector_op > 3
+    if ((descriptor->vector_op != 0 && ((descriptor->scale_base % sizeof(uint32_t)) != 0
+        || (descriptor->scale_row_stride % sizeof(uint32_t)) != 0))
+        || descriptor->mode > 1 || descriptor->vector_op > 5
         || descriptor->row_count == 0 || descriptor->column_count == 0
         || descriptor->reduction_count == 0
         || descriptor->tile_i_rows == 0 || descriptor->tile_i_rows > kDim
@@ -834,7 +839,7 @@ extern "C" int im2p_start_matmul(
             output_rows, static_cast<uint64_t>(descriptor->column_count) * sizeof(int32_t))
         || (descriptor->vector_op != 0
             && !valid_address_extent(descriptor->scale_base, descriptor->scale_row_stride,
-                blocks, descriptor->column_count))) {
+                blocks, static_cast<uint64_t>(descriptor->column_count) * sizeof(uint32_t)))) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     auto *simulator = static_cast<Simulator *>(handle);
@@ -845,6 +850,7 @@ extern "C" int im2p_start_matmul(
     }
 
     // Copied field by field; the descriptor is not retained past this call.
+    simulator->vector_op = descriptor->vector_op;
     top->startMatmul_jobId = descriptor->job_id;
     top->startMatmul_mode = descriptor->mode;
     top->startMatmul_activationBase = descriptor->activation_base;
@@ -1118,20 +1124,21 @@ extern "C" int im2p_put_weight_read_response(
 extern "C" int im2p_stage_scale_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const uint32_t *values,
     uint32_t count
 ) {
     if (handle == nullptr || values == nullptr || count > kDim) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     auto *simulator = static_cast<Simulator *>(handle);
+    if (!valid_scale_values(values, count, simulator->vector_op)) return IM2P_REQUEST_INVALID_ARGUMENT;
     evaluate(simulator);
     auto *top = simulator->top;
     if (!top->RDY_putScaleReadResponse) return 0;
     if (!top->scaleReadRequestValid || !top->RDY_scaleReadRequestTag
         || tag != top->scaleReadRequestTag) return IM2P_REQUEST_IDENTITY_MISMATCH;
     top->putScaleReadResponse_tag = tag;
-    set_i8_lanes(top->putScaleReadResponse_values, values, count);
+    set_scale_lanes(top->putScaleReadResponse_values, values, count);
     top->EN_putScaleReadResponse = 1;
     simulator->staged_response_mask |= 0x4;
     evaluate(simulator);
@@ -1141,13 +1148,14 @@ extern "C" int im2p_stage_scale_read_response(
 extern "C" int im2p_put_scale_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const uint32_t *values,
     uint32_t count
 ) {
     if (handle == nullptr || values == nullptr || count > kDim) {
         return IM2P_REQUEST_INVALID_ARGUMENT;
     }
     auto *simulator = static_cast<Simulator *>(handle);
+    if (!valid_scale_values(values, count, simulator->vector_op)) return IM2P_REQUEST_INVALID_ARGUMENT;
     evaluate(simulator);
     auto *top = simulator->top;
     if (!top->RDY_putScaleReadResponse) {
@@ -1159,7 +1167,7 @@ extern "C" int im2p_put_scale_read_response(
         return IM2P_REQUEST_IDENTITY_MISMATCH;
     }
     top->putScaleReadResponse_tag = tag;
-    set_i8_lanes(top->putScaleReadResponse_values, values, count);
+    set_scale_lanes(top->putScaleReadResponse_values, values, count);
     pulse(simulator, top->EN_putScaleReadResponse);
     return 1;
 }
@@ -1328,8 +1336,8 @@ extern "C" int im2p_test_drive_port(im2p_handle_t handle, uint32_t port,
     top->EN_putWeightReadResponse = 1;
     return 1;
   case IM2P_TEST_PORT_SCALE_RESPONSE:
-    set_i8_lanes(top->putScaleReadResponse_values,
-                 static_cast<const int8_t *>(values), count);
+    set_scale_lanes(top->putScaleReadResponse_values,
+                 static_cast<const uint32_t *>(values), count);
     top->EN_putScaleReadResponse = 1;
     return 1;
   default:
@@ -1360,7 +1368,7 @@ extern "C" int im2p_test_copy_port_words(im2p_handle_t handle, uint32_t port,
     copy_signal_words(top->putWeightReadResponse_values, words, word_count);
     return 1;
   case IM2P_TEST_PORT_SCALE_RESPONSE:
-    if (word_count != kByteLaneWords)
+    if (word_count != kScaleWords)
       return IM2P_REQUEST_INVALID_ARGUMENT;
     copy_signal_words(top->putScaleReadResponse_values, words, word_count);
     return 1;

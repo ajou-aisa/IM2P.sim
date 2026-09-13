@@ -1,0 +1,11 @@
+{
+  "evidence": "/tmp/im2p-build-options-t0-u8pglido",
+  "before_files": {
+    "build-x86.sh": "114970ed57ee232825e0e3e0e202a630138ceaf6cf82ae07942cb81f17811ff0",
+    "build-riscv.sh": "e2a34e55cbfb6e3e7e7ccde8d1eb06c1dcd70d738d37a2334b00fd1ec8e2e5b7",
+    "build-arm64.sh": "1118fe0039c8866879c51b47dfee8c86770ecc1f2bb97c2e35836e2f94e2a334",
+    "build-arm64-cpu.sh": "2c486ab6f5b395394db2a0ced6ac6dc9dd3cb227f877611a3883427143eaebb7",
+    "scripts/im2p-host-provision.sh": "4f6e60e4108ac9cf642e8d8a47f2aa18b676b37ef3f26f25d3883277ffcab702"
+  },
+  "user_dirty_x86_inherited": true
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "ResidentP0.bsv",
+    "historical_source": "build/experiments/activation-publication-20260909-154059/work/minimal-fixed-source/synth/ResidentP0.bsv",
+    "historical_sha256": "1774a9ab925707a7708072e0edabd9e41cc323f84d7c0d82346a950f2f12c395",
+    "test_sha256": "8af4abe058d2a84d6aa4c008f4493891ce91a65a7f07ea45547eb4721f836c8b",
+    "adaptation": "legacy int8-to-uint32 scale carrier and 4-byte scale stride only"
+  },
+  {
+    "name": "resident_shape.cpp",
+    "historical_source": "build/experiments/activation-publication-20260909-154059/work/minimal-harness/nominal-clock/resident_shape.cpp",
+    "historical_sha256": "971040a21dafc5c1c7bf4b5118b767c9c42bb39fe5263ffd98012d52c14b523a",
+    "test_sha256": "971040a21dafc5c1c7bf4b5118b767c9c42bb39fe5263ffd98012d52c14b523a",
+    "adaptation": "unchanged byte copy"
+  },
+  {
+    "name": "activation_monitor.hpp",
+    "historical_source": "build/experiments/activation-publication-20260909-154059/work/minimal-harness/nominal-clock/activation_monitor.hpp",
+    "historical_sha256": "710b9bba211e7019b5a2a4f75e2062b94094d0602458bebd6e07eedccefd119b",
+    "test_sha256": "710b9bba211e7019b5a2a4f75e2062b94094d0602458bebd6e07eedccefd119b",
+    "adaptation": "unchanged byte copy"
+  }
+]

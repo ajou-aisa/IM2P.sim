@@ -3,6 +3,7 @@ package Scale;
 import FloatingPoint::*;
 
 import Types::*;
+import Arithmetic::*;
 
 // Numeric format이 runtime Multiply/Shift를 지원하는지 정의한다.
 // acc_t와 scale_t에 무관한 format capability이므로 실제 transform typeclass와
@@ -94,6 +95,57 @@ instance VectorTransform#(
 
             default: begin
                 return partial;
+            end
+        endcase
+    endfunction
+endinstance
+
+// ABI5 typed metadata. Legacy op1/2 still decode the signed-byte value.
+// SCU clamps each fragment contribution before architectural accumulation.
+// Explicit legacy op1/2 retain their original signed-byte wrap/shift semantics.
+instance VectorTransform#(
+    Int#(inputWidth),
+    Int#(accWidth),
+    UInt#(32)
+) provisos (
+    Add#(accWidth, 17, scaledWidth)
+);
+    function Int#(accWidth) transformVectorElement(
+        Int#(inputWidth) formatProxy,
+        VectorOp op,
+        Int#(accWidth) partial,
+        UInt#(32) scale
+    );
+        case (op)
+            VectorUnsignedMultiply: begin
+                // The ABI validates beta <= 65790 before execution.
+                UInt#(17) factor = truncate(scale);
+                Int#(scaledWidth) widePartial = signExtend(partial);
+                Int#(scaledWidth) wideFactor = unpack(zeroExtend(pack(factor)));
+                Int#(scaledWidth) product = widePartial * wideFactor;
+                return saturateSigned(product);
+            end
+            VectorLeftShift: begin
+                // Zero is a distinct valid metadata value, not exponent zero.
+                if (partial == 0 || scale == 32'h80000000) begin
+                    return 0;
+                end
+                else if (scale >= fromInteger(valueOf(accWidth))) begin
+                    return partial < 0 ? minBound : maxBound;
+                end
+                else begin
+                    // These bounds are exact for multiplication by 2^scale.
+                    // Check before shifting; -1 << (width-1) remains representable.
+                    Int#(accWidth) minimum = minBound;
+                    Int#(accWidth) maximum = maxBound;
+                    if (partial < (minimum >> scale)) return minimum;
+                    else if (partial > (maximum >> scale)) return maximum;
+                    else return partial << scale;
+                end
+            end
+            default: begin
+                Int#(8) legacy = unpack(truncate(pack(scale)));
+                return transformVectorElement(formatProxy, op, partial, legacy);
             end
         endcase
     endfunction

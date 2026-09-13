@@ -612,6 +612,9 @@ struct Run::Impl {
   std::vector<float> activation_scales;
   bool provider_failed = false;
   bool output_committed = false;
+  std::vector<float> shared_channel_scales;
+  std::vector<uint8_t> final_output_seen;
+  size_t final_output_count = 0;
 
   bool retain_legacy_operands() {
     size_t weight_count = 0, output_count = 0;
@@ -763,11 +766,19 @@ struct Run::Impl {
     size_t row_offset = 0, column_offset = 0;
     if (!checked_mul(scalars.i - 1, rs, row_offset) ||
         !checked_mul(scalars.j - 1, cs, column_offset) ||
+        column_offset == std::numeric_limits<size_t>::max() ||
         row_offset > std::numeric_limits<size_t>::max() - column_offset - 1)
       return false;
     const size_t count = row_offset + column_offset + 1;
     try {
       float_output_stage = std::make_shared<std::vector<float>>(count, 0.0f);
+      if (scu_route()) {
+        size_t valid_count = 0;
+        if (!checked_mul(scalars.i, scalars.j, valid_count))
+          return false;
+        shared_channel_scales.resize(scalars.j);
+        final_output_seen.assign(valid_count, 0);
+      }
     } catch (...) {
       return false;
     }
@@ -835,6 +846,17 @@ struct Run::Impl {
 
   uint8_t provider_vector_op() const noexcept {
     switch (route) {
+    case Route::q8_0_unpacked_to_h1:
+    case Route::q8_h1:
+    case Route::q4_h1:
+    case Route::q16_h1:
+      return options.numerical_contract == NumericalContract::main_external
+          ? IM2P_VECTOR_EXTERNAL : IM2P_VECTOR_UNSIGNED_MULTIPLY;
+    case Route::q8_hp1:
+    case Route::q4_hp1:
+    case Route::q16_hp1:
+      return options.numerical_contract == NumericalContract::main_external
+          ? IM2P_VECTOR_EXTERNAL : IM2P_VECTOR_LEFT_SHIFT;
     case Route::q8_channel:
     case Route::q8_channel_dense_sidecar:
       return IM2P_VECTOR_BYPASS;
@@ -843,8 +865,95 @@ struct Run::Impl {
     }
   }
 
-  bool factor(size_t block, size_t column, double &value) const noexcept {
+  bool scu_route() const noexcept {
+    const auto op = provider_vector_op();
+    return op == IM2P_VECTOR_UNSIGNED_MULTIPLY || op == IM2P_VECTOR_LEFT_SHIFT;
+  }
+
+  uint8_t output_domain() const noexcept {
+    if (scu_route()) return IM2P_OUTPUT_SCU_FINAL;
+    return provider_vector_op() == IM2P_VECTOR_EXTERNAL
+        ? IM2P_OUTPUT_LEGACY_BLOCK : IM2P_OUTPUT_LEGACY_FINAL;
+  }
+
+  // Decode only metadata here. Partial arithmetic belongs to the RTL SCU.
+  bool scu_metadata(size_t block, size_t column, uint32_t &encoded,
+                    float &shared, uint16_t &offset) const noexcept {
     if (block >= provider_block_count() || column >= scalars.j)
+      return false;
+    const auto h1 = [&](const auto &b) {
+      encoded = uint32_t(b.c_b) + uint32_t(b.R);
+      shared = b.s_rf;
+      offset = b.R;
+      return std::isfinite(shared) && shared >= 0.0f && encoded <= 65790;
+    };
+    const auto hp1 = [&](const auto &b) {
+      shared = b.channel_scale;
+      offset = 0;
+      if (!std::isfinite(shared) || shared < 0.0f ||
+          (b.m < 0 && b.m != INT16_MIN))
+        return false;
+      encoded = b.m == INT16_MIN ? uint32_t(0x80000000u) : uint32_t(b.m);
+      return true;
+    };
+    switch (route) {
+    case Route::q8_0_unpacked_to_h1: {
+      const auto *codes = static_cast<const uint8_t *>(pointers.c_b);
+      const bool striped = scalars.stripe_j > 1;
+      const auto *scales = static_cast<const float *>(striped ? pointers.s_rf_stripe : pointers.s_rf);
+      const auto *offsets = static_cast<const uint16_t *>(striped ? pointers.r_stripe : pointers.r);
+      const size_t index = striped ? column / scalars.stripe_j : column;
+      if (!codes || !scales || !offsets) return false;
+      shared = scales[index];
+      offset = offsets[index];
+      encoded = uint32_t(codes[column * scalars.blocks_per_row + block]) + uint32_t(offset);
+      return std::isfinite(shared) && shared >= 0.0f && encoded <= 65790;
+    }
+    case Route::q8_h1:
+      return h1(static_cast<const block_q8_h1 *>(pointers.q8_h1)
+                    [column * scalars.blocks_per_row + block]);
+    case Route::q8_hp1:
+      return hp1(static_cast<const block_q8_hp1 *>(pointers.q8_hp1)
+                     [column * scalars.q8_hp1_blocks_per_row + block]);
+    case Route::q4_h1:
+      return h1(static_cast<const block_q4_h1 *>(pointers.q4_h1)
+                    [column * scalars.native_blocks_per_row + block]);
+    case Route::q4_hp1:
+      return hp1(static_cast<const block_q4_hp1 *>(pointers.q4_hp1)
+                     [column * scalars.native_blocks_per_row + block]);
+    case Route::q16_h1:
+      return h1(static_cast<const block_q16_h1 *>(pointers.q16_h1)
+                    [column * scalars.native_blocks_per_row + block]);
+    case Route::q16_hp1:
+      return hp1(static_cast<const block_q16_hp1 *>(pointers.q16_hp1)
+                     [column * scalars.native_blocks_per_row + block]);
+    default:
+      return false;
+    }
+  }
+
+  bool validate_scu_metadata() noexcept {
+    if (!scu_route()) return true;
+    for (size_t column = 0; column < scalars.j; ++column) {
+      uint32_t encoded = 0;
+      float shared = 0.0f;
+      uint16_t offset = 0;
+      if (!scu_metadata(0, column, encoded, shared, offset)) return false;
+      shared_channel_scales[column] = shared;
+      for (size_t block = 1; block < provider_block_count(); ++block) {
+        float next_shared = 0.0f;
+        uint16_t next_offset = 0;
+        if (!scu_metadata(block, column, encoded, next_shared, next_offset) ||
+            next_shared != shared || next_offset != offset)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // External routes reconstruct each block in the main numerical domain.
+  bool factor(size_t block, size_t column, double &value) const noexcept {
+    if (scu_route() || block >= provider_block_count() || column >= scalars.j)
       return false;
     switch (route) {
     case Route::q8_0_unpacked_to_h1: {
@@ -864,15 +973,15 @@ struct Run::Impl {
       break;
     }
     case Route::q8_h1: {
-      const auto *blocks = static_cast<const block_q8_h1 *>(pointers.q8_h1);
-      const auto &b = blocks[column * scalars.blocks_per_row + block];
+      const auto &b = static_cast<const block_q8_h1 *>(pointers.q8_h1)
+          [column * scalars.blocks_per_row + block];
       value = static_cast<double>(b.s_rf) *
               static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
       break;
     }
     case Route::q8_hp1: {
-      const auto *blocks = static_cast<const block_q8_hp1 *>(pointers.q8_hp1);
-      const auto &b = blocks[column * scalars.q8_hp1_blocks_per_row + block];
+      const auto &b = static_cast<const block_q8_hp1 *>(pointers.q8_hp1)
+          [column * scalars.q8_hp1_blocks_per_row + block];
       value = b.m == INT16_MIN ? 0.0
                                : static_cast<double>(gemmini_ldexp_fast_pos(
                                      b.channel_scale, int(b.m)));
@@ -881,20 +990,17 @@ struct Run::Impl {
     case Route::q8_channel: {
       const auto *base = static_cast<const uint8_t *>(pointers.channel_rows);
       float scale = 0.0f;
-      std::memcpy(&scale, base + column * scalars.channel_row_stride,
-                  sizeof(scale));
+      std::memcpy(&scale, base + column * scalars.channel_row_stride, sizeof(scale));
       value = scale;
       break;
     }
     case Route::q8_channel_dense_sidecar:
       value = static_cast<const float *>(pointers.channel_scales)[column];
       break;
-    case Route::q4_h0: {
-      const auto &b = static_cast<const block_q4_h0 *>(pointers.q4_h0)
-          [column * scalars.native_blocks_per_row + block];
-      value = fp16_to_fp32(b.d);
+    case Route::q4_h0:
+      value = fp16_to_fp32(static_cast<const block_q4_h0 *>(pointers.q4_h0)
+                              [column * scalars.native_blocks_per_row + block].d);
       break;
-    }
     case Route::q4_h1: {
       const auto &b = static_cast<const block_q4_h1 *>(pointers.q4_h1)
           [column * scalars.native_blocks_per_row + block];
@@ -908,12 +1014,10 @@ struct Run::Impl {
       value = b.m == INT16_MIN ? 0.0 : std::ldexp(double(b.channel_scale), int(b.m));
       break;
     }
-    case Route::q16_h0: {
-      const auto &b = static_cast<const block_q16_h0 *>(pointers.q16_h0)
-          [column * scalars.native_blocks_per_row + block];
-      value = fp16_to_fp32(b.d);
+    case Route::q16_h0:
+      value = fp16_to_fp32(static_cast<const block_q16_h0 *>(pointers.q16_h0)
+                              [column * scalars.native_blocks_per_row + block].d);
       break;
-    }
     case Route::q16_h1: {
       const auto &b = static_cast<const block_q16_h1 *>(pointers.q16_h1)
           [column * scalars.native_blocks_per_row + block];
@@ -1012,10 +1116,19 @@ struct Run::Impl {
   }
 
   int read_scale(size_t block, size_t column, size_t count,
-                 int8_t *out) noexcept {
+                 uint32_t *out) noexcept {
     if (!out || count == 0 || count > DIM || column > scalars.j ||
         count > scalars.j - column)
       return IM2P_ERROR;
+    if (scu_route()) {
+      for (size_t n = 0; n < count; ++n) {
+        float shared = 0.0f;
+        uint16_t offset = 0;
+        if (!scu_metadata(block, column + n, out[n], shared, offset))
+          return IM2P_ERROR;
+      }
+      return IM2P_OK;
+    }
     auto &entry = factor_cache[next_factor_cache++ % factor_cache.size()];
     entry = {};
     entry.valid = true;
@@ -1042,7 +1155,30 @@ struct Run::Impl {
   }
 
   int write_output(size_t block, size_t row, size_t column, size_t count,
-                   const int64_t *values) noexcept {
+                   const int64_t *values, uint32_t domain) noexcept {
+    if (domain != output_domain()) return IM2P_ERROR;
+    if (scu_route()) {
+      if (!values || block != 0 || count == 0 || count > DIM || row >= scalars.i ||
+          column > scalars.j || count > scalars.j - column ||
+          !std::isfinite(activation_scales[row]) || activation_scales[row] <= 0.0f)
+        return IM2P_ERROR;
+      auto *destination = static_cast<float *>(const_cast<void *>(pointers.f_out));
+      const size_t row_stride = scalars.stride_f_out ? scalars.stride_f_out : scalars.j;
+      const size_t column_stride = scalars.col_stride_f_out ? scalars.col_stride_f_out : 1;
+      for (size_t n = 0; n < count; ++n) {
+        const size_t index = row * scalars.j + column + n;
+        if (final_output_seen[index] ||
+            (route_weight_bits(route) != 16 &&
+             (values[n] < INT32_MIN || values[n] > INT32_MAX)))
+          return IM2P_ERROR;
+        const double final_value = double(values[n]) * double(shared_channel_scales[column + n]) *
+                                   double(activation_scales[row]);
+        destination[row * row_stride + (column + n) * column_stride] = float(final_value);
+        final_output_seen[index] = 1;
+        ++final_output_count;
+      }
+      return IM2P_OK;
+    }
     if (!values || count == 0 || count > DIM || row >= scalars.i ||
         column > scalars.j || count > scalars.j - column ||
         block >= provider_block_count())
@@ -1108,7 +1244,7 @@ struct Run::Impl {
     return result;
   }
   static int provider_read_scale(void *context, size_t row, size_t column,
-                                 size_t count, int8_t *out) {
+                                 size_t count, uint32_t *out) {
     auto &x = *static_cast<Impl *>(context);
     const int result = x.read_scale(row, column, count, out);
     if (result != IM2P_OK)
@@ -1117,9 +1253,9 @@ struct Run::Impl {
   }
   static int provider_write_output(void *context, size_t block, size_t row,
                                    size_t column, size_t count,
-                                   const int64_t *values) {
+                                   const int64_t *values, uint32_t domain) {
     auto &x = *static_cast<Impl *>(context);
-    const int result = x.write_output(block, row, column, count, values);
+    const int result = x.write_output(block, row, column, count, values, domain);
     if (result != IM2P_OK)
       x.provider_failed = true;
     return result;
@@ -1182,6 +1318,7 @@ struct Run::Impl {
       d.scale_row_stride = scalars.j;
       d.scale_valid_columns = scalars.j;
       d.vector_op = provider_vector_op();
+      d.output_domain = output_domain();
       d.provider = provider();
     }
     return d;
@@ -1219,6 +1356,7 @@ struct Run::Impl {
       d.scale_row_stride = scalars.j;
       d.scale_valid_columns = scalars.j;
       d.vector_op = provider_vector_op();
+      d.output_domain = output_domain();
       d.provider = provider();
     }
     return d;
@@ -1706,11 +1844,15 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "invalid IM2P invocation mode"),
             {}};
   }
+  if (options.numerical_contract != NumericalContract::scu_final_integer &&
+      options.numerical_contract != NumericalContract::main_external)
+    return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                        "invalid IM2P numerical contract"),
+            {}};
   if (options.stream_executor) {
-    if (mode != Mode::stripe_pipeline || options.full_executor ||
-        options.residual_stage_mode != ResidualStageMode::none)
+    if (mode != Mode::stripe_pipeline || options.full_executor)
       return {make_status(StatusCode::unsupported_route, Route::unknown, false,
-                          "physical stream adapter requires dense PIPELINE without FULL or residual hooks"),
+                          "physical stream adapter requires PIPELINE without a FULL hook"),
               {}};
     const auto &executor = *options.stream_executor;
     if (!executor.begin || !executor.publish || !executor.poll || !executor.finish)
@@ -1747,6 +1889,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     return {make_status(StatusCode::invalid_argument, Route::unknown, false,
                         "null Gemmini args"),
             {}};
+  if (im2p_sim_abi_version() != IM2P_ABI_VERSION ||
+      std::strcmp(im2p_compiled_numerical_semantics_revision(),
+                  IM2P_SCU_NUMERICAL_REVISION) != 0)
+    return {make_status(StatusCode::invalid_contract, Route::unknown, false,
+                        "stale IM2P ABI or SCU numerical revision"), {}};
   std::unique_ptr<Run::Impl> impl;
   try {
     impl = std::make_unique<Run::Impl>(args, mode, options);
@@ -1766,6 +1913,9 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
             {}};
   auto &x = *run->impl_;
   const RoutePolicy policy = route_policy(x.route);
+  if (x.scu_route() && options.residual_stage_mode != ResidualStageMode::none)
+    x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
+                                 "SCU residual radix and merge contract is not enabled");
   if (policy == RoutePolicy::deprecated) {
     x.final_status = make_status(StatusCode::unsupported_route, x.route,
                                  x.native, "q8_h2 is deprecated");
@@ -1879,6 +2029,10 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       x.final_status = make_status(StatusCode::out_of_memory, x.route, x.native,
                                    "failed to retain IM2P operands");
   }
+  if (x.final_status.ok() &&
+      !x.validate_scu_metadata())
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                 "invalid or inconsistent shared SCU weight metadata");
   if (x.final_status.ok() &&
       options.residual_stage_mode != ResidualStageMode::none &&
       !x.float_output_stage)
@@ -2070,6 +2224,10 @@ FenceResult fence(Run &run) noexcept {
     worker.join();
   {
     std::lock_guard lock(x.mutex);
+    if (x.final_status.ok() && x.scu_route() &&
+        x.final_output_count != x.final_output_seen.size())
+      x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                   "incomplete SCU final integer output");
     if (x.final_status.ok() && x.mode == Mode::stripe_pipeline &&
         x.stripe_rtl_timings.size() != x.canonical_stripe_count)
       x.final_status = make_status(StatusCode::execution_failure, x.route,
@@ -2143,8 +2301,10 @@ int RunTestAccess::read_selected_weight(const ggml_gemmini_args_t &args,
 
 bool RunTestAccess::weight_factor(const ggml_gemmini_args_t &args,
                                   size_t block, size_t column,
-                                  double &out) noexcept {
-  Run::Impl impl(&args, Mode::full, {});
+                                  double &out, NumericalContract contract) noexcept {
+  Options options;
+  options.numerical_contract = contract;
+  Run::Impl impl(&args, Mode::full, options);
   return impl.factor(block, column, out);
 }
 

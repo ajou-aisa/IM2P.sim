@@ -29,6 +29,25 @@ module mkTbArithmetic(Empty);
         Half fpExpected = fromInteger(10);
 
         Bool failed = False;
+        // Full-width two's-complement products retain negative minima and the
+        // positive result of min*min in every supported integer precision.
+        Int#(4) minimum4 = minBound;
+        Int#(4) maximum4 = maxBound;
+        Int#(8) minimum8 = minBound;
+        Int#(16) minimum16 = minBound;
+        Int#(16) maximum16 = maxBound;
+        Int#(8) minSquare4 = arithmeticMultiply(minimum4, minimum4);
+        Int#(8) mixed4 = arithmeticMultiply(minimum4, maximum4);
+        Int#(16) minSquare8 = arithmeticMultiply(minimum8, minimum8);
+        Int#(32) minSquare16 = arithmeticMultiply(minimum16, minimum16);
+        Int#(32) maxSquare16 = arithmeticMultiply(maximum16, maximum16);
+        Int#(32) mixed16 = arithmeticMultiply(minimum16, maximum16);
+        if (minSquare4 != 64 || mixed4 != -56 || minSquare8 != 16384 ||
+                minSquare16 != 1073741824 || maxSquare16 != 1073676289 ||
+                mixed16 != -1073709056) begin
+            $display("FAIL: signed product boundaries A4/A8/A16");
+            failed = True;
+        end
         if (intProduct != -63) begin
             $display("FAIL: INT product expected=-63 actual=%0d", intProduct);
             failed = True;

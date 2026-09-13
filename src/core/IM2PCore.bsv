@@ -444,9 +444,17 @@ module mkIM2PCoreWithArray#(
     Reg#(HostAddress) outputRequestAddressReg <- mkRegU;
     Reg#(BoundedIndex#(arrayDim)) outputRowReg <- mkReg(0);
 
+`ifdef IM2P_TEST_TAG_BOUNDARY
+    // Exercise the former current/lookahead aliases and output wrap in a
+    // bounded RTL test instead of executing billions of requests.
+    Reg#(UInt#(32)) activationTagSequenceReg <- mkReg('h7ffffff0);
+    Reg#(UInt#(32)) weightTagSequenceReg <- mkReg('h8ffffff0);
+    Reg#(UInt#(32)) outputTagSequenceReg <- mkReg('hfffffff0);
+`else
     Reg#(UInt#(32)) activationTagSequenceReg <- mkReg(0);
     Reg#(UInt#(32)) weightTagSequenceReg <- mkReg(0);
     Reg#(UInt#(32)) outputTagSequenceReg <- mkReg(0);
+`endif
     Reg#(UInt#(64)) matmulFragmentsCompletedReg <- mkReg(0);
     Reg#(UInt#(64)) matmulWorksCompletedReg <- mkReg(0);
     Reg#(UInt#(64)) stripesPublishedReg <- mkReg(0);
@@ -620,13 +628,34 @@ module mkIM2PCoreWithArray#(
         return unpack({ pack(matrixJobIdReg), pack(tagIndex) });
     endfunction
 
+    // Tags are opaque on the host-memory ABI. Each A/W/S channel can have
+    // one current and one lookahead owner. The upper word separates those
+    // owners for every low-word counter/block value, including wrap. A tag
+    // retires when its response is accepted; copied A/W/S storage then owns
+    // the data until the consumer finishes. Promotion drains lookahead
+    // responses before reusing that owner, and jobs drain before restart.
+    function HostRequestTag lookaheadMatrixTag(UInt#(32) tagIndex);
+        return unpack({ pack(matrixJobIdReg ^ 'h80000000), pack(tagIndex) });
+    endfunction
+
+    rule checkLiveRequestOwners;
+        dynamicAssert(!(activationRequestValidReg && lookaheadActivationRequestValidReg)
+            || activationRequestTagReg != lookaheadActivationTagReg,
+            "live activation request tag alias");
+        dynamicAssert(!(weightRequestValidReg && lookaheadWeightRequestValidReg)
+            || weightRequestTagReg != lookaheadWeightTagReg,
+            "live weight request tag alias");
+        dynamicAssert(!(scaleRequestValidReg && lookaheadScaleRequestValidReg)
+            || matrixTag(scaleRequestReg.block) != lookaheadScaleTagReg,
+            "live scale request tag alias");
+    endrule
+
     function HostAddress matrixRowAddress(
         HostAddress base,
         MatrixExtent row,
         HostStride stride
     );
-        UInt#(96) offset = zeroExtend(row) * zeroExtend(stride);
-        return base + truncate(offset);
+        return base + hostRowOffset(row, stride);
     endfunction
 
     function HostAddress matrixElementAddress(
@@ -702,7 +731,7 @@ module mkIM2PCoreWithArray#(
         HostAddress address = matrixElementAddress(rowBase,
             lookaheadKStartReg - matrixKOriginReg,
             fromInteger(storageBytes(valueOf(inputBits))));
-        lookaheadActivationTagReg <= matrixTag('h80000000
+        lookaheadActivationTagReg <= lookaheadMatrixTag('h80000000
             + zeroExtend(lookaheadActivationRowReg));
         lookaheadActivationResponseRowReg <= truncate(lookaheadActivationRowReg);
         lookaheadActivationRequestValidReg <= True;
@@ -755,7 +784,7 @@ module mkIM2PCoreWithArray#(
     );
         MatrixExtent localK = lookaheadKStartReg - matrixKOriginReg
             + zeroExtend(lookaheadWeightRowReg);
-        lookaheadWeightTagReg <= matrixTag('h90000000
+        lookaheadWeightTagReg <= lookaheadMatrixTag('h90000000
             + zeroExtend(lookaheadWeightRowReg));
         lookaheadWeightResponseRowReg <= truncate(lookaheadWeightRowReg);
         lookaheadWeightRequestValidReg <= True;
@@ -834,7 +863,7 @@ module mkIM2PCoreWithArray#(
         lookaheadScaleContextReg <= matrixScaleContextReg
             + zeroExtend(lookaheadWorkReg.jStart);
         lookaheadScaleBlockReg <= block;
-        lookaheadScaleTagReg <= matrixTag('ha0000000 + truncate(block));
+        lookaheadScaleTagReg <= lookaheadMatrixTag('ha0000000 + truncate(block));
         lookaheadScaleRequestValidReg <= True;
         lookaheadScaleRequestsReg <= lookaheadScaleRequestsReg + 1;
         scaleReadRequestsReg <= scaleReadRequestsReg + 1;
@@ -1093,6 +1122,11 @@ module mkIM2PCoreWithArray#(
             || lookaheadScaleValidReg)
     );
         MatmulWork#(arrayDim) work = matmulScheduler.work;
+`ifdef IM2P_SEMANTIC_TRACE
+        $display("IM2P_WORK job=%0d stripe=%0d i=%0d rows=%0d j=%0d columns=%0d k=%0d op=%0d",
+            work.jobId, work.stripeId, work.iStart, work.iCount,
+            work.jStart, work.jCount, work.reductionCount, pack(work.vectorOp));
+`endif
         Bool usesScale = vectorOpUsesScale(work.vectorOp);
         ScaleContext workScaleContext = matrixScaleContextReg
             + zeroExtend(work.jStart);
@@ -1164,6 +1198,12 @@ module mkIM2PCoreWithArray#(
     );
         MatrixExtent kStart = workScheduler.fragmentKStart;
         BoundedCount#(arrayDim) kCount = workScheduler.fragmentKCount;
+`ifdef IM2P_SEMANTIC_TRACE
+        $display("IM2P_FRAGMENT job=%0d stripe=%0d i=%0d j=%0d k=%0d count=%0d block=%0d accumulate=%0d end_block=%0d",
+            matrixWorkReg.jobId, matrixWorkReg.stripeId, matrixWorkReg.iStart,
+            matrixWorkReg.jStart, kStart, kCount, workScheduler.fragmentBlockIndex,
+            workScheduler.fragmentAccumulate, workScheduler.fragmentEndsBlock);
+`endif
         Bool usePreload = preloadedFragmentValidReg
             && preloadedFragmentKStartReg == kStart
             && preloadedFragmentKCountReg == kCount;
@@ -1728,7 +1768,8 @@ module mkIM2PCoreWithArray#(
             transformed.valids,
             destinationRowAddressesReg,
             transformed.contributions,
-            commandReg.accumulate
+            commandReg.accumulate,
+            vectorOpSaturates(commandReg.vectorOp)
         );
 
         vectorUnit.consume;
@@ -1937,7 +1978,7 @@ module mkIM2PCoreWithArray#(
         dynamicAssert(vectorOp != VectorExternal
             || outputBlockStride <= 96'hffffffffffffffff,
             "output block stride overflows host address width");
-        matrixOutputBlockStrideReg <= truncate(outputBlockStride);
+        matrixOutputBlockStrideReg <= hostRowOffset(rowCount, outputRowStride);
         matrixStartCycleReg <= cycleReg;
         workActiveReg <= True;
         workCyclesReg <= 0;

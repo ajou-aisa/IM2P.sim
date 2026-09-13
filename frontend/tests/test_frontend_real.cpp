@@ -410,7 +410,9 @@ struct ProviderCase {
 
 [[maybe_unused]] bool run_provider(Mode mode, bool hp1 = false) {
   ProviderCase test(hp1);
-  auto started = execute(&test.args, mode, Options{1000000});
+  Options options{1000000};
+  options.numerical_contract = NumericalContract::main_external;
+  auto started = execute(&test.args, mode, options);
   if (!started.status.ok()) {
     std::fprintf(stderr, "provider execute failed bits=%d dim=%d mode=%d: %s\n",
                  IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS, DIM, int(mode),
@@ -522,7 +524,9 @@ bool run_full_projection_regression() {
   auto &meta = args.act_quant.storage().emplace<exsia::Meta>();
   meta.theta.assign(1, 0);
 
-  auto started = execute(&args, Mode::full, Options{65536});
+  Options options{65536};
+  options.numerical_contract = NumericalContract::main_external;
+  auto started = execute(&args, Mode::full, options);
   if (!started.status.ok() || !started.run)
     return false;
   const auto done = fence(*started.run);
@@ -714,7 +718,10 @@ bool run_matched_provider(MatchedFormat format, Mode mode) {
     return false;
   }
   test.args.activation_rows_per_stripe = (test.m + 2) / 3;
-  auto started = execute(&test.args, mode, Options{1000000});
+  Options options{1000000};
+  if (format != MatchedFormat::h0)
+    options.numerical_contract = NumericalContract::main_external;
+  auto started = execute(&test.args, mode, options);
   if (!started.status.ok()) {
     std::fprintf(stderr, "matched execute failed route=%s mode=%s: %s\n",
                  matched_format_name(format),
@@ -838,9 +845,9 @@ struct RealResidualProvider {
   }
 
   static int write(void *opaque, size_t block, size_t row, size_t column,
-                   size_t count, const int64_t *values) {
+                   size_t count, const int64_t *values, uint32_t output_domain) {
     auto &self = *static_cast<RealResidualProvider *>(opaque);
-    if (block != 0 || row >= self.rows || column != 0 || count != 1 ||
+    if (output_domain != IM2P_OUTPUT_LEGACY_FINAL || block != 0 || row >= self.rows || column != 0 || count != 1 ||
         values == nullptr)
       return -1;
     ++self.output_writes;
@@ -956,6 +963,7 @@ bool run_dual_context_hp1(Case &test, const char *route) {
   DualContextGate gate;
   Options options{};
   options.max_stalled_cycles = 1000000;
+  options.numerical_contract = NumericalContract::main_external;
   options.residual_stage_mode = ResidualStageMode::im2p_compact;
   options.residual_stage_context = &gate;
   options.residual_stage_fn = real_residual_callback;

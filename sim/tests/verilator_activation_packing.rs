@@ -63,7 +63,7 @@ fn configuration() -> (u32, u32, u32, u32, u32) {
 
 fn expected_words(values: &[i32], bits: u32, dim: u32) -> Vec<u32> {
     let mut words = vec![0_u32; (bits * dim).div_ceil(32) as usize];
-    let mask = (1_u32 << bits) - 1;
+    let mask = u32::MAX >> (32 - bits);
     for (lane, value) in values.iter().enumerate() {
         let bit = lane as u32 * bits;
         words[(bit / 32) as usize] |= ((*value as u32) & mask) << (bit % 32);
@@ -185,13 +185,10 @@ fn verilator_weight_and_scale_packing_match_their_independent_widths() {
         expected
     );
 
-    let scales = [-128_i8, -1, 0, 127, 0x12, 0x34];
+    let scales = [0xffff_ff80_u32, u32::MAX, 0, 127, 65_790, 0x8000_0000];
     let scale_expected = expected_words(
-        &scales
-            .iter()
-            .map(|&value| i32::from(value))
-            .collect::<Vec<_>>(),
-        8,
+        &scales.iter().map(|&value| value as i32).collect::<Vec<_>>(),
+        32,
         dim,
     );
     assert_eq!(

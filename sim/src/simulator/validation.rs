@@ -14,6 +14,7 @@ pub(super) fn validate_tile<'a>(
     {
         return Err(Error::InvalidTileShape);
     }
+    reject_scu_i32_output(request.vector_op)?;
     validate_execution_range(request)?;
     require_len(
         "activations",
@@ -36,6 +37,7 @@ pub(super) fn validate_tile<'a>(
         operation: request.vector_op,
     })?;
     validate_scaling_range(request, matrix)?;
+    validate_scale_metadata(matrix, request.vector_op)?;
     Ok(Some(matrix))
 }
 
@@ -81,6 +83,53 @@ fn validate_scaling_range(
     Ok(())
 }
 
+/// Validate the transport encoding, never perform numerical scaling on the CPU.
+pub(crate) fn validate_scale_values(op: VectorOp, values: &[u32]) -> Result<(), Error> {
+    if values.iter().copied().all(|value| match op {
+        VectorOp::UnsignedMultiply => value <= 65_790,
+        VectorOp::LeftShift => value <= 32_767 || value == 0x8000_0000,
+        VectorOp::Multiply | VectorOp::Shift => value == (value as i8 as i32) as u32,
+        VectorOp::Bypass | VectorOp::External => true,
+    }) {
+        Ok(())
+    } else {
+        Err(Error::InvalidScaleMatrixLayout)
+    }
+}
+
+pub(crate) fn validate_scale_metadata(
+    matrix: KBlockScaleMatrixView<'_>,
+    op: VectorOp,
+) -> Result<(), Error> {
+    for block in 0..matrix.total_k.div_ceil(matrix.block_size) {
+        let start = block
+            .checked_mul(matrix.row_stride)
+            .and_then(|offset| offset.checked_add(matrix.column_offset))
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        let end = start
+            .checked_add(matrix.valid_columns)
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        validate_scale_values(
+            op,
+            matrix
+                .values
+                .get(start..end)
+                .ok_or(Error::InvalidScaleMatrixLayout)?,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_scu_i32_output(op: VectorOp) -> Result<(), Error> {
+    if crate::profile::IM2P_ACCUMULATOR_BITS == 64
+        && op.output_domain() == crate::OutputDomain::ScuFinal
+    {
+        Err(Error::InvalidLayout)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_scale_matrix(
     matrix: KBlockScaleMatrixView<'_>,
     required_k: usize,
@@ -119,7 +168,10 @@ pub(crate) fn validate_scale_matrix(
     let required_len = final_row
         .checked_add(matrix.valid_columns)
         .ok_or(Error::InvalidScaleMatrixLayout)?;
-    if required_len > matrix.values.len() {
+    if required_len > isize::MAX as usize / size_of::<u32>()
+        || required_len > matrix.values.len()
+        || super::descriptor::scale_row_stride_bytes(matrix.row_stride).is_err()
+    {
         return Err(Error::InvalidScaleMatrixLayout);
     }
     Ok(())
@@ -190,5 +242,44 @@ mod activation_boundary_tests {
         };
 
         assert_eq!(validate_tile(&request, &[0], 2), Ok(None));
+    }
+}
+
+#[cfg(test)]
+mod scu_metadata_tests {
+    use super::{validate_scale_values, VectorOp};
+
+    #[test]
+    fn unsigned_factor_preserves_seventeenth_bit_and_rejects_reserved() {
+        assert!(validate_scale_values(
+            VectorOp::UnsignedMultiply,
+            &[0, 127, 128, 255, 256, 257, 32767, 32768, 65535, 65536, 65790]
+        )
+        .is_ok());
+        for invalid in [65791, 131071, u32::MAX] {
+            assert!(validate_scale_values(VectorOp::UnsignedMultiply, &[invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn hp1_zero_and_full_nonnegative_exponent_range_are_distinct() {
+        assert!(validate_scale_values(
+            VectorOp::LeftShift,
+            &[0, 1, 31, 32, 63, 64, 32767, 0x8000_0000]
+        )
+        .is_ok());
+        for invalid in [32768, 65535, 0x8000_0001, u32::MAX] {
+            assert!(validate_scale_values(VectorOp::LeftShift, &[invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_metadata_requires_sign_extended_signed_byte() {
+        for op in [VectorOp::Multiply, VectorOp::Shift] {
+            assert!(validate_scale_values(op, &[0, 127, 0xffff_ff80, u32::MAX]).is_ok());
+            for invalid in [128, 255, 256, 65535, 0xffff_ff7f] {
+                assert!(validate_scale_values(op, &[invalid]).is_err());
+            }
+        }
     }
 }

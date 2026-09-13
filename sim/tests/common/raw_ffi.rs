@@ -3,7 +3,7 @@ use std::ffi::c_void;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawScaleView {
-    values: *const i8,
+    values: *const u32,
     values_len: usize,
     block_size: usize,
     total_k: usize,
@@ -45,7 +45,7 @@ pub fn assert_bad_response_identity_rejected() {
         .parse::<usize>()
         .expect("valid test dimension");
     let weights = vec![im2p_sim::parse_weight(0).expect("zero fits every profile"); dim];
-    let values = [1_i8, 2];
+    let values = [1_u32, 2];
 
     // SAFETY: handle is owned for this test, all arrays remain live during
     // synchronous calls, and destroy runs after the final assertion.

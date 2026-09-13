@@ -1,5 +1,9 @@
 # IM2P.sim
 
+> 현재 SCU 수정 후보와 기존 External/IFR2 검증은 서로 다른 수치 계약이다.
+> ABI5·saturation·새 IFR3 지원 상태는 [SCU 수정 보고서](docs/SCU_BLOCK_SCALE_FIX.md)에 있다.
+> 기존 배포 bitstream은 새 SCU 계약을 지원하지 않는다.
+
 Bluespec으로 작성한 **레지스터 기반 weight-stationary systolic NPU RTL 시뮬레이터**다. DIM16/DIM32/DIM64 구성에서 address-driven matrix scheduling, K-block-aware fragmentation, VectorUnit scale path, Accumulator, 비동기 stripe publication, 다음 stripe 선행 준비를 검증한다.
 
 C++ harness가 Verilated RTL clock을 직접 구동하므로 측정 시간은 wall-clock이 아닌 RTL logical cycle이다. Gemmini의 WS 실행 방식은 참고하되 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC, ROB 등의 Gemmini generator/SoC 계층은 복제하지 않는다. DIM64의 16×16 synthesis tile은 BSC scheduling hierarchy만 나누며 별도 Gemmini execution 계층이나 cycle을 추가하지 않는다.

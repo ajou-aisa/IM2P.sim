@@ -56,7 +56,9 @@ struct RunTestAccess {
       void *out) noexcept;
   [[nodiscard]] static bool weight_factor(const ggml_gemmini_args_t &,
                                           size_t block, size_t column,
-                                          double &out) noexcept;
+                                          double &out,
+                                          NumericalContract contract =
+                                              NumericalContract::scu_final_integer) noexcept;
   [[nodiscard]] static bool wait_for_completion(Run &,
                                                 uint64_t target) noexcept;
   [[nodiscard]] static bool wait_for_closing(Run &) noexcept;

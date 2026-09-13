@@ -62,17 +62,26 @@ impl Im2pSimulator {
                 mode: 1,
                 activation_base: ACTIVATION_BASE,
                 weight_base: WEIGHT_BASE,
-                scale_base: SCALE_BASE,
+                scale_base: super::super::descriptor::scale_base_address(
+                    SCALE_BASE,
+                    if provider.is_some() {
+                        0
+                    } else {
+                        scale.map_or(0, |view| view.column_offset)
+                    },
+                )?,
                 output_base: OUTPUT_BASE,
                 activation_row_stride: activation_elements_to_address_bytes(descriptor.reduction)
                     .map_err(|_| Error::InvalidActivationStride)?,
                 weight_row_stride: weight_elements_to_address_bytes(layout.weight_row_stride)
                     .map_err(|_| Error::InvalidWeightStride)?,
-                scale_row_stride: super::super::descriptor::u64_field(if provider.is_some() {
-                    descriptor.columns
-                } else {
-                    scale.map_or(1, |view| view.row_stride)
-                })?,
+                scale_row_stride: super::super::descriptor::scale_row_stride_bytes(
+                    if provider.is_some() {
+                        descriptor.columns
+                    } else {
+                        scale.map_or(1, |view| view.row_stride)
+                    },
+                )?,
                 output_row_stride: super::super::descriptor::output_row_stride_bytes(
                     layout.output_row_stride,
                 )?,
@@ -134,6 +143,9 @@ fn validate_descriptor(
     provider: bool,
     provider_block_size: Option<usize>,
 ) -> Result<(), Error> {
+    if !provider {
+        super::super::validation::reject_scu_i32_output(descriptor.vector_op)?;
+    }
     if descriptor.rows == 0
         || descriptor.columns == 0
         || descriptor.reduction == 0
@@ -194,6 +206,7 @@ fn validate_descriptor(
             descriptor.reduction,
             descriptor.columns,
         )?;
+        super::super::validation::validate_scale_metadata(scales, descriptor.vector_op)?;
     }
     Ok(())
 }

@@ -47,7 +47,18 @@ endtypeclass
 typeclass AccumulatorArithmetic#(type acc_t);
     function acc_t accumulatorZero();
     function acc_t accumulatorAdd(acc_t left, acc_t right);
+    function acc_t accumulatorAddSaturating(acc_t left, acc_t right);
 endtypeclass
+
+// Clamp the widened exact value before narrowing to the architectural width.
+function Int#(accWidth) saturateSigned(Int#(wideWidth) value)
+    provisos (Add#(accWidth, padding, wideWidth));
+    Int#(accWidth) minimum = minBound;
+    Int#(accWidth) maximum = maxBound;
+    if (value < signExtend(minimum)) return minimum;
+    else if (value > signExtend(maximum)) return maximum;
+    else return truncate(value);
+endfunction
 
 // -----------------------------------------------------------------------------
 // Signed integer instances
@@ -76,7 +87,12 @@ instance Multiplier#(
         Int#(inputWidth) activation,
         Int#(weightWidth) weight
     );
-        return signedMul(activation, weight);
+        // The n+m-bit two's-complement product is exact. Extending before the
+        // native multiply avoids signedMul's separate absolute-value/sign
+        // restoration logic without changing any product or accumulator width.
+        Int#(productWidth) wideActivation = signExtend(activation);
+        Int#(productWidth) wideWeight = signExtend(weight);
+        return wideActivation * wideWeight;
     endfunction
 endinstance
 
@@ -104,6 +120,15 @@ instance AccumulatorArithmetic#(Int#(accWidth));
         Int#(accWidth) right
     );
         return left + right;
+    endfunction
+
+    function Int#(accWidth) accumulatorAddSaturating(
+        Int#(accWidth) left,
+        Int#(accWidth) right
+    );
+        Int#(TAdd#(accWidth, 1)) wideLeft = signExtend(left);
+        Int#(TAdd#(accWidth, 1)) wideRight = signExtend(right);
+        return saturateSigned(wideLeft + wideRight);
     endfunction
 endinstance
 
@@ -199,6 +224,14 @@ instance AccumulatorArithmetic#(
         FloatingPoint#(exponentWidth, fractionWidth) right
     );
         return tpl_1(addFP(left, right, Rnd_Nearest_Even));
+    endfunction
+
+    // SCU is integer-only. Keep FP arithmetic unchanged for generic interfaces.
+    function FloatingPoint#(exponentWidth, fractionWidth) accumulatorAddSaturating(
+        FloatingPoint#(exponentWidth, fractionWidth) left,
+        FloatingPoint#(exponentWidth, fractionWidth) right
+    );
+        return accumulatorAdd(left, right);
     endfunction
 endinstance
 

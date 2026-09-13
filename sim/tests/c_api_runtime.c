@@ -42,7 +42,8 @@ static activation_t progress_activations[PROGRESS_K];
 static weight_t progress_weights[PROGRESS_K];
 static int callback_count;
 static int64_t callback_output;
-static int8_t callback_scale;
+static uint32_t callback_domain;
+static uint32_t callback_scale;
 static int callback_fail;
 static int callback_fail_read;
 
@@ -65,7 +66,7 @@ static int read_i16(void *context, size_t row, size_t column, size_t count,
   return 0;
 }
 static int read_scale(void *context, size_t row, size_t column, size_t count,
-                      int8_t *out) {
+                      uint32_t *out) {
   (void)context;
   ++callback_count;
   if (row || column || count != 1) return -1;
@@ -73,9 +74,9 @@ static int read_scale(void *context, size_t row, size_t column, size_t count,
   return 0;
 }
 static int write_output(void *context, size_t block, size_t row,
-                        size_t column, size_t count, const int64_t *values) {
+                        size_t column, size_t count, const int64_t *values, uint32_t output_domain) {
   (void)context;
-  if (block || row || column || count != 1) return -1;
+  if (block || row || column || count != 1 || output_domain != callback_domain) return -1;
   if (callback_fail) return -1;
   callback_output = values[0];
   return 0;
@@ -300,7 +301,7 @@ static int test_wide_transport_and_recovery(im2p_sim_t *sim) {
   if (im2p_execute_matmul(sim, &provider, NULL) != IM2P_OK ||
       callback_output != expected) return 15;
 
-  const int8_t scale = 30;
+  const uint32_t scale = 30;
   int32_t narrowed = 0;
   im2p_matmul_desc_t raw = descriptor();
   raw.scales = &scale;
@@ -390,6 +391,44 @@ static int test_provider_stream_failure(im2p_sim_t *sim) {
       im2p_finish_stream(stream, NULL) == IM2P_ERROR;
   im2p_destroy_stream(stream);
   return failed ? 0 : 29;
+}
+
+static int test_abi5_scu_metadata_and_domain(im2p_sim_t *sim) {
+  im2p_matmul_desc_t work = descriptor();
+  work.weights = NULL;
+  work.scale_total_k = 1;
+  work.scale_row_stride = 1;
+  work.scale_valid_columns = 1;
+  work.scale_values_len = 1;
+  work.output_domain = IM2P_OUTPUT_SCU_FINAL;
+#if IM2P_TEST_WEIGHT_BITS == 16
+  work.provider.read_weight_i16 = read_i16;
+#else
+  work.provider.read_weight_i8 = read_i8;
+#endif
+  work.provider.read_scale = read_scale;
+  work.provider.write_output = write_output;
+  const uint8_t operations[] = {4,4,4,5,5,5};
+  const uint32_t metadata[] = {257,65536,65790,0,14,0x80000000U};
+  const int64_t expected[] = {1542,393216,394740,6,98304,0};
+  callback_domain = IM2P_OUTPUT_SCU_FINAL;
+  for (size_t i = 0; i < sizeof(operations); ++i) {
+    work.vector_op = operations[i];
+    callback_scale = metadata[i];
+    callback_output = -1;
+    if (im2p_execute_matmul(sim, &work, NULL) != IM2P_OK || callback_output != expected[i]) return 30;
+  }
+  callback_count = 0;
+  work.abi_version = 4;
+  if (im2p_execute_matmul(sim, &work, NULL) != IM2P_CONFIGURATION_MISMATCH || callback_count != 0) return 31;
+  work.abi_version = IM2P_ABI_VERSION;
+  work.output_domain = IM2P_OUTPUT_LEGACY_FINAL;
+  if (im2p_execute_matmul(sim, &work, NULL) != IM2P_INVALID_LAYOUT || callback_count != 0) return 32;
+  work.output_domain = IM2P_OUTPUT_LEGACY_BLOCK;
+  if (im2p_execute_matmul(sim, &work, NULL) != IM2P_INVALID_LAYOUT || callback_count != 0) return 33;
+  callback_domain = IM2P_OUTPUT_LEGACY_FINAL;
+  puts("C_ABI5_SCU_PASS numerical_jobs=6 exact=6 stale_abi4=1 domain_rejections=2");
+  return 0;
 }
 
 int main(void) {
@@ -527,6 +566,8 @@ int main(void) {
           IM2P_CONFIGURATION_MISMATCH ||
       stream != NULL) return 10;
 
+  const int scu_status = test_abi5_scu_metadata_and_domain(sim);
+  if (scu_status != 0) return scu_status;
   im2p_sim_destroy(sim);
   return 0;
 }

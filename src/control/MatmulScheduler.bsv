@@ -58,8 +58,7 @@ function HostAddress rowAddress(
     MatrixExtent row,
     HostStride stride
 );
-    UInt#(96) wideOffset = zeroExtend(row) * zeroExtend(stride);
-    return base + truncate(wideOffset);
+    return base + hostRowOffset(row, stride);
 endfunction
 
 function HostAddress columnAddress(
@@ -106,7 +105,7 @@ module mkMatmulScheduler(MatmulSchedulerIfc#(arrayDim)) provisos (
     );
         BoundedCount#(arrayDim) tileCount = truncate(count);
         MatrixExtent boundedCount = zeroExtend(tileCount);
-        return base + zeroExtend(boundedCount) * stride;
+        return base + hostRowOffset(boundedCount, stride);
     endfunction
 
     rule beginMatmul (stateReg == MatmulIdle && startPendingReg);

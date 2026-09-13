@@ -13,7 +13,7 @@ module mkSynthA16W16D32(IM2PCoreIfc#(
     Int#(A16WeightWidth), // weight width
     Int#(A16ProductWidth), // product width
     Int#(A16AccumulatorWidth), // accumulator/output-request width
-    Int#(8) // scale width
+    UInt#(32) // ABI5 typed scale metadata
 ));
     let core <- mkIM2PCore;
     return core;

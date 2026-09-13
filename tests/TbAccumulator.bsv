@@ -31,7 +31,7 @@ module mkTbAccumulator(Empty);
         wide.writeRow(0, vector4(2147483647, 20, 30, 40));
         wide.writeRow(2, vector4(100, 200, -2147483648, 400));
         wide.commit(vector4(True, False, True, False), vector4(0, 0, 2, 0),
-            vector4(1, 99, -1, 99), True);
+            vector4(1, 99, -1, 99), True, False);
         action
             dynamicAssert(!wide.completionValid, "update acceptance is not completion");
         endaction
@@ -56,7 +56,7 @@ module mkTbAccumulator(Empty);
         dut.writeRow(0, vector4(2147483647, 20, 30, 40));
         dut.writeRow(1023, vector4(100, 200, -2147483648, 400));
         dut.commit(vector4(True, False, True, False), vector4(0, 1023, 1023, 0),
-            vector4(1, 99, -1, 99), True);
+            vector4(1, 99, -1, 99), True, False);
         action
             dynamicAssert(!dut.idle && !dut.completionValid,
                 "pending RMW must block the next transaction");
@@ -102,11 +102,11 @@ module mkTbAccumulator(Empty);
 
         // Replace requires no initialized old value; the next two requests must
         // accumulate from the latest completed write in the same bank and row.
-        dut.commit(replicate(True), replicate(256), vector4(7, 8, 9, 10), False);
+        dut.commit(replicate(True), replicate(256), vector4(7, 8, 9, 10), False, False);
         dut.consumeCompletion;
-        dut.commit(replicate(True), replicate(256), vector4(1, 2, 3, 4), True);
+        dut.commit(replicate(True), replicate(256), vector4(1, 2, 3, 4), True, False);
         dut.consumeCompletion;
-        dut.commit(replicate(True), replicate(256), vector4(10, 20, 30, 40), True);
+        dut.commit(replicate(True), replicate(256), vector4(10, 20, 30, 40), True, False);
         dut.consumeCompletion;
         dut.requestReadRow(256);
         action
@@ -128,7 +128,7 @@ module mkTbAccumulator(Empty);
             dut.consumeReadResponse;
         endaction
 
-        dut.commit(replicate(False), replicate(1023), replicate(99), True);
+        dut.commit(replicate(False), replicate(1023), replicate(99), True, False);
         action
             dynamicAssert(dut.completedValids == replicate(False),
                 "empty valid mask fabricated a committed column");
@@ -143,7 +143,7 @@ module mkTbAccumulator(Empty);
 
         // An operation accepted before reset may have written before reset
         // arrives. Its completion/read payload must never enter the next job.
-        dut.commit(replicate(True), replicate(1023), replicate(123), True);
+        dut.commit(replicate(True), replicate(1023), replicate(123), True, False);
         resetControl.assertReset;
         delay(6);
         action

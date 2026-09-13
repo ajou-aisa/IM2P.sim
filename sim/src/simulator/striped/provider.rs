@@ -163,15 +163,17 @@ impl StripedMatmul<'_> {
             let offset = request
                 .address
                 .checked_sub(SCALE_BASE)
-                .ok_or(Error::InvalidScaleMatrixLayout)? as usize;
-            let block = offset / self.descriptor.columns;
-            let column = offset % self.descriptor.columns;
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .ok_or(Error::InvalidScaleMatrixLayout)?;
+            let (block, column) =
+                super::super::descriptor::scale_byte_indices(offset, self.descriptor.columns)?;
             let count = request.element_count as usize;
             if column + count > self.descriptor.columns {
                 return Err(Error::InvalidScaleMatrixLayout);
             }
-            let mut values = vec![0_i8; count];
+            let mut values = vec![0_u32; count];
             provider.read_scale(block, column, &mut values)?;
+            super::super::validation::validate_scale_values(self.descriptor.vector_op, &values)?;
             let accepted = unsafe {
                 ffi::im2p_stage_scale_read_response(
                     self.simulator.handle.as_ptr(),
@@ -191,15 +193,17 @@ impl StripedMatmul<'_> {
             .address
             .checked_sub(SCALE_BASE)
             .ok_or(Error::InvalidKRange)? as usize;
-        let block = offset / view.row_stride;
-        let column = offset % view.row_stride;
+        let (block, column) =
+            super::super::descriptor::scale_byte_indices(offset, view.row_stride)?;
         let count = request.element_count as usize;
-        let column_end = column
+        let logical_column = column
+            .checked_sub(view.column_offset)
+            .ok_or(Error::InvalidScaleMatrixLayout)?;
+        let column_end = logical_column
             .checked_add(count)
             .ok_or(Error::InvalidScaleMatrixLayout)?;
         let start = block
             .checked_mul(view.row_stride)
-            .and_then(|value| value.checked_add(view.column_offset))
             .and_then(|value| value.checked_add(column))
             .ok_or(Error::InvalidScaleMatrixLayout)?;
         let end = start
@@ -261,7 +265,13 @@ impl StripedMatmul<'_> {
         if row >= self.descriptor.rows || column + count > self.descriptor.columns {
             return Err(Error::InvalidKRange);
         }
-        provider.write_output(block, row, column, &values[..count])?;
+        provider.write_output(
+            block,
+            row,
+            column,
+            &values[..count],
+            self.descriptor.vector_op.output_domain(),
+        )?;
         let accepted = unsafe {
             ffi::im2p_stage_output_write_response(self.simulator.handle.as_ptr(), request.tag)
         };

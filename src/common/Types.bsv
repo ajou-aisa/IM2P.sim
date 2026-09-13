@@ -49,16 +49,29 @@ typedef struct {
 //
 // VectorExternal
 //     scale sideband와 block identity는 사용하지만 partial은 변경하지 않는다.
+//
+// VectorUnsignedMultiply
+//     ABI5 unsigned beta(c + R)를 각 fragment partial에 적용한다.
+//
+// VectorLeftShift
+//     ABI5 nonnegative exponent를 적용한다. 0x80000000은 zero sentinel이다.
 typedef enum {
-    VectorBypass,
-    VectorMultiply,
-    VectorShift,
-    VectorExternal
+    VectorBypass = 0,
+    VectorMultiply = 1,
+    VectorShift = 2,
+    VectorExternal = 3,
+    VectorUnsignedMultiply = 4,
+    VectorLeftShift = 5
 } VectorOp deriving (Bits, Eq, FShow);
 
 // 선택한 연산이 scale sideband를 실제로 사용하는지 반환한다.
 function Bool vectorOpUsesScale(VectorOp op);
     return op != VectorBypass;
+endfunction
+
+// Only typed SCU operations select saturating architectural accumulation.
+function Bool vectorOpSaturates(VectorOp op);
+    return op == VectorUnsignedMultiply || op == VectorLeftShift;
 endfunction
 
 // Bool Vector의 OR reduction이다.

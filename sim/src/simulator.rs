@@ -17,6 +17,8 @@ pub enum VectorOp {
     Multiply,
     Shift,
     External,
+    UnsignedMultiply,
+    LeftShift,
 }
 
 impl VectorOp {
@@ -26,12 +28,33 @@ impl VectorOp {
             Self::Multiply => 1,
             Self::Shift => 2,
             Self::External => 3,
+            Self::UnsignedMultiply => 4,
+            Self::LeftShift => 5,
+        }
+    }
+}
+
+/// Numerical meaning of a canonical output callback, independent of lane width.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputDomain {
+    LegacyFinal = 0,
+    LegacyBlock = 1,
+    ScuFinal = 2,
+}
+
+impl VectorOp {
+    pub const fn output_domain(self) -> OutputDomain {
+        match self {
+            Self::External => OutputDomain::LegacyBlock,
+            Self::UnsignedMultiply | Self::LeftShift => OutputDomain::ScuFinal,
+            _ => OutputDomain::LegacyFinal,
         }
     }
 }
 
 pub(crate) type ReadProvider =
-    unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut u32) -> i32;
 pub(crate) type ReadWeightProviderI8 =
     unsafe extern "C" fn(*mut c_void, usize, usize, usize, *mut i8) -> i32;
 pub(crate) type ReadWeightProviderI16 =
@@ -43,7 +66,7 @@ pub(crate) enum ReadWeightProvider {
     I16(ReadWeightProviderI16),
 }
 pub(crate) type WriteProvider =
-    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i64) -> i32;
+    unsafe extern "C" fn(*mut c_void, usize, usize, usize, usize, *const i64, u32) -> i32;
 
 #[derive(Clone, Copy)]
 pub(crate) struct MemoryProvider {
@@ -88,7 +111,7 @@ impl MemoryProvider {
         }
     }
 
-    pub fn read_scale(self, row: usize, column: usize, values: &mut [i8]) -> Result<(), Error> {
+    pub fn read_scale(self, row: usize, column: usize, values: &mut [u32]) -> Result<(), Error> {
         let callback = self.read_scale.ok_or(Error::ProviderFailure)?;
         if unsafe { callback(self.context, row, column, values.len(), values.as_mut_ptr()) } == 0 {
             Ok(())
@@ -103,6 +126,7 @@ impl MemoryProvider {
         row: usize,
         column: usize,
         values: &[i64],
+        output_domain: OutputDomain,
     ) -> Result<(), Error> {
         let callback = self.write_output.ok_or(Error::ProviderFailure)?;
         // SAFETY: Category 8 (FFI boundary): the provider contract guarantees the callback
@@ -115,6 +139,7 @@ impl MemoryProvider {
                 column,
                 values.len(),
                 values.as_ptr(),
+                output_domain as u32,
             )
         };
         if status == 0 {
@@ -195,7 +220,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KBlockScaleMatrixView<'a> {
     /// Host-owned block-major matrix storage.
-    pub values: &'a [i8],
+    pub values: &'a [u32],
     pub block_size: usize,
     pub total_k: usize,
     pub columns: usize,

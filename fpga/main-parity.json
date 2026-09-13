@@ -1,0 +1,453 @@
+{
+  "schema": 2,
+  "updated_utc": "2026-09-11T12:43:08.157313+00:00",
+  "overall": "INCOMPLETE_BLOCKED_FRESH_RTL_BASELINE",
+  "references": {
+    "im2p_main": "6fef5702a9b2b91e66ec7faa43d60fe11a1a042d",
+    "current_host": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+    "include": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+    "r0_native_compatible_host": "7a6ed1e6d98f00e8bb5db4ca235b277260c3d684",
+    "r0_classification": "native-compatible software/mock ABI only; original CI pin not established",
+    "reference_source_patch": null
+  },
+  "repositories": {
+    "IM2P.sim": {
+      "branch": "fpga/main-parity",
+      "head": "3aeb5feee6872f88ec1f6a5dc0d77fb1bb8babf8",
+      "staged_diff_unchanged": true,
+      "diff_check_exit": 0,
+      "preexisting_untracked_paths_still_present": 149,
+      "tracked_paths_changed_this_continuation": [
+        "Makefile"
+      ]
+    },
+    "llama.cpp-gemmini": {
+      "branch": "fpga",
+      "head": "7a74ac29c9c8fa8fbc5d47cf073b8b9266e3e7a9",
+      "staged_diff_unchanged": true,
+      "diff_check_exit": 0,
+      "preexisting_untracked_paths_still_present": 2,
+      "tracked_paths_changed_this_continuation": [
+        "tools/CMakeLists.txt"
+      ]
+    },
+    "RISC-V-DynDNN-gemmini-include": {
+      "branch": "develop",
+      "head": "cd2caed8d93e49d3f8873bd6c4e340fcad54b9e0",
+      "staged_diff_unchanged": true,
+      "diff_check_exit": 0,
+      "preexisting_untracked_paths_still_present": 0,
+      "tracked_paths_changed_this_continuation": []
+    }
+  },
+  "evidence_root": "/home/youngshin/aisa/RISCV-DynDNN/IM2P/.parity/20260911-main-parity-02/evidence",
+  "results": [
+    {
+      "label": "tool-bootstrap",
+      "status": "BLOCKED_ENVIRONMENT",
+      "exit_code": 78,
+      "scope": "environment_only",
+      "record": "tool-bootstrap.json",
+      "record_sha256": "a74a6a4aa3fbe06e729636b7915c6d6eea24e2b8f5ebc127b6e3ec0ea1f80074"
+    },
+    {
+      "label": "r0-native-check",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "software_contract_not_RTL",
+      "record": "r0-native-check.json",
+      "record_sha256": "a650487f314833ae1ddc3e1fc05f93be35b582cd1c55b01bc8f4f9e1488bd7b5"
+    },
+    {
+      "label": "r0-native-frontend",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "software_contract_not_RTL",
+      "record": "r0-native-frontend.json",
+      "record_sha256": "a162f46f77e392698ce05de9d41b07cf2bd392721d718566f4058fea9922274e"
+    },
+    {
+      "label": "r0-native-cache",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "cache_contract_fake_builder_not_RTL",
+      "record": "r0-native-cache.json",
+      "record_sha256": "03372e095d1da5a19e60f4e4948c867818a07508e9563a4dd99b99ebc3e3b633"
+    },
+    {
+      "label": "r0-native-real-syntax",
+      "status": "INCOMPLETE_EXIT_UNKNOWN",
+      "exit_code": null,
+      "scope": "software_contract_not_RTL",
+      "record": "r0-native-real-syntax.json",
+      "record_sha256": "d253a3a80753ad6b4fa8dcdcec7cfd28e5274b6b7a796c0c22d2c57fbe6bd06a"
+    },
+    {
+      "label": "r0-native-real-syntax-retry",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "compile_only_not_RTL",
+      "record": "r0-native-real-syntax-retry.json",
+      "record_sha256": "79820fe2f07e7cc03707854516059f28719fa6d54db70775914902fa1948679f"
+    },
+    {
+      "label": "r1-cache",
+      "status": "INCOMPLETE_EXIT_UNKNOWN",
+      "exit_code": null,
+      "scope": "cache_contract_fake_builder_not_RTL",
+      "record": "r1-cache.json",
+      "record_sha256": "7adf58c32da16382cb71a14542a47611aaab6f622791391612ba24cf9c76b8be"
+    },
+    {
+      "label": "r1-cache-retry",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "cache_contract_fake_builder_not_RTL",
+      "record": "r1-cache-retry.json",
+      "record_sha256": "ee9f94e167baba00a5c2e76f4e87ae892c260c67237bc2e21d4c5d22a21468b1"
+    },
+    {
+      "label": "r1-check",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "software_contract_not_RTL",
+      "record": "r1-check.json",
+      "record_sha256": "83da9a28febeb4a55ca37902eb86e09b46c916caf837632b53498ba5bfb157ac"
+    },
+    {
+      "label": "r1-frontend",
+      "status": "INCOMPLETE_EXIT_UNKNOWN",
+      "exit_code": null,
+      "scope": "frontend_mock_ABI_not_RTL",
+      "record": "r1-frontend.json",
+      "record_sha256": "c467303642243330ec5dc539a63690152835dd9f3cd4fdbd6fc8eb3836cf337c"
+    },
+    {
+      "label": "r1-frontend-retry",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "frontend_mock_ABI_not_RTL",
+      "record": "r1-frontend-retry.json",
+      "record_sha256": "52397736c3667ef89a0890764c52327705dec858a3c7d1ef3f2925a634635e8d"
+    },
+    {
+      "label": "m9-harness-infrastructure",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "test_infrastructure_only_not_RTL",
+      "record": "m9-harness-infrastructure.json",
+      "record_sha256": "b5086060cb7ef793439fb727962f2e494c80dd0e6ac877035d58c2af0011ee82"
+    },
+    {
+      "label": "r1-final-check",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "software_reference_and_harness_infrastructure_not_RTL",
+      "record": "r1-final-check.json",
+      "record_sha256": "b87c2117a125562b03654b5ffaad811c37886d843fbb21c3de17609663f403ed"
+    },
+    {
+      "label": "r0-fresh-rtl-attempt",
+      "status": "BLOCKED_ENVIRONMENT",
+      "exit_code": 2,
+      "scope": "fresh_RTL_requested_no_success_assumed",
+      "record": "r0-fresh-rtl-attempt.json",
+      "record_sha256": "4935c61d0e5416abdb1383d6777b9264d4c466950e12837f86e9ee0eed2dc14e"
+    },
+    {
+      "label": "r1-fresh-rtl-attempt",
+      "status": "BLOCKED_ENVIRONMENT",
+      "exit_code": 2,
+      "scope": "fresh_RTL_requested_no_success_assumed",
+      "record": "r1-fresh-rtl-attempt.json",
+      "record_sha256": "b8cca0bee2927cfabbbcb0211b919d0abb6cd39966e7677cfc2a570f760014cb"
+    },
+    {
+      "label": "r1-fresh-m9-attempt",
+      "status": "BLOCKED_ENVIRONMENT",
+      "exit_code": 2,
+      "scope": "fresh_M9_requested_no_success_assumed",
+      "record": "r1-fresh-m9-attempt.json",
+      "record_sha256": "0ff9616704d336def516e80cddc8806545bd836de7c4e7b26031f6e46e08181f"
+    },
+    {
+      "label": "metadata-configure",
+      "status": "FAIL",
+      "exit_code": 1,
+      "scope": "metadata_tool_build_only",
+      "record": "metadata-configure.json",
+      "record_sha256": "f481448292f0218d76628e793662e170247664d5539fe1a5ef229bbc84bdf926"
+    },
+    {
+      "label": "metadata-cpu-configure",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "metadata_tool_build_only",
+      "record": "metadata-cpu-configure.json",
+      "record_sha256": "c121bfa245e965920affe6d66643292f4e6e80563377ba77938d6ad405167186"
+    },
+    {
+      "label": "metadata-cpu-build",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "metadata_tool_build_only",
+      "record": "metadata-cpu-build.json",
+      "record_sha256": "7779c5a38a288fc2c08d784919cf09eaa2a944c8e45bfc8601c78f871e1fbec2"
+    },
+    {
+      "label": "metadata-tool-unit",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "metadata_parser_only_no_inference",
+      "record": "metadata-tool-unit.json",
+      "record_sha256": "2875aeef3a9b6a8a7abdf7d551a82af6a36781c74aaedfb8de64626c7b75fb6a"
+    },
+    {
+      "label": "model-inventory",
+      "status": "INCOMPLETE_EXIT_UNKNOWN",
+      "exit_code": null,
+      "scope": "metadata_only_no_runtime_invocation",
+      "record": "model-inventory.json",
+      "record_sha256": "30c40b42e038f357ba7baca4122b5e84f96f0c6a3873f2a9f7ace4f5d2d135d3"
+    },
+    {
+      "label": "inventory-llama-native",
+      "status": "PASS",
+      "exit_code": 0,
+      "scope": "stored_metadata_no_invocation",
+      "record": "inventory-llama-native.json",
+      "record_sha256": "c22ab272d417463b5925ba02d720559c122c4444c223ba8f0acd5e4a66f54976"
+    }
+  ],
+  "preservation": {
+    "unexpected_preexisting_core_tracked_changes": [],
+    "unexpected_preexisting_host_tracked_changes": [],
+    "host_build_x86_user_diff_identical": true,
+    "initial_runner_backup_sha256": "51eb1946b9d81085adf93d7c9d8c201400f75060386a385c6f63d9b45c5d9b37",
+    "untracked_scope": "existence only; not a whole-tree original-content hash proof",
+    "main_develop_refs_unchanged": true,
+    "reference_worktrees_pristine": true
+  },
+  "models": {
+    "models": [
+      {
+        "model": "gpt2",
+        "scope": "metadata_only_no_invocation",
+        "tensor_count": 148,
+        "type_counts": {
+          "f32": 99,
+          "q8_hp1": 49
+        },
+        "file_size": 159821472,
+        "representative_stored_tensors": [
+          {
+            "name": "blk.0.attn_output.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              768,
+              768,
+              1,
+              1
+            ],
+            "bytes": 737280,
+            "offset": 51407808
+          },
+          {
+            "name": "blk.0.attn_qkv.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              768,
+              2304,
+              1,
+              1
+            ],
+            "bytes": 2211840,
+            "offset": 52154304
+          },
+          {
+            "name": "blk.0.ffn_down.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              3072,
+              768,
+              1,
+              1
+            ],
+            "bytes": 2949120,
+            "offset": 54369216
+          },
+          {
+            "name": "blk.0.ffn_up.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              768,
+              3072,
+              1,
+              1
+            ],
+            "bytes": 2949120,
+            "offset": 57336768
+          }
+        ]
+      },
+      {
+        "model": "llama3.2-1B",
+        "scope": "metadata_only_no_invocation",
+        "tensor_count": 147,
+        "type_counts": {
+          "f32": 34,
+          "q8_hp1": 113
+        },
+        "file_size": 1552781760,
+        "representative_stored_tensors": [
+          {
+            "name": "blk.0.attn_k.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              512,
+              1,
+              1
+            ],
+            "bytes": 1310720,
+            "offset": 328343680
+          },
+          {
+            "name": "blk.0.attn_output.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              2048,
+              1,
+              1
+            ],
+            "bytes": 5242880,
+            "offset": 329662592
+          },
+          {
+            "name": "blk.0.attn_q.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              2048,
+              1,
+              1
+            ],
+            "bytes": 5242880,
+            "offset": 334905472
+          },
+          {
+            "name": "blk.0.attn_v.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              512,
+              1,
+              1
+            ],
+            "bytes": 1310720,
+            "offset": 340148352
+          },
+          {
+            "name": "blk.0.ffn_down.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              8192,
+              2048,
+              1,
+              1
+            ],
+            "bytes": 20971520,
+            "offset": 341459072
+          },
+          {
+            "name": "blk.0.ffn_gate.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              8192,
+              1,
+              1
+            ],
+            "bytes": 20971520,
+            "offset": 362430592
+          },
+          {
+            "name": "blk.0.ffn_up.weight",
+            "type_id": 41,
+            "type": "q8_hp1",
+            "ggml_shape": [
+              2048,
+              8192,
+              1,
+              1
+            ],
+            "bytes": 20971520,
+            "offset": 383410304
+          }
+        ]
+      }
+    ],
+    "runtime_invocations_captured": 0,
+    "numerical_rtl_evidence": 0
+  },
+  "source_sha256": {
+    "IM2P.sim/Makefile": "f3f53e675bbf5f4877a87763638443bc8ce726f70dc80a9010d07c0e67deffe6",
+    "IM2P.sim/tests/scu_block_scale/run_activation_guard.py": "d15ce5f9eb00189b27abeb26e04692af8b7e5786900410248fe19e7850f64281",
+    "IM2P.sim/tests/scu_block_scale/activation_guard_support.py": "a1f28b7dd8ce0e025114dc5459cee3bca33b09e277cc200d12911b5c7f285b02",
+    "IM2P.sim/tests/scu_block_scale/test_activation_guard_support.py": "59b29f4d532e7ffca580b347fb1ba2254a75a567c6f0b0e591b17c5bde99bd02",
+    "IM2P.sim/docs/FPGA_MAIN_PARITY.md": "3bb51e2f4ae918b958266a8e2c786e62cf7692bd594b52cff5d393569dd935ac",
+    "llama.cpp-gemmini/tools/CMakeLists.txt": "babf44166f9be9a6de8aee99b7f338541f75b0234e0285f83ff96e61b9dbe6ff",
+    "llama.cpp-gemmini/tools/im2p-model-inventory/CMakeLists.txt": "46001232e94b7557d2f24d204c3febbf9a72f517b01b830af3a1c5b5637e7ac1",
+    "llama.cpp-gemmini/tools/im2p-model-inventory/main.cpp": "1156272e5451af9ca4fd693e6deb28039ff2d80b50f39402b8fd5ca619f689f4",
+    "llama.cpp-gemmini/tools/im2p-model-inventory/test_inventory.py": "a4d8a4d6f5ec9b311d065fa071c6492a7c2fd76cf1cd4a966a45a2856125c883",
+    "llama.cpp-gemmini/docs/FPGA_MAIN_PARITY.md": "637a8791501342fc78a6f43e12a708f01ee943bad9ec85ce3c1849f6a7ab9142"
+  },
+  "environment": {
+    "bsc": "known installation not visible in CatDesk filesystem",
+    "vivado": "known installation and /tools not visible in CatDesk filesystem",
+    "verilator": "binary located but -V fails; share/lib runtime not visible",
+    "rust_existing_1_91_1": "works through $HOME/.cargo/bin/rustc",
+    "large_build_disk": "/mnt/fpga-build not visible; initial workspace free about 11 GiB",
+    "reinstalled_tools": 0,
+    "sandbox_configuration_changed": false
+  },
+  "fresh_numerical_RTL_executions": 0,
+  "full_size_model_invocations": 0,
+  "new_bitstreams": 0,
+  "physical_device_access_operations": 0,
+  "pending": [
+    "fresh_R0_R1_R2_numerical_baseline",
+    "fresh_M9_production_asserted_passive",
+    "main_SCU_numerical_contract_differential",
+    "bounded_H1_large_logical_GEMM",
+    "HP1_board_provider",
+    "nonzero_accelerator_residual",
+    "GPT2_Llama_full_size_invocations",
+    "actual_standard_CLI_PPL_model_dispatch",
+    "remaining_profile_regressions",
+    "fresh_25MHz_synthesis_place_route_bitstream",
+    "new_physical_approval_package"
+  ],
+  "unresolved_defects": [
+    "GGML_GEMMINI=OFF with tests ON invokes undefined profile helper",
+    "several CatDesk command jobs terminated without a final exit; cause unknown"
+  ],
+  "commit_candidates": [
+    "test(fpga): add fresh-source M9 harness provenance and fail-closed tool discovery",
+    "feat(tools): add read-only native GGUF inventory and parser tests",
+    "docs(fpga): record native-compatible R0 and actual environment/parity gaps"
+  ],
+  "committed": false,
+  "pushed": false
+}

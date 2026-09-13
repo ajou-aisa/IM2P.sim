@@ -38,6 +38,9 @@ fn transform(partial: i64, scale: i8, operation: VectorOp) -> i64 {
         VectorOp::Bypass | VectorOp::External => partial,
         VectorOp::Multiply => wrap(partial.wrapping_mul(i64::from(scale))),
         VectorOp::Shift => signed_shift(partial, scale),
+        VectorOp::UnsignedMultiply | VectorOp::LeftShift => {
+            panic!("use the independent SCU golden")
+        }
     }
 }
 

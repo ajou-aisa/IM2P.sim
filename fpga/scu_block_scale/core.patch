@@ -1,0 +1,264 @@
+diff --git a/src/accumulator/Accumulator.bsv b/src/accumulator/Accumulator.bsv
+index c8b195e..1369f6c 100644
+--- a/src/accumulator/Accumulator.bsv
++++ b/src/accumulator/Accumulator.bsv
+@@ -21,6 +21,7 @@ typedef union tagged {
+         Vector#(columns, RowAddress#(rows)) rowAddresses;
+         Vector#(columns, acc_t) contributions;
+         Bool accumulate;
++        Bool saturating;
+     } Update;
+     struct {
+         RowAddress#(rows) row;
+@@ -40,7 +41,8 @@ interface AccumulatorIfc#(
+         Vector#(columns, Bool) valids,
+         Vector#(columns, RowAddress#(rows)) rowAddresses,
+         Vector#(columns, acc_t) contributions,
+-        Bool accumulate
++        Bool accumulate,
++        Bool saturating
+     );
+ 
+     method Bool completionValid;
+@@ -77,6 +79,7 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
+     Reg#(Vector#(columns, RowAddress#(rows))) pendingRows <- mkRegU;
+     Reg#(Vector#(columns, acc_t)) pendingContributions <- mkRegU;
+     Reg#(Bool) pendingAccumulate <- mkRegU;
++    Reg#(Bool) pendingSaturating <- mkRegU;
+     Reg#(Vector#(columns, acc_t)) response <- mkRegU;
+     RWire#(AccumulatorRequest#(rows, columns, acc_t)) request <- mkRWire;
+     PulseWire consumed <- mkPulseWire;
+@@ -93,6 +96,7 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
+                         pendingRows <= update.rowAddresses;
+                         pendingContributions <= update.contributions;
+                         pendingAccumulate <= update.accumulate;
++                        pendingSaturating <= update.saturating;
+                         for (Integer column = 0; column < valueOf(columns); column = column + 1) begin
+                             if (update.valids[column] && update.accumulate) begin
+                                 banks[column].put(False, update.rowAddresses[column], ?);
+@@ -119,7 +123,9 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
+                     if (pendingValids[column]) begin
+                         acc_t nextValue = pendingContributions[column];
+                         if (pendingAccumulate) begin
+-                            nextValue = accumulatorAdd(banks[column].read, nextValue);
++                            nextValue = pendingSaturating
++                                ? accumulatorAddSaturating(banks[column].read, nextValue)
++                                : accumulatorAdd(banks[column].read, nextValue);
+                         end
+                         banks[column].put(True, pendingRows[column], nextValue);
+                     end
+@@ -146,11 +152,13 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
+         Vector#(columns, Bool) valids,
+         Vector#(columns, RowAddress#(rows)) rowAddresses,
+         Vector#(columns, acc_t) contributions,
+-        Bool accumulate
++        Bool accumulate,
++        Bool saturating
+     ) if (state == AccumulatorIdle);
+         request.wset(tagged Update {
+             valids: valids, rowAddresses: rowAddresses,
+-            contributions: contributions, accumulate: accumulate
++            contributions: contributions, accumulate: accumulate,
++            saturating: saturating
+         });
+     endmethod
+ 
+diff --git a/src/common/Arithmetic.bsv b/src/common/Arithmetic.bsv
+index 3e2c43b..3c5feaf 100644
+--- a/src/common/Arithmetic.bsv
++++ b/src/common/Arithmetic.bsv
+@@ -47,8 +47,19 @@ endtypeclass
+ typeclass AccumulatorArithmetic#(type acc_t);
+     function acc_t accumulatorZero();
+     function acc_t accumulatorAdd(acc_t left, acc_t right);
++    function acc_t accumulatorAddSaturating(acc_t left, acc_t right);
+ endtypeclass
+ 
++// Clamp the widened exact value before narrowing to the architectural width.
++function Int#(accWidth) saturateSigned(Int#(wideWidth) value)
++    provisos (Add#(accWidth, padding, wideWidth));
++    Int#(accWidth) minimum = minBound;
++    Int#(accWidth) maximum = maxBound;
++    if (value < signExtend(minimum)) return minimum;
++    else if (value > signExtend(maximum)) return maximum;
++    else return truncate(value);
++endfunction
++
+ // -----------------------------------------------------------------------------
+ // Signed integer instances
+ // -----------------------------------------------------------------------------
+@@ -105,6 +116,15 @@ instance AccumulatorArithmetic#(Int#(accWidth));
+     );
+         return left + right;
+     endfunction
++
++    function Int#(accWidth) accumulatorAddSaturating(
++        Int#(accWidth) left,
++        Int#(accWidth) right
++    );
++        Int#(TAdd#(accWidth, 1)) wideLeft = signExtend(left);
++        Int#(TAdd#(accWidth, 1)) wideRight = signExtend(right);
++        return saturateSigned(wideLeft + wideRight);
++    endfunction
+ endinstance
+ 
+ // -----------------------------------------------------------------------------
+@@ -200,6 +220,14 @@ instance AccumulatorArithmetic#(
+     );
+         return tpl_1(addFP(left, right, Rnd_Nearest_Even));
+     endfunction
++
++    // SCU is integer-only. Keep FP arithmetic unchanged for generic interfaces.
++    function FloatingPoint#(exponentWidth, fractionWidth) accumulatorAddSaturating(
++        FloatingPoint#(exponentWidth, fractionWidth) left,
++        FloatingPoint#(exponentWidth, fractionWidth) right
++    );
++        return accumulatorAdd(left, right);
++    endfunction
+ endinstance
+ 
+ endpackage
+diff --git a/src/common/Config.bsv b/src/common/Config.bsv
+index 833cdda..2c0ee0c 100644
+--- a/src/common/Config.bsv
++++ b/src/common/Config.bsv
+@@ -1,5 +1,5 @@
+ // Generated by scripts/im2p_config.py; edit config/im2p_profiles.json.
+-// Configuration SHA256: fb46d020bfec46bd08f16f500f0c9ede698bac13683336a3e33aa50870f8c3c2
++// Configuration SHA256: 091175baa1660ccb15702aca4a28d1a586aab52f460b78fa8495432b0ffb0fd9
+ package Config;
+ 
+ typedef 16 DefaultArrayDim;
+@@ -30,7 +30,7 @@ typedef A8InputWidth DefaultInputWidth;
+ typedef A8WeightWidth DefaultWeightWidth;
+ typedef A8ProductWidth DefaultProductWidth;
+ typedef A8AccumulatorWidth DefaultAccumulatorWidth;
+-typedef 8 DefaultScaleWidth;
++typedef 32 DefaultScaleWidth;
+ typedef IntegerAccumulatorRows#(DefaultArrayDim, DefaultAccumulatorWidth) DefaultAccumulatorRows;
+ 
+ endpackage
+diff --git a/src/common/Types.bsv b/src/common/Types.bsv
+index 863a4d1..b23b8d5 100644
+--- a/src/common/Types.bsv
++++ b/src/common/Types.bsv
+@@ -49,11 +49,19 @@ typedef struct {
+ //
+ // VectorExternal
+ //     scale sideband와 block identity는 사용하지만 partial은 변경하지 않는다.
++//
++// VectorUnsignedMultiply
++//     ABI5 unsigned beta(c + R)를 각 fragment partial에 적용한다.
++//
++// VectorLeftShift
++//     ABI5 nonnegative exponent를 적용한다. 0x80000000은 zero sentinel이다.
+ typedef enum {
+-    VectorBypass,
+-    VectorMultiply,
+-    VectorShift,
+-    VectorExternal
++    VectorBypass = 0,
++    VectorMultiply = 1,
++    VectorShift = 2,
++    VectorExternal = 3,
++    VectorUnsignedMultiply = 4,
++    VectorLeftShift = 5
+ } VectorOp deriving (Bits, Eq, FShow);
+ 
+ // 선택한 연산이 scale sideband를 실제로 사용하는지 반환한다.
+@@ -61,6 +69,11 @@ function Bool vectorOpUsesScale(VectorOp op);
+     return op != VectorBypass;
+ endfunction
+ 
++// Only typed SCU operations select saturating architectural accumulation.
++function Bool vectorOpSaturates(VectorOp op);
++    return op == VectorUnsignedMultiply || op == VectorLeftShift;
++endfunction
++
+ // Bool Vector의 OR reduction이다.
+ // 호출한 계층에서 하나 이상의 element가 유효한지 검사할 때 사용한다.
+ function Bool anyTrue(Vector#(elementCount, Bool) values);
+diff --git a/src/core/IM2PCore.bsv b/src/core/IM2PCore.bsv
+index 81e79cf..6e77781 100644
+--- a/src/core/IM2PCore.bsv
++++ b/src/core/IM2PCore.bsv
+@@ -1728,7 +1728,8 @@ module mkIM2PCoreWithArray#(
+             transformed.valids,
+             destinationRowAddressesReg,
+             transformed.contributions,
+-            commandReg.accumulate
++            commandReg.accumulate,
++            vectorOpSaturates(commandReg.vectorOp)
+         );
+ 
+         vectorUnit.consume;
+diff --git a/src/vector/Scale.bsv b/src/vector/Scale.bsv
+index 21745e3..feb5e66 100644
+--- a/src/vector/Scale.bsv
++++ b/src/vector/Scale.bsv
+@@ -3,6 +3,7 @@ package Scale;
+ import FloatingPoint::*;
+ 
+ import Types::*;
++import Arithmetic::*;
+ 
+ // Numeric format이 runtime Multiply/Shift를 지원하는지 정의한다.
+ // acc_t와 scale_t에 무관한 format capability이므로 실제 transform typeclass와
+@@ -99,6 +100,57 @@ instance VectorTransform#(
+     endfunction
+ endinstance
+ 
++// ABI5 typed metadata. Legacy op1/2 still decode the signed-byte value.
++// SCU clamps each fragment contribution before architectural accumulation.
++// Explicit legacy op1/2 retain their original signed-byte wrap/shift semantics.
++instance VectorTransform#(
++    Int#(inputWidth),
++    Int#(accWidth),
++    UInt#(32)
++) provisos (
++    Add#(accWidth, 17, scaledWidth)
++);
++    function Int#(accWidth) transformVectorElement(
++        Int#(inputWidth) formatProxy,
++        VectorOp op,
++        Int#(accWidth) partial,
++        UInt#(32) scale
++    );
++        case (op)
++            VectorUnsignedMultiply: begin
++                // The ABI validates beta <= 65790 before execution.
++                UInt#(17) factor = truncate(scale);
++                Int#(scaledWidth) widePartial = signExtend(partial);
++                Int#(scaledWidth) wideFactor = unpack(zeroExtend(pack(factor)));
++                Int#(scaledWidth) product = widePartial * wideFactor;
++                return saturateSigned(product);
++            end
++            VectorLeftShift: begin
++                // Zero is a distinct valid metadata value, not exponent zero.
++                if (partial == 0 || scale == 32'h80000000) begin
++                    return 0;
++                end
++                else if (scale >= fromInteger(valueOf(accWidth))) begin
++                    return partial < 0 ? minBound : maxBound;
++                end
++                else begin
++                    // These bounds are exact for multiplication by 2^scale.
++                    // Check before shifting; -1 << (width-1) remains representable.
++                    Int#(accWidth) minimum = minBound;
++                    Int#(accWidth) maximum = maxBound;
++                    if (partial < (minimum >> scale)) return minimum;
++                    else if (partial > (maximum >> scale)) return maximum;
++                    else return partial << scale;
++                end
++            end
++            default: begin
++                Int#(8) legacy = unpack(truncate(pack(scale)));
++                return transformVectorElement(formatProxy, op, partial, legacy);
++            end
++        endcase
++    endfunction
++endinstance
++
+ // FLOAT는 같은 VectorUnit source를 사용하지만 partial을 그대로 통과시킨다.
+ // VectorScaleCapability가 False이므로 Core는 VectorBypass 외의 command를 거부한다.
+ instance VectorTransform#(

@@ -1,5 +1,10 @@
 # 검증된 IFR2 구현의 Jetson Nano 재현 안내
 
+> 이 문서와 배포 bitstream은 **기존 External/host-scaled baseline** 전용이다.
+> `8aef393d040bb306e6ddf7b4b977976a9a924dbc5aec62b37b1690f0aa18c0ca`는
+> 새 SCU block-scaled integer/saturation 계약을 지원하지 않는다.
+> SCU 수정 소스와 혼용하지 않는다. [새 수치 계약](SCU_BLOCK_SCALE_CONTRACT.md)을 참고한다.
+
 이 문서는 검증된 stream-02 bitstream과 host09-02 소스를 Nano로 옮기는 절차다. 지원 범위는 **A8/W8, physical DIM16, native Q8_H1/block32, EXSIA activation, RMD OFF Dense FULL/live PIPELINE**이다. 현재 Nano native build, Nano programming, Nano UART 실행은 **NOT RUN**이다. 기존 x86 실보드 결과는 [host09 측정 보고서](FPGA_DENSE_PIPELINE_HOST09_BOARD_MEASUREMENT.md)에 보존한다.
 
 아래 Nano 명령은 사용자가 보드 이동 완료를 알린 뒤 실행 범위를 확정하고 사용한다. 이 문서를 작성하는 작업은 Nano 접속·설치·빌드·장치 실행을 시작하지 않는다. 이동 중 전원을 끊어도 된다. SRAM 구성은 휘발성이므로 Nano에서 동일 bitstream을 다시 로딩한다. Flash에는 쓰지 않는다.

@@ -18,7 +18,7 @@ pub enum SimError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KBlockScaleMatrixView<'a> {
-    pub values: &'a [i8],
+    pub values: &'a [u32],
     pub block_size: usize,
     pub total_k: usize,
     pub columns: usize,

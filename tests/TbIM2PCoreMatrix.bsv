@@ -276,10 +276,12 @@ module mkTbIM2PCoreMatrix(Empty);
             $finish(1);
         end
 
-        // Tag는 상위 32bit에 jobId를 담는다.
+        // Current tags carry jobId; lookahead uses the disjoint owner word.
         HostRequestTag tag = core.activationReadRequestTag;
-
-        if ((tag >> 32) != 21) begin
+        Bool currentOwner = (tag >> 32) == 21;
+        Bool lookaheadOwner = (tag >> 32) == (21 ^ 64'h80000000)
+            && (tag & 64'hfffffff0) == 64'h80000000;
+        if (!currentOwner && !lookaheadOwner) begin
             $display(
                 "IM2P CORE MATRIX: FAIL activation tag jobId=%0d tag=%0h",
                 tag >> 32, tag

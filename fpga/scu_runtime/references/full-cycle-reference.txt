@@ -1,0 +1,12 @@
+IFR3_FULL_REFERENCE_V1
+hardware_sha256 2c5516e2bae4d5f960697537bb1501d42470b7971be5986b6e59ad8cc6586984
+production_rtl_sha256 1833a6a4f53e48fa18f0afb188fbd2858a7584376701a333374025174d061c26
+backend FPGA_UART
+protocol 3
+profile 0810
+semantic_capability 0294
+numerical_revision 2
+mode FULL
+fixture m16n16k64 16 16 64 617
+fixture m321n48k96 321 48 96 52687
+fixture m17n19k64 17 19 64 1949

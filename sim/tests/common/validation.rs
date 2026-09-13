@@ -19,7 +19,7 @@ pub fn valid_request<'a>(
     }
 }
 
-pub fn scale_view(values: &[i8], block_size: usize, total_k: usize) -> KBlockScaleMatrixView<'_> {
+pub fn scale_view(values: &[u32], block_size: usize, total_k: usize) -> KBlockScaleMatrixView<'_> {
     KBlockScaleMatrixView {
         values,
         block_size,

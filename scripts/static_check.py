@@ -50,11 +50,15 @@ EXPECTED_SRC = {
 EXPECTED_TESTS = {
     "TestVectorUtils.bsv",
     "TbProfileConfig.bsv",
+    "TbHostRowOffset.bsv",
     "TbArithmetic.bsv",
     "TbPE.bsv",
     "TbInputSkew.bsv",
     "TbSystolicArray.bsv",
     "TbVectorUnit.bsv",
+    "TbScuTypedS1.bsv",
+    "TbScuSaturation.bsv",
+    "TbScuProfile.bsv",
     "TbAccumulator.bsv",
     "TbCoreBramBoundary.bsv",
     "TbExecuteController.bsv",
@@ -79,9 +83,14 @@ EXPECTED_TESTS = {
     "TbSynthA8W8D16.bsv",
     "TbSynthA8W8D32.bsv",
     "TbSynthA8W8D64.bsv",
+    "scu_block_scale/activation_guard/ResidentP0.bsv",
+    "scu_block_scale/activation_guard/TbWorkLayout.bsv",
 }
 
 EXPECTED_SYNTH = {
+    "FullReplay.bsv",
+    "DensePipeline.bsv",
+    "ScuPipeline.bsv",
     "SynthA4W4D16.bsv",
     "SynthA4W4D32.bsv",
     "SynthA4W4D64.bsv",
@@ -101,6 +110,8 @@ DIAGNOSTIC_SYNTH_TOPS = {
     "SynthActivationFIFO.bsv": ("mkSynthActivationFIFO",),
     "SynthSchedulerDiagnostics.bsv": ("mkWorkSchedulerDiagnostic", "mkMatmulSchedulerDiagnostic"),
 }
+
+SYNTH_HELPERS = {"WindowBuffer.bsv"}
 
 INTEGER_SYNTH_TOPS = (
     "SynthA4W4D16.bsv",
@@ -321,6 +332,16 @@ def check_balanced_delimiters(path: Path, text: str) -> None:
         ("instance", "endinstance"),
     ):
         begins = len(re.findall(rf"\b{begin}\b", clean))
+        if begin == "interface":
+            # Aliases and typed members of interface declarations have no body.
+            begins -= len(re.findall(r"\binterface\s+\w+\s*=", clean))
+            # ponytail: module bodies cover current implementations; extend scope
+            # handling if interface-valued functions are added.
+            declarations = MODULE_RE.sub("", clean)
+            begins -= len(re.findall(
+                r"\binterface\s+\w+(?:\s*#\([^;]*\))?\s+\w+\s*;",
+                declarations,
+            ))
         ends = len(re.findall(rf"\b{end}\b", clean))
         if begins != ends:
             fail(
@@ -627,7 +648,12 @@ def check_frontend_and_output_contracts() -> None:
         ROOT / "sim/include/im2p_sim.h",
         (
             "const int64_t *values",
-            "IM2P_ABI_VERSION = 4",
+            "IM2P_ABI_VERSION = 5",
+            "IM2P_VECTOR_UNSIGNED_MULTIPLY = 4",
+            "IM2P_VECTOR_LEFT_SHIFT = 5",
+            "IM2P_OUTPUT_SCU_FINAL = 2",
+            "const uint32_t *scales",
+            "uint32_t output_domain",
             "im2p_stripe_work_desc_t",
             "im2p_activation_stripe_t",
             "im2p_begin_striped_matmul",
@@ -797,11 +823,12 @@ def main() -> None:
             f"  missing={sorted(EXPECTED_TESTS - actual_tests)}\n"
             f"  extra={sorted(actual_tests - EXPECTED_TESTS)}"
         )
-    if actual_synth != EXPECTED_SYNTH:
+    expected_synth = EXPECTED_SYNTH | SYNTH_HELPERS
+    if actual_synth != expected_synth:
         fail(
             "synth tree mismatch\n"
-            f"  missing={sorted(EXPECTED_SYNTH - actual_synth)}\n"
-            f"  extra={sorted(actual_synth - EXPECTED_SYNTH)}"
+            f"  missing={sorted(expected_synth - actual_synth)}\n"
+            f"  extra={sorted(actual_synth - expected_synth)}"
         )
 
     build_script = ROOT / "sim" / "build.rs"
@@ -874,9 +901,7 @@ def main() -> None:
 
     # 모든 package는 적어도 하나의 synthesis top 또는 Tb* testbench에서
     # 도달 가능해야 한다. 연결되지 않은 placeholder/helper가 남는 것을 막는다.
-    root_packages = {
-        name for name in package_to_path if name.startswith(("Synth", "Tb"))
-    }
+    root_packages = {Path(name).stem for name in EXPECTED_SYNTH | EXPECTED_TESTS}
     reachable: set[str] = set()
 
     def mark_reachable(name: str) -> None:
@@ -1109,6 +1134,13 @@ def main() -> None:
 
     for synth in SYNTH.glob("*.bsv"):
         text = synth.read_text(encoding="utf-8")
+        if synth.name in SYNTH_HELPERS:
+            continue
+        if synth.name in {"FullReplay.bsv", "DensePipeline.bsv", "ScuPipeline.bsv"}:
+            require_substrings(synth, ("IM2PCore::*", "SynthA8W8D16::*", "let core <- mkSynthA8W8D16;"))
+            if strip_comments(text).count("<- mkSynthA8W8D16") != 1:
+                fail(f"board provider must instantiate exactly one profile core: {synth.name}")
+            continue
         if synth.name == "SynthActivationFIFO.bsv":
             require_substrings(synth, ("FIFOF#(Vector#(16, Int#(8)))", "mkGFIFOF(False, True)"))
             if "IM2PCore" in strip_comments(text):

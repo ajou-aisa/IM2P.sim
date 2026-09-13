@@ -16,7 +16,7 @@ typedef void *im2p_handle_t;
  * their synchronous call and are never retained by the bridge.
  */
 typedef struct {
-    const int8_t *values;
+    const uint32_t *values;
     size_t values_len;
     size_t block_size;
     size_t total_k;
@@ -320,13 +320,13 @@ int im2p_put_weight_read_response(
 int im2p_stage_scale_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const uint32_t *values,
     uint32_t count
 );
 int im2p_put_scale_read_response(
     im2p_handle_t handle,
     uint64_t tag,
-    const int8_t *values,
+    const uint32_t *values,
     uint32_t count
 );
 

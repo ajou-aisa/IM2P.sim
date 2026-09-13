@@ -11,6 +11,8 @@ static_assert(legacy_options.residual_stage_mode ==
               im2p::gemmini::ResidualStageMode::none);
 static_assert(legacy_options.residual_stage_context == nullptr);
 static_assert(legacy_options.residual_stage_fn == nullptr);
+static_assert(legacy_options.numerical_contract ==
+              im2p::gemmini::NumericalContract::scu_final_integer);
 static_assert(std::is_nothrow_invocable_r_v<
               im2p::gemmini::Status, im2p::gemmini::ResidualStageFn, void *,
               im2p_sim_t *,

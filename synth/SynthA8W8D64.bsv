@@ -14,7 +14,7 @@ module mkSynthA8W8D64(IM2PCoreIfc#(
     Int#(A8WeightWidth), // weight width
     Int#(A8ProductWidth), // product width
     Int#(A8AccumulatorWidth), // accumulator/output-request width
-    Int#(8) // scale width
+    UInt#(32) // ABI5 typed scale metadata
 ));
     let array <- mkSystolicArrayInt8x64;
     let core <- mkIM2PCoreWithArray(array);

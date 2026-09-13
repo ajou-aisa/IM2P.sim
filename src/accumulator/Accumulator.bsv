@@ -21,6 +21,7 @@ typedef union tagged {
         Vector#(columns, RowAddress#(rows)) rowAddresses;
         Vector#(columns, acc_t) contributions;
         Bool accumulate;
+        Bool saturating;
     } Update;
     struct {
         RowAddress#(rows) row;
@@ -40,7 +41,8 @@ interface AccumulatorIfc#(
         Vector#(columns, Bool) valids,
         Vector#(columns, RowAddress#(rows)) rowAddresses,
         Vector#(columns, acc_t) contributions,
-        Bool accumulate
+        Bool accumulate,
+        Bool saturating
     );
 
     method Bool completionValid;
@@ -77,6 +79,7 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
     Reg#(Vector#(columns, RowAddress#(rows))) pendingRows <- mkRegU;
     Reg#(Vector#(columns, acc_t)) pendingContributions <- mkRegU;
     Reg#(Bool) pendingAccumulate <- mkRegU;
+    Reg#(Bool) pendingSaturating <- mkRegU;
     Reg#(Vector#(columns, acc_t)) response <- mkRegU;
     RWire#(AccumulatorRequest#(rows, columns, acc_t)) request <- mkRWire;
     PulseWire consumed <- mkPulseWire;
@@ -93,6 +96,7 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
                         pendingRows <= update.rowAddresses;
                         pendingContributions <= update.contributions;
                         pendingAccumulate <= update.accumulate;
+                        pendingSaturating <= update.saturating;
                         for (Integer column = 0; column < valueOf(columns); column = column + 1) begin
                             if (update.valids[column] && update.accumulate) begin
                                 banks[column].put(False, update.rowAddresses[column], ?);
@@ -119,7 +123,9 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
                     if (pendingValids[column]) begin
                         acc_t nextValue = pendingContributions[column];
                         if (pendingAccumulate) begin
-                            nextValue = accumulatorAdd(banks[column].read, nextValue);
+                            nextValue = pendingSaturating
+                                ? accumulatorAddSaturating(banks[column].read, nextValue)
+                                : accumulatorAdd(banks[column].read, nextValue);
                         end
                         banks[column].put(True, pendingRows[column], nextValue);
                     end
@@ -146,11 +152,13 @@ module mkAccumulator(AccumulatorIfc#(rows, columns, acc_t)) provisos (
         Vector#(columns, Bool) valids,
         Vector#(columns, RowAddress#(rows)) rowAddresses,
         Vector#(columns, acc_t) contributions,
-        Bool accumulate
+        Bool accumulate,
+        Bool saturating
     ) if (state == AccumulatorIdle);
         request.wset(tagged Update {
             valids: valids, rowAddresses: rowAddresses,
-            contributions: contributions, accumulate: accumulate
+            contributions: contributions, accumulate: accumulate,
+            saturating: saturating
         });
     endmethod
 

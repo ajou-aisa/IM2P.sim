@@ -135,7 +135,7 @@ module mkTbVectorUnit(Empty);
     endrule
 
     rule finish (!inFlight && executionIndex == 5 && dut.ready);
-        if (pack(VectorExternal) != 2'b11 || !vectorOpUsesScale(VectorExternal)) begin
+        if (pack(VectorExternal) != 3'd3 || !vectorOpUsesScale(VectorExternal)) begin
             $display("VECTOR UNIT: FAIL external encoding/scale policy");
             $finish(1);
         end

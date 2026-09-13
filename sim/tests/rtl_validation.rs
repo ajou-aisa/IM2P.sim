@@ -40,7 +40,7 @@ fn invalid_global_k_range_is_rejected() -> Result<(), SimError> {
 #[test]
 fn cross_block_fragment_is_rejected() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
-    let values = [1_i8, 2, 3, 4];
+    let values = [1_u32, 2, 3, 4];
     let mut request = valid_request(
         &[1, 2],
         &[1, 2, 3, 4],
@@ -158,7 +158,7 @@ fn bypass_accepts_missing_matrix() -> Result<(), SimError> {
 #[test]
 fn invalid_activation_weight_and_output_lengths_are_rejected() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
-    let matrix = [1_i8, 2];
+    let matrix = [1_u32, 2];
     let request = valid_request(
         &[1],
         &[1, 2, 3, 4],
@@ -179,7 +179,7 @@ fn invalid_activation_weight_and_output_lengths_are_rejected() -> Result<(), Sim
 #[test]
 fn invalid_weight_and_output_lengths_are_rejected() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
-    let matrix = [1_i8, 2];
+    let matrix = [1_u32, 2];
     let short_weights = valid_request(
         &[1, 2],
         &[1, 2, 3],
@@ -215,7 +215,7 @@ fn invalid_weight_and_output_lengths_are_rejected() -> Result<(), SimError> {
 #[test]
 fn invalid_tile_shape_is_rejected() -> Result<(), SimError> {
     let mut simulator = Im2pSimulator::new()?;
-    let matrix = [1_i8, 2];
+    let matrix = [1_u32, 2];
     let mut request = valid_request(
         &[1, 2],
         &[1, 2, 3, 4],
@@ -253,7 +253,7 @@ fn bad_response_identity_is_rejected_by_ffi() {
 fn invalid_scale_layouts_are_rejected_by_full_and_striped_apis() -> Result<(), SimError> {
     let activations = [im2p_sim::parse_activation(1).expect("valid activation")];
     let weights: [im2p_sim::WeightValue; 1] = [1];
-    let scales = [1_i8; 4];
+    let scales = [1_u32; 4];
     let invalid_views = [
         KBlockScaleMatrixView {
             values: &scales,
