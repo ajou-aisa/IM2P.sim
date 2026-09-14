@@ -1362,6 +1362,7 @@ struct Run::Impl {
     return d;
   }
 
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
   struct SimDelete {
     void operator()(im2p_sim_t *p) const noexcept {
       if (p)
@@ -1374,10 +1375,19 @@ struct Run::Impl {
         im2p_destroy_stream(p);
     }
   };
+#endif
 
   void run_full() {
     auto d = full_descriptor();
     int result = IM2P_ERROR;
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    if (!options.full_executor) {
+      set_error(make_status(StatusCode::invalid_argument, route, false,
+                            "external FULL executor required"));
+      return;
+    }
+    result = options.full_executor(options.full_executor_context, &d, &stats);
+#else
     if (options.full_executor) {
       result = options.full_executor(options.full_executor_context, &d, &stats);
     } else {
@@ -1389,6 +1399,7 @@ struct Run::Impl {
       }
       result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
     }
+#endif
     if (provider_failed)
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -1415,9 +1426,14 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    const int result = options.stream_executor->publish(
+        options.stream_executor->context, &s);
+#else
     const int result = options.stream_executor
         ? options.stream_executor->publish(options.stream_executor->context, &s)
         : im2p_publish_stripe(stream, &s);
+#endif
     if (result == IM2P_OK) {
       std::lock_guard lock(mutex);
       in_flight.emplace(s.stripe_id, e);
@@ -1455,9 +1471,14 @@ struct Run::Impl {
 #endif
     for (;;) {
       im2p_stripe_completion_extended_t extended{};
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+      const int result = options.stream_executor->poll(
+          options.stream_executor->context, &extended);
+#else
       const int result = options.stream_executor
           ? options.stream_executor->poll(options.stream_executor->context, &extended)
           : im2p_poll_completed_extended(stream, &extended);
+#endif
       const auto &c = extended.base;
       if (result < 0) {
         set_error(from_c_status(result, route, "IM2P completion poll failed",
@@ -1618,6 +1639,11 @@ struct Run::Impl {
       // poll counts and normal producer waits are not logical RTL stall cycles.
       return poll(stream, residual_simulator, completion_count);
     }
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    set_error(make_status(StatusCode::invalid_argument, route, false,
+                          "external stream executor required"));
+    return false;
+#else
     if (im2p_progress_stream(stream, 1) != IM2P_OK ||
         !poll(stream, residual_simulator, completion_count)) {
       set_error(
@@ -1643,13 +1669,30 @@ struct Run::Impl {
       return false;
     }
     return true;
+#endif
   }
 
   void run_pipeline() {
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
     std::unique_ptr<im2p_sim_t, SimDelete> sim;
     std::unique_ptr<im2p_sim_t, SimDelete> residual_simulator;
+#endif
     im2p_stream_t *raw = nullptr;
     bool started = false;
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    if (!options.stream_executor) {
+      set_error(make_status(StatusCode::invalid_argument, route, false,
+                            "external stream executor required"));
+    } else {
+      auto d = stripe_descriptor();
+      const int result = options.stream_executor->begin(
+          options.stream_executor->context, &d);
+      started = result == IM2P_OK;
+      if (!started)
+        set_error(from_c_status(result, route, "failed to start physical IM2P stream",
+                                native));
+    }
+#else
     if (options.stream_executor) {
       auto d = stripe_descriptor();
       const int result = options.stream_executor->begin(
@@ -1679,23 +1722,39 @@ struct Run::Impl {
         started = raw != nullptr;
       }
     }
+#endif
     {
       std::lock_guard lock(mutex);
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+      dense_simulator_identity = 0;
+      residual_simulator_identity = 0;
+#else
       dense_simulator_identity = reinterpret_cast<uintptr_t>(sim.get());
-      residual_simulator_identity =
-          reinterpret_cast<uintptr_t>(residual_simulator.get());
+      residual_simulator_identity = reinterpret_cast<uintptr_t>(residual_simulator.get());
+#endif
 #endif
       startup_done = true;
       changed.notify_all();
     }
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
     std::unique_ptr<im2p_stream_t, StreamDelete> stream(raw);
+#endif
+    im2p_stream_t *stream_handle = raw;
+    im2p_sim_t *residual_handle = nullptr;
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    stream_handle = stream.get();
+    residual_handle = residual_simulator.get();
+#endif
     if (!started)
       return;
     uint64_t stalled = 0;
     uint64_t observed_generation = 0;
-    uint64_t observed_progress = options.stream_executor
-        ? 0 : im2p_stream_progress_count(stream.get());
+    uint64_t observed_progress = 0;
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    if (!options.stream_executor)
+      observed_progress = im2p_stream_progress_count(stream_handle);
+#endif
     for (;;) {
       DenseEvent event{};
       bool have = false;
@@ -1729,7 +1788,7 @@ struct Run::Impl {
       }
       if (have) {
         for (;;) {
-          const int result = publish(stream.get(), event);
+          const int result = publish(stream_handle, event);
           if (result == IM2P_OK)
             break;
           if (result != IM2P_BACKPRESSURE) {
@@ -1737,7 +1796,7 @@ struct Run::Impl {
                                     native));
             break;
           }
-          if (!progress(stream.get(), residual_simulator.get(), stalled,
+          if (!progress(stream_handle, residual_handle, stalled,
                         observed_generation, observed_progress,
                         "IM2P progress failed during raw retry"))
             break;
@@ -1749,7 +1808,7 @@ struct Run::Impl {
           break;
       }
       size_t completion_count = 0;
-      if (!poll(stream.get(), residual_simulator.get(), completion_count))
+      if (!poll(stream_handle, residual_handle, completion_count))
         break;
       observe_completions(stalled, observed_generation);
       bool complete = false;
@@ -1762,7 +1821,7 @@ struct Run::Impl {
       }
       if (complete)
         break;
-      if (!progress(stream.get(), residual_simulator.get(), stalled,
+      if (!progress(stream_handle, residual_handle, stalled,
                     observed_generation, observed_progress,
                     "IM2P stream progress failed"))
         break;
@@ -1776,9 +1835,14 @@ struct Run::Impl {
                  semantic_coverage_complete();
     }
     if (complete) {
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+      const int result = options.stream_executor->finish(
+          options.stream_executor->context, &stats);
+#else
       const int result = options.stream_executor
           ? options.stream_executor->finish(options.stream_executor->context, &stats)
           : im2p_finish_stream_extended(stream.get(), &stats);
+#endif
       if (provider_failed)
         set_error(make_status(StatusCode::execution_failure, route, native,
                               "IM2P provider callback failed"));
@@ -1844,6 +1908,13 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "invalid IM2P invocation mode"),
             {}};
   }
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+  if ((mode == Mode::full && !options.full_executor) ||
+      (mode == Mode::stripe_pipeline && !options.stream_executor))
+    return {make_status(StatusCode::invalid_argument, Route::unknown, false,
+                        "external executor required"),
+            {}};
+#endif
   if (options.numerical_contract != NumericalContract::scu_final_integer &&
       options.numerical_contract != NumericalContract::main_external)
     return {make_status(StatusCode::invalid_argument, Route::unknown, false,
@@ -1889,11 +1960,13 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     return {make_status(StatusCode::invalid_argument, Route::unknown, false,
                         "null Gemmini args"),
             {}};
+#if !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
   if (im2p_sim_abi_version() != IM2P_ABI_VERSION ||
       std::strcmp(im2p_compiled_numerical_semantics_revision(),
                   IM2P_SCU_NUMERICAL_REVISION) != 0)
     return {make_status(StatusCode::invalid_contract, Route::unknown, false,
                         "stale IM2P ABI or SCU numerical revision"), {}};
+#endif
   std::unique_ptr<Run::Impl> impl;
   try {
     impl = std::make_unique<Run::Impl>(args, mode, options);

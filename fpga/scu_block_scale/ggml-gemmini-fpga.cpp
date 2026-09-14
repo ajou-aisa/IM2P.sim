@@ -9,6 +9,7 @@
 #include "residual/direct/direct-executor.hpp"
 #include "residual/rmd/rmd-im2p-executor.hpp"
 #include "residual/rmd/rmd-compose.hpp"
+#include <gemmini/log.hpp>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -467,8 +468,13 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         if (!device) {
             double timeout = 30;
             if (const char *value = std::getenv("IM2P_FPGA_TIMEOUT_SECONDS")) timeout = std::stod(value);
+            ggml::gemmini::log::debug("FPGA_UART",
+                "connection=open_begin device=%s transport=%s", path, bounded ? "IFR4_UART" : "IFR3_UART");
             device = std::make_unique<im2p::fpga::UART>(path, timeout, IM2P_FPGA_PROTOCOL_VERSION);
             opened_device = path;
+            ggml::gemmini::log::debug("FPGA_UART",
+                "connection=verified device=%s protocol=%d capability=%s physical_fpga=1",
+                path, bounded ? 4 : IM2P_FPGA_PROTOCOL_VERSION, bounded ? "08100420" : "0294");
             if (!bounded) std::cout << "FPGA_UART_IDENTITY protocol=" << IM2P_FPGA_PROTOCOL_VERSION
                       << " semantic_capability=0294 numerical_revision=signed-scu-sat-v2 output_domain=2"
                       << " full_cycle_reference=" << (full_reference ? "pinned" : "unavailable_rtl_test")
@@ -620,6 +626,10 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
             throw std::runtime_error("FPGA RELEASE failed");
         }
         observe_boundary("commit", args, pipeline);
+        ggml::gemmini::log::debug("FPGA_UART",
+            "execution=committed layer=%s mode=%s M=%zu N=%zu K=%zu physical_fpga=1",
+            layer_name ? layer_name : "", pipeline ? "STRIPE_PIPELINE" : "FULL",
+            args.I, args.J, args.K);
         const im2p::fpga::RunTelemetry owned(result);
         const auto device_telemetry = device->telemetry();
         const auto cycles = owned.stats.base.work_total_cycles;
