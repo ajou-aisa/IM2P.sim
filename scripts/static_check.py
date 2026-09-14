@@ -83,6 +83,7 @@ EXPECTED_TESTS = {
     "TbSynthA8W8D16.bsv",
     "TbSynthA8W8D32.bsv",
     "TbSynthA8W8D64.bsv",
+    "scu_block_scale/TbIM2PRequestTags.bsv",
     "scu_block_scale/activation_guard/ResidentP0.bsv",
     "scu_block_scale/activation_guard/TbWorkLayout.bsv",
 }

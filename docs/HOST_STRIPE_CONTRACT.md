@@ -54,13 +54,12 @@ physical refill slots, and residual ownership are separate lifetimes. In
 particular, ExSIA releasing a scratch slot does not authorize overwriting the
 accepted A bytes.
 
-The shared RMD builder now admits an INT32 residual when it fits the existing
-native balanced-radix lanes. A8 retains four signed-eight-bit digits with radix
-256; A4 retains eight radix-16 digits, and A16 retains two radix-65536 digits.
-The positive limits are respectively 2,139,062,143, 2,004,318,071, and
-2,147,450,879; INT32_MIN fits all three. Remaining carry and reconstruction
-outside INT32 still reject atomically. Packet layout, lane capacities, scales,
-MAC widths, quantization and folding order are unchanged.
+The shared RMD builder admits every INT32 residual. A8 uses up to five
+signed-eight-bit digits with radix 256; A4 uses up to nine radix-16 digits, and
+A16 uses up to three radix-65536 digits. The extra lane carries bit 32 through
+the existing packing and execution path. Reconstruction outside INT32 still
+rejects atomically. Scales, MAC widths, quantization and folding order are
+unchanged.
 
 This explicitly extends the historical main host's signed-21 admission policy;
 it is not a claim that the immutable R0 quantizer accepted these wider values.
