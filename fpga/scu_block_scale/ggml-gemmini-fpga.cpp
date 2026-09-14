@@ -158,6 +158,31 @@ struct FullCapture {
     }
 };
 
+// The transport validates coverage before this observer sees each record.
+// Retain a final integer plane only when a numerical observer requests it.
+struct DenseCapture {
+    size_t rows, columns, scalars = 0;
+    bool final;
+    std::vector<int32_t> raw;
+    static void output(void *opaque, size_t block, size_t row, size_t column,
+                       size_t count, const int64_t *values) {
+        auto &self = *static_cast<DenseCapture *>(opaque);
+        require(values && row < self.rows && column < self.columns &&
+                count <= self.columns - column, "dense observer extent mismatch");
+        if (self.final) {
+            require(block == 0, "SCU observer received an intermediate block plane");
+            for (size_t lane = 0; lane < count; ++lane) {
+                require(values[lane] >= INT32_MIN && values[lane] <= INT32_MAX,
+                        "SCU observer integer outside int32");
+                if (!self.raw.empty()) self.raw[row * self.columns + column + lane] = int32_t(values[lane]);
+            }
+        } else if (block_observer) {
+            block_observer(block_observer_context, block, row, column, count, values);
+        }
+        self.scalars += count;
+    }
+};
+
 int execute_full(void *context, const im2p_matmul_desc_t *desc,
                  im2p_work_stats_extended_t *stats) {
     return static_cast<im2p::fpga::UART *>(context)->full(desc, stats);
@@ -406,7 +431,7 @@ void ggml_gemmini_fpga_set_boundary_observer(ggml_gemmini_fpga_boundary_observer
 }
 
 bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
-        const std::function<void()> &quantize, const char *layer_name) {
+        const std::function<void()> &quantize, const char *layer_name, bool native_scu) {
     std::lock_guard lock(engine_mutex);
     last_error.clear();
     try {
@@ -415,6 +440,27 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         const bool residual_enabled = GGML_GEMMINI_ENABLE_RMD != 0;
         const bool channel = args.has_q8_channel_direct_read_contract() ||
                              args.has_q8_channel_dense_sidecar_contract();
+        const bool native = args.weight_format == ggml_gemmini_args_t::im2p_weight_format_t::q8_h1 ||
+                            args.weight_format == ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+        auto contract = native && (!bounded || native_scu) ? im2p::gemmini::NumericalContract::scu_final_integer :
+                                                           im2p::gemmini::NumericalContract::main_external;
+        if (const char *requested = std::getenv("IM2P_FPGA_NUMERICAL_CONTRACT")) {
+            const std::string_view name(requested);
+            require(name == "scu_final_integer" || name == "main_external", "invalid FPGA numerical contract");
+            contract = name == "scu_final_integer" ? im2p::gemmini::NumericalContract::scu_final_integer :
+                                                   im2p::gemmini::NumericalContract::main_external;
+        }
+        const bool scu = native && contract == im2p::gemmini::NumericalContract::scu_final_integer;
+        const char *contract_name = contract == im2p::gemmini::NumericalContract::scu_final_integer ?
+                                    "scu_final_integer" : "main_external";
+        const unsigned op = channel ? IM2P_VECTOR_BYPASS : scu ?
+            (args.weight_format == ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1 ?
+             IM2P_VECTOR_LEFT_SHIFT : IM2P_VECTOR_UNSIGNED_MULTIPLY) : IM2P_VECTOR_EXTERNAL;
+        const unsigned domain = channel ? IM2P_OUTPUT_LEGACY_FINAL : scu ? IM2P_OUTPUT_SCU_FINAL : IM2P_OUTPUT_LEGACY_BLOCK;
+        require(bounded || scu, "legacy UART requires the native SCU contract");
+        require(!scu || !residual_enabled, "SCU residual radix and merge contract is not enabled");
+        require(!observer || scu, "final-domain observer requires SCU final output");
+        require(!block_observer || (bounded && !scu), "External block observer requires explicit main_external");
         require(exsia_activation || (bounded && !residual_enabled),
                 "non-ExSIA requires bounded transport and main's RMD OFF policy");
         require(!residual_enabled || bounded, "legacy UART does not implement accelerator residual");
@@ -448,6 +494,8 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         // PTY RTL integration test. Physical FULL remains fail-closed.
         const char *path = std::getenv("IM2P_FPGA_DEVICE");
         require(path && *path, "IM2P_FPGA_DEVICE must explicitly select the transport");
+        const bool physical = !rtl && !std::string_view(path).starts_with("/dev/pts/") &&
+                              !std::string_view(path).starts_with("uart4:/dev/pts/");
         if (!bounded && !full_reference) {
             const char *reference_path = std::getenv("IM2P_FPGA_FULL_REFERENCE");
             if (reference_path && *reference_path) {
@@ -473,8 +521,8 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
             device = std::make_unique<im2p::fpga::UART>(path, timeout, IM2P_FPGA_PROTOCOL_VERSION);
             opened_device = path;
             ggml::gemmini::log::debug("FPGA_UART",
-                "connection=verified device=%s protocol=%d capability=%s physical_fpga=1",
-                path, bounded ? 4 : IM2P_FPGA_PROTOCOL_VERSION, bounded ? "08100420" : "0294");
+                "connection=verified device=%s protocol=%d capability=%s physical_fpga=%u",
+                path, bounded ? 4 : IM2P_FPGA_PROTOCOL_VERSION, bounded ? "08100420" : "0294", unsigned(physical));
             if (!bounded) std::cout << "FPGA_UART_IDENTITY protocol=" << IM2P_FPGA_PROTOCOL_VERSION
                       << " semantic_capability=0294 numerical_revision=signed-scu-sat-v2 output_domain=2"
                       << " full_cycle_reference=" << (full_reference ? "pinned" : "unavailable_rtl_test")
@@ -482,9 +530,9 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
                       << " backend=FPGA_UART native=Q8_H1 activation=EXSIA residual=OFF\n";
         }
         require(opened_device == path, "persistent FPGA device cannot change during the process");
-        require(!bounded || !observer, "final-domain observer is incompatible with External block output");
-        require(bounded || !block_observer, "External block observer requires a bounded transport");
-        if (bounded) device->set_block_observer(block_observer, block_observer_context);
+        DenseCapture dense{args.I, args.J, 0, scu, {}};
+        if (bounded && observer) dense.raw.resize(args.I * args.J);
+        if (bounded) device->set_block_observer(DenseCapture::output, &dense);
         if (expectation) device->expect_full(*expectation);
         auto start = std::chrono::steady_clock::now();
         producer_checkpoint_started.store(false);
@@ -523,7 +571,7 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         std::vector<float> staged(args.I * args.stride_f_out, 0.0f);
         runtime.f_out = staged.data();
         im2p::gemmini::Options options;
-        if (bounded) options.numerical_contract = im2p::gemmini::NumericalContract::main_external;
+        options.numerical_contract = contract;
         Pipeline producer{device.get(), args, runtime};
         producer.residual_enabled = residual_enabled;
         im2p::gemmini::StreamExecutor executor{&producer, Pipeline::begin, Pipeline::publish, Pipeline::poll, Pipeline::finish};
@@ -571,6 +619,7 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         observe_boundary("fence", args, pipeline);
         auto result = im2p::gemmini::fence(*launched.run);
         require(result.status.ok(), result.status.message);
+        if (bounded && scu) require(dense.scalars == args.I * args.J, "SCU final observer coverage mismatch");
         if (residual_enabled && !pipeline) {
             require(device->release() == IM2P_OK, "FPGA dense FULL release failed");
             std::sort(full_capture.events.begin(), full_capture.events.end(),
@@ -604,7 +653,7 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         if (observer) {
             auto completed_args = args;
             completed_args.f_out = staged.data();
-            observer(completed_args, device->last_raw, observer_context);
+            observer(completed_args, bounded ? dense.raw : device->last_raw, observer_context);
         }
         if (result_observer) {
             auto completed_args = args;
@@ -627,9 +676,9 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
         }
         observe_boundary("commit", args, pipeline);
         ggml::gemmini::log::debug("FPGA_UART",
-            "execution=committed layer=%s mode=%s M=%zu N=%zu K=%zu physical_fpga=1",
+            "execution=committed layer=%s mode=%s M=%zu N=%zu K=%zu physical_fpga=%u",
             layer_name ? layer_name : "", pipeline ? "STRIPE_PIPELINE" : "FULL",
-            args.I, args.J, args.K);
+            args.I, args.J, args.K, unsigned(physical));
         const im2p::fpga::RunTelemetry owned(result);
         const auto device_telemetry = device->telemetry();
         const auto cycles = owned.stats.base.work_total_cycles;
@@ -668,10 +717,14 @@ bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
                   << (bounded && !rtl ? " first_A_observation=NOT_AVAILABLE_IFR4" :
                       " first_A_cycle=" + std::to_string(device->last_first_activation_cycle.load()) +
                       " first_A_published_rows=" + std::to_string(device->last_first_activation_published_rows.load()))
-                  << (rtl ? " plugin_api=1 numerical_contract=main_external output_domain=" :
-                      bounded ? " protocol=4 numerical_contract=main_external output_domain=" :
-                            " protocol=3 semantic_capability=0294 numerical_revision=signed-scu-sat-v2 output_domain=2")
-                  << (bounded ? std::string(channel ? "0" : "1") + (rtl ? " PHY=omitted" : " PHY=UART") : "")
+                  << (rtl ? " plugin_api=1 PHY=omitted" : bounded ? " protocol=4 PHY=UART" : " protocol=3 PHY=UART")
+                  << " numerical_contract=" << contract_name << " requested_op=" << op
+                  << " output_domain=" << domain << " domain_source=host_descriptor"
+                  << " physical_fpga=" << unsigned(physical)
+                  << " M=" << args.I << " N=" << args.J << " K=" << args.K
+                  << " final_integer_scalars=" << (scu ? (bounded ? dense.scalars : device->last_raw.size()) : 0)
+                  << " dense_intermediate_scalars=" << (op == IM2P_VECTOR_EXTERNAL && !residual_enabled ? dense.scalars : 0)
+                  << " f_out_scalars=" << args.I * args.J
                   << " residual=" << (residual_enabled ? "ON" : "OFF") << " commit=1\n";
         return true;
     } catch (const std::exception &error) {

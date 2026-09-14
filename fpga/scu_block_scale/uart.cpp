@@ -280,7 +280,7 @@ UART::UART(const std::string &device, double timeout_seconds, unsigned version)
         rtl_instance_ = open_window_uart(device.substr(6), timeout_seconds);
         rtl_api_ = window_uart_api();
         std::cout << "FPGA_UART_IDENTITY protocol=4 capability=08100420 ABI=5 profile=A8/W8/D16"
-                  << " numerical=main_external output_domain=1 transport=UART core=mkScuPipeline\n";
+                  << " numerical=descriptor_selected domain_source=host_descriptor transport=UART core=mkScuPipeline\n";
         initialization_seconds_ = seconds(start, Clock::now());
         return;
     }
@@ -308,7 +308,7 @@ UART::UART(const std::string &device, double timeout_seconds, unsigned version)
             require(rtl_instance_, "RTL plugin create failed");
             std::cout << "FPGA_RTL_IDENTITY plugin=" << path << " bsv_sha256=" << rtl_api_->bsv_sha256
                       << " rtl_sha256=" << rtl_api_->rtl_sha256 << " ABI=5 profile=A8/W8/D16"
-                      << " vector_op=3 output_domain=1 PHY=omitted core=mkScuPipeline\n";
+                      << " numerical=descriptor_selected domain_source=host_descriptor PHY=omitted core=mkScuPipeline\n";
             initialization_seconds_ = seconds(start, Clock::now());
             return;
         } catch (...) {

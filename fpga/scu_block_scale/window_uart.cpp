@@ -11,6 +11,7 @@
 #include <cstring>
 #include <deque>
 #include <fcntl.h>
+#include <iostream>
 #include <limits>
 #include <poll.h>
 #include <stdexcept>
@@ -62,6 +63,7 @@ struct Device {
     std::deque<im2p_stripe_completion_extended_t> completions;
     size_t published = 0, retired = 0, expected_stripes = 0;
     size_t output_i = 0, output_j = 0, output_block = 0, output_row = 0, output_count = 0;
+    uint64_t output_scalars = 0, padding_scalars = 0;
     uint32_t last_output_tag = 0;
     bool owned = false, streaming = false, done = false, failed = false, have_tag = false;
     Bytes last_poll;
@@ -137,9 +139,7 @@ struct Device {
             d.tile_i_rows == std::min(size_t(16), d.m) && d.tile_j_columns == std::min(size_t(16), d.n) &&
             d.weight_row_stride_bytes >= d.n && d.output_row_stride >= d.n &&
             d.provider.read_weight_i8 && !d.provider.read_weight_i16 && d.provider.write_output &&
-            ((d.vector_op == IM2P_VECTOR_EXTERNAL && d.output_domain == IM2P_OUTPUT_LEGACY_BLOCK &&
-              d.block_size == 32 && d.k % 32 == 0 && d.provider.read_scale) ||
-             (d.vector_op == IM2P_VECTOR_BYPASS && d.output_domain == IM2P_OUTPUT_LEGACY_FINAL));
+            im2p_scu_provider_contract_valid(d);
     }
     static bool activation_layout(const void *a, size_t rows, size_t k, size_t stride) {
         return a && rows && stride >= k && rows - 1 <= (SIZE_MAX - k) / stride &&
@@ -152,11 +152,18 @@ struct Device {
         observed = {}; metrics = {}; stripes.clear(); completions.clear(); last_poll.clear();
         published = live ? 0 : d.m; retired = 0; expected_stripes = count;
         output_i = output_j = output_block = output_row = output_count = 0;
+        output_scalars = padding_scalars = 0;
         have_tag = false; streaming = live; done = false;
         const uint32_t control = stride_log(d.k) | stride_log(d.n) << 5 | window_k_log << 10 |
                                  window_n_log << 13 | uint32_t(d.vector_op) << 16;
         exchange(Start, {uint32_t(d.m), uint32_t(d.n), uint32_t(d.k), control, 0}, {}, live);
         owned = true; progress_mark = 0; progress_time = Clock::now();
+        // IFR4 carries START op. Output domain is a host descriptor contract,
+        // not a field echoed by the device.
+        std::cout << "IFR4_START transport=UART wire_op=" << unsigned(d.vector_op)
+                  << " host_descriptor_domain=" << unsigned(d.output_domain)
+                  << " M=" << d.m << " N=" << d.n << " K=" << d.k
+                  << " mode=" << (live ? "PIPELINE" : "FULL") << '\n';
     }
     int8_t activation(size_t row, size_t column) const {
         if (row >= desc.m || column >= desc.k) return 0;
@@ -167,7 +174,7 @@ struct Device {
         return 0; // Padding cannot authorize reads from completed/unpublished backing.
     }
     void refill(unsigned kind, const Bytes &reply) {
-        check(kind != 2 || (desc.vector_op == IM2P_VECTOR_EXTERNAL && desc.provider.read_scale),
+        check(kind != 2 || (desc.vector_op != IM2P_VECTOR_BYPASS && desc.provider.read_scale),
               "IFR4 unexpected scale request");
         const size_t at = header_bytes + 64 + kind * 24;
         const size_t row_origin = get(reply, at, 4), word_origin = get(reply, at + 4, 4);
@@ -195,7 +202,10 @@ struct Device {
                 if (row < row_origin + valid_rows && row < (desc.k + 31) / 32 && column < desc.n)
                     check(desc.provider.read_scale(desc.provider.context, row, column, std::min(size_t(4), desc.n - column), values.data()) == IM2P_OK,
                           "IFR4 scale provider failed");
-                for (auto value : values) put(payload, value, 4);
+                for (auto value : values) {
+                    check(im2p_scu_scale_carrier_valid(desc.vector_op, value), "IFR4 invalid scale carrier");
+                    put(payload, value, 4);
+                }
             } else {
                 std::array<int8_t, 16> values{};
                 if (row < row_origin + valid_rows) {
@@ -237,6 +247,7 @@ struct Device {
             check(desc.provider.write_output(desc.provider.context, output_block, output_i + output_row, output_j, columns,
                   values.data(), desc.output_domain) == IM2P_OK, "IFR4 output provider failed");
             ++output_count;
+            output_scalars += columns; padding_scalars += 16 - columns;
             if (++output_row == std::min(size_t(16), end - output_i)) {
                 output_row = 0;
                 if (++output_block == (desc.vector_op == IM2P_VECTOR_EXTERNAL ? desc.k / 32 : 1)) {
@@ -362,7 +373,17 @@ int finish(void *handle, im2p_work_stats_extended_t *out) {
 int release(void *handle) {
     return invoke(handle, [](Device &d) {
         check(d.owned && d.done, "IFR4 unfinished invocation");
-        d.exchange(Release); d.owned = false; return IM2P_OK;
+        d.exchange(Release); d.owned = false;
+        std::cout << "IFR4_RELEASE wire_op=" << unsigned(d.desc.vector_op)
+                  << " host_descriptor_domain=" << unsigned(d.desc.output_domain)
+                  << " final_integer_scalars=" << (d.desc.output_domain == IM2P_OUTPUT_SCU_FINAL ? d.output_scalars : 0)
+                  << " dense_intermediate_scalars=" << (d.desc.output_domain == IM2P_OUTPUT_LEGACY_BLOCK ? d.output_scalars : 0)
+                  << " legacy_final_scalars=" << (d.desc.output_domain == IM2P_OUTPUT_LEGACY_FINAL ? d.output_scalars : 0)
+                  << " padding_scalars=" << d.padding_scalars << " output_records=" << d.output_count
+                  << " output_ack_packets=" << d.batch - 1 << " output_ack_records=" << d.output_count
+                  << " request_bytes=" << d.metrics.request_bytes << " response_bytes=" << d.metrics.response_bytes
+                  << " bytes_include_constructor_cap=0 owned_session_release=1\n";
+        return IM2P_OK;
     });
 }
 void destroy(void *handle) { delete static_cast<Device *>(handle); }

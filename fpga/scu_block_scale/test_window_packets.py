@@ -249,6 +249,17 @@ def run(binary, m, n, k, live=False, chunk=256, op=3, stripe_rows=7, wk=5, wn=4)
         assert device.exchange(wire.RELEASE)['status'] == 0
         stats = device.stats()
         assert stats['launches'] - before['launches'] == 1 and stats['stripe_acks'] - before['stripe_acks'] == retired
+        if op in (4,5):
+            works = sum((min(stripe_rows if live else m,m-row)+15)//16
+                        for row in range(0,m,stripe_rows if live else m)) * ((n+15)//16)
+            fragments = works * ((k+15)//16)
+            expected_monitor = dict(scu_fragments=fragments, replace_fragments=works,
+                                    accumulate_fragments=fragments-works, final_work_writebacks=works,
+                                    intermediate_work_writebacks=0, final_integer_scalars=m*n, releases=1)
+            for name,value in expected_monitor.items():
+                assert stats[name]-before[name] == value, (name,stats[name]-before[name],value)
+            assert stats['lane0_fragment_clamp_checks']-before['lane0_fragment_clamp_checks'] > 0
+            assert stats['lane0_accumulator_write_checks']-before['lane0_accumulator_write_checks'] > 0
         return dict(m=m,n=n,k=k,live=live,chunk_words=chunk,op=op,values=len(observed),
                     window_k_log=wk,window_n_log=wn,
                     max_refill_bytes=max_refill_bytes,

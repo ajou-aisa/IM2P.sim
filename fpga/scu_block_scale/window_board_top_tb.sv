@@ -12,6 +12,7 @@ module window_board_top_tb;
     byte unsigned received[0:MAX_RESPONSE-1];
     integer received_count = 0, launches = 0, transactions = 0, resets = 0;
     integer completed = 0, release_edges = 0, loads[0:2], commits[0:2], outputs = 0;
+    integer expected_jobs = 9, expected_resets = 3, expected_completed = 6, expected_op = -1;
     integer plan, source, destination, scan, value, length, i, existing;
     string command, argument;
     time previous_edge = 0;
@@ -41,6 +42,8 @@ module window_board_top_tb;
         end
         if (dut.release_reset[3]) begin
             if (dut.shell.do_start) begin
+                if (expected_op >= 0 && dut.shell.core.startLogical_op != expected_op)
+                    $fatal(1, "unexpected accepted SCU op");
                 launches = launches + 1;
                 for (integer channel = 0; channel < 3; channel = channel + 1) begin
                     loads[channel] = 0; commits[channel] = 0;
@@ -124,6 +127,10 @@ module window_board_top_tb;
         end
     endtask
     initial begin
+        if (!$value$plusargs("expected_jobs=%d", expected_jobs)) expected_jobs = 9;
+        if (!$value$plusargs("expected_resets=%d", expected_resets)) expected_resets = 3;
+        if (!$value$plusargs("expected_completed=%d", expected_completed)) expected_completed = 6;
+        if (!$value$plusargs("expected_op=%d", expected_op)) expected_op = -1;
         #1000; button = 0;
         wait(dut.release_reset[3]); #10000;
         plan = $fopen("itinerary.txt", "r");
@@ -170,7 +177,7 @@ module window_board_top_tb;
             end
         end
         $fclose(plan);
-        if (launches != 9 || resets != 3 || completed != 6)
+        if (launches != expected_jobs || resets != expected_resets || completed != expected_completed)
             $fatal(1, "campaign conservation jobs=%0d resets=%0d complete=%0d", launches, resets, completed);
         $display("IFR4_BOARD_TOP_COMPLETE transactions=%0d jobs=%0d resets=%0d fresh_complete=%0d period_ns=40 uart_baud=1000000 vendor_unisims=true",
                  transactions, launches, resets, completed);

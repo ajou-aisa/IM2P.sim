@@ -91,9 +91,7 @@ struct Device {
             d.tile_i_rows == std::min(size_t(16), d.m) &&
             d.tile_j_columns == std::min(size_t(16), d.n) &&
             d.weight_row_stride_bytes >= d.n && d.output_row_stride >= d.n &&
-            ((d.vector_op == IM2P_VECTOR_EXTERNAL && d.output_domain == IM2P_OUTPUT_LEGACY_BLOCK &&
-              d.block_size == 32 && d.k % 32 == 0 && d.provider.read_scale) ||
-             (d.vector_op == IM2P_VECTOR_BYPASS && d.output_domain == IM2P_OUTPUT_LEGACY_FINAL)) &&
+            im2p_scu_provider_contract_valid(d) &&
             d.provider.read_weight_i8 && !d.provider.read_weight_i16 && d.provider.write_output;
     }
     static bool activation_layout(size_t rows, size_t k, size_t stride, const void *values) {
@@ -135,6 +133,8 @@ struct Device {
         return 0;
     }
     void refill(unsigned kind) {
+        check(kind != 2 || (desc.vector_op != IM2P_VECTOR_BYPASS && desc.provider.read_scale),
+              "unexpected RTL scale request");
         auto port = window(kind);
         const uint32_t generation = port.generation;
         const size_t row_origin = port.row, word_origin = port.word, words = port.words;
@@ -150,6 +150,8 @@ struct Device {
                     check(desc.provider.read_scale(desc.provider.context, row, column,
                           std::min(size_t(4), desc.n - column), values.data()) == IM2P_OK,
                           "scale provider rejected resident read");
+                for (auto value : values)
+                    check(im2p_scu_scale_carrier_valid(desc.vector_op, value), "invalid RTL scale carrier");
             } else {
                 std::array<int8_t, 16> bytes{};
                 if (kind == 0) {
@@ -196,8 +198,10 @@ struct Device {
               column == output_j && count == std::min(size_t(16), desc.n - output_j),
               "RTL output block/order/extent mismatch");
         std::array<int64_t, 16> values{};
-        for (size_t lane = 0; lane < count; ++lane)
+        for (size_t lane = 0; lane < 16; ++lane) {
             values[lane] = int32_t(top.streamOutputValues[lane]);
+            check(lane < count || values[lane] == 0, "nonzero RTL output padding");
+        }
         if (observer) observer(observer_context, block, row, column, count, values.data());
         check(desc.provider.write_output(desc.provider.context, block, row, column, count,
               values.data(), desc.output_domain) == IM2P_OK, "output provider rejected RTL values");
@@ -268,6 +272,8 @@ struct Device {
     void finish(im2p_work_stats_extended_t *out) {
         check(top.done && !top.streamOutputValid && output_i == desc.m && output_j == 0 &&
               output_block == 0 && output_row == 0, "incomplete RTL output coverage");
+        check(top.outputWrites == output_count && top.outputAcks == output_count,
+              "RTL completion count mismatch");
         stats(out);
         check(top.RDY_acknowledge, "RTL final acknowledge not ready");
         top.EN_acknowledge = 1; tick(); top.EN_acknowledge = 0; eval();

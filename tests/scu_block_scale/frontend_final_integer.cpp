@@ -2,6 +2,10 @@
 #include "ggml-gemmini-args.h"
 #include "im2p_gemmini_frontend.hpp"
 #include "quants/act/exsia/exsia.hpp"
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+#include "rtl_plugin.hpp"
+#include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -16,6 +20,11 @@
 #include <vector>
 
 using namespace im2p::gemmini;
+
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+static const im2p_scu_rtl_api_v1 *rtl_api = nullptr;
+static void *rtl_instance = nullptr;
+#endif
 
 static void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
@@ -96,6 +105,7 @@ struct Observation {
     int64_t raw = 0;
     std::vector<size_t> scale_blocks;
     std::vector<uint32_t> scales;
+    bool drop_output = false;
 
     static int weight(void *context, size_t row, size_t column, size_t count, int8_t *values) {
         auto &self = *static_cast<Observation *>(context);
@@ -118,6 +128,7 @@ struct Observation {
         ++self.callbacks;
         self.domain = output_domain;
         self.raw = values[0];
+        if (self.drop_output) return IM2P_OK;
         return self.downstream.write_output(self.downstream.context, block, row, column, count, values, output_domain);
     }
     static int execute(void *context, const im2p_matmul_desc_t *descriptor, im2p_work_stats_extended_t *stats) {
@@ -135,12 +146,19 @@ struct Observation {
         }
         auto copy = *descriptor;
         copy.provider = {&self, weight, nullptr, scale, output};
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+        ++self.executes;
+        const int result = rtl_api->full(rtl_instance, &copy, stats);
+        if (result != IM2P_OK) std::cerr << "production RTL: " << rtl_api->error(rtl_instance) << '\n';
+        return result == IM2P_OK ? rtl_api->release(rtl_instance) : result;
+#else
         auto *simulator = im2p_sim_create();
         if (!simulator) return IM2P_ERROR;
         ++self.executes;
         const int result = im2p_execute_matmul_extended(simulator, &copy, stats);
         im2p_sim_destroy(simulator);
         return result;
+#endif
     }
 };
 
@@ -165,10 +183,47 @@ static void reject_metadata() {
     }
 }
 
+static void reject_missing_output() {
+    Fixture fixture("hp1", {0, 1}, 0, 1 / 256.0f, 0, {1, 1, 1, 1}, {1, 1, 1, 1}, false);
+    Observation observed{fixture};
+    observed.drop_output = true;
+    Options options;
+    options.full_executor_context = &observed;
+    options.full_executor = Observation::execute;
+    auto started = execute(&fixture.args, Mode::full, options);
+    require(started.status.ok() && started.run, "missing-output test did not launch");
+    require(!fence(*started.run).status.ok() && observed.executes == 1 && observed.callbacks == 1 &&
+            fixture.output == std::array<float, 3>{17, 17, 17},
+            "missing final output accepted or changed caller output");
+    std::cout << "SCU_FRONTEND_REJECTION case=missing_output executor_calls=1 RTL_callbacks=1 caller_output_preserved=1\n";
+}
+
 int main(int argc, char **argv) {
     try {
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+        require(argc == 3 && IM2P_ABI_VERSION == 5, "usage: frontend_final_integer CASES_TXT PLUGIN_SO (external ABI5 build)");
+        void *library = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
+        require(library, "production RTL plugin load failed");
+        const auto get_api = reinterpret_cast<im2p_scu_rtl_get_api_v1_fn>(dlsym(library, "im2p_scu_rtl_get_api_v1"));
+        require(get_api, "production RTL API missing");
+        rtl_api = get_api();
+        require(rtl_api && rtl_api->struct_size == sizeof(*rtl_api) && rtl_api->version == 1 &&
+                rtl_api->abi_version == 5 && rtl_api->dim == 16 && rtl_api->activation_bits == 8 &&
+                rtl_api->weight_bits == 8 && rtl_api->create && rtl_api->destroy && rtl_api->error &&
+                rtl_api->full && rtl_api->release && rtl_api->bsv_sha256 && rtl_api->rtl_sha256,
+                "production RTL API/profile mismatch");
+        rtl_instance = rtl_api->create();
+        require(rtl_instance, "production RTL create failed");
+        const char *backend = "production_rtl_plugin";
+        const char *revision = IM2P_SCU_NUMERICAL_REVISION;
+        std::cout << "SCU_FRONTEND_RTL_IDENTITY bsv_sha256=" << rtl_api->bsv_sha256
+                  << " rtl_sha256=" << rtl_api->rtl_sha256 << " physical_access=0\n";
+#else
         require(argc == 2 && IM2P_ABI_VERSION == 5, "usage: frontend_final_integer CASES_TXT (ABI5 build)");
         require(im2p_compiled_accumulator_bits() == 32, "this fixture requires A8 signed32 accumulator");
+        const char *backend = "actual_rtl_simulator";
+        const char *revision = im2p_compiled_numerical_semantics_revision();
+#endif
         std::ifstream input(argv[1]);
         require(bool(input), "missing independent case inputs");
         size_t cases = 0;
@@ -201,14 +256,19 @@ int main(int argc, char **argv) {
             std::cout << " metadata_blocks=";
             for (size_t index = 0; index < observed.scale_blocks.size(); ++index)
                 std::cout << (index ? "," : "") << observed.scale_blocks[index];
-            std::cout << " padding_preserved=1 logical_invocations=1 backend=actual_rtl_simulator"
+            std::cout << " padding_preserved=1 logical_invocations=1 backend=" << backend
                       << " internal_scu_consumption=not_observed\n";
             ++cases;
         }
         require(cases > 0, "empty independent input set");
         reject_metadata();
+        reject_missing_output();
         std::cout << "SCU_FRONTEND_PASS cases=" << cases << " rejected_metadata=6 numerical_revision="
-                  << im2p_compiled_numerical_semantics_revision() << '\n';
+                  << revision << '\n';
+#if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+        rtl_api->destroy(rtl_instance);
+        dlclose(library);
+#endif
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "SCU_FRONTEND_FAIL " << error.what() << '\n';

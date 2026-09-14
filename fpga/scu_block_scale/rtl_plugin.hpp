@@ -25,6 +25,21 @@ inline bool im2p_scu_logical_extent_valid(size_t m, size_t n, size_t k, bool ext
     return m <= (UINT64_MAX >> output_shift);
 }
 
+inline bool im2p_scu_provider_contract_valid(const im2p_matmul_desc_t &d) {
+    if (d.vector_op == IM2P_VECTOR_BYPASS)
+        return d.output_domain == IM2P_OUTPUT_LEGACY_FINAL;
+    const bool external = d.vector_op == IM2P_VECTOR_EXTERNAL && d.output_domain == IM2P_OUTPUT_LEGACY_BLOCK;
+    const bool scu = (d.vector_op == IM2P_VECTOR_UNSIGNED_MULTIPLY || d.vector_op == IM2P_VECTOR_LEFT_SHIFT) &&
+                     d.output_domain == IM2P_OUTPUT_SCU_FINAL;
+    return (external || scu) && d.block_size == 32 && d.k % 32 == 0 && d.provider.read_scale;
+}
+
+inline bool im2p_scu_scale_carrier_valid(uint8_t op, uint32_t value) {
+    if (op == IM2P_VECTOR_UNSIGNED_MULTIPLY) return value <= 65790;
+    if (op == IM2P_VECTOR_LEFT_SHIFT) return value <= 32767 || value == UINT32_C(0x80000000);
+    return op == IM2P_VECTOR_EXTERNAL;
+}
+
 struct im2p_scu_rtl_observation_v1 {
     uint64_t first_activation_cycle;
     uint64_t first_activation_published_rows;

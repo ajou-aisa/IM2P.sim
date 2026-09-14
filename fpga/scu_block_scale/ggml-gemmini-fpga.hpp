@@ -19,9 +19,11 @@ bool ggml_gemmini_fpga_supports(std::size_t rows, std::size_t columns,
                                 std::size_t reduction, bool pipeline, bool block_scaled);
 bool ggml_gemmini_fpga_uses_rtl();
 bool ggml_gemmini_fpga_uses_bounded();
+// False preserves the existing bounded External contract after Q8_0 has been
+// reprocessed into H1 storage. Native H1/HP1 select SCU independently of storage.
 bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
                                const std::function<void()> &quantize,
-                               const char *layer_name);
+                               const char *layer_name, bool native_scu = true);
 std::string ggml_gemmini_fpga_last_error();
 void ggml_gemmini_fpga_test_producer_checkpoint(std::size_t stripe_index);
 

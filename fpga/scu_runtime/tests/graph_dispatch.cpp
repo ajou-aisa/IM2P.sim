@@ -52,14 +52,25 @@ struct Observation {
     std::vector<int64_t> block_raw;
     std::vector<uint8_t> coverage;
     const std::vector<uint8_t> *original_q8_0 = nullptr;
+    bool external = false;
+    bool edges = false;
+    size_t seed = 0;
+    std::string mode;
+    std::filesystem::path capture_directory;
+    size_t intermediate_scalars = 0;
     std::string failure;
     void begin(size_t rows, size_t columns, size_t k) {
         m = rows; n = columns; blocks = k / 32;
-        block_raw.assign(m * n * blocks, 0); coverage.assign(block_raw.size(), 0);
+        block_raw.assign(external ? m * n * blocks : 0, 0); coverage.assign(block_raw.size(), 0);
+        intermediate_scalars = 0;
         failure.clear();
     }
     static void block(void *opaque, size_t b, size_t row, size_t col, size_t count, const int64_t *values) noexcept {
         auto &self = *static_cast<Observation *>(opaque);
+        self.intermediate_scalars += count;
+        if (!self.external) {
+            self.failure = "SCU emitted an intermediate dense callback"; return;
+        }
         if (!values || b >= self.blocks || row >= self.m || col >= self.n || count > self.n - col) {
             self.failure = "External callback extent"; return;
         }
@@ -288,7 +299,10 @@ struct Observation {
     static void complete(const ggml_gemmini_args_t & args, const std::vector<int32_t> & actual, void * opaque) {
         auto & self = *static_cast<Observation *>(opaque);
         require(!simulator_creates && !simulator_executes && !simulator_streams, "simulator fallback");
-        require(actual.size() == args.I * args.J && args.has_q8_h1_im2p_contract(), "final integer domain/count");
+        const bool hp1 = args.weight_format == ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
+        require(actual.size() == args.I * args.J &&
+                (hp1 ? args.has_q8_hp1_im2p_contract() : args.has_q8_h1_im2p_contract()),
+                "final integer domain/count");
         const auto & meta = std::get<quants::act::exsia::Meta>(args.act_quant.storage());
         require(meta.direct_residuals.empty() && meta.rmd_packets.empty(), "RMD OFF");
         const auto geometry = args.activation_geometry();
@@ -300,6 +314,7 @@ struct Observation {
                     meta.theta[1] != meta.theta[2], "distinct stripe theta control");
         }
         self.expected.assign(args.I * args.J, 0);
+        std::vector<int32_t> expected_raw(actual.size());
         size_t scu_clamps = 0, accumulator_clamps = 0;
         auto clamp = [](int64_t value, size_t & count) {
             if (value > INT32_MAX) { ++count; return INT32_MAX; }
@@ -313,26 +328,41 @@ struct Observation {
             const float activation_scale = std::ldexp(1.0f, meta.theta[stripe]);
             require(std::isfinite(activation_scale) && activation_scale > 0, "activation scale");
             for (size_t col = 0; col < args.J; ++col) {
-                const auto * weights = args.q8_h1_blocks + col * (args.K / 32);
-                const float shared = weights[0].s_rf;
-                const uint16_t offset = weights[0].R;
-                require(std::isfinite(shared), "shared channel scale");
+                const size_t base = col * (args.K / 32);
+                const float shared = hp1 ? args.q8_hp1_blocks[base].channel_scale : args.q8_h1_blocks[base].s_rf;
+                const uint16_t offset = hp1 ? 0 : args.q8_h1_blocks[base].R;
+                require(std::isfinite(shared) && shared >= 0, "shared channel scale");
                 int32_t accumulator = 0;
                 for (size_t first = 0; first < args.K; first += 16) {
-                    const auto & weight = weights[first / 32];
-                    require(weight.s_rf == shared && weight.R == offset, "shared S/R");
-                    const uint32_t beta = uint32_t(weight.c_b) + uint32_t(weight.R);
-                    require(beta <= 65790, "H1 uint17 factor");
+                    const size_t index = base + first / 32;
+                    const auto *codes = hp1 ? args.q8_hp1_blocks[index].qs : args.q8_h1_blocks[index].qs;
                     int64_t partial = 0;
                     const size_t count = std::min({size_t(16), args.K - first, size_t(32) - first % 32});
                     for (size_t lane = 0; lane < count; ++lane)
-                        partial += int64_t(a[first + lane]) * int64_t(weight.qs[first % 32 + lane]);
+                        partial += int64_t(a[first + lane]) * int64_t(codes[first % 32 + lane]);
                     ++self.reference_fragments;
-                    const int32_t scaled = clamp(partial * int64_t(beta), scu_clamps);
+                    int32_t scaled;
+                    if (hp1) {
+                        const auto &weight = args.q8_hp1_blocks[index];
+                        require(weight.channel_scale == shared && (weight.m == INT16_MIN || weight.m >= 0),
+                                "HP1 shared scale/exponent");
+                        if (weight.m == INT16_MIN || partial == 0) scaled = 0;
+                        else if (weight.m >= 32) {
+                            ++scu_clamps;
+                            scaled = partial < 0 ? INT32_MIN : INT32_MAX;
+                        } else scaled = clamp(partial * (INT64_C(1) << weight.m), scu_clamps);
+                    } else {
+                        const auto &weight = args.q8_h1_blocks[index];
+                        require(weight.s_rf == shared && weight.R == offset, "shared S/R");
+                        const uint32_t beta = uint32_t(weight.c_b) + uint32_t(weight.R);
+                        require(beta <= 65790, "H1 uint17 factor");
+                        scaled = clamp(partial * int64_t(beta), scu_clamps);
+                    }
                     accumulator = first == 0 ? scaled : clamp(int64_t(accumulator) + scaled, accumulator_clamps);
                 }
                 const size_t index = row * args.J + col;
                 require(actual[index] == accumulator, "G1 final integer mismatch");
+                expected_raw[index] = accumulator;
                 self.expected[index] = float(double(accumulator) * double(shared) * double(activation_scale));
                 require(std::bit_cast<uint32_t>(args.f_out[row * args.stride_f_out + col * args.col_stride_f_out]) ==
                         std::bit_cast<uint32_t>(self.expected[index]), "G2 staged f_out mismatch");
@@ -340,12 +370,56 @@ struct Observation {
         }
         require(std::any_of(actual.begin(), actual.end(), [](int32_t x) { return x != 0; }), "nonzero input control");
         if (self.calls) require(self.raw != actual, "distinct invocation raw control");
+        if (!self.capture_directory.empty()) {
+            const auto prefix = self.capture_directory / ("invocation-" + std::to_string(self.calls));
+            const auto write = [&](const char *suffix, const void *data, size_t count) {
+                const auto path = prefix.string() + suffix;
+                require(!std::filesystem::exists(path), "graph capture already exists");
+                std::ofstream file(path, std::ios::binary);
+                file.write(static_cast<const char *>(data), count);
+                require(bool(file), "graph capture write failed");
+            };
+            std::vector<int8_t> activation(args.I * args.K);
+            for (size_t row = 0; row < args.I; ++row)
+                std::memcpy(activation.data() + row * args.K,
+                            static_cast<const uint8_t *>(args.A.raw_data()) + row * args.A.row_stride_bytes, args.K);
+            const size_t native_size = hp1 ? sizeof(block_q8_hp1) : sizeof(block_q8_h1);
+            const void *weights = hp1 ? static_cast<const void *>(args.q8_hp1_blocks)
+                                      : static_cast<const void *>(args.q8_h1_blocks);
+            write(".activation-i8.bin", activation.data(), activation.size());
+            write(".native-weight.bin", weights, args.J * (args.K / 32) * native_size);
+            write(".expected-raw-i32.bin", expected_raw.data(), expected_raw.size() * sizeof(int32_t));
+            write(".expected-fout-f32.bin", self.expected.data(), self.expected.size() * sizeof(float));
+            const auto path = prefix.string() + ".json";
+            require(!std::filesystem::exists(path), "graph capture manifest already exists");
+            std::ofstream manifest(path);
+            manifest << "{\"schema\":\"scu-graph-fixture-v1\",\"M\":" << args.I << ",\"N\":" << args.J
+                     << ",\"K\":" << args.K << ",\"format\":\"" << (hp1 ? "Q8_HP1" : "Q8_H1")
+                     << "\",\"mode\":\"" << self.mode << "\",\"RMD\":\"OFF\",\"seed\":" << self.seed
+                     << ",\"input_generation\":\"" << (self.edges ? "native_edges" : "quantized")
+                     << "\",\"native_block_bytes\":" << native_size << ",\"tile_I\":" << args.tile_I
+                     << ",\"tile_J\":" << args.tile_J << ",\"stripe_rows\":" << geometry.geometry.stripe_rows
+                     << ",\"stripes\":" << geometry.geometry.stripe_count << ",\"theta\":[";
+            for (size_t i = 0; i < meta.theta.size(); ++i) manifest << (i ? "," : "") << meta.theta[i];
+            manifest << "],\"numerical_contract\":\"scu_final_integer\",\"requested_op\":" << (hp1 ? 5 : 4)
+                     << ",\"output_domain\":2,\"domain_evidence\":\"host_callback_not_wire_echo\",\"golden_source\":\"independent_fragment_integer_and_binary64\",\"final_integer_scalars\":"
+                     << expected_raw.size() << "}\n";
+            require(bool(manifest), "graph capture manifest write failed");
+        }
         self.raw = actual;
         ++self.calls;
         self.scalars += actual.size();
-        std::cout << "GRAPH_REFERENCE PASS raw=" << actual.size() << " f_out=" << args.I * args.J
-                  << " domain=2 scu_clamps=" << scu_clamps << " accumulator_clamps=" << accumulator_clamps
-                  << " source=actual_quantizer_metadata endpoint=after_RTL_before_caller_commit\n";
+        std::cout << "GRAPH_REFERENCE PASS native=" << (hp1 ? "Q8_HP1" : "Q8_H1")
+                  << " M=" << args.I << " N=" << args.J << " K=" << args.K
+                  << " raw=" << actual.size() << " f_out=" << args.I * args.J
+                  << " requested_op=" << (hp1 ? 5 : 4) << " domain=2 contract=scu_final_integer RMD=OFF"
+                  << " final_integer_scalars=" << actual.size() << " f_out_scalars=" << args.I * args.J
+                  << " dense_intermediate_scalars=NOT_OBSERVED expected_dense_intermediate_scalars=0"
+                  << " intermediate_evidence=transport_coverage_required"
+                  << " stripes=" << geometry.geometry.stripe_count << " stripe_rows=" << geometry.geometry.stripe_rows
+                  << " scu_clamps=" << scu_clamps << " accumulator_clamps=" << accumulator_clamps
+                  << " source=" << (self.edges ? "explicit_native_edge_fixture" : "actual_quantizer_metadata")
+                  << " endpoint=after_RTL_before_caller_commit\n";
     }
 };
 
@@ -393,7 +467,7 @@ struct Graph {
         if (cpu) ggml_backend_free(cpu);
         if (fpga) ggml_backend_free(fpga);
     }
-    void prepare(size_t seed, bool invalid_scale = false) {
+    void prepare(size_t seed, bool invalid_scale = false, bool edges = false) {
         std::vector<float> a(m * k), w(n * k);
         for (size_t i = 0; i < a.size(); ++i)
             a[i] = float(int((i * 17 + seed * 13) % 251) - 125) / 32;
@@ -406,6 +480,10 @@ struct Graph {
             gemmini_set_tile_ws(&args);
             const auto geometry = args.activation_geometry();
             require(geometry.ok(), "input fixture geometry");
+            std::cout << "GRAPH_GEOMETRY M=" << m << " N=" << n << " K=" << k
+                      << " tile_I=" << args.tile_I << " tile_J=" << args.tile_J
+                      << " stripe_rows=" << geometry.geometry.stripe_rows
+                      << " stripes=" << geometry.geometry.stripe_count << std::endl;
             for (size_t row = 0; row < m; ++row)
                 for (size_t col = 0; col < k; ++col)
                     a[row * k + col] = std::ldexp(a[row * k + col], int(row / geometry.geometry.stripe_rows % 3) * 3);
@@ -424,6 +502,13 @@ struct Graph {
             std::vector<block_q8_hp1> packed(n * k / 32);
             for (size_t j = 0; j < n; ++j)
                 quantize_row_q8_hp1_ref(w.data() + j * k, packed.data() + j * k / 32, k);
+            if (edges) for (size_t col = 0; col < n; ++col) for (size_t block = 0; block < k / 32; ++block) {
+                auto &value = packed[col * (k / 32) + block];
+                constexpr int16_t exponents[] = {0, 1, 7, 31, 32, 32767, INT16_MIN};
+                value.m = col == 0 ? INT16_MIN : col == 1 ? (block == 0 ? 0 : INT16_MIN)
+                    : exponents[(col + block) % std::size(exponents)];
+                if (seed % 2 == 0 && block == 0) std::fill_n(value.qs, 32, int8_t(0));
+            }
             ggml_backend_tensor_set(weight, packed.data(), 0, packed.size() * sizeof(block_q8_hp1));
         } else {
         std::vector<block_q8_h1> packed(n * k / 32);
@@ -431,6 +516,12 @@ struct Graph {
             quantize_row_q8_h1_ref(w.data() + j * k, packed.data() + j * k / 32, k);
         for (const auto & block : packed)
             require(block.s_rf > 0 && uint32_t(block.c_b) + block.R > 0, "nonzero native weight scale");
+        if (edges) for (size_t col = 0; col < n; ++col) for (size_t block = 0; block < k / 32; ++block) {
+            auto &value = packed[col * (k / 32) + block];
+            value.R = col % 4 == 3 ? 65535 : 0;
+            value.c_b = col == 0 ? 0 : col == 1 ? (block == 0 ? 1 : 0) : (block % 2 ? 255 : 1);
+            if (seed % 2 == 0 && block == 0) std::fill_n(value.qs, 32, int8_t(0));
+        }
         ggml_backend_tensor_set(weight, packed.data(), 0, packed.size() * sizeof(block_q8_h1));
         }
         ggml_backend_tensor_set(activation, a.data(), 0, a.size() * sizeof(float));
@@ -458,34 +549,49 @@ int main(int argc, char ** argv) {
     SetBlockObserver set_block_observer = nullptr;
     SetResultObserver set_result_observer = nullptr;
     try {
-        require(argc == 8 || argc == 9,
-                "usage: graph_dispatch BACKEND_SO M N K SEED REPS FULL|STRIPE_PIPELINE [HP1|Q8_0|Q8_0-invalid-scale|expect-failure]");
+        const bool physical = argc >= 10 && std::string_view(argv[argc - 2]) == "--physical-device";
+        const int option_argc = argc - (physical ? 2 : 0);
+        require(option_argc == 8 || option_argc == 9,
+                "usage: graph_dispatch BACKEND_SO M N K SEED REPS FULL|STRIPE_PIPELINE [HP1|HP1-edges|H1-edges|Q8_0|Q8_0-invalid-scale|expect-failure] [--physical-device BY_ID_PATH]");
         const auto library = std::filesystem::canonical(argv[1]);
         const size_t m = std::stoul(argv[2]), n = std::stoul(argv[3]), k = std::stoul(argv[4]);
         const size_t seed = std::stoul(argv[5]), repetitions = std::stoul(argv[6]);
         const std::string mode = argv[7];
-        const bool invalid_scale = argc == 9 && std::string(argv[8]) == "Q8_0-invalid-scale";
-        const bool failure = invalid_scale || (argc == 9 && std::string(argv[8]) == "expect-failure");
-        const bool hp1 = argc == 9 && std::string(argv[8]) == "HP1";
-        const bool q8_0 = invalid_scale || (argc == 9 && std::string(argv[8]) == "Q8_0");
-        require(argc == 8 || failure || hp1 || q8_0, "test option");
+        const bool invalid_scale = option_argc == 9 && std::string(argv[8]) == "Q8_0-invalid-scale";
+        const bool failure = invalid_scale || (option_argc == 9 && std::string(argv[8]) == "expect-failure");
+        const bool edges = option_argc == 9 && (std::string(argv[8]) == "HP1-edges" || std::string(argv[8]) == "H1-edges");
+        const bool hp1 = option_argc == 9 && (std::string(argv[8]) == "HP1" || std::string(argv[8]) == "HP1-edges");
+        const bool q8_0 = invalid_scale || (option_argc == 9 && std::string(argv[8]) == "Q8_0");
+        require(option_argc == 8 || failure || hp1 || edges || q8_0, "test option");
         const char * device = std::getenv("IM2P_FPGA_DEVICE");
         const bool rtl = device && std::string_view(device).starts_with("rtl:/");
         const bool uart4 = device && std::string_view(device).starts_with("uart4:/");
         const bool bounded = rtl || uart4;
+        const char *contract = std::getenv("IM2P_FPGA_NUMERICAL_CONTRACT");
+        require(!contract || std::string_view(contract) == "main_external" ||
+                std::string_view(contract) == "scu_final_integer", "explicit numerical contract");
+        const bool external = bounded && (q8_0 || (contract && std::string_view(contract) == "main_external"));
+        require(!edges || (!external && n >= 3 && k >= 64), "edge fixture requires native SCU, N>=3, K>=64");
         require(bounded ? (m > 0 && m <= 65536 && n > 0 && n <= 65536 && k > 0 && k <= 65536 && k % 32 == 0) :
                       (m > 0 && m <= 336 && n > 0 && n <= 48 && (k == 32 || k == 64 || k == 96)), "test bounds");
         require(!hp1 || bounded, "HP1 requires bounded RTL transport");
         require(!q8_0 || bounded, "Q8_0 requires bounded RTL transport");
         require(repetitions > 0 && repetitions <= 2 && (!failure || repetitions == 1), "test invocation count");
         require(mode == "FULL" || mode == "STRIPE_PIPELINE", "test mode");
+        if (physical) {
+            const std::filesystem::path approved(argv[argc - 1]);
+            require(!failure && uart4 && std::string_view(device + 6) == approved.string() &&
+                    approved.parent_path() == "/dev/serial/by-id" &&
+                    std::filesystem::is_character_file(approved),
+                    "physical execution requires explicit matching UART4 by-id device argument");
+        }
         if (rtl) require(std::filesystem::is_regular_file(device + 4), "RTL plugin must exist");
-        else if (device && *device) {
+        else if (device && *device && !physical) {
             const auto path = std::filesystem::canonical(uart4 ? device + 6 : device);
             const std::string number = path.filename().string();
             require(path.parent_path() == "/dev/pts" && !number.empty() &&
                     number.find_first_not_of("0123456789") == std::string::npos, "test accepts PTY only");
-        } else require(failure, "numerical test requires explicit PTY");
+        } else require(failure || physical, "numerical test requires explicit PTY");
         unsetenv("GEMMINI_MATMUL_INVOCATION");
         setenv("GEMMINI_MATMUL_MODE", mode.c_str(), 1);
         require(!std::getenv("IM2P_FPGA_TEST_PRODUCER_OVERLAP") && !std::getenv("IM2P_FPGA_TEST_WAIT_FIRST_READ"),
@@ -505,19 +611,38 @@ int main(int argc, char ** argv) {
         require(stats_fn(&before, sizeof(before)) && !before.assigned && !before.attempted && !before.completed && !before.failed,
                 "fresh module counters");
         Observation observation;
+        observation.external = external;
+        observation.edges = edges;
+        observation.mode = mode;
+        if (const char *capture = std::getenv("IM2P_GRAPH_CAPTURE_DIR")) {
+            require(!external && *capture && std::filesystem::is_directory(capture),
+                    "graph capture requires native SCU and existing output directory");
+            observation.capture_directory = capture;
+        }
         if (bounded) {
             set_block_observer = reinterpret_cast<SetBlockObserver>(ggml_backend_reg_get_proc_address(reg, "ggml_gemmini_fpga_set_block_observer"));
             set_result_observer = reinterpret_cast<SetResultObserver>(ggml_backend_reg_get_proc_address(reg, "ggml_gemmini_fpga_set_result_observer"));
-            require(set_block_observer && set_result_observer, "External observation APIs");
+            require(set_block_observer && set_result_observer, "provider observation APIs");
+        }
+        if (external) {
             set_block_observer(Observation::block, &observation);
             set_result_observer(Observation::external_complete, &observation);
-        } else set_observer(Observation::complete, &observation);
+        }
+        else set_observer(Observation::complete, &observation);
+        std::cout << "GRAPH_REQUEST transport=" << (rtl ? "rtl_plugin" : uart4 ? "uart4" : "uart3")
+                  << " requested_contract=" << (external ? "main_external" : "scu_final_integer")
+                  << " requested_op=" << (external ? 3 : hp1 ? 5 : 4) << " requested_domain=" << (external ? 1 : 2)
+                  << " M=" << m << " N=" << n << " K=" << k << " mode=" << mode
+                  << " repetitions=" << repetitions << " fixture=" << (edges ? "native_edges" : "quantized")
+                  << " op_domain_evidence=requested_contract physical_device_selected=" << physical
+                  << " physical_access=not_started\n";
         Graph test(ggml_backend_reg_dev_get(reg, 0), m, n, k,
                    q8_0 ? GGML_TYPE_Q8_0 : hp1 ? GGML_TYPE_Q8_HP1 : GGML_TYPE_Q8_H1);
         if (q8_0) observation.original_q8_0 = &test.original_q8_0;
         for (size_t iteration = 0; iteration < repetitions; ++iteration) {
-            if (bounded) observation.begin(m, n, k);
-            test.prepare(seed + iteration, invalid_scale);
+            observation.begin(m, n, k);
+            observation.seed = seed + iteration;
+            test.prepare(seed + iteration, invalid_scale, edges);
             const auto status = ggml_backend_sched_graph_compute(test.scheduler, test.graph);
             ggml_backend_sched_synchronize(test.scheduler);
             const auto actual = test.values();
@@ -542,12 +667,16 @@ int main(int argc, char ** argv) {
         if (set_result_observer) set_result_observer(nullptr, nullptr);
         std::cout << "STANDARD_GRAPH_" << (failure ? "EXPECTED_FAILURE" : "NUMERICAL") << " PASS"
                   << " mode=" << mode << " logical=" << repetitions << " raw=" << observation.scalars
-                  << " f_out=" << (failure ? 0 : repetitions * m * n) << " domain=" << (bounded ? 1 : 2)
+                  << " f_out=" << (failure ? 0 : repetitions * m * n) << " domain=" << (external ? 1 : 2)
+                  << " final_integer_scalars=" << (external ? 0 : observation.scalars)
+                  << " f_out_scalars=" << (failure ? 0 : repetitions * m * n)
+                  << " dense_intermediate_scalars=" << (external ? std::to_string(observation.scalars) : "NOT_OBSERVED")
                   << " scheduler_assigned=" << after.assigned << " adapter_attempted=" << after.attempted
                   << " completed=" << after.completed << " failed=" << after.failed
                   << " simulator_create_calls=" << simulator_creates << " simulator_execute_calls=" << simulator_executes
                   << " simulator_stream_calls=" << simulator_streams << " reference_fragments=" << observation.reference_fragments
                   << " cpu_reference_scope=independent_after_RTL PHY=" << (rtl ? "omitted" : "UART")
+                  << " physical_access=" << (physical ? "1" : "0")
                   << " caller_output_preserved=" << failure << " loaded_backend=" << library << '\n';
         if (q8_0) std::cout << "Q8_0_REPROCESS_GRAPH_PASS original_backing=unchanged quantizer=existing_row_helper\n";
         return 0;

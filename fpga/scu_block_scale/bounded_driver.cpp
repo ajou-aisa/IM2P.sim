@@ -22,7 +22,7 @@ static unsigned stride_log(unsigned extent) {
     while ((uint64_t(1) << value) < extent) ++value;
     return value;
 }
-struct Shape { unsigned m, n, k; bool saturation = false; unsigned op = 4; };
+struct Shape { unsigned m, n, k; bool saturation = false; unsigned op = 4; unsigned pattern = 0; };
 
 // Generated inputs are shared by the transport and a separate scalar oracle.
 // Only RTL output is collected; these functions never supply an output value.
@@ -38,6 +38,11 @@ static int8_t weight(const Shape &s, unsigned k, unsigned column) {
 }
 static uint32_t scale(const Shape &s, unsigned block, unsigned column) {
     if (block >= (s.k + 31) / 32 || column >= s.n) return 0;
+    // First-block-only and all-zero jobs expose stale accumulation across jobs.
+    if (s.pattern) {
+        const bool nonzero = s.pattern == 1 && block == 0;
+        return s.op == 5 ? (nonzero ? 0 : 0x80000000U) : unsigned(nonzero);
+    }
     if (s.op == 5) {
         static constexpr uint32_t shifts[] = {0x80000000U, 0, 1, 7, 15, 30, 31, 32, 127, 32767};
         return shifts[(block * 7 + column * 3) % 10];
@@ -133,6 +138,10 @@ struct Test {
     }
     void start() {
         until([&] { return top.RDY_startLogical; });
+        output_requests = publications = completions = 0;
+        refills.fill(0);
+        std::fill(observed.begin(), observed.end(), 0);
+        std::fill(seen.begin(), seen.end(), false);
         top.startLogical_striped = live;
         top.startLogical_m = shape.m; top.startLogical_n = shape.n; top.startLogical_k = shape.k;
         top.startLogical_kStrideLog = stride_log(shape.k); top.startLogical_nStrideLog = n_log;
@@ -262,6 +271,7 @@ struct Test {
                   << (live ? "STRIPE_PIPELINE" : "FULL") << "\",\"stripes\":" << publications
                   << ",\"M\":" << shape.m << ",\"N\":" << shape.n
                   << ",\"K\":" << shape.k << ",\"saturation\":" << (shape.saturation ? "true" : "false")
+                  << ",\"pattern\":" << shape.pattern
                   << ",\"window_K\":" << (1U << window_k_log) << ",\"window_N\":" << (1U << window_n_log)
                   << ",\"delay\":" << delay << ",\"cycles\":" << top.cycles
                   << ",\"works\":" << top.works << ",\"fragments\":" << top.fragments
@@ -389,6 +399,21 @@ int main(int argc, char **argv) {
                     ++jobs;
                 }
             }
+        }
+        for (unsigned op : {5U, 4U}) {
+            Test consecutive({17,19,96,false,op}, 5, 4, 2);
+            consecutive.reset(); consecutive.start(); consecutive.finish();
+            consecutive.shape.pattern = 1;
+            consecutive.live = true;
+            consecutive.start(); consecutive.finish();
+            require(std::any_of(consecutive.observed.begin(), consecutive.observed.end(),
+                               [](int32_t value) { return value != 0; }), "first block anchor is zero");
+            consecutive.shape.pattern = 2;
+            consecutive.live = false;
+            consecutive.start(); consecutive.finish();
+            jobs += 3;
+            std::cout << "{\"kind\":\"consecutive_invocations\",\"op\":" << op
+                      << ",\"jobs\":3,\"resets\":1,\"status\":\"PASS\"}" << std::endl;
         }
         for (const char *kind : {"stale_generation", "duplicate_index", "incomplete_commit"}) {
             Test test({16,48,192}, 5, 4, 0);
