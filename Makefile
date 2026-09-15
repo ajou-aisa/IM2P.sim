@@ -39,6 +39,11 @@ IM2P_ARTIFACT_ID = a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d$(IM2P_DIM)
 IM2P_CARGO_TARGET_DIR = $(abspath $(BUILD_DIR)/cargo/$(IM2P_ARTIFACT_ID))
 IM2P_RESULTS_DIR = $(BUILD_DIR)/results/$(IM2P_ARTIFACT_ID)
 CARGO_TEST_FILTER ?=
+IM2P_GEMMINI_WORK_ROOT ?= $(HOME)/aisa-lab/build/im2p-gemmini
+GEMMINI_HP1_OUT ?= $(IM2P_GEMMINI_WORK_ROOT)/build/$@
+GEMMINI_HP1_CONTRACT_DIR ?= config/gemmini_host_memory_contracts
+GEMMINI_HP1_BOARD ?=
+GEMMINI_HP1_CLOCK_MHZ ?=
 
 # Optional, simulator-owned Gemmini C++ frontend. The default core build has no
 # dependency on llama.cpp-gemmini or its headers.
@@ -157,9 +162,17 @@ VERILATOR_COMMON := --cc --assert --Wno-fatal
         sim-test-a4-w4-d16 sim-test-a4-w4-d32 sim-test-a4-w4-d64 \
         sim-test-a8-w8-d16 sim-test-a8-w8-d32 sim-test-a8-w8-d64 \
         sim-test-a16-w16-d16 sim-test-a16-w16-d32 sim-test-a16-w16-d64 sim-test \
+        gemmini-hp1-plan gemmini-hp1-rtl gemmini-hp1-test \
+        gemmini-hp1-host-test gemmini-hp1-export gemmini-hp1-synth \
+        gemmini-hp1-route gemmini-hp1-bitstream \
         verilator-lint yosys-stat clean help check-tools
 
 all: check
+
+gemmini-hp1-plan gemmini-hp1-rtl gemmini-hp1-test gemmini-hp1-host-test gemmini-hp1-export:
+	./scripts/gemmini_build.sh --matrix a4w4,a8w8 --dims 16,32,64 \
+	  --scu hp1-left-shift --memory-contract-dir config/gemmini_host_memory_contracts \
+	  --stage $(patsubst gemmini-hp1-%,%,$@) --out "$(GEMMINI_HP1_OUT)"
 
 check: profile-config-check static-check cpp-test numerical-reference-test activation-guard-infrastructure-test
 
@@ -739,6 +752,24 @@ check-tools:
 	    printf '[MISSING] %s\n' $$tool; \
 	  fi; \
 	done
+
+gemmini-hp1-synth:
+	./scripts/gemmini_build.sh --matrix a4w4,a8w8 --dims 16,32,64 \
+	  --scu hp1-left-shift --memory-contract-dir "$(GEMMINI_HP1_CONTRACT_DIR)" \
+	  --stage synth --out "$(GEMMINI_HP1_OUT)" \
+	  --board "$(GEMMINI_HP1_BOARD)" --clock-mhz "$(GEMMINI_HP1_CLOCK_MHZ)"
+
+gemmini-hp1-route:
+	./scripts/gemmini_build.sh --matrix a4w4,a8w8 --dims 16,32,64 \
+	  --scu hp1-left-shift --memory-contract-dir "$(GEMMINI_HP1_CONTRACT_DIR)" \
+	  --stage route --out "$(GEMMINI_HP1_OUT)" \
+	  --board "$(GEMMINI_HP1_BOARD)" --clock-mhz "$(GEMMINI_HP1_CLOCK_MHZ)"
+
+gemmini-hp1-bitstream:
+	./scripts/gemmini_build.sh --matrix a4w4,a8w8 --dims 16,32,64 \
+	  --scu hp1-left-shift --memory-contract-dir "$(GEMMINI_HP1_CONTRACT_DIR)" \
+	  --stage bitstream --out "$(GEMMINI_HP1_OUT)" \
+	  --board "$(GEMMINI_HP1_BOARD)" --clock-mhz "$(GEMMINI_HP1_CLOCK_MHZ)"
 
 clean:
 	rm -rf $(BUILD_DIR)

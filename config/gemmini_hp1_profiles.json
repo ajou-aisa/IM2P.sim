@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "implementation": "gemmini-hp1",
+  "dataflow": "WS",
+  "scu": "hp1-left-shift",
+  "numerical_revision": "hp1-fragment-sat32-v1",
+  "block_size": 32,
+  "accumulator_bits": 32,
+  "supported_width_pairs": [[4, 4], [8, 8]],
+  "supported_dims": [16, 32, 64],
+  "memory_policy": {
+    "name": "fixed-256kib-packed-sp-64kib-int32-acc-v1",
+    "bank_count": 4,
+    "scratchpad_total_bytes": 262144,
+    "accumulator_total_bytes": 65536,
+    "ws_double_buffered": true,
+    "active_d16_reference": {
+      "path": "../RISC-V-DynDNN-gemmini-include/gemmini_params.h",
+      "sha256": "d6db18f8edbfeb854780286d8c2afb81ae3b9103224522478a9047d5550272e5",
+      "dim": 16,
+      "bank_count": 4,
+      "bank_rows": 4096,
+      "accumulator_rows": 1024
+    },
+    "alternate_d32_reference": {
+      "path": "../RISC-V-DynDNN-gemmini-include/gemmini_params_ee290.h",
+      "sha256": "4e8a3abc47b9d9b007c8662e05c2edce381c27220e652c42854b35bd601180db",
+      "dim": 32,
+      "bank_count": 4,
+      "bank_rows": 2048,
+      "accumulator_rows": 512
+    }
+  },
+  "profiles": [
+    {"profile": "a4w4-d16-hp1", "activation_bits": 4, "weight_bits": 4, "dim": 16, "packing": "signed-int4-low-nibble-first", "memory_contract": "gemmini_host_memory_contracts/a4w4-d16-hp1.json"},
+    {"profile": "a4w4-d32-hp1", "activation_bits": 4, "weight_bits": 4, "dim": 32, "packing": "signed-int4-low-nibble-first", "memory_contract": "gemmini_host_memory_contracts/a4w4-d32-hp1.json"},
+    {"profile": "a4w4-d64-hp1", "activation_bits": 4, "weight_bits": 4, "dim": 64, "packing": "signed-int4-low-nibble-first", "memory_contract": "gemmini_host_memory_contracts/a4w4-d64-hp1.json"},
+    {"profile": "a8w8-d16-hp1", "activation_bits": 8, "weight_bits": 8, "dim": 16, "packing": "signed-int8", "memory_contract": "gemmini_host_memory_contracts/a8w8-d16-hp1.json"},
+    {"profile": "a8w8-d32-hp1", "activation_bits": 8, "weight_bits": 8, "dim": 32, "packing": "signed-int8", "memory_contract": "gemmini_host_memory_contracts/a8w8-d32-hp1.json"},
+    {"profile": "a8w8-d64-hp1", "activation_bits": 8, "weight_bits": 8, "dim": 64, "packing": "signed-int8", "memory_contract": "gemmini_host_memory_contracts/a8w8-d64-hp1.json"}
+  ]
+}

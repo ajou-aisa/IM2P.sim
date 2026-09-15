@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "profile": "a4w4-d16-hp1",
+  "activation_bits": 4,
+  "weight_bits": 4,
+  "dim": 16,
+  "accumulator_bits": 32,
+  "bank_count": 4,
+  "bank_rows": 8192,
+  "accumulator_rows": 1024,
+  "scratchpad_row_bytes": 8,
+  "accumulator_row_bytes": 64,
+  "scratchpad_total_bytes": 262144,
+  "accumulator_total_bytes": 65536,
+  "ws_double_buffered": true,
+  "ws_scratchpad_rows_per_buffer": 16384,
+  "ws_accumulator_rows_per_buffer": 512,
+  "provenance": {
+    "kind": "derived-packed-width",
+    "policy": "fixed-256kib-packed-sp-64kib-int32-acc-v1",
+    "reference": "active_d16_reference"
+  },
+  "tile_policy": "existing-gemmini-h-runtime"
+}

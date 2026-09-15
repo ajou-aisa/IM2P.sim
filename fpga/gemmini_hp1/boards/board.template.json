@@ -1,0 +1,15 @@
+{
+  "$schema": "./board.schema.json",
+  "schema_version": 1,
+  "board_id": null,
+  "part": null,
+  "top": null,
+  "clock": {
+    "port": null,
+    "frequency_mhz": null
+  },
+  "xdc": [],
+  "pin_constraints": null,
+  "memory_interface": null,
+  "deployment_artifact": null
+}

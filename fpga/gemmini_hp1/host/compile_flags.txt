@@ -1,0 +1,17 @@
+-std=c++20
+-DIM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1
+-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=8
+-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=16
+-DGGML_GEMMINI_CONFIGURED_DIM=16
+-DGGML_GEMMINI_ACTIVATION_BITS=8
+-DGGML_GEMMINI_WEIGHT_BITS=8
+-DGGML_GEMMINI_ENABLE_RMD=0
+-I.
+-I../../../frontend/include
+-I../../../sim/include
+-I../../../../llama.cpp-gemmini/ggml/src/ggml-gemmini
+-I../../../../llama.cpp-gemmini/ggml/src/ggml-gemmini-utils/include
+-I../../../../llama.cpp-gemmini/ggml/include
+-I../../../../llama.cpp-gemmini/ggml/src
+-I../../../../llama.cpp-gemmini/common
+-I../../../../RISC-V-DynDNN-gemmini-include
