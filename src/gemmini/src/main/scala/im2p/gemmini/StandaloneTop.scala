@@ -273,11 +273,14 @@ final class StandaloneTop(
     bankWidth = 1,
     rowWidth = accumulatorAddressWidth,
     workIdWidth = workIdWidth,
+    robIdWidth = workIdWidth,
     fragmentIdWidth = rowCountWidth,
     generationWidth = generationWidth,
     scaleAddressWidth = scaleAddressWidth,
   ))
   writeback.io.reserve := state === reserveWriteback && reservedRows < dim.U
+  writeback.io.reserveBatch.valid := false.B
+  writeback.io.reserveBatch.bits := 0.U
   when(writeback.io.reserve && writeback.io.reserveReady) {
     reservedRows := reservedRows + 1.U
     when(reservedRows === (dim - 1).U) {
@@ -307,8 +310,10 @@ final class StandaloneTop(
   writeback.io.enq.bits.mask := laneMask.asUInt
   writeback.io.enq.bits.accumulate := !command.firstContribution
   writeback.io.enq.bits.workId := command.workId
+  writeback.io.enq.bits.robId := command.workId
   writeback.io.enq.bits.fragmentId := naturalResponseRow
   writeback.io.enq.bits.finalFragment := command.finalFragment && mesh.io.resp.bits.last
+  writeback.io.enq.bits.completeRob := command.finalFragment && mesh.io.resp.bits.last
   writeback.io.enq.bits.scaleAddress := command.scaleAddress
   writeback.io.enq.bits.scaleGeneration := command.scaleGeneration
 

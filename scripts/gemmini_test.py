@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import sys
-from typing import Sequence
+from collections.abc import Sequence
+from pathlib import Path
 
-from gemmini_build import main as build_main
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.gemmini_build import main as build_main
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

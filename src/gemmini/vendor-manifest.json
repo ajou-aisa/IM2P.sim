@@ -2,6 +2,7 @@
   "entries": [
     {
       "compile_include": false,
+      "compile_overlay": false,
       "compile_reason": "license provenance only",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -17,6 +18,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "AccumulatorMem dependency",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -32,6 +34,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "standalone accumulator SRAM/RMW",
       "direct_dependencies": [
         "Activation.scala",
@@ -53,6 +56,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "PE and accumulator arithmetic typeclass",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -68,6 +72,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "PE control dependency",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -82,7 +87,62 @@
       "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
     },
     {
+      "compile_include": false,
+      "compile_overlay": true,
+      "compile_reason": "compile patched copy through upstreamGemmini source overlay",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "982542993e53854f9f1a54c0ef76289a8d90da65",
+      "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
+      "patches": [
+        "patches/0001-packed-input-controller-bytes.patch"
+      ],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/GemminiConfigs.scala",
+      "snapshot_sha256": "b4cebe69d5c54bb59f7ed1e67427f8686a4691f27e912bcbacc75ef8690d29bd",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/GemminiConfigs.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": false,
+      "compile_overlay": true,
+      "compile_reason": "compile patched copy through upstreamGemmini source overlay",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "4e5132f7b33181ac2d8744596c1a9394435a0bb8",
+      "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
+      "patches": [
+        "patches/0001-packed-input-controller-bytes.patch"
+      ],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/LoadController.scala",
+      "snapshot_sha256": "82db47c2079b9ec4a02f550890411e96dec466858232db54992f870c6f5dd32d",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/LoadController.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": false,
+      "compile_overlay": true,
+      "compile_reason": "compile patched copy through upstreamGemmini source overlay",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "07d8d49e95bf421514293ad10bc01026a4b36056",
+      "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
+      "patches": [
+        "patches/0001-packed-input-controller-bytes.patch"
+      ],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/LoopMatmul.scala",
+      "snapshot_sha256": "23b37660adbe9d2ec590157e228048251777d3771480441f7eca4ecea3561716",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/LoopMatmul.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "standalone systolic mesh",
       "direct_dependencies": [
         "Arithmetic.scala",
@@ -102,6 +162,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "WS array timing and tags",
       "direct_dependencies": [
         "Arithmetic.scala",
@@ -126,6 +187,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "standalone processing element",
       "direct_dependencies": [
         "Arithmetic.scala",
@@ -144,6 +206,7 @@
     },
     {
       "compile_include": false,
+      "compile_overlay": false,
       "compile_reason": "full file couples ScratchpadBank to Rocket/TL DMA; extract selected symbols before compile",
       "direct_dependencies": [
         "SharedExtMem.scala"
@@ -163,6 +226,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "ExtMemIO used by original memory banks",
       "direct_dependencies": [
         "Util.scala"
@@ -180,6 +244,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "MeshWithDelays skew dependency",
       "direct_dependencies": [
         "SyncMem.scala",
@@ -197,7 +262,26 @@
       "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
     },
     {
+      "compile_include": false,
+      "compile_overlay": true,
+      "compile_reason": "compile patched copy through upstreamGemmini source overlay",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "72cd761bff92a336d36732bdcaa908a4607054c5",
+      "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
+      "patches": [
+        "patches/0001-packed-input-controller-bytes.patch"
+      ],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/StoreController.scala",
+      "snapshot_sha256": "e76e8799f7fe67a245894a32fa976fd371d6d508a9be3ab55838998e42c2ba6f",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/StoreController.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "AccumulatorMem SRAM dependency",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -213,6 +297,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "MeshWithDelays tag lifetime",
       "direct_dependencies": [
         "Util.scala"
@@ -230,6 +315,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "standalone PE tile",
       "direct_dependencies": [
         "Arithmetic.scala",
@@ -249,6 +335,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "MeshWithDelays transpose dependency",
       "direct_dependencies": [
         "Util.scala"
@@ -266,6 +353,7 @@
     },
     {
       "compile_include": true,
+      "compile_overlay": false,
       "compile_reason": "shared queue, wrap, and reduction helpers",
       "direct_dependencies": [],
       "extraction": "full_file",
@@ -280,5 +368,6 @@
       "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
     }
   ],
+  "patch_sha256": "22215525e584685399caa927e87e2e0676a2f8aa990a50454e3dff37e7b50d27",
   "schema_version": 1
 }

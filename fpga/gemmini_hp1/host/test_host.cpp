@@ -75,6 +75,27 @@ int main(int argc, char **argv) {
   }
   check(full.tile_i == 3 && full.tile_j == 5 && full.tile_k == 7);
 
+  auto rmd_capability = capability;
+  rmd_capability.rmd = true;
+  check(compatible(rmd_capability,
+                   decode_capability(encode_capability(rmd_capability))));
+  check(!compatible(capability, rmd_capability));
+  const WorkPlanV1 raw{17, 19, 31, 3, 5, 2, 0, Mode::full, WorkKind::rmd_raw};
+  const auto raw_decoded = decode_work_plan_v1(encode_work_plan_v1(raw));
+  check(raw_decoded.kind == WorkKind::rmd_raw && raw_decoded.k == 31);
+  check(fragment_work(rmd_capability, raw).size() == (31 + capability.dim - 1) / capability.dim);
+  const auto rejects = [](auto operation) {
+    try { operation(); } catch (const std::invalid_argument &) { return true; }
+    return false;
+  };
+  check(rejects([&] { static_cast<void>(fragment_work(capability, raw)); }));
+  auto oversized_raw = raw;
+  oversized_raw.k = 33;
+  check(rejects([&] { static_cast<void>(encode_work_plan_v1(oversized_raw)); }));
+  auto unknown = raw;
+  unknown.kind = static_cast<WorkKind>(255);
+  check(rejects([&] { static_cast<void>(encode_work_plan_v1(unknown)); }));
+
   const std::array<std::int8_t, 5> source_values{-8, -1, 0, 3, 7};
   const std::vector<std::int8_t> values(source_values.begin(), source_values.end());
   const auto packed = pack_int4(values);

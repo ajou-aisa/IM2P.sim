@@ -34,12 +34,16 @@ EXPECTED_SOURCES: Final = (
     "src/main/scala/gemmini/AccumulatorMem.scala",
     "src/main/scala/gemmini/Arithmetic.scala",
     "src/main/scala/gemmini/Dataflow.scala",
+    "src/main/scala/gemmini/GemminiConfigs.scala",
+    "src/main/scala/gemmini/LoadController.scala",
+    "src/main/scala/gemmini/LoopMatmul.scala",
     "src/main/scala/gemmini/Mesh.scala",
     "src/main/scala/gemmini/MeshWithDelays.scala",
     "src/main/scala/gemmini/PE.scala",
     "src/main/scala/gemmini/Scratchpad.scala",
     "src/main/scala/gemmini/SharedExtMem.scala",
     "src/main/scala/gemmini/Shifter.scala",
+    "src/main/scala/gemmini/StoreController.scala",
     "src/main/scala/gemmini/SyncMem.scala",
     "src/main/scala/gemmini/TagQueue.scala",
     "src/main/scala/gemmini/Tile.scala",
@@ -117,7 +121,10 @@ def test_vendor_generation_when_source_is_pinned() -> None:
         snapshot_shas: list[str] = re.findall(r'^\s+"snapshot_sha256": "([0-9a-f]+)"', manifest, flags=re.MULTILINE)
         assert tuple(upstream_paths) == EXPECTED_SOURCES
         assert len(snapshot_paths) == len(blob_shas) == len(snapshot_shas) == len(EXPECTED_SOURCES)
-        assert manifest.count('"patches": []') == len(EXPECTED_SOURCES)
+        assert manifest.count('"patches": []') == len(EXPECTED_SOURCES) - 4
+        assert manifest.count('"compile_overlay": true') == 4
+        patch = destination / "patches/0001-packed-input-controller-bytes.patch"
+        assert f'"patch_sha256": "{hashlib.sha256(patch.read_bytes()).hexdigest()}"' in manifest
         assert manifest.count('"extraction": "full_file"') == len(EXPECTED_SOURCES)
         for upstream_path, snapshot_path, blob_sha, snapshot_sha in zip(
             upstream_paths, snapshot_paths, blob_shas, snapshot_shas, strict=True
@@ -204,9 +211,60 @@ def test_vendor_rejects_wrong_pin_and_dirty_dependency() -> None:
         # Then
         assert dirty.returncode != 0
         assert "Gemmini checkout is dirty" in dirty.stderr
+        for rejected_source in (wrong_source, mirror):
+            overlay = temporary / "rejected-overlay"
+            result = subprocess.run(
+                [sys.executable, str(VENDOR), "--source", str(rejected_source), "--overlay", str(overlay)],
+                check=False, capture_output=True, text=True,
+            )
+            assert result.returncode != 0 and not overlay.exists()
+
+
+def test_overlay_is_reproducible_without_dependency_writes() -> None:
+    # Given
+    source = source_checkout()
+    gemmini = source / "generators/gemmini"
+    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
+    prefix = "src/main/scala/gemmini/"
+    originals = {name: (gemmini / prefix / name).read_bytes() for name in names}
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-overlay-") as directory:
+        overlay = Path(directory) / "overlay"
+        command = [sys.executable, str(VENDOR), "--source", str(source), "--overlay", str(overlay)]
+        # When
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        # Then
+        assert result.returncode == 0, result.stderr
+        assert sorted(path.name for path in overlay.rglob("*.scala")) == sorted(names)
+        config = (overlay / prefix / names[0]).read_text()
+        load = (overlay / prefix / names[1]).read_text()
+        loop = (overlay / prefix / names[2]).read_text()
+        store = (overlay / prefix / names[3]).read_text()
+        assert config.count("dma_maxbytes * 8 / inputType.getWidth") == 2
+        assert "val row_bits = Mux" in load
+        assert "((row_bits +& 7.U) >> 3) * actual_rows_read" in load
+        assert "input_w/8" not in loop
+        assert "dma_max_bytes * 8 / (block_size * input_w)" in loop
+        assert "dma_maxbytes * 8 / (block_cols * inputType.getWidth)" in store
+        assert originals == {name: (gemmini / prefix / name).read_bytes() for name in names}
+        assert git(gemmini, ["status", "--porcelain=v1"]) == ""
+        before = tree_digest(overlay)
+        repeated = subprocess.run(command, check=False, capture_output=True, text=True)
+        assert repeated.returncode != 0 and "overlay already exists" in repeated.stderr
+        assert tree_digest(overlay) == before
+        second = Path(directory) / "second"
+        command[-1] = str(second)
+        regenerated = subprocess.run(command, check=False, capture_output=True, text=True)
+        assert regenerated.returncode == 0, regenerated.stderr
+        assert tree_digest(second) == before
+        empty = Path(directory) / "empty"
+        empty.mkdir()
+        command[-1] = str(empty)
+        rejected = subprocess.run(command, check=False, capture_output=True, text=True)
+        assert rejected.returncode != 0 and not list(empty.iterdir())
 
 
 def main() -> None:
+    test_overlay_is_reproducible_without_dependency_writes()
     test_vendor_generation_when_source_is_pinned()
     test_vendor_is_idempotent_when_destination_matches()
     test_verify_rejects_tampered_snapshot()

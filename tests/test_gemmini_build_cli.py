@@ -194,6 +194,10 @@ def test_plan_writes_resolved_profile() -> None:
         # Then: resolved profile and truthful PASS result exist.
         assert result.returncode == 0, result.stderr
         assert json.loads((output / "resolved-profile.json").read_text())["profile"] == "a8w8-d16-hp1"
+        resolved = json.loads((output / "resolved-profile.json").read_text())
+        assert resolved["rmd_raw"] is True
+        assert resolved["rmd_numerical_revision"] == "rmd-raw-k32-cpu-compose-v1"
+        assert resolved["work_kinds"] == ["DENSE_HP1_FINAL", "RMD_RAW"]
         assert json.loads((output / "result.json").read_text())["status"] == "PASS"
 
 
@@ -226,36 +230,101 @@ def test_board_free_stages_validate_in_dry_run() -> None:
             assert result.returncode == 0, result.stderr
             plan = json.loads(result.stdout)
             assert plan["stage"] == stage
+            profile = plan["profiles"][0]
+            assert profile["controller_kind"] == "UPSTREAM_GEMMINI_WS"
+            assert profile["backing_memory"] == "INTEGRATED"
+            assert profile["cycle_scope"] == (
+                "logical_work_accept_to_final_backing_write_completion"
+            )
+            assert profile["host_artifact_role"] == "HOST_COMMON_ORCHESTRATION"
+            assert profile["host_audit_role"] == "PHYSICAL_HOST"
+            assert profile["selected_top"] == "IM2PGemminiWSHP1A8W8D16"
             if stage in ("rtl", "export"):
-                generator = plan["profiles"][0]["commands"][0]["arguments"]
+                commands = profile["commands"]
+                overlay = commands[0]["arguments"]
+                generator = commands[1]["arguments"]
+                assert overlay[1].endswith("scripts/gemmini_vendor.py")
+                assert overlay[-2] == "--overlay"
+                assert overlay[-1].endswith("upstream-overlay")
+                assert commands[1]["cwd"].endswith("src/gemmini/control")
                 assert generator[1] == "-J-Xmx6G"
                 assert "midas_target_utils" in generator[3]
                 assert "scalaVersion := \"2.13.12\"" in generator[3]
-                assert "--a-bits 8 --w-bits 8 --dim 16" in generator[4]
-                assert "--scratchpad-bank-rows 4096" in generator[4]
-                assert "--accumulator-rows 1024" in generator[4]
+                assert 'ProjectRef(' in generator[4]
+                assert '"gemmini") / Compile / unmanagedSources ~=' in generator[4]
+                assert "upstream-overlay" in generator[4]
+                assert generator[5].startswith(
+                    "runMain im2p.gemmini.ElaborateUpstreamWsHp1 "
+                )
+                assert "--a-bits 8 --w-bits 8 --dim 16" in generator[5]
             if stage == "test":
-                test_command = plan["profiles"][0]["commands"][0]["arguments"]
+                commands = profile["commands"]
+                assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
+                assert commands[1]["cwd"].endswith("src/gemmini/control")
+                test_command = commands[1]["arguments"]
                 assert "-Dim2p.testProfile=a8w8-d16-hp1" in test_command
                 assert "-Dim2p.scratchpadBankRows=4096" in test_command
                 assert "-Dim2p.accumulatorRows=1024" in test_command
-                assert "midas_target_utils" in test_command[-2]
-                assert test_command[-1] == "testOnly im2p.gemmini.StandaloneTopSpec"
+                assert "midas_target_utils" in test_command[-3]
+                assert '"gemmini") / Compile / unmanagedSources ~=' in test_command[-2]
+                assert test_command[-1] == "test"
             if stage == "export":
-                commands = plan["profiles"][0]["commands"]
-                assert commands[0]["arguments"][0] == "sbt"
-                assert commands[1]["arguments"][0] == "verilator"
+                commands = profile["commands"]
+                assert commands[1]["arguments"][0] == "sbt"
+                assert commands[2]["arguments"][0] == "verilator"
                 assert "create" in plan["handoff"]["arguments"]
-            if stage == "host-test":
-                commands = plan["profiles"][0]["commands"]
-                assert commands[0]["arguments"][0] == "sbt"
-                assert commands[1]["arguments"][0] == "verilator"
+            if stage in ("host-test", "export"):
+                commands = profile["commands"]
+                assert commands[1]["arguments"][0] == "sbt"
+                assert commands[2]["arguments"][0] == "verilator"
+                configure = next(
+                    command for command in commands
+                    if command["arguments"][:2] == ["cmake", "-S"]
+                )
+                assert "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON" in configure["arguments"]
                 assert commands[-2]["arguments"][0] == "verilator"
-                assert commands[-1]["arguments"][0].endswith("VIM2PGemminiHP1RtlTest")
-                audit = next(command for command in commands if "--role" in command["arguments"])
-                assert audit["arguments"][-4:] == [
-                    "--role", "HOST_COMMON", "--out", str(base / stage / "host-audit.json")
+                assert "--top-module" in commands[-2]["arguments"]
+                assert "IM2PGemminiWSHP1A8W8D16" in commands[-2]["arguments"]
+                assert "VIM2PGemminiWSHP1RtlTest" in commands[-2]["arguments"]
+                rtl_sources = {Path(argument).name for argument in commands[-2]["arguments"]}
+                assert {"test_ws_rtl.cpp", "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp"} <= rtl_sources
+                assert "-DGGML_GEMMINI_ENABLE_RMD=1" in commands[-2]["arguments"][
+                    commands[-2]["arguments"].index("-CFLAGS") + 1
                 ]
+                assert commands[-1]["arguments"][0].endswith("VIM2PGemminiWSHP1RtlTest")
+                audit = next(command for command in commands if "--role" in command["arguments"])
+                assert audit["arguments"][audit["arguments"].index("--role") + 1] == (
+                    "PHYSICAL_HOST"
+                )
+                assert audit["arguments"][audit["arguments"].index("--artifact") + 1].endswith(
+                    "gemmini_hp1_host_orchestration"
+                )
+                assert "--command-log" in audit["arguments"]
+                assert audit["arguments"][-2:] == [
+                    "--out", str(base / stage / "host-audit.json")
+                ]
+
+
+def test_standalone_top_remains_an_explicit_diagnostic() -> None:
+    # Given: a caller explicitly selects the old standalone top.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-standalone-") as temporary:
+        output = Path(temporary) / "standalone"
+
+        # When: RTL planning uses the diagnostic selector.
+        result = run_script(
+            BUILD,
+            [*base_single_arguments(output), "--stage", "rtl", "--top", "standalone", "--dry-run"],
+        )
+
+        # Then: the old elaborator remains available without the upstream overlay.
+        assert result.returncode == 0, result.stderr
+        profile = json.loads(result.stdout)["profiles"][0]
+        assert profile["selected_top"] == "IM2PGemminiHP1A8W8D16"
+        commands = profile["commands"]
+        assert commands[0]["arguments"][0] == "sbt"
+        assert commands[0]["cwd"].endswith("src/gemmini")
+        assert commands[0]["arguments"][-1].startswith("runMain im2p.gemmini.Elaborate ")
+        assert commands[1]["arguments"][0] == "verilator"
 
 
 def test_darwin_hardware_stage_is_deferred_before_output() -> None:
@@ -296,9 +365,9 @@ def test_test_entrypoint_selects_real_rtl_stage() -> None:
         assert result.returncode == 0, result.stderr
         plan = json.loads(result.stdout)
         assert plan["stage"] == "test"
-        assert plan["profiles"][0]["commands"][0]["arguments"][-1] == (
-            "testOnly im2p.gemmini.StandaloneTopSpec"
-        )
+        commands = plan["profiles"][0]["commands"]
+        assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
+        assert commands[1]["arguments"][-1] == "test"
         assert not output.exists()
 
 
@@ -314,14 +383,22 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
             "import os, pathlib, shlex, sys\n"
             "if sys.platform == 'darwin':\n"
             "    assert pathlib.Path(os.environ['JAVA_HOME'], 'bin', 'java').is_file()\n"
-            "    pinned = pathlib.Path(os.environ['IM2P_GEMMINI_WORK_ROOT'], 'deps', "
+            "    work_root = pathlib.Path(os.environ.get('IM2P_GEMMINI_WORK_ROOT', "
+            "pathlib.Path.home() / 'aisa-lab/build/im2p-gemmini'))\n"
+            "    pinned = pathlib.Path(work_root, 'deps', "
             "'firtool-1.62.0-macos-x64', 'org.chipsalliance', 'llvm-firtool', "
             "'macos-x64', 'bin')\n"
             "    assert pathlib.Path(os.environ['CHISEL_FIRTOOL_PATH']) == pinned\n"
+            "assert pathlib.Path.cwd().name == 'control'\n"
+            "override = next(arg for arg in sys.argv if 'unmanagedSources ~=' in arg)\n"
+            "assert 'ProjectRef(' in override and '\"gemmini\") / Compile' in override\n"
             "args = shlex.split(sys.argv[-1])\n"
             "out = pathlib.Path(args[args.index('--out') + 1])\n"
+            "overlay = out.parent / 'upstream-overlay'\n"
+            "assert len(tuple(overlay.rglob('*.scala'))) == 4\n"
             "out.mkdir(parents=True)\n"
-            "(out / 'StandaloneTop.sv').write_text('module StandaloneTop; endmodule\\n')\n",
+            "(out / 'IM2PGemminiWSHP1A8W8D16.sv').write_text("
+            "'module IM2PGemminiWSHP1A8W8D16; endmodule\\n')\n",
             encoding="utf-8",
         )
         verilator = tools / "verilator"
@@ -329,23 +406,16 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
             "#!/usr/bin/env python3\n"
             "import pathlib, sys\n"
             "filelist = pathlib.Path(sys.argv[sys.argv.index('-F') + 1])\n"
-            "assert filelist.read_text() == 'rtl/StandaloneTop.sv\\n'\n",
+            "assert filelist.read_text() == 'rtl/IM2PGemminiWSHP1A8W8D16.sv\\n'\n",
             encoding="utf-8",
         )
         sbt.chmod(0o755)
         verilator.chmod(0o755)
-        firtool = (
-            base / "work-root" / "deps" / "firtool-1.62.0-macos-x64"
-            / "org.chipsalliance" / "llvm-firtool" / "macos-x64" / "bin" / "firtool"
-        )
-        firtool.parent.mkdir(parents=True)
-        firtool.write_text("pinned firtool fixture\n", encoding="utf-8")
-        firtool.chmod(0o755)
         output = base / "rtl-build"
         environment = dict(os.environ)
         environment.pop("JAVA_HOME", None)
+        environment["CHISEL_FIRTOOL_PATH"] = str(tools / "incompatible-firtool")
         environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
-        environment["IM2P_GEMMINI_WORK_ROOT"] = str(base / "work-root")
 
         # When: actual orchestration runs instead of dry-run planning.
         completed = subprocess.run(
@@ -354,15 +424,53 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
         )
 
         # Then: both commands pass and filelist remains relocatable.
-        assert completed.returncode == 0, completed.stderr
+        diagnostics = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((output / "logs").glob("*.log"))
+        )
+        assert completed.returncode == 0, completed.stderr + diagnostics
         result = json.loads((output / "result.json").read_text(encoding="utf-8"))
         assert result["status"] == "PASS"
-        assert (output / "filelist.f").read_text(encoding="utf-8") == "rtl/StandaloneTop.sv\n"
+        assert (output / "filelist.f").read_text(encoding="utf-8") == (
+            "rtl/IM2PGemminiWSHP1A8W8D16.sv\n"
+        )
+        resolved = json.loads((output / "resolved-profile.json").read_text(encoding="utf-8"))
+        assert resolved["controller_kind"] == "UPSTREAM_GEMMINI_WS"
+        assert resolved["backing_memory"] == "INTEGRATED"
+        assert resolved["cycle_scope"] == (
+            "logical_work_accept_to_final_backing_write_completion"
+        )
+        assert resolved["selected_top"] == "IM2PGemminiWSHP1A8W8D16"
         lock = json.loads((output / "tool-lock.json").read_text(encoding="utf-8"))
         assert lock["tools"]["java"]["path"].endswith("/bin/java")
         assert lock["tools"]["firtool"]["sha256"]
         assert lock["host"]["system"]
         assert (output / "stage-rtl.json").is_file()
+
+
+def test_export_does_not_reuse_a_different_top() -> None:
+    # Given: existing RTL belongs to the old standalone diagnostic.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-export-stale-") as temporary:
+        output = Path(temporary) / "build"
+        rtl = output / "rtl" / "IM2PGemminiHP1A8W8D16.sv"
+        rtl.parent.mkdir(parents=True)
+        rtl.write_text("module IM2PGemminiHP1A8W8D16; endmodule\n", encoding="utf-8")
+
+        # When: the default integrated export is planned.
+        result = run_script(
+            BUILD,
+            [*base_single_arguments(output), "--stage", "export", "--dry-run"],
+        )
+
+        # Then: integrated elaboration is retained instead of reusing stale RTL.
+        assert result.returncode == 0, result.stderr
+        commands = json.loads(result.stdout)["profiles"][0]["commands"]
+        assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
+        assert commands[1]["arguments"][-1].startswith(
+            "runMain im2p.gemmini.ElaborateUpstreamWsHp1 "
+        )
+        assert commands[2]["arguments"][0] == "verilator"
+        assert not (output / "upstream-overlay").exists()
 
 
 def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
@@ -373,14 +481,39 @@ def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
         tools = base / "tools"
         tools.mkdir()
         verilator = tools / "verilator"
-        verilator.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        verilator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "if '--Mdir' in sys.argv:\n"
+            "    root = pathlib.Path(sys.argv[sys.argv.index('--Mdir') + 1])\n"
+            "    name = sys.argv[sys.argv.index('--prefix') + 1]\n"
+            "    top = sys.argv[sys.argv.index('--top-module') + 1]\n"
+            "    label = top.removeprefix('IM2PGemminiWSHP1')\n"
+            "    bits, dim = int(label[1]), int(label.rsplit('D', 1)[1])\n"
+            "    lanes = 9 if bits == 4 else 5\n"
+            "    root.mkdir(parents=True, exist_ok=True)\n"
+            "    binary = root / name\n"
+            "    binary.write_text('#!/bin/sh\\necho \\\'integrated upstream WS HP1 RTL passed "
+            "' + label + ' loops=1 load_execute_overlap=1\\\'\\n' + "
+            "f'echo \\\'WS_RMD {label} rtl_callbacks=1 raw_exact=27 lanes={lanes} high_carry=1 "
+            "compose_exact=54 merge_exact=54 negative_tests=6 missing_reject=1 duplicate_reject=1 "
+            "overflow_reject=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\\\'\\n' + "
+            "f'echo \\\'WS_RMD_BOUND bits={bits} DIM={dim} full_exact=27 pipeline_exact=27 "
+            "dense_calls=4 raw_calls=1 stripes=3 slots=0,1,0 rollback=2 public_entry=1\\\'\\n' + "
+            "'echo FLOW_UNIT_TEST_ONLY\\n')\n"
+            "    binary.chmod(0o755)\n",
+            encoding="utf-8",
+        )
         verilator.chmod(0o755)
         for profile in EXPECTED_PROFILES:
-            rtl = output / profile / "rtl" / "StandaloneTop.sv"
+            bits = profile[1]
+            dim = profile.split("-d", maxsplit=1)[1].split("-", maxsplit=1)[0]
+            top = f"IM2PGemminiWSHP1A{bits}W{bits}D{dim}"
+            rtl = output / profile / "rtl" / f"{top}.sv"
             rtl.parent.mkdir(parents=True)
-            rtl.write_text(f"module {profile.replace('-', '_')}; endmodule\n", encoding="utf-8")
+            rtl.write_text(f"module {top}; endmodule\n", encoding="utf-8")
         environment = dict(os.environ)
-        environment["PATH"] = f"{tools}{os.pathsep}/usr/bin:/bin"
+        environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
 
         # When: export targets that existing matrix output.
         completed = subprocess.run(
@@ -394,7 +527,11 @@ def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
         )
 
         # Then: RTL is reused and one verified board-free archive contains all profiles.
-        assert completed.returncode == 0, completed.stderr
+        diagnostics = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(output.rglob("*.log"))
+        )
+        assert completed.returncode == 0, completed.stderr + diagnostics
         result = json.loads((output / "result.json").read_text(encoding="utf-8"))
         assert result["status"] == "PASS"
         assert all(profile["status"] == "PASS" for profile in result["profiles"])
@@ -405,10 +542,11 @@ def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
         assert all(profile["status"] == "PASS" for profile in handoff["profiles"])
         assert all(not Path(profile["root"]).is_absolute() for profile in handoff["profiles"])
         assert (output / "export/SHA256SUMS").is_file()
-        filelist = (output / "export/filelist.f").read_text(encoding="utf-8").splitlines()
-        assert len(filelist) == len(EXPECTED_PROFILES)
-        assert all(not Path(name).is_absolute() for name in filelist)
-        assert all((output / "export" / name).is_file() for name in filelist)
+        assert not (output / "export/filelist.f").exists()
+        filelists = [Path(str(profile["filelist"])) for profile in handoff["profiles"]]
+        assert len(filelists) == len(EXPECTED_PROFILES)
+        assert all(not path.is_absolute() for path in filelists)
+        assert all((output / "export" / path).is_file() for path in filelists)
 
 
 def main() -> int:
@@ -421,10 +559,12 @@ def main() -> int:
         test_plan_writes_resolved_profile,
         test_existing_output_is_rejected,
         test_board_free_stages_validate_in_dry_run,
+        test_standalone_top_remains_an_explicit_diagnostic,
         test_darwin_hardware_stage_is_deferred_before_output,
         test_bash3_wrapper_forwards_arguments,
         test_test_entrypoint_selects_real_rtl_stage,
         test_rtl_stage_uses_detected_java_and_emitted_relative_filelist,
+        test_export_does_not_reuse_a_different_top,
         test_matrix_export_reuses_rtl_in_one_relocatable_handoff,
     )
     for test in tests:

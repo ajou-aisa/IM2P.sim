@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Final, NewType, TypeAlias, TypedDict, final
 
 CommitSha = NewType("CommitSha", str)
-BlobSha = NewType("BlobSha", str)
 Artifacts: TypeAlias = dict[str, bytes]
 
 ROOT: Final = Path(__file__).resolve().parents[1]
@@ -34,7 +33,9 @@ GEMMINI_PIN: Final = CommitSha("25809f78323a729ef76fb68f3cedd8a24da2942b")
 CHIPYARD_REPOSITORY: Final = "https://github.com/ucb-bar/chipyard.git"
 GEMMINI_REPOSITORY: Final = "https://github.com/ucb-bar/gemmini.git"
 GEMMINI_GITLINK: Final = "generators/gemmini"
-USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR] [--verify]"
+USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR] [--verify] [--overlay NEW_DIR]"
+PATCH_PATH: Final = "patches/0001-packed-input-controller-bytes.patch"
+OVERLAY_NAMES: Final = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class VendorRequest:
     source: Path
     destination: Path
     verify: bool
+    overlay: Path | None = None
 
 
 @final
@@ -93,12 +95,14 @@ class VendorEntry(TypedDict):
     patches: list[str]
     patch_reason: str
     compile_include: bool
+    compile_overlay: bool
     compile_reason: str
     direct_dependencies: list[str]
 
 
 class VendorManifest(TypedDict):
     schema_version: int
+    patch_sha256: str
     entries: list[VendorEntry]
 
 
@@ -109,12 +113,14 @@ FILE_SPECS: Final = (
     FileSpec(f"{SOURCE_PREFIX}AccumulatorMem.scala", f"upstream/{SOURCE_PREFIX}AccumulatorMem.scala", True, "standalone accumulator SRAM/RMW", ("Activation.scala", "Arithmetic.scala", "SharedExtMem.scala", "SyncMem.scala", "Util.scala")),
     FileSpec(f"{SOURCE_PREFIX}Arithmetic.scala", f"upstream/{SOURCE_PREFIX}Arithmetic.scala", True, "PE and accumulator arithmetic typeclass"),
     FileSpec(f"{SOURCE_PREFIX}Dataflow.scala", f"upstream/{SOURCE_PREFIX}Dataflow.scala", True, "PE control dependency"),
+    *(FileSpec(f"{SOURCE_PREFIX}{name}", f"upstream/{SOURCE_PREFIX}{name}", False, "compile patched copy through upstreamGemmini source overlay") for name in OVERLAY_NAMES[:3]),
     FileSpec(f"{SOURCE_PREFIX}Mesh.scala", f"upstream/{SOURCE_PREFIX}Mesh.scala", True, "standalone systolic mesh", ("Arithmetic.scala", "PE.scala", "Tile.scala")),
     FileSpec(f"{SOURCE_PREFIX}MeshWithDelays.scala", f"upstream/{SOURCE_PREFIX}MeshWithDelays.scala", True, "WS array timing and tags", ("Arithmetic.scala", "Dataflow.scala", "Mesh.scala", "PE.scala", "Shifter.scala", "TagQueue.scala", "Transposer.scala", "Util.scala")),
     FileSpec(f"{SOURCE_PREFIX}PE.scala", f"upstream/{SOURCE_PREFIX}PE.scala", True, "standalone processing element", ("Arithmetic.scala", "Dataflow.scala")),
     FileSpec(f"{SOURCE_PREFIX}Scratchpad.scala", f"upstream/{SOURCE_PREFIX}Scratchpad.scala", False, "full file couples ScratchpadBank to Rocket/TL DMA; extract selected symbols before compile", ("SharedExtMem.scala",)),
     FileSpec(f"{SOURCE_PREFIX}SharedExtMem.scala", f"upstream/{SOURCE_PREFIX}SharedExtMem.scala", True, "ExtMemIO used by original memory banks", ("Util.scala",)),
     FileSpec(f"{SOURCE_PREFIX}Shifter.scala", f"upstream/{SOURCE_PREFIX}Shifter.scala", True, "MeshWithDelays skew dependency", ("SyncMem.scala", "Util.scala")),
+    FileSpec(f"{SOURCE_PREFIX}StoreController.scala", f"upstream/{SOURCE_PREFIX}StoreController.scala", False, "compile patched copy through upstreamGemmini source overlay"),
     FileSpec(f"{SOURCE_PREFIX}SyncMem.scala", f"upstream/{SOURCE_PREFIX}SyncMem.scala", True, "AccumulatorMem SRAM dependency"),
     FileSpec(f"{SOURCE_PREFIX}TagQueue.scala", f"upstream/{SOURCE_PREFIX}TagQueue.scala", True, "MeshWithDelays tag lifetime", ("Util.scala",)),
     FileSpec(f"{SOURCE_PREFIX}Tile.scala", f"upstream/{SOURCE_PREFIX}Tile.scala", True, "standalone PE tile", ("Arithmetic.scala", "PE.scala", "Util.scala")),
@@ -162,10 +168,10 @@ def verify_source(source: Path) -> Path:
 
 def render_artifacts(gemmini: Path) -> Artifacts:
     entries: list[VendorEntry] = []
-    artifacts: Artifacts = {}
+    artifacts: Artifacts = {PATCH_PATH: (ROOT / "src/gemmini" / PATCH_PATH).read_bytes()}
     for spec in FILE_SPECS:
         content = run_git(gemmini, ["show", f"{GEMMINI_PIN}:{spec.upstream_path}"])
-        blob = BlobSha(git_text(gemmini, ["rev-parse", f"{GEMMINI_PIN}:{spec.upstream_path}"]))
+        blob = git_text(gemmini, ["rev-parse", f"{GEMMINI_PIN}:{spec.upstream_path}"])
         artifacts[spec.snapshot_path] = content
         entries.append(
             VendorEntry(
@@ -177,9 +183,10 @@ def render_artifacts(gemmini: Path) -> Artifacts:
                 snapshot_sha256=hashlib.sha256(content).hexdigest(),
                 extraction="full_file",
                 selected_symbols=["ScratchpadBank"] if spec.upstream_path.endswith("/Scratchpad.scala") else [],
-                patches=[],
-                patch_reason="none; immutable upstream snapshot",
+                patches=[PATCH_PATH] if Path(spec.upstream_path).name in OVERLAY_NAMES else [],
+                patch_reason="packed input bit-to-byte accounting; snapshot remains immutable" if Path(spec.upstream_path).name in OVERLAY_NAMES else "none; immutable upstream snapshot",
                 compile_include=spec.compile_include,
+                compile_overlay=Path(spec.upstream_path).name in OVERLAY_NAMES,
                 compile_reason=spec.compile_reason,
                 direct_dependencies=list(spec.direct_dependencies),
             )
@@ -195,7 +202,7 @@ def render_artifacts(gemmini: Path) -> Artifacts:
         ),
         extraction="git show <commit>:<path>; no dependency checkout writes",
     )
-    manifest = VendorManifest(schema_version=1, entries=entries)
+    manifest = VendorManifest(schema_version=1, entries=entries, patch_sha256=hashlib.sha256(artifacts[PATCH_PATH]).hexdigest())
     artifacts["UPSTREAM.lock.json"] = encode_json(lock)
     artifacts["vendor-manifest.json"] = encode_json(manifest)
     artifacts["README.md"] = f"""# Pinned Gemmini sources
@@ -203,9 +210,25 @@ def render_artifacts(gemmini: Path) -> Artifacts:
 Immutable provenance snapshots from Gemmini `{GEMMINI_PIN}`, selected by Chipyard `{CHIPYARD_PIN}`.
 Generate with `uv run scripts/gemmini_vendor.py`; verify with `uv run scripts/gemmini_vendor.py --verify`.
 
-`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. No patch is currently applied. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
+`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the recorded packed-input controller patch to separate copies. Supply that output through `scripts/gemmini_build.py`'s source override, which explicitly replaces the imported Gemmini build's `Compile / unmanagedSources` through SBT. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
 """.encode()
     return artifacts
+
+
+def materialize_overlay(gemmini: Path, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise VendorError(f"overlay already exists: {destination}")
+    if destination.resolve().is_relative_to(gemmini.parent.parent.resolve()):
+        raise VendorError("overlay must be outside the Chipyard dependency")
+    destination.mkdir(parents=True)
+    for name in OVERLAY_NAMES:
+        relative = f"{SOURCE_PREFIX}{name}"
+        path = destination / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_bytes(run_git(gemmini, ["show", f"{GEMMINI_PIN}:{relative}"]))
+    patch = str(ROOT / "src/gemmini" / PATCH_PATH)
+    _ = run_git(destination, ["apply", "--check", patch])
+    _ = run_git(destination, ["apply", patch])
 
 
 def encode_json(value: UpstreamLock | VendorManifest) -> bytes:
@@ -237,6 +260,7 @@ def parse_arguments(arguments: list[str]) -> VendorRequest | None:
     source = work_root / "deps/chipyard-1.13.0"
     destination = ROOT / "src/gemmini"
     verify = False
+    overlay: Path | None = None
     index = 0
     while index < len(arguments):
         token = arguments[index]
@@ -246,14 +270,19 @@ def parse_arguments(arguments: list[str]) -> VendorRequest | None:
             verify = True
             index += 1
             continue
-        if token not in ("--source", "--destination"):
+        if token not in ("--source", "--destination", "--overlay"):
             raise VendorError(f"unknown argument: {token}")
         if index + 1 >= len(arguments):
             raise VendorError(f"missing value for {token}")
         value = Path(arguments[index + 1]).expanduser()
-        source, destination = (value, destination) if token == "--source" else (source, value)
+        if token == "--overlay":
+            overlay = value
+        else:
+            source, destination = (value, destination) if token == "--source" else (source, value)
         index += 2
-    return VendorRequest(source=source, destination=destination, verify=verify)
+    if verify and overlay is not None:
+        raise VendorError("--verify and --overlay cannot be combined")
+    return VendorRequest(source=source, destination=destination, verify=verify, overlay=overlay)
 
 
 def main() -> int:
@@ -263,6 +292,10 @@ def main() -> int:
             print(USAGE)
             return 0
         gemmini = verify_source(outcome.source)
+        if outcome.overlay is not None:
+            materialize_overlay(gemmini, outcome.overlay)
+            print(f"Gemmini overlay: {outcome.overlay}")
+            return 0
         materialize(outcome, render_artifacts(gemmini))
         action = "verified" if outcome.verify else "vendored"
         print(f"Gemmini {action}: {outcome.destination}")

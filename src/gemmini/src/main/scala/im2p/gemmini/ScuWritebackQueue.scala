@@ -11,6 +11,7 @@ final class ScuWritebackEntry(
   fragmentIdWidth: Int,
   generationWidth: Int,
   scaleAddressWidth: Int,
+  robIdWidth: Int,
 ) extends Bundle {
   val data = Vec(lanes, SInt(32.W))
   val accBank = UInt(bankWidth.W)
@@ -18,8 +19,10 @@ final class ScuWritebackEntry(
   val mask = UInt(lanes.W)
   val accumulate = Bool()
   val workId = UInt(workIdWidth.W)
+  val robId = UInt(robIdWidth.W)
   val fragmentId = UInt(fragmentIdWidth.W)
   val finalFragment = Bool()
+  val completeRob = Bool()
   val scaleAddress = UInt(scaleAddressWidth.W)
   val scaleGeneration = UInt(generationWidth.W)
 }
@@ -33,6 +36,7 @@ final class ScuWritebackQueue(
   fragmentIdWidth: Int,
   generationWidth: Int,
   scaleAddressWidth: Int,
+  robIdWidth: Int,
 ) extends Module {
   require(lanes > 0, s"lanes must be positive, got $lanes")
   require(depth > 0, s"depth must be positive, got $depth")
@@ -46,11 +50,13 @@ final class ScuWritebackQueue(
     fragmentIdWidth,
     generationWidth,
     scaleAddressWidth,
+    robIdWidth,
   )
 
   val io = IO(new Bundle {
     val reserve = Input(Bool())
     val reserveReady = Output(Bool())
+    val reserveBatch = Flipped(Decoupled(UInt(countWidth.W)))
     val enq = Flipped(Decoupled(entry))
     val deq = Decoupled(entry)
     val reserved = Output(UInt(countWidth.W))
@@ -62,11 +68,18 @@ final class ScuWritebackQueue(
   private val queue = Module(new Queue(entry, depth))
   private val reserved = RegInit(0.U(countWidth.W))
   private val used = Wire(UInt(countWidth.W))
+  private val credits = Wire(UInt(countWidth.W))
 
   used := queue.io.count + reserved
-  io.reserveReady := used < depth.U
+  credits := depth.U - used
+  io.reserveReady := !io.reserveBatch.valid && used < depth.U
+  io.reserveBatch.ready := !io.reserve &&
+    io.reserveBatch.bits =/= 0.U && io.reserveBatch.bits <= credits
   val reserveFire = io.reserve && io.reserveReady
-  val reservationAvailable = reserved =/= 0.U || reserveFire
+  val reserveBatchFire = io.reserveBatch.fire
+  val reservationFire = reserveFire || reserveBatchFire
+  val reservationCount = Mux(reserveBatchFire, io.reserveBatch.bits, reserveFire.asUInt)
+  val reservationAvailable = reserved =/= 0.U || reservationFire
 
   queue.io.enq.valid := io.enq.valid && reservationAvailable
   queue.io.enq.bits := io.enq.bits
@@ -74,15 +87,13 @@ final class ScuWritebackQueue(
   io.deq <> queue.io.deq
 
   val responseFire = io.enq.fire
-  when(reserveFire && !responseFire) {
-    reserved := reserved + 1.U
-  }.elsewhen(responseFire && !reserveFire) {
-    reserved := reserved - 1.U
+  when(reservationFire || responseFire) {
+    reserved := reserved + reservationCount - responseFire.asUInt
   }
 
   io.reserved := reserved
   io.occupied := queue.io.count
-  io.credits := depth.U - used
+  io.credits := credits
   io.responseWithoutReservation := io.enq.valid && !reservationAvailable
 
   assert(!(io.enq.valid && reservationAvailable && !queue.io.enq.ready), "reserved SCU response has no queue slot")

@@ -65,17 +65,34 @@ final class StandaloneLocalMemory(profile: ResolvedProfile, bankRows: Int) exten
     response: DecoupledIO[UInt],
     banks: Seq[ScratchpadBank],
   ): Unit = {
-    val arbiter = Module(new Arbiter(UInt(rowBits.W), banks.size))
+    val responseOrder = Module(new Queue(Bool(), banks.size))
     banks.zipWithIndex.foreach { case (bank, index) =>
-      bank.io.read.req.valid := request.valid && request.bits.slot === index.U
+      bank.io.read.req.valid := request.valid && responseOrder.io.enq.ready && request.bits.slot === index.U
       bank.io.read.req.bits.addr := request.bits.row
       bank.io.read.req.bits.fromDMA := false.B
-      arbiter.io.in(index).valid := bank.io.read.resp.valid
-      arbiter.io.in(index).bits := bank.io.read.resp.bits.data
-      bank.io.read.resp.ready := arbiter.io.in(index).ready
     }
-    request.ready := Mux(request.bits.slot, banks(1).io.read.req.ready, banks(0).io.read.req.ready)
-    response <> arbiter.io.out
+    request.ready := responseOrder.io.enq.ready &&
+      Mux(request.bits.slot, banks(1).io.read.req.ready, banks(0).io.read.req.ready)
+    responseOrder.io.enq.valid := request.fire
+    responseOrder.io.enq.bits := request.bits.slot
+
+    val selectedResponse = Mux(
+      responseOrder.io.deq.bits,
+      banks(1).io.read.resp.bits.data,
+      banks(0).io.read.resp.bits.data,
+    )
+    val selectedResponseValid = Mux(
+      responseOrder.io.deq.bits,
+      banks(1).io.read.resp.valid,
+      banks(0).io.read.resp.valid,
+    )
+    response.valid := responseOrder.io.deq.valid && selectedResponseValid
+    response.bits := selectedResponse
+    responseOrder.io.deq.ready := response.ready && selectedResponseValid
+    banks.zipWithIndex.foreach { case (bank, index) =>
+      bank.io.read.resp.ready := response.ready && responseOrder.io.deq.valid &&
+        responseOrder.io.deq.bits === index.U
+    }
   }
 
   connectRead(io.activationRead, io.activationData, activationBanks)

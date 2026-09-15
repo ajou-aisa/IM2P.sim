@@ -22,6 +22,17 @@ void require(bool value, const char *message) {
   }
 }
 
+void validate_work_kind(const WorkPlanV1 &plan) {
+  switch (plan.kind) {
+  case WorkKind::dense_hp1_final:
+    return;
+  case WorkKind::rmd_raw:
+    require(plan.k > 0 && plan.k <= 32, "RMD raw requires compact K in 1..32");
+    return;
+  }
+  throw std::invalid_argument("unsupported work kind");
+}
+
 template <typename T>
 void put(std::vector<std::uint8_t> &bytes, T value) {
   static_assert(std::is_unsigned<T>::value, "wire fields must be unsigned");
@@ -88,12 +99,13 @@ bool compatible(const Capability &expected, const Capability &actual) noexcept {
 
 std::vector<Fragment> fragment_work(const Capability &profile, const WorkPlanV1 &plan) {
   require(profile.dim == 16 || profile.dim == 32 || profile.dim == 64, "unsupported DIM");
-  require(profile.block_size == 32 && profile.hp1_shift_only && profile.ws && !profile.rmd,
+  require(profile.block_size == 32 && profile.hp1_shift_only && profile.ws,
           "unsupported capability");
   require(plan.m != 0 && plan.n != 0 && plan.k != 0 && plan.tile_i != 0 &&
               plan.tile_j != 0 && plan.tile_k != 0,
           "invalid work plan geometry");
-  require(plan.kind == WorkKind::dense_hp1_final, "RMD raw is not ready");
+  validate_work_kind(plan);
+  require(plan.kind != WorkKind::rmd_raw || profile.rmd, "RMD raw capability missing");
   require(plan.mode == Mode::full ||
               (plan.mode == Mode::pipeline && plan.activation_rows_per_stripe != 0),
           "invalid work plan mode");
@@ -195,7 +207,7 @@ Capability decode_capability(const std::vector<std::uint8_t> &payload) {
 std::vector<std::uint8_t> encode_work_plan_v1(const WorkPlanV1 &plan) {
   require(plan.mode == Mode::full || plan.mode == Mode::pipeline,
           "invalid work plan mode");
-  require(plan.kind == WorkKind::dense_hp1_final, "RMD raw is not ready");
+  validate_work_kind(plan);
   std::vector<std::uint8_t> bytes;
   put(bytes, work_plan_version);
   put(bytes, plan.m);
@@ -227,7 +239,7 @@ WorkPlanV1 decode_work_plan_v1(const std::vector<std::uint8_t> &payload) {
   require(offset == payload.size(), "work plan payload has trailing bytes");
   require(plan.mode == Mode::full || plan.mode == Mode::pipeline,
           "invalid work plan mode");
-  require(plan.kind == WorkKind::dense_hp1_final, "RMD raw is not ready");
+  validate_work_kind(plan);
   return plan;
 }
 

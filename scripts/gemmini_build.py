@@ -31,7 +31,10 @@ from enum import StrEnum, unique
 from pathlib import Path
 from typing import Final, TypeAlias, assert_never
 
-from gemmini_tools import build_environment, collect_tool_lock
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.gemmini_tools import build_environment, collect_tool_lock
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT: Final = Path(os.environ.get("IM2P_WORKSPACE_ROOT", ROOT.parent))
@@ -40,6 +43,7 @@ GEMMINI_INCLUDE_ROOT: Final = WORKSPACE_ROOT / "RISC-V-DynDNN-gemmini-include"
 DEFAULT_CATALOG: Final = ROOT / "config" / "gemmini_hp1_profiles.json"
 RESOLVER: Final = ROOT / "scripts" / "gemmini_resolve_profile.py"
 BOARD_RESOLVER: Final = ROOT / "scripts" / "gemmini_board.py"
+VENDOR: Final = ROOT / "scripts" / "gemmini_vendor.py"
 WORK_ROOT: Final = Path(os.environ.get(
     "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab" / "build" / "im2p-gemmini",
 ))
@@ -53,6 +57,9 @@ JsonValue: TypeAlias = (
 )
 HARDWARE_STAGES: Final = frozenset(("synth", "route", "bitstream"))
 RTL_SUFFIXES: Final = frozenset((".sv", ".svh", ".v", ".vh", ".vhd", ".vhdl"))
+OVERLAY_SOURCE_NAMES: Final = (
+    "GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala",
+)
 
 
 @unique
@@ -81,6 +88,12 @@ class Stage(StrEnum):
     SYNTH = "synth"
     ROUTE = "route"
     BITSTREAM = "bitstream"
+
+
+@unique
+class Top(StrEnum):
+    INTEGRATED = "integrated"
+    STANDALONE = "standalone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +135,7 @@ class BuildRequest:
     memory_contract_dir: Path | None
     board: Path | None
     clock_mhz: float | None
+    top: Top
     output: Path
     dry_run: bool
 
@@ -210,6 +224,7 @@ def _parse_request(arguments: Sequence[str]) -> BuildRequest:
     contracts.add_argument("--memory-contract-dir", type=Path)
     parser.add_argument("--board", type=Path)
     parser.add_argument("--clock-mhz", type=float)
+    parser.add_argument("--top", choices=tuple(Top), default=Top.INTEGRATED)
     parser.add_argument("--stage", choices=tuple(Stage), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
@@ -217,7 +232,7 @@ def _parse_request(arguments: Sequence[str]) -> BuildRequest:
     return BuildRequest(
         Stage(namespace.stage), _selection_arguments(namespace), namespace.profiles,
         namespace.memory_contract, namespace.memory_contract_dir, namespace.board,
-        namespace.clock_mhz, namespace.out, namespace.dry_run,
+        namespace.clock_mhz, Top(namespace.top), namespace.out, namespace.dry_run,
     )
 
 
@@ -287,9 +302,43 @@ def _resolve_cases(request: BuildRequest) -> tuple[BuildCase, ...]:
                 raise BuildFailure(FailureReason.VALIDATION, "memory contract source missing")
             contract = contract_dir / f"{selection.name}.json"
         case_output = request.output / selection.name if matrix else request.output
-        resolved = _resolve_document(selection, request.catalog_path, contract)
+        resolved = {
+            **_resolve_document(selection, request.catalog_path, contract),
+            **_top_metadata(request.top, selection),
+        }
         cases.append(BuildCase(selection, resolved, case_output, case_output / "resolved-profile.json"))
     return tuple(cases)
+
+
+def _top_metadata(top: Top, selection: ProfileSelection) -> Mapping[str, JsonValue]:
+    match top:
+        case Top.INTEGRATED:
+            return {
+                "controller_kind": "UPSTREAM_GEMMINI_WS",
+                "backing_memory": "INTEGRATED",
+                "cycle_scope": "logical_work_accept_to_final_backing_write_completion",
+                "host_artifact_role": "HOST_COMMON_ORCHESTRATION",
+                "host_audit_role": "PHYSICAL_HOST",
+                "rmd_raw": True,
+                "rmd_numerical_revision": "rmd-raw-k32-cpu-compose-v1",
+                "work_kinds": ["DENSE_HP1_FINAL", "RMD_RAW"],
+                "selected_top": (
+                    f"IM2PGemminiWSHP1A{selection.activation_bits}"
+                    f"W{selection.weight_bits}D{selection.dim}"
+                ),
+            }
+        case Top.STANDALONE:
+            return {
+                "controller_kind": "STANDALONE_DIAGNOSTIC",
+                "backing_memory": "LOCAL_DIAGNOSTIC",
+                "cycle_scope": "fragment_accept_to_final_accumulator_write_completion",
+                "selected_top": (
+                    f"IM2PGemminiHP1A{selection.activation_bits}"
+                    f"W{selection.weight_bits}D{selection.dim}"
+                ),
+            }
+        case unreachable:
+            assert_never(unreachable)
 
 
 def _resolved_board(request: BuildRequest) -> ResolvedBoard:
@@ -314,8 +363,7 @@ def _resolved_board(request: BuildRequest) -> ResolvedBoard:
     return board
 
 
-def _rtl_commands(case: BuildCase) -> tuple[Command, ...]:
-    scala_root = ROOT / "src" / "gemmini"
+def _rtl_commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
     rtl_output = case.output / "rtl"
     memory = case.resolved.get("memory")
     scratchpad_bank_rows = memory.get("bank_rows") if isinstance(memory, dict) else None
@@ -324,22 +372,43 @@ def _rtl_commands(case: BuildCase) -> tuple[Command, ...]:
         raise BuildFailure(FailureReason.VALIDATION, "resolved scratchpad bank rows missing")
     if not isinstance(accumulator_rows, int) or isinstance(accumulator_rows, bool):
         raise BuildFailure(FailureReason.VALIDATION, "resolved accumulator rows missing")
-    return (
-        Command(scala_root, (
-            "sbt", "-J-Xmx6G", "--batch", _sbt_scala_override(),
-            (
-                "runMain im2p.gemmini.Elaborate "
-                f"--a-bits {case.selection.activation_bits} "
-                f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
-                f"--scratchpad-bank-rows {scratchpad_bank_rows} "
-                f"--accumulator-rows {accumulator_rows} --out {rtl_output}"
-            ),
-        )),
-        Command(ROOT, (
-            "verilator", "--lint-only", "--timing", "-Wall", "-Wno-fatal",
-            "-F", str(case.output / "filelist.f"),
-        )),
-    )
+    lint = Command(ROOT, (
+        "verilator", "--lint-only", "--timing", "-Wall", "-Wno-fatal",
+        "-F", str(case.output / "filelist.f"),
+    ))
+    match request.top:
+        case Top.INTEGRATED:
+            overlay = case.output / "upstream-overlay"
+            return (
+                Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
+                Command(ROOT / "src" / "gemmini" / "control", (
+                    "sbt", "-J-Xmx6G", "--batch", _sbt_scala_override(),
+                    _sbt_source_override(overlay),
+                    (
+                        "runMain im2p.gemmini.ElaborateUpstreamWsHp1 "
+                        f"--a-bits {case.selection.activation_bits} "
+                        f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
+                        f"--out {rtl_output}"
+                    ),
+                )),
+                lint,
+            )
+        case Top.STANDALONE:
+            return (
+                Command(ROOT / "src" / "gemmini", (
+                    "sbt", "-J-Xmx6G", "--batch", _sbt_scala_override(),
+                    (
+                        "runMain im2p.gemmini.Elaborate "
+                        f"--a-bits {case.selection.activation_bits} "
+                        f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
+                        f"--scratchpad-bank-rows {scratchpad_bank_rows} "
+                        f"--accumulator-rows {accumulator_rows} --out {rtl_output}"
+                    ),
+                )),
+                lint,
+            )
+        case unreachable:
+            assert_never(unreachable)
 
 
 def _sbt_scala_override() -> str:
@@ -350,7 +419,19 @@ def _sbt_scala_override() -> str:
     )
 
 
-def _rtl_test_commands(case: BuildCase) -> tuple[Command, ...]:
+def _sbt_source_override(overlay: Path) -> str:
+    chipyard_uri = (WORK_ROOT / "deps" / "chipyard-1.13.0").resolve().as_uri().rstrip("/") + "/"
+    names = ", ".join(f'"{name}"' for name in OVERLAY_SOURCE_NAMES)
+    escaped_overlay = str(overlay.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        f'set ProjectRef(uri("{chipyard_uri}"), "gemmini") / Compile / unmanagedSources ~= '
+        f'{{ sources => val names = Set({names}); '
+        f'sources.filterNot(source => names(source.getName)) ++ '
+        f'(file("{escaped_overlay}") ** "*.scala").get }}'
+    )
+
+
+def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
     memory = case.resolved.get("memory")
     if not isinstance(memory, dict):
         raise BuildFailure(FailureReason.VALIDATION, "resolved memory contract missing")
@@ -360,15 +441,14 @@ def _rtl_test_commands(case: BuildCase) -> tuple[Command, ...]:
         raise BuildFailure(FailureReason.VALIDATION, "resolved scratchpad bank rows missing")
     if not isinstance(accumulator_rows, int) or isinstance(accumulator_rows, bool):
         raise BuildFailure(FailureReason.VALIDATION, "resolved accumulator rows missing")
-    top = (
-        f"IM2PGemminiHP1A{case.selection.activation_bits}"
-        f"W{case.selection.weight_bits}D{case.selection.dim}"
-    )
+    metadata = _top_metadata(request.top, case.selection)
+    top = str(metadata["selected_top"])
     object_dir = case.output / "rtl-test-obj"
     host = ROOT / "fpga" / "gemmini_hp1" / "host"
     host_params = case.output / "host-params"
+    integrated = request.top is Top.INTEGRATED
     flags = " ".join((
-        "-std=c++20", "-Wall", "-Wextra", "-Wpedantic",
+        "-std=c++20", "-Wall", "-Wextra", "-Wpedantic", "-fno-fast-math",
         "-DIM2P_RTL_TEST_BUILD=1",
         f"-DIM2P_DIM={case.selection.dim}",
         f"-DIM2P_OPERAND_BITS={case.selection.activation_bits}",
@@ -380,7 +460,9 @@ def _rtl_test_commands(case: BuildCase) -> tuple[Command, ...]:
         f"-DGGML_GEMMINI_CONFIGURED_DIM={case.selection.dim}",
         f"-DGGML_GEMMINI_ACTIVATION_BITS={case.selection.activation_bits}",
         f"-DGGML_GEMMINI_WEIGHT_BITS={case.selection.weight_bits}",
-        "-DGGML_GEMMINI_ENABLE_RMD=0",
+        f"-DGGML_GEMMINI_ENABLE_RMD={int(integrated)}",
+        "-DGGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1",
+        "-DIM2P_FPGA_ARCH_GEMMINI_HP1=1",
         f"-I{host_params}",
         f"-I{host}",
         f"-I{ROOT / 'frontend' / 'include'}",
@@ -392,18 +474,62 @@ def _rtl_test_commands(case: BuildCase) -> tuple[Command, ...]:
         f"-I{LLAMA_ROOT / 'common'}",
         f"-I{GEMMINI_INCLUDE_ROOT}",
     ))
-    executable = object_dir / "VIM2PGemminiHP1RtlTest"
+    prefix = "VIM2PGemminiWSHP1RtlTest" if integrated else "VIM2PGemminiHP1RtlTest"
+    source = "test_ws_rtl.cpp" if integrated else "test_rtl.cpp"
+    executable = object_dir / prefix
+    sources = (
+        (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"))
+        if integrated else (
+            str(ROOT / "frontend" / "src" / "im2p_gemmini_frontend.cpp"),
+            str(host / "uart.cpp"),
+        )
+    )
+    link_flags = (
+        ("-LDFLAGS", " ".join((
+            str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
+            str(case.output / "host-build" / "libgemmini_hp1_ggml_numeric.a"),
+            "-Wl,-dead_strip" if platform.system() == "Darwin" else "-Wl,--gc-sections -pthread",
+        ))) if integrated else ()
+    )
     return (
         Command(ROOT, (
             "verilator", "--cc", "--exe", "--build", "--assert", "--timing",
             "-Wall", "-Wno-fatal", "-j", "2", "--top-module", top,
-            "--prefix", "VIM2PGemminiHP1RtlTest", "--Mdir", str(object_dir),
+            "--prefix", prefix, "--Mdir", str(object_dir),
             "-CFLAGS", flags, "-F", str(case.output / "filelist.f"),
-            str(host / "test_rtl.cpp"), str(host / "frontend_rtl_fixture.cpp"),
-            str(ROOT / "frontend" / "src" / "im2p_gemmini_frontend.cpp"),
-            str(host / "uart.cpp"),
+            str(host / source), str(host / "frontend_rtl_fixture.cpp"),
+            *sources, *link_flags,
         )),
         Command(ROOT, (str(executable),)),
+    )
+
+
+def _host_validation_commands(
+    request: BuildRequest, case: BuildCase, rtl_commands: tuple[Command, ...],
+) -> tuple[Command, ...]:
+    source = ROOT / "fpga" / "gemmini_hp1" / "host"
+    build = case.output / "host-build"
+    return (
+        *rtl_commands,
+        Command(ROOT, (
+            "cmake", "-S", str(source), "-B", str(build),
+            f"-DIM2P_GEMMINI_RESOLVED_PROFILE={case.manifest}",
+            f"-DIM2P_LLAMA_ROOT={LLAMA_ROOT}",
+            f"-DIM2P_GEMMINI_INCLUDE_ROOT={GEMMINI_INCLUDE_ROOT}",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        )),
+        Command(ROOT, ("cmake", "--build", str(build))),
+        Command(ROOT, ("ctest", "--test-dir", str(build), "--output-on-failure")),
+        Command(ROOT, (
+            sys.executable, str(ROOT / "scripts" / "gemmini_audit_host.py"),
+            "--artifact", str(build / "gemmini_hp1_host_orchestration"),
+            "--role", "PHYSICAL_HOST",
+            "--command-log", str(
+                build / "CMakeFiles" / "gemmini_hp1_host_orchestration.dir" / "link.txt"
+            ),
+            "--out", str(case.output / "host-audit.json"),
+        )),
+        *_rtl_test_commands(request, case),
     )
 
 
@@ -414,7 +540,7 @@ def _commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
         case Stage.PLAN:
             return ()
         case Stage.RTL:
-            return _rtl_commands(case)
+            return _rtl_commands(request, case)
         case Stage.TEST:
             memory = case.resolved.get("memory")
             if not isinstance(memory, dict):
@@ -425,38 +551,37 @@ def _commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
                 raise BuildFailure(FailureReason.VALIDATION, "resolved scratchpad bank rows missing")
             if not isinstance(accumulator_rows, int) or isinstance(accumulator_rows, bool):
                 raise BuildFailure(FailureReason.VALIDATION, "resolved accumulator rows missing")
-            return (Command(scala_root, (
+            common = (
                 "sbt", "-J-Xmx6G", f"-Dim2p.resolvedProfile={manifest}",
                 f"-Dim2p.testProfile={case.selection.name}", "--batch",
                 f"-Dim2p.scratchpadBankRows={scratchpad_bank_rows}",
-                f"-Dim2p.accumulatorRows={accumulator_rows}",
-                _sbt_scala_override(), "testOnly im2p.gemmini.StandaloneTopSpec",
-            )),)
+                f"-Dim2p.accumulatorRows={accumulator_rows}", _sbt_scala_override(),
+            )
+            match request.top:
+                case Top.INTEGRATED:
+                    overlay = case.output / "upstream-overlay"
+                    return (
+                        Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
+                        Command(
+                            ROOT / "src" / "gemmini" / "control",
+                            (*common, _sbt_source_override(overlay), "test"),
+                        ),
+                    )
+                case Top.STANDALONE:
+                    return (Command(
+                        scala_root, (*common, "testOnly im2p.gemmini.StandaloneTopSpec"),
+                    ),)
+                case unreachable:
+                    assert_never(unreachable)
         case Stage.HOST_TEST:
-            source = ROOT / "fpga" / "gemmini_hp1" / "host"
-            build = case.output / "host-build"
-            return (
-                *_rtl_commands(case),
-                Command(ROOT, (
-                    "cmake", "-S", str(source), "-B", str(build),
-                    f"-DIM2P_GEMMINI_RESOLVED_PROFILE={manifest}",
-                )),
-                Command(ROOT, ("cmake", "--build", str(build))),
-                Command(ROOT, ("ctest", "--test-dir", str(build), "--output-on-failure")),
-                Command(ROOT, (
-                    sys.executable, str(ROOT / "scripts" / "gemmini_audit_host.py"),
-                    "--artifact", str(build / "gemmini_hp1_host_test"),
-                    "--role", "HOST_COMMON", "--out", str(case.output / "host-audit.json"),
-                )),
-                *_rtl_test_commands(case),
-            )
+            return _host_validation_commands(request, case, _rtl_commands(request, case))
         case Stage.EXPORT:
-            commands = _rtl_commands(case)
-            reusable = any(
-                path.is_file() and not path.is_symlink() and path.suffix.lower() in RTL_SUFFIXES
-                for path in (case.output / "rtl").glob("**/*")
-            )
-            return commands[1:] if reusable else commands
+            commands = _rtl_commands(request, case)
+            selected_top = str(_top_metadata(request.top, case.selection)["selected_top"])
+            existing_top = case.output / "rtl" / f"{selected_top}.sv"
+            reusable = existing_top.is_file() and not existing_top.is_symlink()
+            rtl_commands = commands[-1:] if reusable else commands
+            return _host_validation_commands(request, case, rtl_commands)
         case Stage.SYNTH | Stage.ROUTE | Stage.BITSTREAM:
             board = _resolved_board(request)
             xdc_arguments = tuple(value for path in board.xdc for value in ("--xdc", str(path)))
@@ -469,7 +594,7 @@ def _commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
                 "--filelist", str(case.output / "filelist.f"),
                 "--out", str(case.output / "vivado"),
             ))
-            return (*_rtl_commands(case), flow)
+            return (*_rtl_commands(request, case), flow)
         case unreachable:
             assert_never(unreachable)
 
@@ -545,6 +670,7 @@ def _write_host_params(case: BuildCase) -> None:
 
 
 def _case_document(
+    request: BuildRequest,
     case: BuildCase,
     commands: tuple[Command, ...],
     results: tuple[CommandResult, ...] | None = None,
@@ -555,6 +681,7 @@ def _case_document(
         else "FAIL"
     )
     return {
+        **_top_metadata(request.top, case.selection),
         "profile": case.selection.name,
         "status": status,
         "reason": next(
@@ -587,7 +714,10 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
         return {
             "schema_version": 1, "stage": request.stage.value, "status": "DRY_RUN",
             "execution": "sequential",
-            "profiles": [_case_document(case, commands) for case, commands in zip(cases, command_sets)],
+            "profiles": [
+                _case_document(request, case, commands)
+                for case, commands in zip(cases, command_sets)
+            ],
             "handoff": _export_command(request).to_document() if request.stage is Stage.EXPORT else None,
         }
     request.output.mkdir(parents=True, exist_ok=request.stage is Stage.EXPORT)
@@ -597,7 +727,7 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
     profile_documents: list[Mapping[str, JsonValue]] = []
     for case, commands in zip(cases, command_sets):
         _write_json(case.manifest, case.resolved)
-        if request.stage is Stage.HOST_TEST:
+        if request.stage in (Stage.HOST_TEST, Stage.EXPORT):
             _write_host_params(case)
         if tool_lock is not None and not (case.output / "tool-lock.json").exists():
             _write_json(case.output / "tool-lock.json", tool_lock)
@@ -612,8 +742,13 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
             results.append(result)
             if result.returncode != 0:
                 break
-        profile_documents.append(_case_document(case, commands, tuple(results)))
+        profile_documents.append(_case_document(request, case, commands, tuple(results)))
     status = "PASS" if all(profile["status"] == "PASS" for profile in profile_documents) else "FAIL"
+    if request.stage is Stage.EXPORT:
+        _write_json(request.output / "stage-host-test.json", {
+            "schema_version": 1, "stage": Stage.HOST_TEST.value, "status": status,
+            "execution": "sequential", "profiles": profile_documents, "handoff": None,
+        })
     handoff: Mapping[str, JsonValue] | None = None
     if request.stage is Stage.EXPORT and status == "PASS":
         command = _export_command(request)

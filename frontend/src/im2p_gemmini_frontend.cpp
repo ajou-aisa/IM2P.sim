@@ -1986,7 +1986,16 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
             {}};
   auto &x = *run->impl_;
   const RoutePolicy policy = route_policy(x.route);
-  if (x.scu_route() && options.residual_stage_mode != ResidualStageMode::none)
+  const bool external_hp1_residual =
+#if defined(IM2P_FPGA_ARCH_GEMMINI_HP1)
+      (x.route == Route::q4_hp1 || x.route == Route::q8_hp1) &&
+      options.stream_executor && options.residual_stage_fn &&
+      options.residual_stage_mode == ResidualStageMode::im2p_compact;
+#else
+      false;
+#endif
+  if (x.scu_route() && options.residual_stage_mode != ResidualStageMode::none &&
+      !external_hp1_residual)
     x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
                                  "SCU residual radix and merge contract is not enabled");
   if (policy == RoutePolicy::deprecated) {

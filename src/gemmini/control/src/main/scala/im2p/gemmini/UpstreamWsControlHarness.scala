@@ -28,6 +28,7 @@ final class InertTLClient(implicit parameters: Parameters) extends LazyModule {
 }
 
 final class UpstreamWsControlHarness(
+  profile: ResolvedProfile,
   config: GemminiArrayConfig[SInt, gemmini.Float, gemmini.Float],
 )(implicit parameters: Parameters) extends LazyModule {
   private val client = LazyModule(new InertTLClient)
@@ -40,7 +41,7 @@ final class UpstreamWsControlHarness(
       case TileKey => RocketTileParams()
       case TileVisibilityNodeKey => visibility
     }
-    private val control = Module(new UpstreamWsControl(config)(controlParameters))
+    private val control = Module(new UpstreamWsControl(profile, config)(controlParameters))
     val io = IO(chiselTypeOf(control.io))
     io <> control.io
   }

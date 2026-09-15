@@ -26,10 +26,11 @@ ROOT: Final = Path(__file__).resolve().parents[1]
 def build_environment(work_root: Path) -> Mapping[str, str]:
     environment = dict(os.environ)
     if platform.system() == "Darwin":
-        environment.setdefault("CHISEL_FIRTOOL_PATH", str(
+        pinned_firtool = (
             work_root / "deps/firtool-1.62.0-macos-x64"
-            / "org.chipsalliance/llvm-firtool/macos-x64/bin",
-        ))
+            / "org.chipsalliance/llvm-firtool/macos-x64/bin"
+        )
+        environment["CHISEL_FIRTOOL_PATH"] = str(pinned_firtool)
         if "JAVA_HOME" not in environment:
             probe = subprocess.run(
                 ("/usr/libexec/java_home",), text=True, capture_output=True, check=False,

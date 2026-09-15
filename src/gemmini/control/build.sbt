@@ -19,6 +19,7 @@ lazy val root = (project in file("."))
   .dependsOn(ProjectRef(file("..").toURI, "root"))
   .settings(
     name := "im2p-gemmini-upstream-control",
+    Test / parallelExecution := false,
     addCompilerPlugin("org.chipsalliance" % "chisel-plugin" % "6.5.0" cross CrossVersion.full),
     libraryDependencies ++= Seq(
       "edu.berkeley.cs" %% "chiseltest" % "6.0.0" % Test,

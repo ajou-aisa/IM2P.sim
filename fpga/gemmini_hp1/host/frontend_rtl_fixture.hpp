@@ -23,4 +23,27 @@ using FrontendRtlExecute = int (*)(void *, const FrontendRtlFragment &,
 
 void run_frontend_rtl_fixture(const Capability &, void *, FrontendRtlExecute);
 
+struct FrontendRtlWork {
+  std::uint32_t work_id;
+  std::uint32_t host_slot;
+  std::uint32_t row_begin;
+  std::uint32_t rows;
+  std::uint32_t columns;
+  std::uint32_t k;
+  WorkPlanV1 plan;
+  std::vector<std::int8_t> activations; // Decoded row-major rows * k scalar bytes.
+  std::vector<std::int8_t> weights; // Decoded row-major k * columns signed codes.
+  std::vector<std::uint32_t> carriers; // Block-major ceil(k / 32) * columns.
+};
+
+struct FrontendRtlTiming {
+  std::uint64_t start_cycle;
+  std::uint64_t done_cycle;
+};
+
+using FrontendRtlWorkExecute = int (*)(void *, const FrontendRtlWork &,
+                                     std::vector<std::int32_t> &, FrontendRtlTiming &);
+
+void run_frontend_ws_rtl_fixture(const Capability &, void *, FrontendRtlWorkExecute);
+
 }
