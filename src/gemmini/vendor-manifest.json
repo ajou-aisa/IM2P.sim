@@ -1,0 +1,284 @@
+{
+  "entries": [
+    {
+      "compile_include": false,
+      "compile_reason": "license provenance only",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "17824de7324f7cf4b8b72e3f8d66138fc48841fd",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "LICENSE.upstream",
+      "snapshot_sha256": "c41aaa8016faefb6d266f5cfbbaeefc32b5ae0ff3c67670be2b1b0cf291ef6e0",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "LICENSE",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "AccumulatorMem dependency",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "1b7d94e6acfcdea87c1a10d418d9a105f9d884d8",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Activation.scala",
+      "snapshot_sha256": "9aec0433b8be1861a0e474f7fc13f9276c5344e60951da3b18eb8fbc41cc7c2b",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Activation.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "standalone accumulator SRAM/RMW",
+      "direct_dependencies": [
+        "Activation.scala",
+        "Arithmetic.scala",
+        "SharedExtMem.scala",
+        "SyncMem.scala",
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "c664bd0f24b8236d5a553597440da8b2bc6eae6d",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/AccumulatorMem.scala",
+      "snapshot_sha256": "09e710bdd7ec5c3a5e738d72433529583da29b5d50629447f2887535a06abd9b",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/AccumulatorMem.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "PE and accumulator arithmetic typeclass",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "7bd8d9e806bd98b17dfad9d36a035bcf6e3ebb38",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Arithmetic.scala",
+      "snapshot_sha256": "fbad802b6eea2276b7da4b4e891045c1f1243d5ef3ec22e67e31ffa1359b915b",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Arithmetic.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "PE control dependency",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "d5db2446850c358bf0d78fa835689c96770bf3ce",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Dataflow.scala",
+      "snapshot_sha256": "e87024cf9357868ddeb013d0599e5f48fc709c224dbad3d1a64b56bbe2e7815f",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Dataflow.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "standalone systolic mesh",
+      "direct_dependencies": [
+        "Arithmetic.scala",
+        "PE.scala",
+        "Tile.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "cd0566584e47bbcfb7bac8b5afe9eed5570a16f3",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Mesh.scala",
+      "snapshot_sha256": "82e0ab80b78a71436437fb92aef3f6bfb82b89c3665c4ec5f8ea8b884cb799a1",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Mesh.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "WS array timing and tags",
+      "direct_dependencies": [
+        "Arithmetic.scala",
+        "Dataflow.scala",
+        "Mesh.scala",
+        "PE.scala",
+        "Shifter.scala",
+        "TagQueue.scala",
+        "Transposer.scala",
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "516760bf661e2957ce9781b74fef614bb17d0a5e",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/MeshWithDelays.scala",
+      "snapshot_sha256": "3a0bccc14cfd73f6de315e31d6c0f2595009edb98a84aadc48715e50150607b5",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/MeshWithDelays.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "standalone processing element",
+      "direct_dependencies": [
+        "Arithmetic.scala",
+        "Dataflow.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "6e065125e16b5773a578ba9c11480ae4e40b1338",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/PE.scala",
+      "snapshot_sha256": "3f9a86873d58614261edd7ec3b7125e40fda31d961823d9ad500a7d130d5614d",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/PE.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": false,
+      "compile_reason": "full file couples ScratchpadBank to Rocket/TL DMA; extract selected symbols before compile",
+      "direct_dependencies": [
+        "SharedExtMem.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "d07614b3f161a638c039a5ae028565e711fb5436",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [
+        "ScratchpadBank"
+      ],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Scratchpad.scala",
+      "snapshot_sha256": "e8c0f4ca334ce71d3fa321fa2b6c7e79aae01aa9454b9852132e696fbae8ae91",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Scratchpad.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "ExtMemIO used by original memory banks",
+      "direct_dependencies": [
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "f3acdd2e4cf21e5af664498778f95283b5c07679",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/SharedExtMem.scala",
+      "snapshot_sha256": "7ee395b0e906d2de6decc6ed9bbc0dfcd60a1791da8f6c1829c6482cd6d81619",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/SharedExtMem.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "MeshWithDelays skew dependency",
+      "direct_dependencies": [
+        "SyncMem.scala",
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "1b419135b6df2460b08e5206af425cbe723f4fee",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Shifter.scala",
+      "snapshot_sha256": "aaa70ce1c9c6872f717aa800b9d1dda5fc2b6f5b396ff9c960718ffda87b26ad",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Shifter.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "AccumulatorMem SRAM dependency",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "4320001551cd77222f5f248eea4f8377cf746f4e",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/SyncMem.scala",
+      "snapshot_sha256": "c118cdae6ceb96896c43c41281f85d7d3adfff9b0fc74e0413d9ed272c10af97",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/SyncMem.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "MeshWithDelays tag lifetime",
+      "direct_dependencies": [
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "f656119a503b8fefcf1a5e6aebbfb256598bfafc",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/TagQueue.scala",
+      "snapshot_sha256": "513c0b8aa5b813207919eee9916b3c27f4a5805f3c5a07f2acab04042671c0ae",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/TagQueue.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "standalone PE tile",
+      "direct_dependencies": [
+        "Arithmetic.scala",
+        "PE.scala",
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "9c2a418cbaf16b1130e705d9c2eb528c1473d5fa",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Tile.scala",
+      "snapshot_sha256": "28d3a0165876cf29e10799244c420cff835447e9ec2777006d0d693b581b7946",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Tile.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "MeshWithDelays transpose dependency",
+      "direct_dependencies": [
+        "Util.scala"
+      ],
+      "extraction": "full_file",
+      "git_blob_sha": "23fc5365f89a4eba6e399b62d85f0df7edbedf5b",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Transposer.scala",
+      "snapshot_sha256": "69a1349d98d188e9fffe8acb4e108e6fbb56c8ef314956faa4bf22a23828e5e3",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Transposer.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": true,
+      "compile_reason": "shared queue, wrap, and reduction helpers",
+      "direct_dependencies": [],
+      "extraction": "full_file",
+      "git_blob_sha": "07c36554377424e22b0ffedae5d90ea2942aabfc",
+      "patch_reason": "none; immutable upstream snapshot",
+      "patches": [],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/Util.scala",
+      "snapshot_sha256": "e57a938f1d6a417d558ac7018ec34ce48e0cf0678c6dfd4ddca6c51fefbce20b",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/Util.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    }
+  ],
+  "schema_version": 1
+}

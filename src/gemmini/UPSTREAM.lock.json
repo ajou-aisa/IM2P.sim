@@ -1,0 +1,14 @@
+{
+  "chipyard": {
+    "commit": "69eba860a352343e4ac6b6df0f3638a79a86ec78",
+    "repository": "https://github.com/ucb-bar/chipyard.git"
+  },
+  "extraction": "git show <commit>:<path>; no dependency checkout writes",
+  "gemmini": {
+    "chipyard_gitlink": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+    "chipyard_gitlink_path": "generators/gemmini",
+    "commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+    "repository": "https://github.com/ucb-bar/gemmini.git"
+  },
+  "schema_version": 1
+}
