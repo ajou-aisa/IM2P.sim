@@ -129,9 +129,10 @@
       "direct_dependencies": [],
       "extraction": "full_file",
       "git_blob_sha": "07d8d49e95bf421514293ad10bc01026a4b36056",
-      "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
+      "patch_reason": "packed input accounting and deterministic head reset; immutable snapshot",
       "patches": [
-        "patches/0001-packed-input-controller-bytes.patch"
+        "patches/0001-packed-input-controller-bytes.patch",
+        "patches/0002-loop-head-reset.patch"
       ],
       "selected_symbols": [],
       "snapshot_path": "upstream/src/main/scala/gemmini/LoopMatmul.scala",
@@ -368,6 +369,18 @@
       "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
     }
   ],
-  "patch_sha256": "22215525e584685399caa927e87e2e0676a2f8aa990a50454e3dff37e7b50d27",
+  "patch_sha256": "e8efa47038164679bd1d71b659e597827cf25468201ceed51f5a9d34428b1ceb",
+  "patches": [
+    {
+      "path": "patches/0001-packed-input-controller-bytes.patch",
+      "reason": "packed input bit-to-byte accounting",
+      "sha256": "e8efa47038164679bd1d71b659e597827cf25468201ceed51f5a9d34428b1ceb"
+    },
+    {
+      "path": "patches/0002-loop-head-reset.patch",
+      "reason": "deterministic LoopMatmul head reset",
+      "sha256": "a55b9ca7f93628f517e63087c647f7778db4c127fa3161b4b6b97c569e8ce8d3"
+    }
+  ],
   "schema_version": 1
 }

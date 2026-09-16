@@ -87,6 +87,8 @@ def run_builder(
         ]
         if subprocess.run(model, cwd=generated, env=environment).returncode:
             return 1
+        shutil.copyfile(generated / "im2p_gemmini_hardware.h",
+                        object_dir / "im2p_gemmini_hardware.h")
         environment.update({
             "IM2P_GEMMINI_HP1_OBJ_DIR": str(object_dir),
             "IM2P_GEMMINI_HP1_TOP": top,

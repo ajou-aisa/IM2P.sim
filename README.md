@@ -1,12 +1,99 @@
 # IM2P.sim
 
-> 현재 SCU 수정 후보와 기존 External/IFR2 검증은 서로 다른 수치 계약이다.
-> ABI5·saturation·새 IFR3 지원 상태는 [SCU 수정 보고서](docs/SCU_BLOCK_SCALE_FIX.md)에 있다.
-> 기존 배포 bitstream은 새 SCU 계약을 지원하지 않는다.
+IM2P.sim은 실제 RTL을 실행하는 두 simulation implementation을 유지한다.
+`IM2P_SIM_IMPLEMENTATION`의 기본값은 `LEGACY_BSV`이며,
+`GEMMINI_HP1`은 pinned upstream Gemmini WS + SCU + IM2P standalone bridge를 사용한다.
+두 구현을 같은 수치 계약이나 같은 cycle 모델로 취급하지 않는다.
 
-Bluespec으로 작성한 **레지스터 기반 weight-stationary systolic NPU RTL 시뮬레이터**다. DIM16/DIM32/DIM64 구성에서 address-driven matrix scheduling, K-block-aware fragmentation, VectorUnit scale path, Accumulator, 비동기 stripe publication, 다음 stripe 선행 준비를 검증한다.
+| 구현 | 현재 RTL / host 경로 | 프로필 / 검증 진입점 |
+|---|---|---|
+| `LEGACY_BSV` | `src/core/IM2PCore.bsv`, `sim/ffi/im2p_verilator.cpp` | 기존 matched A4/W4, A8/W8, A16/W16 × DIM16/32/64; `make sim-test-a8-w8-d16` 등 |
+| `GEMMINI_HP1` | `src/gemmini/control/`, `sim/backends/gemmini_hp1/`, `sim/ffi/im2p_gemmini_integrated.cpp` | A4/W4·A8/W8 × DIM16/32/64의 여섯 HP1 프로필; 아래 integrated 검증 명령 |
 
-C++ harness가 Verilated RTL clock을 직접 구동하므로 측정 시간은 wall-clock이 아닌 RTL logical cycle이다. Gemmini의 WS 실행 방식은 참고하되 `Tile`, `Mesh`, `MeshWithDelays`, DMA, RoCC, ROB 등의 Gemmini generator/SoC 계층은 복제하지 않는다. DIM64의 16×16 synthesis tile은 BSC scheduling hierarchy만 나누며 별도 Gemmini execution 계층이나 cycle을 추가하지 않는다.
+`make rtl`, `make bsv-test`, `make verilator-*`, `make sim-test-*`는 BSV 생성/검증
+타깃이다. Gemmini RTL은 `gemmini-hp1-rtl`, `gemmini-hp1-test`,
+`gemmini-hp1-host-test` 또는 `scripts/gemmini_build.py --top integrated`로 생성·검증한다.
+Gemmini simulator/frontend library는 `IM2P_SIM_IMPLEMENTATION=GEMMINI_HP1`로 선택한다.
+A16 또는 mixed A/W는 Gemmini HP1 프로필이 아니다.
+
+## GEMMINI_HP1 책임 경계
+
+```
+src/gemmini/build.sbt                  단일 SBT build / 명시적 source sets
+  scuCore                             SCU.scala, scale protocol, 재사용 primitives
+  gemminiIntegration                  Gemmini writeback / completion / metadata
+  root                                IM2P host bridge / backing adapter / top
+  diagnostics                         구 StandaloneTop / local memory / 기존 tests
+sim/common/gemmini_schedule.*          값·Verilator 없는 단일 loop/fragment/extent planner
+sim/common/operand_packing.hpp         A4/A8 packing
+sim/backends/gemmini_hp1/runtime.*     model ownership, reset/clock, session, counters
+sim/backends/gemmini_hp1/backing_memory.cpp
+sim/ffi/im2p_gemmini_integrated.cpp     기존 C ABI entrypoints
+```
+
+SCU.scala의 입력은 raw partial과 HP1 carrier다. `0..32767`은 left shift,
+`0x80000000`은 zero sentinel이며 그 외 carrier는 유효하지 않다.
+각 contribution은 Sat32로 변환하고, 첫 contribution은 replace, 나머지는
+widened sum 후 Sat32 accumulate한다. Block32·full-K·final-only output을 유지한다.
+실제 구현은 `SCU.scala`, `SatAccumulatorAdder.scala`, `UpstreamHp1Writeback.scala`와
+해당 Scala/수치 RTL tests가 기준이다. 기존 software SCU/ABI 설명은
+[SCU 수치 계약](docs/SCU_BLOCK_SCALE_CONTRACT.md)과
+[SCU 수정 보고서](docs/SCU_BLOCK_SCALE_FIX.md)를 함께 확인한다.
+RMD raw-dot의 full-INT32 software 계약은 HP1 scaled output과 별개이며 signed-21로 제한하지 않는다.
+
+설정의 출발점은 `config/gemmini_hp1_profiles.json`과 선택된
+`config/gemmini_host_memory_contracts/*.json`이다. Resolver의 `resolved-profile.json`에서
+Scala 검증용 properties와 C++ header를 생성하고, 실제 elaborated DIM/width/memory/latency와
+일치하는지 검증한다. Upstream pin/blob/patch provenance는
+[`src/gemmini/README.md`](src/gemmini/README.md), `UPSTREAM.lock.json`,
+`vendor-manifest.json`, `patches/`에 있다. `upstream/` snapshot은 immutable provenance이며
+원본과 patched Gemmini class를 동시에 compile하지 않는다.
+
+## GEMMINI_HP1 검증
+
+출력 경로는 매번 새 디렉터리를 사용한다. 아래 명령은 물리 장치나 Vivado를 사용하지 않는다.
+
+```bash
+OUT="$HOME/aisa-lab/build/im2p-gemmini/verify-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 -B scripts/gemmini_vendor.py --verify
+make gemmini-schedule-test
+
+# 전체 Scala suite: integrated control + 기존 diagnostics tests
+python3 -B scripts/gemmini_build.py \
+  --a-bits 4 --w-bits 4 --dim 16 --scu hp1-left-shift \
+  --memory-contract config/gemmini_host_memory_contracts/a4w4-d16-hp1.json \
+  --top integrated --stage test --out "$OUT/scala"
+
+# 여섯 프로필: integrated elaboration, lint, host tests, numerical RTL fixture
+python3 -B scripts/gemmini_build.py \
+  --matrix a4w4,a8w8 --dims 16,32,64 --scu hp1-left-shift \
+  --memory-contract-dir config/gemmini_host_memory_contracts \
+  --top integrated --stage host-test --out "$OUT/matrix"
+```
+
+실제 C ABI model object directory에는 같은 profile에서 생성한
+`im2p_gemmini_hardware.h`가 있어야 한다. `real_lib_cache.py`가 이를 복사하고
+`sim/build.rs`가 검증한다. Header 누락이나 profile 불일치를 임의 상수로 우회하지 않는다.
+`test_ws_rtl.cpp`의 독립 numerical fixture와 production runtime 검증은 다른 경로다.
+Legacy frontend의 `main_external` operation 3을 Gemmini HP1 operation 5처럼 취급하지 않는다.
+
+**Value-free cycle simulator는 아직 구현되어 있지 않다.** 추출된 것은 실행 순서와
+바이트 범위를 재사용하는 planner뿐이다. 준비된 내부 인터페이스와 실제 cycle 시작/완료
+정의는 [cycle simulator 경계](docs/GEMMINI_CYCLE_SIM_BOUNDARY.md), 변경·검증·잔여 문제는
+[refactor 보고서](docs/GEMMINI_REFACTOR_REPORT.md)에 기록한다. 빌드 성공만으로 numerical/
+cycle regression 전체가 통과했다고 해석하지 않는다.
+
+## LEGACY_BSV 상세 및 역사적 설계 설명
+
+**이하 BSV core 구조, VectorUnit, MatmulScheduler/WorkScheduler, 아홉 frontend 프로필,
+legacy route 표와 cycle 설명은 `LEGACY_BSV`에 한정한다.** Gemmini HP1은 실제 upstream
+Tile/Mesh/DMA/ROB/RoCC controller를 사용하는 별도 integrated 구현이다. 아래의
+“Gemmini generator 계층을 복제하지 않는다”, “host가 K loop를 scheduling하지 않는다” 등의
+BSV 설명을 Gemmini HP1에 적용하면 안 된다. 과거 wrap/shift 설명은 역사적 BSV 경로이며,
+현재 SCU-final saturation 계약은 위의 authoritative 구현·계약 문서를 우선한다.
+기존 External/IFR2와 새 SCU 계약의 차이 및 과거 배포 상태는 SCU 수정 보고서에 보존한다.
+
+Bluespec으로 작성한 레지스터 기반 weight-stationary systolic NPU RTL은 다음과 같다.
 
 ```text
 IM2PCore
@@ -16,7 +103,6 @@ IM2PCore
 │   ├── ExecuteController
 │   ├── InputSkew
 │   └── SystolicArray
-│       └── PE array
 ├── VectorUnit
 └── Accumulator
 ```

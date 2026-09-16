@@ -268,6 +268,8 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       pokeWork(dut)
       dut.io.work.bits.firstLoop.poke(false.B)
       dut.io.work.bits.logicalWorkId.poke("hdf".U)
+      dut.io.work.bits.workBase.poke("hbd".U)
+      dut.io.work.bits.scaleGeneration.poke("h57".U)
       dut.io.work.bits.hostSlot.poke(true.B)
       dut.io.controllerBusy.poke(true.B)
       dut.io.work.ready.expect(true.B)
@@ -285,8 +287,8 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
         }
         if (dut.io.loopMetadata.valid.peek().litToBoolean) {
           metadata :+= (
-            dut.io.loopMetadata.bits.logicalWorkId.peek().litValue,
-            dut.io.loopMetadata.bits.hostSlot.peek().litValue,
+            dut.io.loopMetadata.bits.workBase.peek().litValue,
+            dut.io.loopMetadata.bits.scaleGeneration.peek().litValue,
           )
         }
         sawOverlap ||= dut.io.overlapIssued.peek().litToBoolean
@@ -294,7 +296,7 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
         cycles += 1
       }
       assert(commands == expected.map(_._1) ++ expected.drop(5).map(_._1))
-      assert(metadata == Seq(BigInt("de", 16) -> BigInt(0), BigInt("df", 16) -> BigInt(1)))
+      assert(metadata == Seq(BigInt("bc", 16) -> BigInt("56", 16), BigInt("bd", 16) -> BigInt("57", 16)))
       assert(sawOverlap)
 
       pokeWork(dut)

@@ -45,9 +45,9 @@ final class UpstreamWsControl(
 
   val io = IO(new Bundle {
     val instruction = Flipped(Decoupled(new UpstreamInstruction))
-    val loopMetadata = Flipped(Decoupled(new Hp1LoopDescriptor))
-    val scaleLoad = Flipped(Decoupled(new ScaleLoad(profile, scaleEntries, generationWidth)))
-    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile, scaleEntries, generationWidth)))
+    val loopMetadata = Flipped(Decoupled(new Hp1LoopMetadata))
+    val scaleLoad = Flipped(Decoupled(new ScaleLoad(profile.dim, scaleEntries, generationWidth)))
+    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile.dim, scaleEntries, generationWidth)))
     val dmaRead = chiselTypeOf(load.io.dma)
     val dmaWrite = chiselTypeOf(store.io.dma)
     val srams = chiselTypeOf(execute.io.srams)
@@ -132,7 +132,7 @@ final class UpstreamWsControl(
   private val contextI = RegInit(0.U(16.W))
   private val contextJ = RegInit(0.U(16.W))
   private val contextK = RegInit(0.U(16.W))
-  private val metadataQueue = Module(new Queue(new Hp1LoopDescriptor, 2))
+  private val metadataQueue = Module(new Queue(new Hp1LoopMetadata, 2))
   metadataQueue.io.enq <> io.loopMetadata
 
   private val metadata = metadataQueue.io.deq.bits

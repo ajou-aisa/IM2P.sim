@@ -35,6 +35,11 @@ GEMMINI_REPOSITORY: Final = "https://github.com/ucb-bar/gemmini.git"
 GEMMINI_GITLINK: Final = "generators/gemmini"
 USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR] [--verify] [--overlay NEW_DIR]"
 PATCH_PATH: Final = "patches/0001-packed-input-controller-bytes.patch"
+RESET_PATCH_PATH: Final = "patches/0002-loop-head-reset.patch"
+PATCHES: Final = (
+    (PATCH_PATH, "packed input bit-to-byte accounting"),
+    (RESET_PATCH_PATH, "deterministic LoopMatmul head reset"),
+)
 OVERLAY_NAMES: Final = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
 
 
@@ -100,9 +105,16 @@ class VendorEntry(TypedDict):
     direct_dependencies: list[str]
 
 
+class PatchRecord(TypedDict):
+    path: str
+    sha256: str
+    reason: str
+
+
 class VendorManifest(TypedDict):
     schema_version: int
     patch_sha256: str
+    patches: list[PatchRecord]
     entries: list[VendorEntry]
 
 
@@ -168,7 +180,7 @@ def verify_source(source: Path) -> Path:
 
 def render_artifacts(gemmini: Path) -> Artifacts:
     entries: list[VendorEntry] = []
-    artifacts: Artifacts = {PATCH_PATH: (ROOT / "src/gemmini" / PATCH_PATH).read_bytes()}
+    artifacts: Artifacts = {path: (ROOT / "src/gemmini" / path).read_bytes() for path, _ in PATCHES}
     for spec in FILE_SPECS:
         content = run_git(gemmini, ["show", f"{GEMMINI_PIN}:{spec.upstream_path}"])
         blob = git_text(gemmini, ["rev-parse", f"{GEMMINI_PIN}:{spec.upstream_path}"])
@@ -183,8 +195,12 @@ def render_artifacts(gemmini: Path) -> Artifacts:
                 snapshot_sha256=hashlib.sha256(content).hexdigest(),
                 extraction="full_file",
                 selected_symbols=["ScratchpadBank"] if spec.upstream_path.endswith("/Scratchpad.scala") else [],
-                patches=[PATCH_PATH] if Path(spec.upstream_path).name in OVERLAY_NAMES else [],
-                patch_reason="packed input bit-to-byte accounting; snapshot remains immutable" if Path(spec.upstream_path).name in OVERLAY_NAMES else "none; immutable upstream snapshot",
+                patches=([PATCH_PATH, RESET_PATCH_PATH] if spec.upstream_path.endswith("/LoopMatmul.scala")
+                         else [PATCH_PATH] if Path(spec.upstream_path).name in OVERLAY_NAMES else []),
+                patch_reason=("packed input accounting and deterministic head reset; immutable snapshot"
+                              if spec.upstream_path.endswith("/LoopMatmul.scala") else
+                              "packed input bit-to-byte accounting; snapshot remains immutable"
+                              if Path(spec.upstream_path).name in OVERLAY_NAMES else "none; immutable upstream snapshot"),
                 compile_include=spec.compile_include,
                 compile_overlay=Path(spec.upstream_path).name in OVERLAY_NAMES,
                 compile_reason=spec.compile_reason,
@@ -202,7 +218,12 @@ def render_artifacts(gemmini: Path) -> Artifacts:
         ),
         extraction="git show <commit>:<path>; no dependency checkout writes",
     )
-    manifest = VendorManifest(schema_version=1, entries=entries, patch_sha256=hashlib.sha256(artifacts[PATCH_PATH]).hexdigest())
+    manifest = VendorManifest(
+        schema_version=1, entries=entries,
+        patch_sha256=hashlib.sha256(artifacts[PATCH_PATH]).hexdigest(),
+        patches=[PatchRecord(path=path, sha256=hashlib.sha256(artifacts[path]).hexdigest(), reason=reason)
+                 for path, reason in PATCHES],
+    )
     artifacts["UPSTREAM.lock.json"] = encode_json(lock)
     artifacts["vendor-manifest.json"] = encode_json(manifest)
     artifacts["README.md"] = f"""# Pinned Gemmini sources
@@ -210,7 +231,7 @@ def render_artifacts(gemmini: Path) -> Artifacts:
 Immutable provenance snapshots from Gemmini `{GEMMINI_PIN}`, selected by Chipyard `{CHIPYARD_PIN}`.
 Generate with `uv run scripts/gemmini_vendor.py`; verify with `uv run scripts/gemmini_vendor.py --verify`.
 
-`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the recorded packed-input controller patch to separate copies. Supply that output through `scripts/gemmini_build.py`'s source override, which explicitly replaces the imported Gemmini build's `Compile / unmanagedSources` through SBT. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
+`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the ordered packed-input and loop-reset patches to separate copies. `scripts/gemmini_build.py` supplies `-Dim2p.gemmini.overlay=NEW_DIR` to the single `build.sbt`; it replaces exactly four imported Gemmini sources. The build declares `scuCore` (no upstream or host dependency), `gemminiIntegration`, integrated standalone `root`, and test-only `diagnostics` source sets. `control/build.sbt` is no longer a separate build. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
 """.encode()
     return artifacts
 
@@ -226,9 +247,10 @@ def materialize_overlay(gemmini: Path, destination: Path) -> None:
         path = destination / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         _ = path.write_bytes(run_git(gemmini, ["show", f"{GEMMINI_PIN}:{relative}"]))
-    patch = str(ROOT / "src/gemmini" / PATCH_PATH)
-    _ = run_git(destination, ["apply", "--check", patch])
-    _ = run_git(destination, ["apply", patch])
+    for relative, _reason in PATCHES:
+        patch = str(ROOT / "src/gemmini" / relative)
+        _ = run_git(destination, ["apply", "--check", patch])
+        _ = run_git(destination, ["apply", patch])
 
 
 def encode_json(value: UpstreamLock | VendorManifest) -> bytes:

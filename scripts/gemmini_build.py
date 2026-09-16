@@ -35,6 +35,7 @@ if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.gemmini_tools import build_environment, collect_tool_lock
+from scripts.gemmini_hardware_contract import write_hardware_contract
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT: Final = Path(os.environ.get("IM2P_WORKSPACE_ROOT", ROOT.parent))
@@ -57,9 +58,6 @@ JsonValue: TypeAlias = (
 )
 HARDWARE_STAGES: Final = frozenset(("synth", "route", "bitstream"))
 RTL_SUFFIXES: Final = frozenset((".sv", ".svh", ".v", ".vh", ".vhd", ".vhdl"))
-OVERLAY_SOURCE_NAMES: Final = (
-    "GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala",
-)
 
 
 @unique
@@ -376,58 +374,23 @@ def _rtl_commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]
         "verilator", "--lint-only", "--timing", "-Wall", "-Wno-fatal",
         "-F", str(case.output / "filelist.f"),
     ))
-    match request.top:
-        case Top.INTEGRATED:
-            overlay = case.output / "upstream-overlay"
-            return (
-                Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
-                Command(ROOT / "src" / "gemmini" / "control", (
-                    "sbt", "-J-Xmx6G", "--batch", _sbt_scala_override(),
-                    _sbt_source_override(overlay),
-                    (
-                        "runMain im2p.gemmini.ElaborateUpstreamWsHp1 "
-                        f"--a-bits {case.selection.activation_bits} "
-                        f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
-                        f"--out {rtl_output}"
-                    ),
-                )),
-                lint,
-            )
-        case Top.STANDALONE:
-            return (
-                Command(ROOT / "src" / "gemmini", (
-                    "sbt", "-J-Xmx6G", "--batch", _sbt_scala_override(),
-                    (
-                        "runMain im2p.gemmini.Elaborate "
-                        f"--a-bits {case.selection.activation_bits} "
-                        f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
-                        f"--scratchpad-bank-rows {scratchpad_bank_rows} "
-                        f"--accumulator-rows {accumulator_rows} --out {rtl_output}"
-                    ),
-                )),
-                lint,
-            )
-        case unreachable:
-            assert_never(unreachable)
-
-
-def _sbt_scala_override() -> str:
-    chipyard_uri = (WORK_ROOT / "deps" / "chipyard-1.13.0").resolve().as_uri().rstrip("/") + "/"
+    overlay = case.output / "upstream-overlay"
+    if request.top is Top.INTEGRATED:
+        main = "runMain im2p.gemmini.ElaborateUpstreamWsHp1"
+        options = f"--resolved-hardware {case.output / 'resolved-hardware.properties'} "
+    else:
+        main = "diagnostics/runMain im2p.gemmini.Elaborate"
+        options = (f"--scratchpad-bank-rows {scratchpad_bank_rows} "
+                   f"--accumulator-rows {accumulator_rows} ")
     return (
-        f'set ProjectRef(uri("{chipyard_uri}"), "midas_target_utils") '
-        '/ scalaVersion := "2.13.12"'
-    )
-
-
-def _sbt_source_override(overlay: Path) -> str:
-    chipyard_uri = (WORK_ROOT / "deps" / "chipyard-1.13.0").resolve().as_uri().rstrip("/") + "/"
-    names = ", ".join(f'"{name}"' for name in OVERLAY_SOURCE_NAMES)
-    escaped_overlay = str(overlay.resolve()).replace("\\", "\\\\").replace('"', '\\"')
-    return (
-        f'set ProjectRef(uri("{chipyard_uri}"), "gemmini") / Compile / unmanagedSources ~= '
-        f'{{ sources => val names = Set({names}); '
-        f'sources.filterNot(source => names(source.getName)) ++ '
-        f'(file("{escaped_overlay}") ** "*.scala").get }}'
+        Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
+        Command(ROOT / "src" / "gemmini", (
+            "sbt", "-J-Xmx6G", "--batch", f"-Dim2p.gemmini.overlay={overlay.resolve()}",
+            f"{main} --a-bits {case.selection.activation_bits} "
+            f"--w-bits {case.selection.weight_bits} --dim {case.selection.dim} "
+            f"{options}--out {rtl_output}",
+        )),
+        lint,
     )
 
 
@@ -452,6 +415,7 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
         "-DIM2P_RTL_TEST_BUILD=1",
         f"-DIM2P_DIM={case.selection.dim}",
         f"-DIM2P_OPERAND_BITS={case.selection.activation_bits}",
+        f"-DIM2P_ACTIVATION_BITS={case.selection.activation_bits}",
         f"-DIM2P_BANK_ROWS={bank_rows}",
         f"-DIM2P_ACC_ROWS={accumulator_rows}",
         "-DIM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1",
@@ -467,6 +431,7 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
         f"-I{host}",
         f"-I{ROOT / 'frontend' / 'include'}",
         f"-I{ROOT / 'sim' / 'include'}",
+        f"-I{ROOT / 'sim' / 'ffi'}",
         f"-I{LLAMA_ROOT / 'ggml' / 'src' / 'ggml-gemmini'}",
         f"-I{LLAMA_ROOT / 'ggml' / 'src' / 'ggml-gemmini-utils' / 'include'}",
         f"-I{LLAMA_ROOT / 'ggml' / 'include'}",
@@ -551,28 +516,20 @@ def _commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
                 raise BuildFailure(FailureReason.VALIDATION, "resolved scratchpad bank rows missing")
             if not isinstance(accumulator_rows, int) or isinstance(accumulator_rows, bool):
                 raise BuildFailure(FailureReason.VALIDATION, "resolved accumulator rows missing")
+            overlay = case.output / "upstream-overlay"
             common = (
                 "sbt", "-J-Xmx6G", f"-Dim2p.resolvedProfile={manifest}",
+                f"-Dim2p.resolvedHardware={case.output / 'resolved-hardware.properties'}",
                 f"-Dim2p.testProfile={case.selection.name}", "--batch",
                 f"-Dim2p.scratchpadBankRows={scratchpad_bank_rows}",
-                f"-Dim2p.accumulatorRows={accumulator_rows}", _sbt_scala_override(),
+                f"-Dim2p.accumulatorRows={accumulator_rows}",
+                f"-Dim2p.gemmini.overlay={overlay.resolve()}",
             )
-            match request.top:
-                case Top.INTEGRATED:
-                    overlay = case.output / "upstream-overlay"
-                    return (
-                        Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
-                        Command(
-                            ROOT / "src" / "gemmini" / "control",
-                            (*common, _sbt_source_override(overlay), "test"),
-                        ),
-                    )
-                case Top.STANDALONE:
-                    return (Command(
-                        scala_root, (*common, "testOnly im2p.gemmini.StandaloneTopSpec"),
-                    ),)
-                case unreachable:
-                    assert_never(unreachable)
+            target = "test" if request.top is Top.INTEGRATED else "diagnostics/test"
+            return (
+                Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
+                Command(scala_root, (*common, target)),
+            )
         case Stage.HOST_TEST:
             return _host_validation_commands(request, case, _rtl_commands(request, case))
         case Stage.EXPORT:
@@ -727,6 +684,10 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
     profile_documents: list[Mapping[str, JsonValue]] = []
     for case, commands in zip(cases, command_sets):
         _write_json(case.manifest, case.resolved)
+        try:
+            write_hardware_contract(case.resolved, case.output)
+        except (OSError, ValueError) as error:
+            raise BuildFailure(FailureReason.VALIDATION, str(error)) from error
         if request.stage in (Stage.HOST_TEST, Stage.EXPORT):
             _write_host_params(case)
         if tool_lock is not None and not (case.output / "tool-lock.json").exists():

@@ -20,3 +20,9 @@ src/gemmini/control/.bloop/
 src/gemmini/control/target/
 src/gemmini/control/project/project/
 src/gemmini/control/project/target/
+
+# Explicit Gemmini source-set projects (previous control caches remain preserved).
+src/gemmini/scu-core/target/
+src/gemmini/integration/target/
+src/gemmini/diagnostics/target/
+src/gemmini/diagnostics/test_run_dir/

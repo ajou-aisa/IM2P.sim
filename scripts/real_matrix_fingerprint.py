@@ -73,7 +73,7 @@ def main() -> int:
         required += (selected_top,)
     else:
         required += (
-            ROOT / "src/gemmini/control/build.sbt",
+            ROOT / "src/gemmini/build.sbt",
             ROOT / "src/gemmini/vendor-manifest.json",
             ROOT / "config/gemmini_hp1_profiles.json",
             ROOT / "config/gemmini_host_memory_contracts"
@@ -106,6 +106,16 @@ def main() -> int:
             "sim/include/*.h",
             "sim/ffi/*.h",
             "sim/ffi/*.cpp",
+            "sim/ffi/*.hpp",
+            "sim/common/*",
+            "sim/backends/**/*.cpp",
+            "sim/backends/**/*.hpp",
+            "src/gemmini/build.sbt",
+            "src/gemmini/project/*.sbt",
+            "src/gemmini/project/*.properties",
+            "src/gemmini/patches/*.patch",
+            "scripts/gemmini_resolve_profile.py",
+            "scripts/gemmini_hardware_contract.py",
             "src/gemmini/**/*.scala",
             "patches/*.patch",
             "src/gemmini/vendor-manifest.json",
@@ -131,7 +141,7 @@ def main() -> int:
     digest = hashlib.sha256()
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     for value in (
-        "real-matrix-fingerprint-v4",
+        "real-matrix-fingerprint-v5",
         json.dumps(profile_config(args.bits, args.weight_bits, args.dim), sort_keys=True),
         f"identity={identity}",
         f"implementation={args.implementation}",

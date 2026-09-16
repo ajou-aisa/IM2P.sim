@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include <verilated.h>
+#include "../common/operand_packing.hpp"
 
 namespace im2p::integrated {
 
@@ -32,10 +33,7 @@ std::uint8_t byte_at(const Signal &signal, std::size_t index) {
 
 template <typename Bytes>
 void put_operand(Bytes &bytes, std::size_t index, std::int8_t value) {
-  if constexpr (IM2P_ACTIVATION_BITS == 4)
-    bytes.at(index / 2) |= (static_cast<std::uint8_t>(value) & 15U) << (index % 2 * 4);
-  else
-    bytes.at(index) = static_cast<std::uint8_t>(value);
+  gemmini::put_operand<IM2P_ACTIVATION_BITS>(bytes, index, value);
 }
 
 }

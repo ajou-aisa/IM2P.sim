@@ -5,6 +5,7 @@
   "scu": "hp1-left-shift",
   "numerical_revision": "hp1-fragment-sat32-v1",
   "block_size": 32,
+  "fixed_latencies": {"scratchpad_read_delay": 4, "accumulator_latency": 2},
   "accumulator_bits": 32,
   "supported_width_pairs": [[4, 4], [8, 8]],
   "supported_dims": [16, 32, 64],

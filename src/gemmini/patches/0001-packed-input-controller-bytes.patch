@@ -1,3 +1,7 @@
+Subject: Account for packed INT4 rows in Gemmini DMA byte extents
+
+Retain element strides while computing packed byte lengths without input_w/8 truncation.
+
 diff --git a/src/main/scala/gemmini/GemminiConfigs.scala b/src/main/scala/gemmini/GemminiConfigs.scala
 --- a/src/main/scala/gemmini/GemminiConfigs.scala
 +++ b/src/main/scala/gemmini/GemminiConfigs.scala
@@ -86,16 +90,6 @@ diff --git a/src/main/scala/gemmini/LoopMatmul.scala b/src/main/scala/gemmini/Lo
    val max_block_len_acc = (dma_max_bytes / (block_size * acc_w / 8)) max 1
  
    val io = IO(new Bundle {
-@@ -783,8 +783,8 @@
- 
-   // Create states
-   val concurrent_loops = 2
-   val loops = Reg(Vec(concurrent_loops, new LoopMatmulState(iterator_bitwidth, coreMaxAddrBits, max_addr, max_acc_addr)))
--  val head_loop_id = Reg(UInt(log2Up(concurrent_loops).W))
-+  val head_loop_id = RegInit(0.U(log2Up(concurrent_loops).W))
-   val tail_loop_id = (~head_loop_id).asUInt // This is the loop that we always try to configure if available
-   val head_loop = loops(head_loop_id)
-   val tail_loop = loops(tail_loop_id)
 diff --git a/src/main/scala/gemmini/StoreController.scala b/src/main/scala/gemmini/StoreController.scala
 --- a/src/main/scala/gemmini/StoreController.scala
 +++ b/src/main/scala/gemmini/StoreController.scala

@@ -167,6 +167,9 @@ fn main() {
     println!("cargo:rerun-if-changed={bridge_source}");
     println!("cargo:rerun-if-changed={bridge_header}");
     if implementation == "GEMMINI_HP1" {
+        let hardware = obj_dir.join("im2p_gemmini_hardware.h");
+        assert!(hardware.is_file(), "copy the generated resolved hardware header into the model object directory");
+        println!("cargo:rerun-if-changed={}", hardware.display());
         println!("cargo:rerun-if-changed=ffi/im2p_integrated_signal.hpp");
     }
 
@@ -188,6 +191,18 @@ fn main() {
         .file("ffi/im2p_verilator_log.cpp");
     if implementation == "GEMMINI_HP1" {
         build.define("IM2P_GEMMINI_INTEGRATED", None);
+        for source in [
+            "common/gemmini_schedule.cpp",
+            "backends/gemmini_hp1/runtime.cpp",
+            "backends/gemmini_hp1/backing_memory.cpp",
+        ] {
+            println!("cargo:rerun-if-changed={source}");
+            build.file(source);
+        }
+        for header in ["common/gemmini_schedule.hpp", "common/operand_packing.hpp",
+                       "backends/gemmini_hp1/runtime.hpp"] {
+            println!("cargo:rerun-if-changed={header}");
+        }
     }
     if env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() {
         build.define("IM2P_VERILATOR_TEST_HOOKS", None);

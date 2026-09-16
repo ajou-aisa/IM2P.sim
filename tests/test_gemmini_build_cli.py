@@ -195,6 +195,9 @@ def test_plan_writes_resolved_profile() -> None:
         assert result.returncode == 0, result.stderr
         assert json.loads((output / "resolved-profile.json").read_text())["profile"] == "a8w8-d16-hp1"
         resolved = json.loads((output / "resolved-profile.json").read_text())
+        assert (output / "resolved-hardware.properties").is_file()
+        assert (output / "im2p_gemmini_hardware.h").is_file()
+        assert resolved["fixed_latencies"] == {"scratchpad_read_delay": 4, "accumulator_latency": 2}
         assert resolved["rmd_raw"] is True
         assert resolved["rmd_numerical_revision"] == "rmd-raw-k32-cpu-compose-v1"
         assert resolved["work_kinds"] == ["DENSE_HP1_FINAL", "RMD_RAW"]
@@ -246,27 +249,24 @@ def test_board_free_stages_validate_in_dry_run() -> None:
                 assert overlay[1].endswith("scripts/gemmini_vendor.py")
                 assert overlay[-2] == "--overlay"
                 assert overlay[-1].endswith("upstream-overlay")
-                assert commands[1]["cwd"].endswith("src/gemmini/control")
+                assert commands[1]["cwd"].endswith("src/gemmini")
                 assert generator[1] == "-J-Xmx6G"
-                assert "midas_target_utils" in generator[3]
-                assert "scalaVersion := \"2.13.12\"" in generator[3]
-                assert 'ProjectRef(' in generator[4]
-                assert '"gemmini") / Compile / unmanagedSources ~=' in generator[4]
-                assert "upstream-overlay" in generator[4]
-                assert generator[5].startswith(
-                    "runMain im2p.gemmini.ElaborateUpstreamWsHp1 "
-                )
-                assert "--a-bits 8 --w-bits 8 --dim 16" in generator[5]
+                assert generator[3].startswith("-Dim2p.gemmini.overlay=")
+                assert "upstream-overlay" in generator[3]
+                assert generator[4].startswith("runMain im2p.gemmini.ElaborateUpstreamWsHp1 ")
+                assert "--a-bits 8 --w-bits 8 --dim 16" in generator[4]
+                assert "--resolved-hardware" in generator[4]
+                assert not any(argument.startswith("set ") for argument in generator)
             if stage == "test":
                 commands = profile["commands"]
                 assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
-                assert commands[1]["cwd"].endswith("src/gemmini/control")
+                assert commands[1]["cwd"].endswith("src/gemmini")
                 test_command = commands[1]["arguments"]
                 assert "-Dim2p.testProfile=a8w8-d16-hp1" in test_command
                 assert "-Dim2p.scratchpadBankRows=4096" in test_command
                 assert "-Dim2p.accumulatorRows=1024" in test_command
-                assert "midas_target_utils" in test_command[-3]
-                assert '"gemmini") / Compile / unmanagedSources ~=' in test_command[-2]
+                assert any(argument.startswith("-Dim2p.resolvedHardware=") for argument in test_command)
+                assert test_command[-2].startswith("-Dim2p.gemmini.overlay=")
                 assert test_command[-1] == "test"
             if stage == "export":
                 commands = profile["commands"]
@@ -291,6 +291,9 @@ def test_board_free_stages_validate_in_dry_run() -> None:
                 assert "-DGGML_GEMMINI_ENABLE_RMD=1" in commands[-2]["arguments"][
                     commands[-2]["arguments"].index("-CFLAGS") + 1
                 ]
+                flags = commands[-2]["arguments"][commands[-2]["arguments"].index("-CFLAGS") + 1]
+                assert f"-I{ROOT / 'sim/ffi'}" in flags
+                assert "-DIM2P_ACTIVATION_BITS=8" in flags
                 assert commands[-1]["arguments"][0].endswith("VIM2PGemminiWSHP1RtlTest")
                 audit = next(command for command in commands if "--role" in command["arguments"])
                 assert audit["arguments"][audit["arguments"].index("--role") + 1] == (
@@ -316,15 +319,16 @@ def test_standalone_top_remains_an_explicit_diagnostic() -> None:
             [*base_single_arguments(output), "--stage", "rtl", "--top", "standalone", "--dry-run"],
         )
 
-        # Then: the old elaborator remains available without the upstream overlay.
+        # Then: diagnostics use the same explicit build and verified upstream sources.
         assert result.returncode == 0, result.stderr
         profile = json.loads(result.stdout)["profiles"][0]
         assert profile["selected_top"] == "IM2PGemminiHP1A8W8D16"
         commands = profile["commands"]
-        assert commands[0]["arguments"][0] == "sbt"
-        assert commands[0]["cwd"].endswith("src/gemmini")
-        assert commands[0]["arguments"][-1].startswith("runMain im2p.gemmini.Elaborate ")
-        assert commands[1]["arguments"][0] == "verilator"
+        assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
+        assert commands[1]["arguments"][0] == "sbt"
+        assert commands[1]["cwd"].endswith("src/gemmini")
+        assert commands[1]["arguments"][-1].startswith("diagnostics/runMain im2p.gemmini.Elaborate ")
+        assert commands[2]["arguments"][0] == "verilator"
 
 
 def test_darwin_hardware_stage_is_deferred_before_output() -> None:
@@ -389,9 +393,9 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
             "'firtool-1.62.0-macos-x64', 'org.chipsalliance', 'llvm-firtool', "
             "'macos-x64', 'bin')\n"
             "    assert pathlib.Path(os.environ['CHISEL_FIRTOOL_PATH']) == pinned\n"
-            "assert pathlib.Path.cwd().name == 'control'\n"
-            "override = next(arg for arg in sys.argv if 'unmanagedSources ~=' in arg)\n"
-            "assert 'ProjectRef(' in override and '\"gemmini\") / Compile' in override\n"
+            "assert pathlib.Path.cwd().name == 'gemmini'\n"
+            "overlay_arg = next(arg for arg in sys.argv if arg.startswith('-Dim2p.gemmini.overlay='))\n"
+            "assert pathlib.Path(overlay_arg.split('=', 1)[1]).is_dir()\n"
             "args = shlex.split(sys.argv[-1])\n"
             "out = pathlib.Path(args[args.index('--out') + 1])\n"
             "overlay = out.parent / 'upstream-overlay'\n"

@@ -4,13 +4,7 @@ import chisel3._
 import chisel3.util._
 import gemmini.GemminiISA
 
-final class Hp1LoopDescriptor extends Bundle {
-  val maxI = UInt(16.W)
-  val maxJ = UInt(16.W)
-  val maxK = UInt(16.W)
-  val padI = UInt(16.W)
-  val padJ = UInt(16.W)
-  val padK = UInt(16.W)
+final class Hp1LoopDescriptor extends Hp1LoopMetadata {
   val aAddress = UInt(64.W)
   val bAddress = UInt(64.W)
   val cAddress = UInt(64.W)
@@ -18,31 +12,17 @@ final class Hp1LoopDescriptor extends Bundle {
   val aStrideBytes = UInt(64.W)
   val bStrideBytes = UInt(64.W)
   val cStrideBytes = UInt(64.W)
-  val scaleBase = UInt(16.W)
-  val scaleGeneration = UInt(8.W)
-  val fragmentBase = UInt(16.W)
-  val workBase = UInt(8.W)
-  val accumulate = Bool()
-  val finalFragment = Bool()
   val firstLoop = Bool()
   val finalLoop = Bool()
   val logicalWorkId = UInt(8.W)
   val hostSlot = Bool()
-  val rmdRaw = Bool()
-
-  // One compact block per raw result; the CPU owns radix and block-scale composition.
-  def rawShapeValid(dim: Int): Bool = {
-    val compactK = maxK * dim.U - padK
-    !rmdRaw || (maxK =/= 0.U && padK < dim.U && compactK > 0.U &&
-      compactK <= 32.U && fragmentBase === 0.U && !accumulate && finalFragment)
-  }
 }
 
 final class HostCommandBridge(profile: ResolvedProfile) extends Module {
   val io = IO(new Bundle {
     val work = Flipped(Decoupled(new Hp1LoopDescriptor))
     val instruction = Decoupled(new UpstreamInstruction)
-    val loopMetadata = Decoupled(new Hp1LoopDescriptor)
+    val loopMetadata = Decoupled(new Hp1LoopMetadata)
     val controllerBusy = Input(Bool())
     val start = Output(Bool())
     val active = Output(Valid(new Hp1LoopDescriptor))
@@ -137,7 +117,10 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
     (io.loopMetadata.ready && issued.io.enq.ready))
   io.instruction.bits := commands(commandIndex)
   io.loopMetadata.valid := loopCommand && io.instruction.ready && issued.io.enq.ready
-  io.loopMetadata.bits := pending.io.deq.bits
+  // Projection deliberately excludes host ownership and backing addresses.
+  io.loopMetadata.bits.elements.foreach { case (name, field) =>
+    field := pending.io.deq.bits.elements(name)
+  }
   issued.io.enq.valid := loopCommand && io.instruction.ready && io.loopMetadata.ready
   issued.io.enq.bits := pending.io.deq.bits
   pending.io.deq.ready := issued.io.enq.fire

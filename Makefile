@@ -190,6 +190,12 @@ gemmini-hp1-plan gemmini-hp1-rtl gemmini-hp1-test gemmini-hp1-host-test gemmini-
 	  --scu hp1-left-shift --memory-contract-dir config/gemmini_host_memory_contracts \
 	  --stage $(patsubst gemmini-hp1-%,%,$@) --out "$(GEMMINI_HP1_OUT)"
 
+.PHONY: gemmini-schedule-test
+gemmini-schedule-test:
+	$(PYTHON) tests/test_gemmini_schedule.py
+
+gemmini-hp1-test: gemmini-schedule-test
+
 check: profile-config-check static-check cpp-test numerical-reference-test activation-guard-infrastructure-test
 
 # Harness infrastructure only: no compiler marker is executed as a numerical DUT.

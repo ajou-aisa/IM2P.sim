@@ -15,21 +15,6 @@ final class LocalMemoryRead(bankRows: Int) extends Bundle {
   val row = UInt(math.max(1, log2Ceil(bankRows)).W)
 }
 
-final class ScaleLoad(profile: ResolvedProfile, scaleEntries: Int, generationWidth: Int)
-    extends Bundle {
-  val column = UInt(math.max(1, log2Ceil(profile.dim)).W)
-  val address = UInt(math.max(1, log2Ceil(scaleEntries)).W)
-  val generation = UInt(generationWidth.W)
-  val carrier = UInt(32.W)
-}
-
-final class ScaleRelease(profile: ResolvedProfile, scaleEntries: Int, generationWidth: Int)
-    extends Bundle {
-  val column = UInt(math.max(1, log2Ceil(profile.dim)).W)
-  val address = UInt(math.max(1, log2Ceil(scaleEntries)).W)
-  val generation = UInt(generationWidth.W)
-}
-
 final class StandaloneFragmentCommand(
   profile: ResolvedProfile,
   scratchpadBankRows: Int,

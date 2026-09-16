@@ -41,8 +41,8 @@ final class StandaloneTop(
 
   val io = IO(new Bundle {
     val localLoad = Flipped(Decoupled(new LocalMemoryLoad(profile, scratchpadBankRows)))
-    val scaleLoad = Flipped(Decoupled(new ScaleLoad(profile, scaleEntries, generationWidth)))
-    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile, scaleEntries, generationWidth)))
+    val scaleLoad = Flipped(Decoupled(new ScaleLoad(profile.dim, scaleEntries, generationWidth)))
+    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile.dim, scaleEntries, generationWidth)))
     val command = Flipped(Decoupled(new StandaloneFragmentCommand(
       profile,
       scratchpadBankRows,

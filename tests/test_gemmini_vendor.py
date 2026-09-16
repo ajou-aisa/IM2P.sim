@@ -263,7 +263,39 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
         assert rejected.returncode != 0 and not list(empty.iterdir())
 
 
+def test_focused_patches_have_independent_effects() -> None:
+    """Prove each patch has one purpose against immutable pinned source bytes."""
+    source = source_checkout() / "generators/gemmini"
+    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
+    prefix = Path("src/main/scala/gemmini")
+    old = "val head_loop_id = Reg(UInt(log2Up(concurrent_loops).W))"
+    new = "val head_loop_id = RegInit(0.U(log2Up(concurrent_loops).W))"
+    with tempfile.TemporaryDirectory(prefix="im2p-focused-patches-") as directory:
+        root = Path(directory)
+        for index in (1, 2):
+            case = root / str(index)
+            (case / prefix).mkdir(parents=True)
+            originals = {name: (source / prefix / name).read_bytes() for name in names}
+            for name, content in originals.items():
+                (case / prefix / name).write_bytes(content)
+            patch_name = ("0001-packed-input-controller-bytes.patch" if index == 1
+                          else "0002-loop-head-reset.patch")
+            patch = ROOT / "src/gemmini/patches" / patch_name
+            for args in (["apply", "--check"], ["apply"]):
+                subprocess.run(["git", "-C", str(case), *args, str(patch)], check=True)
+            loop = (case / prefix / "LoopMatmul.scala").read_text()
+            if index == 1:
+                assert old in loop and new not in loop
+                assert "input_w/8" not in loop
+                assert all((case / prefix / name).read_bytes() != originals[name] for name in names)
+            else:
+                assert loop == originals["LoopMatmul.scala"].decode().replace(old, new)
+                assert all((case / prefix / name).read_bytes() == originals[name]
+                           for name in names if name != "LoopMatmul.scala")
+
+
 def main() -> None:
+    test_focused_patches_have_independent_effects()
     test_overlay_is_reproducible_without_dependency_writes()
     test_vendor_generation_when_source_is_pinned()
     test_vendor_is_idempotent_when_destination_matches()

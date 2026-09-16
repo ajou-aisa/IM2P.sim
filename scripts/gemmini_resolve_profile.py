@@ -100,6 +100,8 @@ class Catalog:
     scratchpad_total_bytes: int
     accumulator_total_bytes: int
     memory_policy: str
+    scratchpad_read_delay: int
+    accumulator_latency: int
     profiles: tuple[ProfileSpec, ...]
 
 
@@ -169,6 +171,10 @@ class ResolvedProfile:
             "packing": self.spec.packing,
             "numerical_revision": self.catalog.numerical_revision,
             "memory": memory,
+            "fixed_latencies": {
+                "scratchpad_read_delay": self.catalog.scratchpad_read_delay,
+                "accumulator_latency": self.catalog.accumulator_latency,
+            },
             "host_contract_source": _portable_path(self.contract_path),
             "host_contract_sha256": _file_sha256(self.contract_path),
             "profile_catalog_source": _portable_path(self.catalog_path),
@@ -265,6 +271,8 @@ def load_catalog(path: Path) -> Catalog:
         _integer(policy, "scratchpad_total_bytes"),
         _integer(policy, "accumulator_total_bytes"),
         _string(policy, "name"),
+        _integer(_mapping(document, "fixed_latencies"), "scratchpad_read_delay"),
+        _integer(_mapping(document, "fixed_latencies"), "accumulator_latency"),
         profiles,
     )
 
@@ -297,6 +305,10 @@ def resolve_profile(
     contract = load_memory_contract(contract_path)
     spec = matches[0]
     expected = (
+        catalog.block_size == 32,
+        catalog.accumulator_bits == 32,
+        catalog.scratchpad_read_delay > 0,
+        catalog.accumulator_latency > 0,
         contract.profile == selection.name,
         (contract.activation_bits, contract.weight_bits, contract.dim)
         == (selection.activation_bits, selection.weight_bits, selection.dim),

@@ -22,7 +22,7 @@ final class ScaleBackingLoader(
     val loadedWork = Decoupled(new Hp1LoopDescriptor)
     val readRequest = Decoupled(new BackingReadRequest(64, 4))
     val readBeat = Flipped(Decoupled(new BackingReadBeat(profile.dim * 32, 4)))
-    val scaleLoad = Decoupled(new ScaleLoad(profile, scaleEntries, generationWidth))
+    val scaleLoad = Decoupled(new ScaleLoad(profile.dim, scaleEntries, generationWidth))
     val requests = Output(UInt(64.W))
     val responses = Output(UInt(64.W))
     val readBytes = Output(UInt(64.W))

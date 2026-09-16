@@ -18,6 +18,7 @@ object ElaborateUpstreamWsHp1 {
   def main(values: Array[String]): Unit = {
     val args = arguments(values)
     val profile = ResolvedProfile(args("a-bits").toInt, args("w-bits").toInt, args("dim").toInt)
+    HardwareContract.verify(profile, UpstreamWsConfig(profile), Path.of(args("resolved-hardware")))
     val output = Path.of(args("out")).toAbsolutePath.normalize()
     require(!Files.exists(output) || Files.isDirectory(output), s"output is not a directory: $output")
     Files.createDirectories(output)

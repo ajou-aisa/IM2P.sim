@@ -31,7 +31,7 @@ final class UpstreamWsHp1Top(
     val completedHostSlot = Output(Bool())
     val logicalDone = Valid(UInt(8.W))
     val overlapLoopIssued = Output(Bool())
-    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile, scaleEntries, 8)))
+    val scaleRelease = Flipped(Decoupled(new ScaleRelease(profile.dim, scaleEntries, 8)))
     val readRequest = Decoupled(new BackingReadRequest(64, 4))
     val readBeat = Flipped(Decoupled(new BackingReadBeat(profile.dim * 32, 4)))
     val writeRequest = Decoupled(new BackingWriteBeat(profile.dim * 32, 64, 4))
