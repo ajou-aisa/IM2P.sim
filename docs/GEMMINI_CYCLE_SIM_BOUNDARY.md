@@ -29,9 +29,10 @@ sim/common/gemmini_schedule.{hpp,cpp} <- integrated runtime
                                    <- future value-free consumer (not implemented)
 ```
 
-The four SBT source sets are declared in `src/gemmini/build.sbt`. The old
-StandaloneTop and StandaloneLocalMemory are in the `diagnostics` project, not the
-integrated production source set. Diagnostics retain all their existing tests.
+The four SBT source sets are declared in `src/gemmini/build.sbt`. The `diagnostics` project now contains only lower-level tests; its production
+source set is empty. The alternate standalone GEMM top and its elaboration option
+have been removed. ScratchpadBankHarness preserves the packed-bank isolation and
+response-order checks; integrated tests cover the removed top's numerical work.
 SCU.scala still takes only `partialWidth: Int`. Scale protocol messages take a
 lane count, not a resolved profile or a host descriptor. Gemmini integration uses
 Hp1LoopMetadata; only HostCommandBridge's derived Hp1LoopDescriptor adds backing

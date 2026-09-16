@@ -1,32 +1,36 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
+"""Current Gemmini runtime/export verification helpers.
+
+This library reads external validation results and audits host artifacts; it does
+not package historical approval campaigns or perform physical device operations.
+"""
 
 from __future__ import annotations
 
-import argparse
+
 import hashlib
+
+
 import json
-import os
+
+
 import re
+
+
 import shutil
+
+
 import subprocess
-import sys
-import tempfile
+
+
 from collections.abc import Mapping
+
+
 from pathlib import Path
+
+
 from typing import TypedDict, cast
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE_ROOT = Path(os.environ.get("IM2P_WORKSPACE_ROOT", ROOT.parent)).resolve()
-PROFILES = tuple(
-    f"a{bits}w{bits}-d{dim}-hp1" for bits in (4, 8) for dim in (16, 32, 64)
-)
-PLAN_SHA256 = "e2189267dfc63e9f773688292ce53eff3750e7cf1883bac612772d8dce89caa9"
-StatusEntry = dict[str, str | None]
-ProfileStatus = dict[str, StatusEntry]
+
 MAC_GATES = (
     "DATAPATH_NUMERICAL",
     "UPSTREAM_CONTROLLER_CLOSURE",
@@ -40,12 +44,16 @@ MAC_GATES = (
     "EXPORT_SELECTED_TOP",
     "LAYOUT_BASELINE_DIFFERENTIAL",
 )
+
+
 ORCHESTRATION_SYMBOLS = (
     "im2p::gemmini::execute(",
     "ggml_gemmini_fpga_execute(",
     "im2p::gemmini_hp1::encode_work_plan_v1(",
     "im2p::gemmini_hp1::decode_work_plan_v1(",
 )
+
+
 RUN_RE = re.compile(
     r"^WS RTL (?P<mode>FULL|PIPELINE) rows=(?P<rows>\d+) row_begin=(?P<row_begin>\d+) "
     + r"N=(?P<n>\d+) K=(?P<k>\d+) cycles=(?P<cycles>\d+) "
@@ -55,6 +63,8 @@ RUN_RE = re.compile(
     + r"scale_reads=(?P<scale_reads>\d+) reordered_reads=(?P<reordered_reads>\d+)$",
     re.MULTILINE,
 )
+
+
 DUAL_LOOP_RE = re.compile(
     r"^WS_DUAL_LOOP slots=(?P<slot0>\d+),(?P<slot1>\d+) "
     + r"overlap_loop_issue=(?P<overlap_loop_issue>\d+) "
@@ -147,36 +157,6 @@ class LayoutEvidence(TypedDict):
     layouts_equal: bool
     current: dict[str, object]
     baseline: dict[str, object]
-
-
-class Arguments(argparse.Namespace):
-    build_root: Path
-    memory_probe: Path
-    export_root: Path
-    numerical_build: Path
-    layout_current_probe: Path
-    layout_baseline_probe: Path
-    layout_current_test_log: Path
-    layout_baseline_test_log: Path
-    software_root: Path | None
-    scala_log: Path | None
-    failed_build: list[Path]
-    out: Path
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.build_root = Path()
-        self.memory_probe = Path()
-        self.export_root = Path()
-        self.numerical_build = Path()
-        self.layout_current_probe = Path()
-        self.layout_baseline_probe = Path()
-        self.layout_current_test_log = Path()
-        self.layout_baseline_test_log = Path()
-        self.software_root = None
-        self.scala_log = None
-        self.failed_build = []
-        self.out = Path()
 
 
 def sha256(path: Path) -> str:
@@ -436,151 +416,6 @@ def orchestration_symbols(text: str) -> tuple[str, ...]:
     return ORCHESTRATION_SYMBOLS
 
 
-def write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-
-
-def git(repository: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ("git", "-C", str(repository), *arguments),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git {' '.join(arguments)} failed: {repository}: {result.stderr.strip()}"
-        )
-    return result.stdout
-
-
-def repository_state(repository: Path) -> dict[str, object]:
-    return {
-        "path": str(repository.resolve()),
-        "head": git(repository, "rev-parse", "HEAD").strip(),
-        "branch": git(repository, "branch", "--show-current").strip(),
-        "remote": git(repository, "remote", "get-url", "origin").strip(),
-        "status": git(repository, "status", "--short").splitlines(),
-        "staged": git(repository, "diff", "--cached", "--name-status").splitlines(),
-        "tracked_diff": git(repository, "diff", "--name-status").splitlines(),
-        "untracked": git(
-            repository, "ls-files", "--others", "--exclude-standard"
-        ).splitlines(),
-    }
-
-
-def task_sources() -> list[Path]:
-    selections = (
-        ROOT / "src/gemmini",
-        ROOT / "fpga/gemmini_hp1",
-        ROOT / "config/gemmini_hp1_profiles.json",
-        ROOT / "config/gemmini_host_memory_contracts",
-        ROOT / "frontend/include/im2p_gemmini_frontend.hpp",
-        ROOT / "frontend/src/im2p_gemmini_frontend.cpp",
-        ROOT / "sim/include/im2p_sim.h",
-    )
-    files = [
-        path
-        for selected in selections
-        if selected.exists()
-        for path in ([selected] if selected.is_file() else selected.rglob("*"))
-    ]
-    files.extend((ROOT / "scripts").glob("gemmini_*"))
-    files.extend((ROOT / "tests").glob("test_gemmini_*"))
-    return sorted(
-        {
-            path
-            for path in files
-            if path.is_file()
-            and not path.is_symlink()
-            and not {"target", "__pycache__", ".bloop", ".bsp"}.intersection(path.parts)
-        }
-    )
-
-
-def artifact_manifest(build_root: Path) -> list[dict[str, object]]:
-    result: list[dict[str, object]] = []
-    for profile in PROFILES:
-        for path in sorted((build_root / profile / "rtl").rglob("*")):
-            if path.is_file() and not path.is_symlink():
-                result.append(
-                    {
-                        "profile": profile,
-                        "path": path.relative_to(build_root).as_posix(),
-                        "bytes": path.stat().st_size,
-                        "sha256": sha256(path),
-                    }
-                )
-    return result
-
-
-def first_failure(build: Path) -> dict[str, object] | None:
-    result_path = build / "result.json"
-    if not result_path.is_file():
-        return None
-    result = read_object(result_path)
-    for profile in named_rows(result).values():
-        for command in command_rows(profile, "command_results"):
-            if command.get("returncode") != 0:
-                log_value = command.get("log")
-                log = Path(log_value) if isinstance(log_value, str) else None
-                return {
-                    "build": str(build.resolve()),
-                    "profile": profile.get("profile"),
-                    "command": command,
-                    "first_failure_log": log.read_text(encoding="utf-8")
-                    if log and log.is_file()
-                    else None,
-                }
-    return None
-
-
-def rows(document: dict[str, object], key: str) -> list[dict[str, object]]:
-    value = document.get(key)
-    if not isinstance(value, list):
-        raise TypeError(f"{key} is not an object array")
-    values = cast(list[object], value)
-    if not all(isinstance(row, dict) for row in values):
-        raise RuntimeError(f"{key} is not an object array")
-    return [cast(dict[str, object], row) for row in values if isinstance(row, dict)]
-
-
-def named_rows(document: dict[str, object]) -> dict[str, dict[str, object]]:
-    result: dict[str, dict[str, object]] = {}
-    for row in rows(document, "profiles"):
-        name = row.get("profile")
-        if not isinstance(name, str):
-            raise TypeError("profile name missing")
-        if name in result:
-            raise RuntimeError(f"duplicate profile: {name}")
-        result[name] = row
-    return result
-
-
-def read_object(path: Path) -> dict[str, object]:
-    value = cast(object, json.loads(path.read_text(encoding="utf-8")))
-    if not isinstance(value, dict):
-        raise TypeError(f"JSON object required: {path}")
-    return cast(dict[str, object], value)
-
-
-def expected_identity(profile: str) -> dict[str, str]:
-    match = re.fullmatch(r"a(?P<bits>[48])w(?P=bits)-d(?P<dim>16|32|64)-hp1", profile)
-    if match is None:
-        raise RuntimeError(f"invalid profile: {profile}")
-    return {
-        "selected_top": f"IM2PGemminiWSHP1A{match['bits']}W{match['bits']}D{match['dim']}",
-        "controller_kind": "UPSTREAM_GEMMINI_WS",
-        "backing_memory": "INTEGRATED",
-        "cycle_scope": "logical_work_accept_to_final_backing_write_completion",
-        "host_artifact_role": "HOST_COMMON_ORCHESTRATION",
-        "host_audit_role": "PHYSICAL_HOST",
-    }
-
-
 def host_artifact_evidence(
     build_root: Path, name: str, audit: dict[str, object]
 ) -> dict[str, object]:
@@ -619,483 +454,3 @@ def host_artifact_evidence(
         "symbols": list(symbols),
         "nm_output_sha256": hashlib.sha256(inspected.stdout.encode()).hexdigest(),
     }
-
-
-def command_rows(row: dict[str, object], key: str) -> list[dict[str, object]]:
-    value = row.get(key)
-    if not isinstance(value, list):
-        raise TypeError(f"{key} missing for {row.get('profile')}")
-    values = cast(list[object], value)
-    if not all(isinstance(item, dict) for item in values):
-        raise RuntimeError(f"{key} missing for {row.get('profile')}")
-    return [cast(dict[str, object], item) for item in values if isinstance(item, dict)]
-
-
-def validate_profile(build_root: Path, row: dict[str, object]) -> dict[str, object]:
-    name = row.get("profile")
-    if not isinstance(name, str):
-        raise TypeError("profile name missing")
-    expected = expected_identity(name)
-    manifest = read_object(build_root / name / "resolved-profile.json")
-    if row.get("status") != "PASS" or any(
-        row.get(key) != value or manifest.get(key) != value
-        for key, value in expected.items()
-    ):
-        raise RuntimeError(f"integrated identity mismatch: {name}")
-    planned, executed = (
-        command_rows(row, "commands"),
-        command_rows(row, "command_results"),
-    )
-    if len(planned) != len(executed) or any(
-        planned_item.get("arguments") != result.get("arguments")
-        or result.get("returncode") != 0
-        for planned_item, result in zip(planned, executed)
-    ):
-        raise RuntimeError(f"host-test command evidence incomplete: {name}")
-    rtl_builds: list[list[object]] = []
-    audit_commands: list[list[str]] = []
-    runtime_rows: list[dict[str, object]] = []
-    for result in executed:
-        arguments = result.get("arguments")
-        values = cast(list[object], arguments) if isinstance(arguments, list) else []
-        if (
-            values
-            and values[0] == "verilator"
-            and any(Path(str(value)).name == "test_ws_rtl.cpp" for value in values)
-        ):
-            rtl_builds.append(values)
-        if any(Path(str(value)).name == "gemmini_audit_host.py" for value in values):
-            audit_commands.append([str(value) for value in values])
-        if values and Path(str(values[0])).name == "VIM2PGemminiWSHP1RtlTest":
-            runtime_rows.append(result)
-    top = expected["selected_top"]
-    top_index = (
-        rtl_builds[0].index("--top-module")
-        if len(rtl_builds) == 1 and "--top-module" in rtl_builds[0]
-        else -1
-    )
-    if (
-        len(rtl_builds) != 1
-        or top_index < 0
-        or len(rtl_builds[0]) <= top_index + 1
-        or rtl_builds[0][top_index + 1] != top
-    ):
-        raise RuntimeError(f"integrated runtime build missing: {name}")
-    if len(runtime_rows) != 1 or not isinstance(runtime_rows[0].get("log"), str):
-        raise RuntimeError(f"integrated runtime log missing: {name}")
-    if len(audit_commands) != 1:
-        raise RuntimeError(f"physical host audit command missing: {name}")
-    audit_command = audit_commands[0]
-    role_index = audit_command.index("--role") if "--role" in audit_command else -1
-    artifact_index = (
-        audit_command.index("--artifact") if "--artifact" in audit_command else -1
-    )
-    if (
-        role_index < 0
-        or len(audit_command) <= role_index + 1
-        or audit_command[role_index + 1] != "PHYSICAL_HOST"
-        or artifact_index < 0
-        or len(audit_command) <= artifact_index + 1
-        or Path(audit_command[artifact_index + 1]).name
-        != "gemmini_hp1_host_orchestration"
-    ):
-        raise RuntimeError(f"physical host audit command invalid: {name}")
-    runtime_log = Path(str(runtime_rows[0]["log"])).resolve()
-    if (
-        not runtime_log.is_relative_to(build_root.resolve())
-        or not runtime_log.is_file()
-    ):
-        raise RuntimeError(f"runtime log outside build: {name}")
-    content = runtime_log.read_text(encoding="utf-8")
-    runtime = runtime_evidence(content, name)
-    rmd_raw = manifest.get("rmd_raw", False)
-    if type(rmd_raw) is not bool:
-        raise RuntimeError(f"RMD capability must be boolean: {name}")
-    if rmd_raw and (
-        manifest.get("rmd_numerical_revision") != "rmd-raw-k32-cpu-compose-v1"
-        or manifest.get("work_kinds") != ["DENSE_HP1_FINAL", "RMD_RAW"]
-        or any(row.get(field) != manifest.get(field) for field in (
-            "rmd_raw", "rmd_numerical_revision", "work_kinds",
-        ))
-    ):
-        raise RuntimeError(f"RMD resolved contract mismatch: {name}")
-    rmd = rmd_runtime_evidence(content, name) if rmd_raw else None
-    rmd_bound = rmd_bound_runtime_evidence(content, name) if rmd_raw else None
-    if rmd_raw and not {
-        "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp",
-    }.issubset({Path(str(value)).name for value in rtl_builds[0]}):
-        raise RuntimeError(f"RMD runtime compilation closure missing: {name}")
-    audit = read_object(build_root / name / "host-audit.json")
-    host_artifact = host_artifact_evidence(build_root, name, audit)
-    required = (
-        "ExecuteController.sv",
-        "LoadController.sv",
-        "LoopMatmul.sv",
-        "ReservationStation.sv",
-        "StoreController.sv",
-        "MeshWithDelays.sv",
-        "SCU.sv",
-        "UpstreamWsControl.sv",
-        "UpstreamWsMemory.sv",
-        f"{expected['selected_top']}.sv",
-    )
-    rtl = build_root / name / "rtl"
-    missing = [source for source in required if not (rtl / source).is_file()]
-    if missing or len(tuple(rtl.glob("MeshWithDelays.sv"))) != 1:
-        raise RuntimeError(f"integrated RTL closure incomplete: {name}: {missing}")
-    return {
-        **expected,
-        "runtime_log": str(runtime_log),
-        "runtime_log_sha256": sha256(runtime_log),
-        "runtime": runtime,
-        "rmd_raw": rmd_raw,
-        "rmd_status": "PASS" if rmd is not None else "NOT_RUN",
-        "rmd": rmd,
-        "rmd_bound": rmd_bound,
-        "host_audit": audit,
-        "host_artifact": host_artifact,
-        "rtl": [
-            {"path": source, "sha256": sha256(rtl / source)} for source in required
-        ],
-    }
-
-
-def validate_export(export_root: Path) -> dict[str, dict[str, object]]:
-    result = read_object(export_root / "result.json")
-    manifest = read_object(export_root / "profile-manifest.json")
-    result_rows, manifest_rows = named_rows(result), named_rows(manifest)
-    if (
-        result.get("export") != "PASS"
-        or result.get("export_kind") != "INTEGRATED"
-        or set(result_rows) != set(PROFILES)
-        or result_rows != manifest_rows
-    ):
-        raise RuntimeError("integrated export result invalid")
-    for name, row in result_rows.items():
-        expected = expected_identity(name)
-        if (
-            any(row.get(key) != value for key, value in expected.items())
-            or row.get("status") != "PASS"
-            or row.get("runtime_status") != "PASS"
-            or row.get("no_sim_host_artifact") != "PASS"
-        ):
-            raise RuntimeError(f"integrated export metadata invalid: {name}")
-        root_value = row.get("root")
-        if not isinstance(root_value, str):
-            raise TypeError(f"integrated export root missing: {name}")
-        profile_root = (export_root / root_value).resolve()
-        if not profile_root.is_relative_to(export_root.resolve()):
-            raise RuntimeError(f"integrated export root unsafe: {name}")
-        exported = read_object(profile_root / "resolved-profile.json")
-        if any(exported.get(key) != value for key, value in expected.items()):
-            raise RuntimeError(f"exported profile identity mismatch: {name}")
-        top = expected["selected_top"]
-        if (
-            not (profile_root / "rtl" / f"{top}.sv").is_file()
-            or f"rtl/{top}.sv"
-            not in (profile_root / "filelist.f")
-            .read_text(encoding="utf-8")
-            .splitlines()
-        ):
-            raise RuntimeError(f"export selected top missing: {name}")
-    return result_rows
-
-
-def passing_matrix(root: Path) -> dict[str, dict[str, object]]:
-    document = read_object(root / "result.json")
-    profiles = named_rows(document)
-    if (
-        document.get("status") != "PASS"
-        or set(profiles) != set(PROFILES)
-        or any(row.get("status") != "PASS" for row in profiles.values())
-    ):
-        raise RuntimeError(f"six-profile numerical PASS required: {root}")
-    return profiles
-
-
-def verify_relocation(export_root: Path) -> dict[str, object]:
-    tool = ROOT / "scripts/gemmini_export.py"
-    archive = export_root.with_name(export_root.name + ".tar.gz")
-    commands = ((sys.executable, str(tool), "verify", str(export_root)),)
-    with tempfile.TemporaryDirectory(
-        prefix="gemmini-evidence-relocation-"
-    ) as directory:
-        extract = (
-            sys.executable,
-            str(tool),
-            "extract",
-            str(archive),
-            "--out",
-            str(Path(directory) / "package"),
-        )
-        results = [
-            subprocess.run(command, text=True, capture_output=True, check=False)
-            for command in (*commands, extract)
-        ]
-    if not archive.is_file() or any(result.returncode != 0 for result in results):
-        raise RuntimeError("export hash or relocation verification failed")
-    return {
-        "path": str(archive.resolve()),
-        "bytes": archive.stat().st_size,
-        "sha256": sha256(archive),
-        "relocation_verified": True,
-    }
-
-
-def status_table(
-    runtime: dict[str, dict[str, object]],
-    probe: dict[str, object],
-    exported: dict[str, dict[str, object]],
-) -> dict[str, ProfileStatus]:
-    probe_names = set(named_rows(probe))
-    return {
-        name: {
-            "elaboration": {"status": "PASS"},
-            "rtl_numerical": {"status": "PASS"},
-            "host_contract": {"status": "PASS"},
-            "host_rtl_integration": {"status": "PASS"},
-            "no_sim_host_artifact": {"status": "PASS", "reason": None},
-            "memory_contract": {"status": "PASS" if name in probe_names else "FAIL"},
-            "export": {"status": str(exported[name]["status"])},
-            "route": {"status": "NOT_RUN", "reason": "PLATFORM"},
-            "bitstream": {"status": "NOT_RUN", "reason": "PLATFORM_BOARD_REQUIRED"},
-            "physical": {"status": "NOT_RUN", "reason": "OUT_OF_SCOPE"},
-            "rmd": {
-                "status": str(runtime[name].get("rmd_status", "NOT_RUN")),
-                "reason": None if runtime[name].get("rmd_status") == "PASS"
-                else "UNSUPPORTED_BEFORE_DISPATCH",
-            },
-        }
-        for name in runtime
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    _ = parser.add_argument("--build-root", type=Path, required=True)
-    _ = parser.add_argument("--memory-probe", type=Path, required=True)
-    _ = parser.add_argument("--export-root", type=Path, required=True)
-    _ = parser.add_argument("--numerical-build", type=Path, required=True)
-    _ = parser.add_argument("--layout-current-probe", type=Path, required=True)
-    _ = parser.add_argument("--layout-baseline-probe", type=Path, required=True)
-    _ = parser.add_argument("--layout-current-test-log", type=Path, required=True)
-    _ = parser.add_argument("--layout-baseline-test-log", type=Path, required=True)
-    _ = parser.add_argument("--software-root", type=Path)
-    _ = parser.add_argument("--scala-log", type=Path)
-    _ = parser.add_argument("--failed-build", type=Path, action="append", default=[])
-    _ = parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args(namespace=Arguments())
-    if os.path.lexists(args.out):
-        raise SystemExit(f"new evidence directory required: {args.out}")
-    build_path = args.build_root / "stage-host-test.json"
-    if not build_path.is_file():
-        build_path = args.build_root / "result.json"
-    build = read_object(build_path)
-    build_profiles = named_rows(build)
-    if (
-        build.get("stage") != "host-test"
-        or build.get("status") != "PASS"
-        or build.get("execution") != "sequential"
-        or set(build_profiles) != set(PROFILES)
-    ):
-        raise SystemExit("passing sequential six-profile integrated host-test required")
-    runtime = {
-        name: validate_profile(args.build_root, build_profiles[name])
-        for name in PROFILES
-    }
-    probe = read_object(args.memory_probe)
-    probe_profiles = named_rows(probe)
-    if (
-        probe.get("status") != "PASS"
-        or set(probe_profiles) != set(PROFILES)
-        or any(
-            row.get("shape") != {"m": 129, "n": 129, "k": 96}
-            for row in probe_profiles.values()
-        )
-    ):
-        raise SystemExit("exact six-profile M129/N129/K96 memory probe required")
-    _ = passing_matrix(args.numerical_build)
-    exported = validate_export(args.export_root)
-    if any(
-        runtime[name]["rmd_raw"] != (exported[name].get("rmd_raw") is True)
-        or runtime[name]["rmd_status"] == "PASS"
-        and exported[name].get("rmd_runtime_status") != "PASS"
-        for name in PROFILES
-    ):
-        raise RuntimeError("export RMD capability does not match executed profile")
-    relocation = verify_relocation(args.export_root)
-    layout = layout_differential(
-        args.layout_current_probe,
-        args.layout_baseline_probe,
-        args.layout_current_test_log,
-        args.layout_baseline_test_log,
-    )
-    gates: dict[str, dict[str, object]] = {
-        "DATAPATH_NUMERICAL": {"status": "PASS", "evidence": "stage-test.json"},
-        "UPSTREAM_CONTROLLER_CLOSURE": {
-            "status": "PASS",
-            "evidence": "architecture-result.json",
-        },
-        "UPSTREAM_WS_HP1_RUNTIME_INTEGRATION": {
-            "status": "PASS",
-            "evidence": "runtime-evidence.json",
-        },
-        "BACKING_LOAD_STORE_INTEGRATION": {
-            "status": "PASS",
-            "evidence": "runtime-evidence.json#profiles.*.runtime.dual_loop.accepted_load_execute_store",
-        },
-        "LARGE_HOST_TILE_EXECUTION": {"status": "PASS", "shape": "M129/N129/K96"},
-        "WS_DOUBLE_BUFFER_OWNERSHIP": {
-            "status": "PASS",
-            "pipeline_stripes": 3,
-            "slots": "0,1,0",
-            "local_halves": "0,1",
-            "slot0_reuse_blocked": 1,
-        },
-        "WS_OVERLAP_TEST": {
-            "status": "PASS",
-            "evidence": "dual-loop issue and load/execute overlaps >0 per profile",
-        },
-        "LOGICAL_MATMUL_CYCLE_BOUNDARY": {
-            "status": "PASS",
-            "evidence": "runtime-evidence.json#profiles.*.runtime.dual_loop.delayed_done_cycles",
-        },
-        "NO_SIM_HOST_ARTIFACT": {
-            "status": "PASS",
-            "role": "PHYSICAL_HOST",
-            "artifact": "gemmini_hp1_host_orchestration",
-            "evidence": "runtime-evidence.json#profiles.*.host_artifact",
-        },
-        "EXPORT_SELECTED_TOP": {"status": "PASS", "evidence": "export-result.json"},
-        "LAYOUT_BASELINE_DIFFERENTIAL": {
-            "status": "PASS",
-            "classification": "BASELINE_EXISTING_FAIL",
-        },
-        "LINUX_PRODUCTION_HOST": {"status": "NOT_RUN", "reason": "PLATFORM"},
-        "VIVADO_ROUTE": {"status": "NOT_RUN", "reason": "PLATFORM_BOARD_REQUIRED"},
-        "BITSTREAM": {"status": "NOT_RUN", "reason": "PLATFORM_BOARD_REQUIRED"},
-        "PHYSICAL": {"status": "NOT_RUN", "reason": "OUT_OF_SCOPE"},
-        "RMD_HARDWARE": {
-            "status": "PASS" if all(row["rmd_status"] == "PASS" for row in runtime.values()) else "NOT_RUN",
-            "scope": "GENERATED_RTL_RAW_DOT_CPU_COMPOSE_MERGE",
-            "evidence": "runtime-evidence.json#profiles.*.rmd",
-        },
-    }
-    ready = integration_ready(gates)
-
-    args.out.mkdir(parents=True)
-    repositories = {
-        "im2p_sim": repository_state(ROOT),
-        "llama_cpp_gemmini": repository_state(WORKSPACE_ROOT / "llama.cpp-gemmini"),
-        "gemmini_include": repository_state(
-            WORKSPACE_ROOT / "RISC-V-DynDNN-gemmini-include"
-        ),
-    }
-    write_json(args.out / "baseline.json", repositories)
-    agents = [
-        path
-        for path in (
-            WORKSPACE_ROOT / "AGENTS.md",
-            WORKSPACE_ROOT / "RISC-V-DynDNN-gemmini-include/AGENTS.md",
-        )
-        if path.is_file()
-    ]
-    write_json(
-        args.out / "instruction-hashes.json",
-        {
-            "agents": [{"path": str(path), "sha256": sha256(path)} for path in agents],
-            "plan": {
-                "filename": "IM2P_Gemmini_HP1_Chipyard_1_13_0_Implementation_Plan_Mac.md",
-                "availability": "NOT_AVAILABLE",
-                "expected_sha256_from_user": PLAN_SHA256,
-                "recomputed_sha256": None,
-                "reason": "exact attachment bytes not present in workspace",
-            },
-        },
-    )
-    source_rows = [
-        {
-            "path": path.relative_to(ROOT).as_posix(),
-            "bytes": path.stat().st_size,
-            "sha256": sha256(path),
-        }
-        for path in task_sources()
-    ]
-    write_json(args.out / "task-source-manifest.json", {"files": source_rows})
-    write_json(
-        args.out / "rtl-artifact-manifest.json",
-        {
-            "files": artifact_manifest(args.build_root),
-        },
-    )
-    _ = shutil.copy2(build_path, args.out / "stage-host-test.json")
-    _ = shutil.copy2(args.memory_probe, args.out / "memory-probe.json")
-    _ = shutil.copy2(
-        args.build_root / PROFILES[0] / "tool-lock.json", args.out / "tool-lock.json"
-    )
-    _ = shutil.copy2(
-        ROOT / "src/gemmini/UPSTREAM.lock.json", args.out / "upstream-lock.json"
-    )
-    _ = shutil.copy2(
-        ROOT / "src/gemmini/vendor-manifest.json", args.out / "vendor-manifest.json"
-    )
-    _ = shutil.copy2(args.export_root / "result.json", args.out / "export-result.json")
-    write_json(
-        args.out / "architecture-result.json", {"status": "PASS", "profiles": runtime}
-    )
-    write_json(
-        args.out / "runtime-evidence.json", {"status": "PASS", "profiles": runtime}
-    )
-    write_json(args.out / "layout-baseline-differential.json", layout)
-    write_json(args.out / "gate-table.json", gates)
-    _ = shutil.copy2(args.numerical_build / "result.json", args.out / "stage-test.json")
-    if args.software_root is not None:
-        _ = shutil.copytree(args.software_root, args.out / "software-tests")
-    if args.scala_log is not None:
-        _ = shutil.copy2(args.scala_log, args.out / "scala-full-test.log")
-    write_json(args.out / "export-artifact.json", relocation)
-    (args.out / "resolved-profiles").mkdir()
-    (args.out / "host-audits").mkdir()
-    for profile in PROFILES:
-        _ = shutil.copytree(
-            args.build_root / profile / "logs", args.out / "logs" / profile
-        )
-        _ = shutil.copy2(
-            args.build_root / profile / "resolved-profile.json",
-            args.out / "resolved-profiles" / f"{profile}.json",
-        )
-        _ = shutil.copy2(
-            args.build_root / profile / "host-audit.json",
-            args.out / "host-audits" / f"{profile}.json",
-        )
-    failures = [
-        failure for path in args.failed_build if (failure := first_failure(path))
-    ]
-    write_json(args.out / "first-failures.json", failures)
-    _ = (args.out / "im2p-final.diff").write_text(git(ROOT, "diff"), encoding="utf-8")
-    llama = WORKSPACE_ROOT / "llama.cpp-gemmini"
-    _ = (args.out / "llama-final.diff").write_text(git(llama, "diff"), encoding="utf-8")
-    profiles = status_table(runtime, probe, exported)
-    marker = "UPSTREAM_WS_HP1_6PROFILE_INTEGRATION_PASS"
-    if ready:
-        _ = (args.out / marker).write_text(marker + "\n", encoding="utf-8")
-    final = {
-        "schema_version": 2,
-        "plan_revision": "mac-v2",
-        "scope": "HP1_SHIFT_ONLY_A4W4_A8W8_D16_D32_D64",
-        "profiles": profiles,
-        "gate_table": gates,
-        "integration_marker": marker if ready else None,
-        "layout_regression": layout,
-        "linux_vivado": {"status": "NOT_RUN", "reason": "PLATFORM"},
-        "rmd_on_ready": gates["RMD_HARDWARE"]["status"] == "PASS",
-        "hardware_access": {"uart": 0, "jtag": 0, "flash": 0},
-        "git_commit_push": "NOT_RUN",
-        "mac_implementation_ready": ready,
-    }
-    write_json(args.out / "final.json", final)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

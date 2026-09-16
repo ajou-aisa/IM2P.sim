@@ -7,6 +7,14 @@ import gemmini._
 import gemmini.Arithmetic.SIntArithmetic
 import org.scalatest.flatspec.AnyFlatSpec
 
+final class MeshTestTag extends Bundle with TagQueueTag {
+  val payloadValid = Bool()
+
+  override def make_this_garbage(dummy: Int = 0): Unit = {
+    payloadValid := false.B
+  }
+}
+
 final class UpstreamMeshSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "pinned Gemmini MeshWithDelays"
 
@@ -16,7 +24,7 @@ final class UpstreamMeshSpec extends AnyFlatSpec with ChiselScalatestTester {
       SInt(8.W),
       SInt(12.W),
       SInt(32.W),
-      new StandaloneMeshTag,
+      new MeshTestTag,
       Dataflow.WS,
       false,
       0,

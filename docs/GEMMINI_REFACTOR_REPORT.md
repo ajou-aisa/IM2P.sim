@@ -1,5 +1,10 @@
 # GEMMINI refactor report
 
+> **Completed phase record.** The state and validation below were captured before
+> commit `820e6d425cba73d219551027f5a06db6c102531c`. The original report body and
+> cycle table are preserved. For the current retained layout and subsequent
+> deletion-only validation, see [repository cleanup](REPOSITORY_CLEANUP_REPORT.md).
+
 This report closes the non-regression evidence for the frozen IM2P.sim refactor. It does **not** add a cycle simulator, op trace, synthesis flow, physical-FPGA path, or real Chipyard/SoC integration.
 
 ## A. Repository state

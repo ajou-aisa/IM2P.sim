@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.gemmini_evidence import (
-    PLAN_SHA256,
     host_artifact_evidence,
     integration_ready,
     layout_differential,
@@ -224,10 +223,6 @@ def test_marker_requires_every_mac_gate() -> None:
     assert integration_ready(gates)
     gates["EXPORT_SELECTED_TOP"] = {"status": "FAIL"}
     assert not integration_ready(gates)
-    assert (
-        PLAN_SHA256
-        == "e2189267dfc63e9f773688292ce53eff3750e7cf1883bac612772d8dce89caa9"
-    )
 
 
 def test_no_sim_gate_requires_frontend_and_orchestration_symbols() -> None:

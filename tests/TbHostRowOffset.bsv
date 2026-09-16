@@ -27,14 +27,12 @@ module mkTbHostRowOffset(Empty);
                 dynamicAssert(hostRowOffset(rowValue(sample), stride) == truncate(expected),
                     "power-of-two row offset differs from exact product low64");
             endaction
-`ifndef IM2P_POWER_OF_TWO_STRIDES
         for (sample <= 0; sample < 8; sample <= sample + 1) action
             HostStride stride = zeroExtend(sample) * 17 + 3;
             UInt#(96) expected = zeroExtend(rowValue(sample)) * zeroExtend(stride);
             dynamicAssert(hostRowOffset(rowValue(sample), stride) == truncate(expected),
                 "generic arbitrary stride changed");
         endaction
-`endif
         $display("HOST_ROW_OFFSET_PASS");
     endseq);
 endmodule

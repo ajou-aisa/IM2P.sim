@@ -91,7 +91,6 @@ class Stage(StrEnum):
 @unique
 class Top(StrEnum):
     INTEGRATED = "integrated"
-    STANDALONE = "standalone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,16 +324,6 @@ def _top_metadata(top: Top, selection: ProfileSelection) -> Mapping[str, JsonVal
                     f"W{selection.weight_bits}D{selection.dim}"
                 ),
             }
-        case Top.STANDALONE:
-            return {
-                "controller_kind": "STANDALONE_DIAGNOSTIC",
-                "backing_memory": "LOCAL_DIAGNOSTIC",
-                "cycle_scope": "fragment_accept_to_final_accumulator_write_completion",
-                "selected_top": (
-                    f"IM2PGemminiHP1A{selection.activation_bits}"
-                    f"W{selection.weight_bits}D{selection.dim}"
-                ),
-            }
         case unreachable:
             assert_never(unreachable)
 
@@ -375,13 +364,8 @@ def _rtl_commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]
         "-F", str(case.output / "filelist.f"),
     ))
     overlay = case.output / "upstream-overlay"
-    if request.top is Top.INTEGRATED:
-        main = "runMain im2p.gemmini.ElaborateUpstreamWsHp1"
-        options = f"--resolved-hardware {case.output / 'resolved-hardware.properties'} "
-    else:
-        main = "diagnostics/runMain im2p.gemmini.Elaborate"
-        options = (f"--scratchpad-bank-rows {scratchpad_bank_rows} "
-                   f"--accumulator-rows {accumulator_rows} ")
+    main = "runMain im2p.gemmini.ElaborateUpstreamWsHp1"
+    options = f"--resolved-hardware {case.output / 'resolved-hardware.properties'} "
     return (
         Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
         Command(ROOT / "src" / "gemmini", (
@@ -409,7 +393,6 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
     object_dir = case.output / "rtl-test-obj"
     host = ROOT / "fpga" / "gemmini_hp1" / "host"
     host_params = case.output / "host-params"
-    integrated = request.top is Top.INTEGRATED
     flags = " ".join((
         "-std=c++20", "-Wall", "-Wextra", "-Wpedantic", "-fno-fast-math",
         "-DIM2P_RTL_TEST_BUILD=1",
@@ -424,7 +407,7 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
         f"-DGGML_GEMMINI_CONFIGURED_DIM={case.selection.dim}",
         f"-DGGML_GEMMINI_ACTIVATION_BITS={case.selection.activation_bits}",
         f"-DGGML_GEMMINI_WEIGHT_BITS={case.selection.weight_bits}",
-        f"-DGGML_GEMMINI_ENABLE_RMD={int(integrated)}",
+        "-DGGML_GEMMINI_ENABLE_RMD=1",
         "-DGGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1",
         "-DIM2P_FPGA_ARCH_GEMMINI_HP1=1",
         f"-I{host_params}",
@@ -439,23 +422,15 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
         f"-I{LLAMA_ROOT / 'common'}",
         f"-I{GEMMINI_INCLUDE_ROOT}",
     ))
-    prefix = "VIM2PGemminiWSHP1RtlTest" if integrated else "VIM2PGemminiHP1RtlTest"
-    source = "test_ws_rtl.cpp" if integrated else "test_rtl.cpp"
+    prefix = "VIM2PGemminiWSHP1RtlTest"
+    source = "test_ws_rtl.cpp"
     executable = object_dir / prefix
-    sources = (
-        (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"))
-        if integrated else (
-            str(ROOT / "frontend" / "src" / "im2p_gemmini_frontend.cpp"),
-            str(host / "uart.cpp"),
-        )
-    )
-    link_flags = (
-        ("-LDFLAGS", " ".join((
-            str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
-            str(case.output / "host-build" / "libgemmini_hp1_ggml_numeric.a"),
-            "-Wl,-dead_strip" if platform.system() == "Darwin" else "-Wl,--gc-sections -pthread",
-        ))) if integrated else ()
-    )
+    sources = (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"))
+    link_flags = ("-LDFLAGS", " ".join((
+        str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
+        str(case.output / "host-build" / "libgemmini_hp1_ggml_numeric.a"),
+        "-Wl,-dead_strip" if platform.system() == "Darwin" else "-Wl,--gc-sections -pthread",
+    )))
     return (
         Command(ROOT, (
             "verilator", "--cc", "--exe", "--build", "--assert", "--timing",
@@ -525,7 +500,7 @@ def _commands(request: BuildRequest, case: BuildCase) -> tuple[Command, ...]:
                 f"-Dim2p.accumulatorRows={accumulator_rows}",
                 f"-Dim2p.gemmini.overlay={overlay.resolve()}",
             )
-            target = "test" if request.top is Top.INTEGRATED else "diagnostics/test"
+            target = "test"
             return (
                 Command(ROOT, (sys.executable, str(VENDOR), "--overlay", str(overlay))),
                 Command(scala_root, (*common, target)),

@@ -25,11 +25,15 @@ BUILD_DIR = Path(BUILD_DIR_TEXT)
 
 
 def artifact(*parts: str) -> str:
+    # This test targets the retained LEGACY_BSV implementation. The production
+    # build already isolates compiled archives/objects by implementation.
+    if parts and parts[0] in ("bin", "lib", "cargo", "selected"):
+        parts = (parts[0], "LEGACY_BSV", *parts[1:])
     return (BUILD_DIR.joinpath(*parts)).as_posix()
 
 
 def cargo_dir(identity: str) -> str:
-    path = BUILD_DIR / "cargo" / identity
+    path = BUILD_DIR / "cargo" / "LEGACY_BSV" / identity
     if not path.is_absolute():
         path = ROOT / path
     return str(path)
@@ -96,6 +100,7 @@ def make_dry_run(
             "-B",
             *targets,
             *variables,
+            "IM2P_SIM_IMPLEMENTATION=LEGACY_BSV",
             *build_variable,
         ],
         cwd=ROOT,
@@ -113,12 +118,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="im2p-frontend-deps-") as temp_dir:
         build_dir = Path(temp_dir) / "build"
         identity = "a8-w8-d16"
-        frontend_object = build_dir / "bin" / identity / "im2p_gemmini_frontend.o"
+        frontend_object = build_dir / "bin" / "LEGACY_BSV" / identity / "im2p_gemmini_frontend.o"
         variables = (
             f"BUILD_DIR={build_dir}",
             "IM2P_ACTIVATION_BITS=8",
             "IM2P_WEIGHT_BITS=8",
             "IM2P_DIM=16",
+            "IM2P_SIM_IMPLEMENTATION=LEGACY_BSV",
         )
         built = subprocess.run(
             ["make", "--no-print-directory", str(frontend_object), *variables],
@@ -219,7 +225,7 @@ def main() -> int:
             "copied obsolete docs sentence was not rejected by the full build contract: "
             f"{sorted(copied_fixture_findings)}"
         )
-    for relative in ("README.md", "frontend/README.md", "docs/ARCHITECTURE.md", "docs/VERIFICATION.md"):
+    for relative in ("README.md", "frontend/README.md", "docs/legacy/ARCHITECTURE.md", "docs/VERIFICATION.md"):
         text = (ROOT / relative).read_text(encoding="utf-8")
         if not all(value in text for value in ("matched ExSIA", "A4/Q4", "A8/Q8", "A16/Q16")):
             failures.append(f"{relative} lacks the supported matched ExSIA contract")
@@ -470,7 +476,7 @@ def main() -> int:
                     artifact(
                         "selected", identity, "current", "libim2p_sim.a"
                     ),
-                    artifact("results", identity),
+                    artifact("results", "LEGACY_BSV", identity),
                 )
                 if real.returncode != 0:
                     failures.append(

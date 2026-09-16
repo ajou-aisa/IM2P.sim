@@ -180,4 +180,4 @@ PE array에는 weight bank가 두 개 있다. resident가 아닌 lookahead W는 
 
 promotion은 불변 scale execution snapshot을 래치하므로 이후 응답이 진행 중인 staggered output을 변경할 수 없다.
 
-Integration test 구성은 [simulator test 가이드](tests/README.md), RTL 및 simulator 구조는 [architecture 문서](../docs/ARCHITECTURE.md), high-level adapter는 [C++ frontend](../frontend/README.md)에서 확인한다.
+Integration test 구성은 [simulator test 가이드](tests/README.md), RTL 및 simulator 구조는 [architecture 문서](../docs/legacy/ARCHITECTURE.md), high-level adapter는 [C++ frontend](../frontend/README.md)에서 확인한다.

@@ -243,7 +243,7 @@ endmodule
 endpackage
 """
     static_check.check_balanced_delimiters(path, text)
-    for source in (ROOT / "synth/ScuPipeline.bsv", ROOT / "synth/WindowBuffer.bsv"):
+    for source in (ROOT / "src/core/IM2PCore.bsv", ROOT / "tests/scu_block_scale/activation_guard/ResidentP0.bsv"):
         static_check.check_balanced_delimiters(source, source.read_text())
     for invalid, diagnostic in (
         (text.replace("endinterface", "", 1), "interface/endinterface"),

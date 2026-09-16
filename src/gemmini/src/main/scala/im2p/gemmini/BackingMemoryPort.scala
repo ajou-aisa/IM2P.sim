@@ -3,49 +3,6 @@ package im2p.gemmini
 import chisel3._
 import chisel3.util.{Decoupled, PopCount, isPow2, log2Ceil}
 
-final class LocalMemoryLoad(profile: ResolvedProfile, bankRows: Int) extends Bundle {
-  val weights = Bool()
-  val slot = Bool()
-  val row = UInt(math.max(1, log2Ceil(bankRows)).W)
-  val data = UInt((profile.dim * profile.operandBits).W)
-}
-
-final class LocalMemoryRead(bankRows: Int) extends Bundle {
-  val slot = Bool()
-  val row = UInt(math.max(1, log2Ceil(bankRows)).W)
-}
-
-final class StandaloneFragmentCommand(
-  profile: ResolvedProfile,
-  scratchpadBankRows: Int,
-  accumulatorRows: Int,
-  scaleEntries: Int,
-  generationWidth: Int,
-  workIdWidth: Int,
-) extends Bundle {
-  val slot = Bool()
-  val validRows = UInt(math.max(1, log2Ceil(profile.dim + 1)).W)
-  val validColumns = UInt(math.max(1, log2Ceil(profile.dim + 1)).W)
-  val fragmentLength = UInt(math.max(1, log2Ceil(profile.dim + 1)).W)
-  val activationBase = UInt(math.max(1, log2Ceil(scratchpadBankRows)).W)
-  val weightBase = UInt(math.max(1, log2Ceil(scratchpadBankRows)).W)
-  val accumulatorBase = UInt(math.max(1, log2Ceil(accumulatorRows)).W)
-  val scaleAddress = UInt(math.max(1, log2Ceil(scaleEntries)).W)
-  val scaleGeneration = UInt(generationWidth.W)
-  val workId = UInt(workIdWidth.W)
-  val firstContribution = Bool()
-  val finalFragment = Bool()
-}
-
-final class StandaloneResultRequest(accumulatorRows: Int) extends Bundle {
-  val row = UInt(math.max(1, log2Ceil(accumulatorRows)).W)
-}
-
-final class StandaloneResult(profile: ResolvedProfile, accumulatorRows: Int) extends Bundle {
-  val row = UInt(math.max(1, log2Ceil(accumulatorRows)).W)
-  val data = Vec(profile.dim, SInt(32.W))
-}
-
 final class BackingReadRequest(addressWidth: Int, idWidth: Int) extends Bundle {
   val address = UInt(addressWidth.W)
   val beats = UInt(16.W)

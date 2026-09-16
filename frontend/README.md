@@ -1,17 +1,12 @@
-# 선택적 Gemmini C++ 프런트엔드
+# Optional Gemmini-compatible C++ frontend
 
-> 수치 계약은 명시적으로 선택한다. 현재 bounded FPGA의 `main_external`은
-> main의 block raw output·host reconstruction·checked residual merge를 보존한다.
-> 별도 `scu_final_integer` 계약은 ABI5/op4·5에서 RTL block scale을 적용하며
-> residual-enabled 실행을 거부한다. 두 raw domain은 서로 비교하지 않는다.
-> [현재 stripe/provider 계약](../docs/HOST_STRIPE_CONTRACT.md)과
-> [SCU final-integer 보고서](../docs/SCU_BLOCK_SCALE_FIX.md)를 구분한다.
-
-아래 simulator handle·clock 설명은 기존 main/R1 시뮬레이터 경로다.
-Bounded FPGA는 같은 frontend의 dense/residual 순서를 한 physical core에서
-직렬 실행하며, residual dot을 별도 simulator나 CPU dot으로 대체하지 않는다.
-`rtl:`은 synthesis core/provider simulation, `uart4:`는 같은 core의 bulk UART
-transport를 명시적으로 선택한다. 장치 열기는 실제 실행 때만 수행한다.
+The shared API/ABI and numerical contracts are described in
+[API_CONTRACT](../docs/API_CONTRACT.md) and
+[NUMERICAL_CONTRACT](../docs/NUMERICAL_CONTRACT.md). The detailed simulator worker,
+legacy operation and independent dense/residual handle behavior below belongs to
+the retained simulator frontend. The integrated Gemmini external-executor path is
+validated separately; these descriptions do not claim every legacy operation is
+accepted by GEMMINI_HP1. No physical deployment transport is provided here.
 
 `frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. 모든 route는 activation/weight width와 storage identity를 포함하는 단일 canonical ABI를 사용한다. Typed provider transport는 W4/W8/W16을 구분하고 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
 
@@ -57,7 +52,7 @@ Channel route는 RTL `VectorBypass`에서 정수 dot product를 실행하고 cha
 
 두 route 모두 worker를 시작하지 않으며 원시 `q8_h0`로 fallback하지도 않는다. 프런트엔드는 전체 operand의 전치, 언패킹, 역양자화, 복사를 수행하지 않는다.
 
-RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-extend하고 canonical ABI의 기존 signed64 provider callback을 유지한다. Raw output storage는 signed32이며 기존 최종 saturation을 유지한다. RTL의 중간 wrap과 provider의 block별 double reconstruction/RMD merge는 다른 수치 경계다. Overflow-free 입력에서만 이전 INT64 reference와 exact equality를 요구한다.
+RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-extend하고 canonical ABI의 기존 signed64 provider callback을 유지한다. Raw output storage는 signed32이며 기존 최종 saturation을 유지한다. Legacy op0..3의 중간 wrap과 provider의 block별 double reconstruction/RMD merge는 다른 수치 경계다. ABI5 op4/5의 fragment saturation은 현재 numerical contract를 따른다. Overflow-free 입력에서만 이전 INT64 reference와 exact equality를 요구한다.
 
 선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `q8_h1_block_count`, `q8_h1_rows`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
 
@@ -81,7 +76,7 @@ watchdog은 RTL의 완료된 K fragment 카운터가 바뀌거나 matched stripe
 
 이 호스트 wall-clock 대기는 RTL의 논리 대기 사이클이 아니다. 성능 cycle의 기준값은 IM2PCore 내부 RTL telemetry다. External C++ Host는 `execute`/`submit_stripe`/`fence`를 사용하고, Simulation Bridge는 clock과 A/W/S/C I/O를 구동하며 RTL counter를 읽는다.
 
-Frontend worker 반복 횟수와 native provider wall-clock은 `total_cycles`에 반영하지 않는다. Model은 on-core scale cache와 resident weight-bank state를 기능적으로 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, clock frequency는 포함하지 않는다. Host pointer access는 zero-time이다.
+Frontend worker 반복 횟수와 native provider wall-clock은 `total_cycles`에 반영하지 않는다. LEGACY_BSV model은 on-core scale cache와 resident weight-bank state를 기능적으로 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, clock frequency는 포함하지 않는다. Host pointer access는 zero-time이다.
 
 Dense와 residual handle은 서로 다른 `VerilatedContext`, RTL state, clock을 소유한다. 두 domain의 cycle duration은 비가산이며 unified RTL timing, shared-core contention/context-switch cost, 또는 physical Gemmini 실행을 뜻하지 않는다. Frontend/Verilator runtime과 RTL counter만으로는 CPU/NPU 공통 시간, 물리적 ns/GHz/Fmax, silicon 성능을 확립할 수 없다.
 

@@ -148,9 +148,6 @@ define run_bluesim
 endef
 
 SYNTH_TOPS := \
-	mkFullReplay \
-	mkDensePipeline \
-	mkScuPipeline \
 	mkSynthA8W8D16 \
 	mkSynthFP16D16 \
 	mkSynthFP32D16
@@ -203,8 +200,8 @@ check: profile-config-check static-check cpp-test numerical-reference-test activ
 activation-guard-infrastructure-test:
 	$(PYTHON) tests/scu_block_scale/test_activation_guard_support.py
 
-.PHONY: profile-config-check numerical-reference-test fpga-rtl fpga-area \
-        fpga-timing fpga-route fpga-fifo-rtl fpga-flow-test scheduler-rtl
+.PHONY: profile-config-check numerical-reference-test \
+        fpga-fifo-rtl scheduler-rtl
 
 profile-config-check:
 	$(PYTHON) scripts/im2p_config.py --check
@@ -215,15 +212,8 @@ numerical-reference-test:
 	$(PYTHON) tests/test_numerical_reference.py
 	$(PYTHON) tests/test_host_reconstruction.py
 
-fpga-rtl fpga-area fpga-timing fpga-route:
-	BSC="$(BSC)" VERILATOR="$(VERILATOR)" scripts/fpga_build.sh \
-	  --mode $(patsubst fpga-%,%,$@) --bits $(IM2P_ACTIVATION_BITS) --dim $(IM2P_DIM)
-
 fpga-fifo-rtl:
 	$(MAKE) rtl-one TOP=mkSynthActivationFIFO
-
-fpga-flow-test:
-	bash tests/test_fpga_flow.sh
 
 scheduler-rtl: | $(BUILD_DIR)/bsc $(BUILD_DIR)/info
 	@set -euo pipefail; \

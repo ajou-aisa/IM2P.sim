@@ -77,10 +77,9 @@ lazy val root = (project in file("."))
       .filterNot(source => integrationNames(source.getName)) :+ (portableSources / "BackingMemoryPort.scala"),
     Test / unmanagedSourceDirectories := Seq(sourceRoot / "control/src/test/scala"),
   )
-// Old StandaloneTop remains an explicit diagnostic target, not integrated input.
+// Lower-level primitive diagnostics are test-only; no alternative production top.
 lazy val diagnostics = (project in file("diagnostics"))
   .dependsOn(root).settings(common).settings(testLibraries).settings(
-    Compile / unmanagedSources := (portableSources * "*.scala").get
-      .filterNot(source => coreNames(source.getName) || source.getName == "BackingMemoryPort.scala"),
+    Compile / unmanagedSources := Seq.empty,
     Test / unmanagedSourceDirectories := Seq(sourceRoot / "src/test/scala"),
   )

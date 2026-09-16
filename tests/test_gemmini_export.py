@@ -82,21 +82,6 @@ def source_fixture(root: Path) -> None:
     (root / "src/gemmini/external-link").symlink_to(Path("/tmp"))
 
 
-def build_fixture(root: Path) -> None:
-    profile = root / "a4w4-d16-hp1"
-    write(profile / "resolved-profile.json", json.dumps({
-        "profile": "a4w4-d16-hp1",
-        "selected_top": "IM2PGemminiHP1A4W4D16",
-        "controller_kind": "STANDALONE_DIAGNOSTIC",
-        "backing_memory": "LOCAL_DIAGNOSTIC",
-        "cycle_scope": "fragment_accept_to_final_accumulator_write_completion",
-    }) + "\n")
-    write(profile / "rtl/StandaloneTop.sv", "module StandaloneTop; endmodule\n")
-    write(profile / "rtl/defs.svh", "`define DIM 16\n")
-    write(profile / "result.json", '{"elaboration":{"status":"PASS"}}\n')
-    write(profile / "forbidden.gguf", b"model")
-    write(profile / "rtl/forbidden.v", bytes.fromhex("cafebabf") + b"payload")
-    (profile / "rtl-link").symlink_to(Path("/tmp"))
 
 
 def integrated_source_fixture(root: Path, rmd: bool = False) -> None:
@@ -197,13 +182,16 @@ def test_export_round_trip() -> None:
     with tempfile.TemporaryDirectory(prefix="gemmini-export-test-") as directory:
         base = Path(directory)
         source, build, output = base / "source", base / "build", base / "package"
-        source_fixture(source)
-        build_fixture(build)
+        integrated_source_fixture(source)
+        integrated_build_fixture(build)
+        write(build / "a8w8-d16-hp1/forbidden.gguf", b"model")
+        write(build / "a8w8-d16-hp1/rtl/forbidden.v", bytes.fromhex("cafebabf") + b"payload")
+        (build / "a8w8-d16-hp1/rtl-link").symlink_to(Path("/tmp"))
         board_dir = base / "board"
         write(board_dir / "pins.xdc", "set_property PACKAGE_PIN A1 [get_ports core_clk]\n")
         board = board_dir / "board.json"
         board.write_text(json.dumps({"schema_version": 1, "board_id": "test-board", "part": "xc-test",
-            "top": "StandaloneTop", "clock": {"port": "core_clk", "frequency_mhz": 100},
+            "top": "IM2PGemminiWSHP1A8W8D16", "clock": {"port": "core_clk", "frequency_mhz": 100},
             "xdc": ["pins.xdc"], "pin_constraints": "pins.xdc", "memory_interface": "test-memory",
             "deployment_artifact": "bit"}), encoding="utf-8")
 
@@ -215,14 +203,16 @@ def test_export_round_trip() -> None:
         # Then: hashes and relative RTL closure survive relocation; unsafe data stays out.
         assert result.relocation_verified and verify_export(output).status == "PASS"
         assert extracted.status == "PASS"
-        filelist = (output / "filelist.f").read_text(encoding="utf-8").splitlines()
+        profile = json.loads((output / "profile-manifest.json").read_text(encoding="utf-8"))["profiles"][0]
+        filelist_path = output / profile["filelist"]
+        filelist = filelist_path.read_text(encoding="utf-8").splitlines()
         assert filelist and all(not Path(line).is_absolute() for line in filelist)
-        assert all((output / line).is_file() for line in filelist)
+        assert all((filelist_path.parent / line).is_file() for line in filelist)
         names = {path.relative_to(output).as_posix() for path in output.rglob("*")}
         assert not any("forbidden" in name or "external-link" in name or "rtl-link" in name for name in names)
         assert "source/fpga/gemmini_hp1/host/uart.cpp" in names
         assert "source/fpga/gemmini_hp1/host/uart.hpp" in names
-        assert "generated/a4w4-d16-hp1/result.json" in names
+        assert "generated/a8w8-d16-hp1/resolved-profile.json" in names
         assert (output / "SHA256SUMS").is_file()
         resolved_board = json.loads((output / "board/resolved-board.json").read_text(encoding="utf-8"))
         assert resolved_board["schema_version"] == 1
@@ -231,6 +221,26 @@ def test_export_round_trip() -> None:
         create_export(ExportRequest(source, None, source_only, None))
         source_result = json.loads((source_only / "result.json").read_text(encoding="utf-8"))
         assert source_result["export_kind"] == "SOURCE_ONLY" and source_result["profiles"] == []
+
+
+def test_removed_standalone_export_is_rejected() -> None:
+    with tempfile.TemporaryDirectory(prefix="gemmini-retired-export-") as directory:
+        base = Path(directory)
+        source, build = base / "source", base / "build"
+        integrated_source_fixture(source)
+        integrated_build_fixture(build)
+        manifest = build / "a8w8-d16-hp1/resolved-profile.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data.update(controller_kind="STANDALONE_DIAGNOSTIC", backing_memory="LOCAL_DIAGNOSTIC",
+                    cycle_scope="fragment_accept_to_final_accumulator_write_completion",
+                    selected_top="IM2PGemminiHP1A8W8D16")
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        try:
+            create_export(ExportRequest(source, build, base / "package", None))
+        except ExportError as error:
+            assert "unsupported controller kind" in str(error)
+        else:
+            raise AssertionError("retired standalone export accepted")
 
 
 def test_integrated_export_preserves_verified_profile_closure() -> None:
@@ -606,12 +616,13 @@ def test_tamper_and_existing_output_rejected() -> None:
     with tempfile.TemporaryDirectory(prefix="gemmini-export-tamper-") as directory:
         base = Path(directory)
         source, build, output = base / "source", base / "build", base / "package"
-        source_fixture(source)
-        build_fixture(build)
+        integrated_source_fixture(source)
+        integrated_build_fixture(build)
         create_export(ExportRequest(source, build, output, None))
 
         # When: package content changes or output is reused.
-        (output / "filelist.f").write_text("tampered\n", encoding="utf-8")
+        profile = json.loads((output / "profile-manifest.json").read_text(encoding="utf-8"))["profiles"][0]
+        (output / profile["filelist"]).write_text("tampered\n", encoding="utf-8")
 
         # Then: verification fails and existing output remains untouched.
         try:

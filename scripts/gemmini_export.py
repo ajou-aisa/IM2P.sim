@@ -67,9 +67,7 @@ PROFILE_FIELDS: Final = (
 INTEGRATED_PROFILE_FIELDS: Final = ("host_artifact_role", "host_audit_role")
 RMD_PROFILE_FIELDS: Final = ("rmd_raw", "rmd_numerical_revision", "work_kinds")
 INTEGRATED_CONTROLLER: Final = "UPSTREAM_GEMMINI_WS"
-DIAGNOSTIC_CONTROLLER: Final = "STANDALONE_DIAGNOSTIC"
 INTEGRATED_MEMORY: Final = "INTEGRATED"
-DIAGNOSTIC_MEMORY: Final = "LOCAL_DIAGNOSTIC"
 INTEGRATED_CYCLE_SCOPE: Final = "logical_work_accept_to_final_backing_write_completion"
 INTEGRATED_ARTIFACT_ROLE: Final = "HOST_COMMON_ORCHESTRATION"
 INTEGRATED_AUDIT_ROLE: Final = "PHYSICAL_HOST"
@@ -77,7 +75,6 @@ UNRESOLVED_BYPASS_FLAGS: Final = (
     "--allow-shlib-undefined", "--unresolved-symbols=ignore", "-undefined dynamic_lookup",
     "-Wl,-undefined,dynamic_lookup",
 )
-DIAGNOSTIC_CYCLE_SCOPE: Final = "fragment_accept_to_final_accumulator_write_completion"
 INTEGRATED_SOURCE_FILES: Final = (
     "source/src/gemmini/control/src/main/scala/im2p/gemmini/UpstreamWsHp1Top.scala",
     "source/src/gemmini/control/src/main/scala/im2p/gemmini/UpstreamWsMemory.scala",
@@ -686,14 +683,6 @@ def export_kind(profiles: list[dict[str, JsonValue]]) -> str:
                 if profile["selected_top"] != expected:
                     raise ExportError(f"invalid integrated selected top: {profile['selected_top']}")
             return "INTEGRATED"
-        case "STANDALONE_DIAGNOSTIC":
-            for profile in profiles:
-                if profile["backing_memory"] != DIAGNOSTIC_MEMORY or profile["cycle_scope"] != DIAGNOSTIC_CYCLE_SCOPE:
-                    raise ExportError(f"invalid diagnostic resolved profile: {profile['profile']}")
-                expected = expected_selected_top(str(profile["profile"]), "IM2PGemminiHP1")
-                if profile["selected_top"] != expected:
-                    raise ExportError(f"invalid diagnostic selected top: {profile['selected_top']}")
-            return "DIAGNOSTIC"
         case _:
             raise ExportError(f"unsupported controller kind: {controller}")
 

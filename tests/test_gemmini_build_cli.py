@@ -308,27 +308,15 @@ def test_board_free_stages_validate_in_dry_run() -> None:
                 ]
 
 
-def test_standalone_top_remains_an_explicit_diagnostic() -> None:
-    # Given: a caller explicitly selects the old standalone top.
-    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-standalone-") as temporary:
+def test_removed_standalone_top_is_rejected() -> None:
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-removed-top-") as temporary:
         output = Path(temporary) / "standalone"
-
-        # When: RTL planning uses the diagnostic selector.
         result = run_script(
             BUILD,
             [*base_single_arguments(output), "--stage", "rtl", "--top", "standalone", "--dry-run"],
         )
-
-        # Then: diagnostics use the same explicit build and verified upstream sources.
-        assert result.returncode == 0, result.stderr
-        profile = json.loads(result.stdout)["profiles"][0]
-        assert profile["selected_top"] == "IM2PGemminiHP1A8W8D16"
-        commands = profile["commands"]
-        assert commands[0]["arguments"][1].endswith("scripts/gemmini_vendor.py")
-        assert commands[1]["arguments"][0] == "sbt"
-        assert commands[1]["cwd"].endswith("src/gemmini")
-        assert commands[1]["arguments"][-1].startswith("diagnostics/runMain im2p.gemmini.Elaborate ")
-        assert commands[2]["arguments"][0] == "verilator"
+        assert result.returncode != 0
+        assert not output.exists()
 
 
 def test_darwin_hardware_stage_is_deferred_before_output() -> None:
@@ -563,7 +551,7 @@ def main() -> int:
         test_plan_writes_resolved_profile,
         test_existing_output_is_rejected,
         test_board_free_stages_validate_in_dry_run,
-        test_standalone_top_remains_an_explicit_diagnostic,
+        test_removed_standalone_top_is_rejected,
         test_darwin_hardware_stage_is_deferred_before_output,
         test_bash3_wrapper_forwards_arguments,
         test_test_entrypoint_selects_real_rtl_stage,
