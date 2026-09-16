@@ -98,6 +98,13 @@ typedef struct {
 } im2p_matmul_descriptor_t;
 
 typedef struct {
+    uint64_t tile_i;
+    uint64_t tile_j;
+    uint64_t tile_k;
+    uint64_t activation_rows_per_stripe;
+} im2p_ffi_work_plan_t;
+
+typedef struct {
     uint64_t fragments_completed;
     uint64_t works_completed;
     uint64_t stripes_published;
@@ -265,6 +272,10 @@ int im2p_read_accumulator_row(
 int im2p_start_matmul(
     im2p_handle_t handle,
     const im2p_matmul_descriptor_t *descriptor
+);
+int im2p_configure_work_plan(
+    im2p_handle_t handle,
+    const im2p_ffi_work_plan_t *plan
 );
 int im2p_publish_activation_stripe(
     im2p_handle_t handle,

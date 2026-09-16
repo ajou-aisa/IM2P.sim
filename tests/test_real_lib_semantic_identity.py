@@ -33,6 +33,7 @@ def test_manifest_requires_current_semantics() -> None:
                 profile = profile_config(bits, bits, dim)
                 identity: IdentityData = {
                     **profile, "id": f"a{bits}-w{bits}-d{dim}", "block_size": 32,
+                    "implementation": "LEGACY_BSV",
                     "platform": "test", "platform_release": "test", "arch": "test",
                 }
                 atomic_json(path, {

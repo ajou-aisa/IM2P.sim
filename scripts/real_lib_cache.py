@@ -31,13 +31,17 @@ from scripts.real_lib_materialize import (
     materialize,
     secure_directory,
 )
-from scripts.real_lib_toolchain import collect_toolchain, identity_fingerprint
+from scripts.real_lib_toolchain import (
+    collect_toolchain,
+    identity_fingerprint,
+    integrated_build_environment,
+)
 
 
-def artifact_relatives(identity: str) -> tuple[Path, ...]:
+def artifact_relatives(implementation: str, identity: str) -> tuple[Path, ...]:
     return (
-        Path("lib") / identity / "libim2p_gemmini_frontend.a",
-        Path("cargo") / identity / "release" / "libim2p_sim.a",
+        Path("lib") / implementation / identity / "libim2p_gemmini_frontend.a",
+        Path("cargo") / implementation / identity / "release" / "libim2p_sim.a",
     )
 
 
@@ -47,11 +51,12 @@ def run_builder(
     identity: str,
     tools: dict[str, ToolIdentity],
 ) -> int:
-    environment = os.environ.copy()
+    environment = integrated_build_environment(args)
     environment.update({
         "CARGO_BUILD_JOBS": "1",
         "IM2P_CACHE_STAGE_BUILD_DIR": str(stage_build),
         "IM2P_CACHE_ARTIFACT_ID": identity,
+        "IM2P_SIM_IMPLEMENTATION": args.implementation,
         "IM2P_ACTIVATION_BITS": str(args.bits),
         "IM2P_WEIGHT_BITS": str(args.weight_bits),
         "IM2P_DIM": str(args.dim),
@@ -59,6 +64,34 @@ def run_builder(
         "IM2P_VERILATOR_EXECUTABLE": tools["verilator"]["executable"],
     })
     environment.pop("MAKEFLAGS", None)
+    if args.implementation == "GEMMINI_HP1" and not args.builder:
+        profile = f"a{args.bits}w{args.weight_bits}-d{args.dim}-hp1"
+        generated = stage_build / "gemmini-hp1" / profile
+        contract = ROOT / "config" / "gemmini_host_memory_contracts" / f"{profile}.json"
+        generator = [
+            sys.executable, str(ROOT / "scripts" / "gemmini_build.py"),
+            "--a-bits", str(args.bits), "--w-bits", str(args.weight_bits),
+            "--dim", str(args.dim), "--scu", "hp1-left-shift",
+            "--top", "integrated", "--memory-contract", str(contract),
+            "--stage", "rtl", "--out", str(generated),
+        ]
+        if subprocess.run(generator, cwd=ROOT, env=environment).returncode:
+            return 1
+        top = f"IM2PGemminiWSHP1A{args.bits}W{args.weight_bits}D{args.dim}"
+        object_dir = stage_build / "verilator" / "GEMMINI_HP1" / identity / "obj_dir"
+        object_dir.mkdir(parents=True, exist_ok=True)
+        model = [
+            tools["verilator"]["executable"], "--cc", "--timing", "-Wall", "-Wno-fatal",
+            "--top-module", top, "--prefix", "VIM2PGemminiWSHP1Sim",
+            "--Mdir", str(object_dir), "-F", str(generated / "filelist.f"),
+        ]
+        if subprocess.run(model, cwd=generated, env=environment).returncode:
+            return 1
+        environment.update({
+            "IM2P_GEMMINI_HP1_OBJ_DIR": str(object_dir),
+            "IM2P_GEMMINI_HP1_TOP": top,
+            "IM2P_GEMMINI_HP1_PREFIX": "VIM2PGemminiWSHP1Sim",
+        })
     if args.builder:
         command = [args.builder]
     else:
@@ -75,6 +108,7 @@ def run_builder(
             f"BSC_VERILOG={args.bsc_verilog}",
             f"BSC_EXTRA_FLAGS={args.bsc_extra_flags}",
             f"VERILATOR={args.verilator}",
+            f"IM2P_SIM_IMPLEMENTATION={args.implementation}",
             f"RUSTC={args.rustc}", f"CARGO={args.cargo}",
             "_gemmini-frontend-real-lib-build",
         ]
@@ -90,19 +124,29 @@ def ensure(args: argparse.Namespace) -> int:
     build_dir.mkdir(parents=True, exist_ok=True)
     if not build_dir.is_dir():
         raise CacheError(f"build root is not a directory: {build_dir}")
+    if args.implementation == "GEMMINI_HP1" and (
+        args.bits not in (4, 8) or args.block_size != 32
+    ):
+        raise CacheError("GEMMINI_HP1 requires A/W 4 or 8 and block size 32")
+    if args.implementation == "LEGACY_BSV" and (
+        not args.bsc_verilog or not args.bsc_extra_flags
+    ):
+        raise CacheError("LEGACY_BSV requires BSC Verilog runtime inputs")
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     tools, build_config = collect_toolchain(args)
     fingerprint = identity_fingerprint(args, tools, build_config)
     identity_data: IdentityData = {
         **profile_config(args.bits, args.weight_bits, args.dim),
-        "id": identity, "block_size": args.block_size,
+        "id": identity, "implementation": args.implementation,
+        "block_size": args.block_size,
         "platform": platform.system(), "platform_release": platform.release(),
         "arch": platform.machine(),
     }
-    cache_root = secure_directory(build_dir, Path("cache") / "real-lib")
-    entries = secure_directory(build_dir, Path("cache") / "real-lib" / "entries")
-    staging = secure_directory(build_dir, Path("cache") / "real-lib" / "staging")
-    locks = secure_directory(build_dir, Path("cache") / "real-lib" / "locks")
+    cache_path = Path("cache") / "real-lib" / args.implementation
+    cache_root = secure_directory(build_dir, cache_path)
+    entries = secure_directory(build_dir, cache_path / "entries")
+    staging = secure_directory(build_dir, cache_path / "staging")
+    locks = secure_directory(build_dir, cache_path / "locks")
     entry = entries / fingerprint
     # Serialize every generation of one public identity, not just one content
     # key, so two source revisions cannot race while materializing its stable paths.
@@ -114,7 +158,7 @@ def ensure(args: argparse.Namespace) -> int:
         if os.path.lexists(entry):
             if entry.is_symlink() or not entry.is_dir():
                 raise CacheError(f"cache entry is not a private directory: {entry}")
-            relatives = artifact_relatives(identity)
+            relatives = artifact_relatives(args.implementation, identity)
             expected_cache_artifacts = tuple(
                 (Path("artifacts") / relative).as_posix()
                 for relative in relatives
@@ -146,7 +190,7 @@ def ensure(args: argparse.Namespace) -> int:
             status = run_builder(args, stage_build, identity, tools)
             if status:
                 return status
-            relatives = artifact_relatives(identity)
+            relatives = artifact_relatives(args.implementation, identity)
             for relative in relatives:
                 source = stage_build / relative
                 destination = publish / "artifacts" / relative
@@ -199,12 +243,16 @@ def parser() -> argparse.ArgumentParser:
     sub = result.add_subparsers(dest="command", required=True)
     verify = sub.add_parser("verify")
     verify.add_argument("--manifest", type=Path, required=True)
-    for field in ("identity", "platform", "arch"):
+    for field in ("identity", "implementation", "platform", "arch"):
         verify.add_argument(f"--expected-{field}")
     verify.add_argument("--expected-block-size", type=int)
     verify.add_argument("--expected-platform-release")
     verify.add_argument("--artifact-kind", choices=("selected",))
     ensure_parser = sub.add_parser("ensure")
+    ensure_parser.add_argument(
+        "--implementation", choices=("LEGACY_BSV", "GEMMINI_HP1"),
+        default="LEGACY_BSV",
+    )
     for name in ("bits", "weight-bits"):
         ensure_parser.add_argument(f"--{name}", type=int, choices=(4, 8, 16), required=True)
     ensure_parser.add_argument("--dim", type=int, choices=(16, 32, 64), required=True)
@@ -212,12 +260,19 @@ def parser() -> argparse.ArgumentParser:
     ensure_parser.add_argument("--build-dir", type=Path, required=True)
     ensure_parser.add_argument("--gemmini-root", type=Path, required=True)
     ensure_parser.add_argument("--params-root", type=Path, required=True)
-    for name in ("cxx", "ar", "bsc", "verilator", "rustc", "cargo"):
+    for name in ("cxx", "ar", "verilator", "rustc", "cargo"):
         ensure_parser.add_argument(f"--{name}", required=True)
-    ensure_parser.add_argument("--bsc-verilog", required=True)
-    ensure_parser.add_argument("--bsc-extra-flags", required=True)
+    ensure_parser.add_argument("--bsc", default="bsc")
+    ensure_parser.add_argument("--bsc-verilog", default="")
+    ensure_parser.add_argument("--bsc-extra-flags", default="")
     ensure_parser.add_argument("--extra-input", type=Path)
     ensure_parser.add_argument("--builder")
+    ensure_parser.add_argument(
+        "--gemmini-work-root", type=Path,
+        default=Path(os.environ.get(
+            "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab" / "build" / "im2p-gemmini",
+        )),
+    )
     return result
 
 
@@ -227,6 +282,7 @@ def main() -> int:
         if args.command == "verify":
             valid, detail = verify_manifest(
                 args.manifest.resolve(), expected_identity=args.expected_identity,
+                expected_implementation=args.expected_implementation,
                 expected_block_size=args.expected_block_size,
                 expected_platform=args.expected_platform,
                 expected_platform_release=args.expected_platform_release,

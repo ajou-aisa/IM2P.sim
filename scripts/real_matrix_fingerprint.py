@@ -35,6 +35,10 @@ def main() -> int:
     parser.add_argument("--weight-bits", type=int, choices=(4, 8, 16), required=True)
     parser.add_argument("--dim", type=int, choices=(16, 32, 64), required=True)
     parser.add_argument("--block-size", type=int, default=32)
+    parser.add_argument(
+        "--implementation", choices=("LEGACY_BSV", "GEMMINI_HP1"),
+        default="LEGACY_BSV",
+    )
     parser.add_argument("--gemmini-root", type=Path, required=True)
     parser.add_argument("--params-root", type=Path, required=True)
     parser.add_argument("--extra-input", type=Path)
@@ -45,6 +49,10 @@ def main() -> int:
     params_root = args.params_root.resolve()
     if args.bits != args.weight_bits:
         parser.error("real matrix fingerprints require matched activation/weight widths")
+    if args.implementation == "GEMMINI_HP1" and (
+        args.bits not in (4, 8) or args.block_size != 32
+    ):
+        parser.error("GEMMINI_HP1 requires A/W 4 or 8 and block size 32")
     selected_stem = f"SynthA{args.bits}W{args.weight_bits}D{args.dim}"
     selected_top = ROOT / "synth" / f"{selected_stem}.bsv"
     required = (
@@ -56,12 +64,21 @@ def main() -> int:
         ROOT / "scripts/im2p_config.py",
         ROOT / "src/common/Config.bsv",
         ROOT / "sim/ffi/im2p_config.h",
-        selected_top,
         params_root.parent / "gemmini_params.h",
         gemmini_root / "ggml/src/ggml-gemmini/ggml-gemmini-args.h",
         gemmini_root / "ggml/src/ggml-common.h",
         gemmini_root / "ggml/include/ggml.h",
     )
+    if args.implementation == "LEGACY_BSV":
+        required += (selected_top,)
+    else:
+        required += (
+            ROOT / "src/gemmini/control/build.sbt",
+            ROOT / "src/gemmini/vendor-manifest.json",
+            ROOT / "config/gemmini_hp1_profiles.json",
+            ROOT / "config/gemmini_host_memory_contracts"
+            / f"a{args.bits}w{args.weight_bits}-d{args.dim}-hp1.json",
+        )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         parser.error("missing fingerprint input(s): " + ", ".join(missing))
@@ -72,6 +89,9 @@ def main() -> int:
             "Makefile",
             "scripts/real_matrix_fingerprint.py",
             "scripts/real_lib_*.py",
+            "scripts/gemmini_build.py",
+            "scripts/gemmini_tools.py",
+            "scripts/gemmini_vendor.py",
             "config/*.json",
             "scripts/im2p_config.py",
             ".cargo/config*",
@@ -86,10 +106,14 @@ def main() -> int:
             "sim/include/*.h",
             "sim/ffi/*.h",
             "sim/ffi/*.cpp",
+            "src/gemmini/**/*.scala",
+            "patches/*.patch",
+            "src/gemmini/vendor-manifest.json",
             "src/**/*.bsv",
         ),
     )
-    local_files.append(selected_top)
+    if args.implementation == "LEGACY_BSV":
+        local_files.append(selected_top)
     local_files = sorted(set(local_files))
     gemmini_files = files_under(
         gemmini_root,
@@ -107,9 +131,10 @@ def main() -> int:
     digest = hashlib.sha256()
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     for value in (
-        "real-matrix-fingerprint-v3",
+        "real-matrix-fingerprint-v4",
         json.dumps(profile_config(args.bits, args.weight_bits, args.dim), sort_keys=True),
         f"identity={identity}",
+        f"implementation={args.implementation}",
         f"block_size={args.block_size}",
         f"top=mk{selected_stem}",
         f"activation_bits={args.bits}",

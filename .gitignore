@@ -10,3 +10,13 @@ build/verilator/
 sim/target/
 # Library lockfile is a cache-identity input and must remain versioned.
 !sim/Cargo.lock
+.omx/
+src/gemmini/.bloop/
+src/gemmini/target/
+src/gemmini/test_run_dir/
+src/gemmini/project/project/
+src/gemmini/project/target/
+src/gemmini/control/.bloop/
+src/gemmini/control/target/
+src/gemmini/control/project/project/
+src/gemmini/control/project/target/

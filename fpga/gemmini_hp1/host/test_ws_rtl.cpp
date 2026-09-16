@@ -7,6 +7,7 @@ int im2p_gemmini_hp1_ws_rtl_test_requires_generated_model;
 #include "rmd_rtl_fixture.hpp"
 #include "bound_rmd_rtl_fixture.hpp"
 #include "im2p_sim.h"
+#include "im2p_integrated_signal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,35 +39,13 @@ void check(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
 }
 
-template <typename Signal>
-void set_bytes(Signal &signal, const std::vector<std::uint8_t> &bytes) {
-  if constexpr (VlIsVlWide<Signal>::value) {
-    std::fill_n(signal.data(), signal.size(), 0U);
-    for (std::size_t i = 0; i < bytes.size(); ++i)
-      signal.at(i / 4) |= static_cast<std::uint32_t>(bytes[i]) << (i % 4 * 8);
-  } else {
-    std::uint64_t value = 0;
-    for (std::size_t i = 0; i < bytes.size(); ++i)
-      value |= static_cast<std::uint64_t>(bytes[i]) << (i * 8);
-    signal = static_cast<Signal>(value);
-  }
-}
-
-template <typename Signal>
-std::uint8_t byte_at(const Signal &signal, std::size_t index) {
-  if constexpr (VlIsVlWide<Signal>::value)
-    return static_cast<std::uint8_t>(signal.at(index / 4) >> (index % 4 * 8));
-  else
-    return static_cast<std::uint8_t>(static_cast<std::uint64_t>(signal) >> (index * 8));
-}
+using im2p::integrated::byte_at;
+using im2p::integrated::set_bytes;
 
 std::size_t padded(std::size_t count) { return (count + dim - 1) / dim * dim; }
 
 void put_operand(std::vector<std::uint8_t> &bytes, std::size_t index, std::int8_t value) {
-  if constexpr (IM2P_OPERAND_BITS == 4)
-    bytes.at(index / 2) |= (static_cast<std::uint8_t>(value) & 15U) << (index % 2 * 4);
-  else
-    bytes.at(index) = static_cast<std::uint8_t>(value);
+  im2p::integrated::put_operand(bytes, index, value);
 }
 
 struct Read {

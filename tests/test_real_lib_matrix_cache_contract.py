@@ -44,13 +44,14 @@ from scripts.im2p_config import profile_config
 from scripts.real_lib_manifest import SCHEMA, artifact_rows
 values = dict(arg.split('=', 1) for arg in sys.argv[1:] if '=' in arg)
 identity = f"a{values['IM2P_ACTIVATION_BITS']}-w{values['IM2P_WEIGHT_BITS']}-d{values['IM2P_DIM']}"
+implementation = values['IM2P_SIM_IMPLEMENTATION']
 build = Path(values['BUILD_DIR'])
-selected = build / 'selected' / identity
+selected = build / 'selected' / implementation / identity
 generation = selected / 'generations' / identity
 generation.mkdir(parents=True, exist_ok=True)
 manifest = generation / 'real-lib.json'
 profile = profile_config(int(values['IM2P_ACTIVATION_BITS']), int(values['IM2P_WEIGHT_BITS']), int(values['IM2P_DIM']))
-profile.update({'id': identity, 'block_size': int(values['GEMMINI_FRONTEND_BLOCK_SIZE'])})
+profile.update({'id': identity, 'implementation': implementation, 'block_size': int(values['GEMMINI_FRONTEND_BLOCK_SIZE'])})
 if os.environ.get('IM2P_MATRIX_LEGACY'):
     del profile['numerical_semantics_revision']
 artifacts = (Path('libim2p_gemmini_frontend.a'), Path('libim2p_sim.a'))
@@ -109,6 +110,21 @@ else:
         assert matrix_hit.returncode == 0, matrix_hit.stdout
         assert matrix_hit.stdout.count("state=hit") == 9
         assert len((temp / "builds").read_text().splitlines()) == 9
+
+        integrated_args = (
+            str(MATRIX), "--build-dir", str(build), "--jobs", "2",
+            "--implementation", "GEMMINI_HP1",
+        )
+        integrated = run(*integrated_args, env=matrix_env)
+        assert integrated.returncode == 0, integrated.stdout
+        integrated_summary = json.loads(
+            (build / "manifests/real-lib-all.json").read_text()
+        )
+        assert integrated_summary["ok"]
+        assert integrated_summary["implementation"] == "GEMMINI_HP1"
+        assert len(integrated_summary["artifacts"]) == 6
+        assert all(row["id"].split("-")[0] in ("a4", "a8")
+                   for row in integrated_summary["artifacts"])
 
         legacy_env = {**matrix_env, "IM2P_MATRIX_LEGACY": "1"}
         legacy = run(*matrix_args, env=legacy_env)

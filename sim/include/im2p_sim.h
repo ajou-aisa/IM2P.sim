@@ -15,10 +15,22 @@ extern "C" {
 typedef struct im2p_sim im2p_sim_t;
 typedef struct im2p_stream im2p_stream_t;
 
+/*
+ * Optional process-wide sink for Verilated RTL printf/$display output. The
+ * callback is invoked synchronously by whichever simulator thread emits the
+ * message. Passing NULL restores the standalone stdout behavior.
+ * `message` is not required to be NUL-terminated; use `length`.
+ */
+typedef void (*im2p_rtl_log_fn)(
+    void *context, const char *message, size_t length
+);
+void im2p_set_rtl_log_callback(im2p_rtl_log_fn callback, void *context);
+
 uint32_t im2p_compiled_accumulator_bits(void);
 uint32_t im2p_compiled_accumulator_rows(void);
 uint32_t im2p_compiled_partial_bits(void);
 const char *im2p_compiled_numerical_semantics_revision(void);
+const char *im2p_sim_implementation(void);
 
 /*
  * Raw handles are single-thread/thread-affine. The thread that starts an

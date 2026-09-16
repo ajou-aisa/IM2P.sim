@@ -456,6 +456,10 @@ extern "C" const char *im2p_compiled_numerical_semantics_revision(void) {
     return IM2P_NUMERICAL_SEMANTICS_REVISION;
 }
 
+extern "C" const char *im2p_sim_implementation(void) {
+  return "legacy-bsv-v1";
+}
+
 extern "C" uint32_t im2p_compiled_activation_storage_bytes(void) {
   return kActivationStorageBytes;
 }

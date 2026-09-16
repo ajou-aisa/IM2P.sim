@@ -28,8 +28,13 @@ SELECTED_ARTIFACTS = (
 )
 
 
-def selected_manifest_path(build_dir: Path, identity: str) -> Path:
-    return build_dir / "selected" / identity / "current" / "real-lib.json"
+def selected_manifest_path(
+    build_dir: Path, implementation: str, identity: str,
+) -> Path:
+    return (
+        build_dir / "selected" / implementation / identity / "current"
+        / "real-lib.json"
+    )
 
 
 def secure_directory(root: Path, relative: Path) -> Path:
@@ -80,9 +85,12 @@ def materialize(
     cache_rows: list[ArtifactRow],
 ) -> Path:
     identity = identity_data["id"]
-    selected = secure_directory(build_dir, Path("selected") / identity)
+    selected = secure_directory(
+        build_dir, Path("selected") / identity_data["implementation"] / identity,
+    )
     generations = secure_directory(
-        build_dir, Path("selected") / identity / "generations"
+        build_dir,
+        Path("selected") / identity_data["implementation"] / identity / "generations",
     )
     current = selected / "current"
     if os.path.lexists(current):
