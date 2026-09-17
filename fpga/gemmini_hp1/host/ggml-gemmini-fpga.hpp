@@ -23,24 +23,26 @@ bool ggml_gemmini_fpga_uses_rtl();
 bool ggml_gemmini_fpga_uses_bounded();
 bool ggml_gemmini_fpga_execute(ggml_gemmini_args_t &args, bool pipeline,
                                const std::function<void()> &quantize,
-                               const char *layer_name,
-                               bool native_scu = true);
+                               const char *layer_name, bool native_scu = true);
 std::string ggml_gemmini_fpga_last_error();
 void ggml_gemmini_fpga_test_producer_checkpoint(std::size_t stripe_index);
 
-using ggml_gemmini_fpga_observer = void (*)(
-    const ggml_gemmini_args_t &, const std::vector<std::int32_t> &, void *);
+using ggml_gemmini_fpga_observer = void (*)(const ggml_gemmini_args_t &,
+                                            const std::vector<std::int32_t> &,
+                                            void *);
 void ggml_gemmini_fpga_set_observer(ggml_gemmini_fpga_observer observer,
                                     void *context);
 
-using ggml_gemmini_fpga_block_observer = void (*)(
-    void *, std::size_t block, std::size_t row, std::size_t column,
-    std::size_t count, const std::int64_t *values);
+using ggml_gemmini_fpga_block_observer = void (*)(void *, std::size_t block,
+                                                  std::size_t row,
+                                                  std::size_t column,
+                                                  std::size_t count,
+                                                  const std::int64_t *values);
 void ggml_gemmini_fpga_set_block_observer(
     ggml_gemmini_fpga_block_observer observer, void *context);
 
 using ggml_gemmini_fpga_result_observer = void (*)(const ggml_gemmini_args_t &,
-                                                    void *);
+                                                   void *);
 void ggml_gemmini_fpga_set_result_observer(
     ggml_gemmini_fpga_result_observer observer, void *context);
 
@@ -52,7 +54,8 @@ void ggml_gemmini_fpga_set_boundary_observer(
 
 // Borrowed execution callbacks. Bind only an executor for the selected CAP;
 // callbacks and context remain alive until unbind after execute has returned.
-// prepare receives the unchanged host tile/stripe companion before quantization.
+// prepare receives the unchanged host tile/stripe companion before
+// quantization.
 struct ggml_gemmini_hp1_executor {
   im2p::gemmini_hp1::Capability capability;
   void *context = nullptr;
@@ -60,7 +63,9 @@ struct ggml_gemmini_hp1_executor {
   int (*full)(void *, const im2p_matmul_desc_t *,
               im2p_work_stats_extended_t *) = nullptr;
   im2p::gemmini::StreamExecutor stream;
-  im2p::gemmini_hp1::RmdRawExecute raw = nullptr;
+  im2p::gemmini_hp1::RmdRawExecute raw = nullptr; // optional legacy diagnostic
+  im2p::gemmini_hp1::RmdScuExecute scu =
+      nullptr; // required production residual
 };
 
 im2p::gemmini_hp1::Capability ggml_gemmini_hp1_capability();

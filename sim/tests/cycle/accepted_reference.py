@@ -67,10 +67,30 @@ def header(cases: list[dict[str, Any]]) -> str:
         out.append('  }},')
     out += ['};', 'static const AcceptedCase *accepted_case = nullptr;',
             'static const AcceptedDescriptor *accepted_descriptor = nullptr;']
+    if any('numerical_input' in case for case in cases):
+        if not all('numerical_input' in case for case in cases):
+            raise ValueError('mixed numerical/reference fixture corpus')
+        out += ['struct AcceptedNumerical {',
+                '  std::vector<std::int8_t> a, w;',
+                '  std::vector<std::uint32_t> carriers;',
+                '  std::vector<std::int32_t> expected;', '};',
+                'static const std::vector<AcceptedNumerical> accepted_numerical = {']
+        for case in cases:
+            data = json.loads(Path(case['numerical_input']).read_text())
+            g = data['geometry']
+            m, n, k = g['m'], g['n'], g['k']
+            av = [data['a'][i * data['a_stride'] + q] for i in range(m) for q in range(k)]
+            wv = [data['w'][q * data['b_stride'] + j] for q in range(k) for j in range(n)]
+            if k > 32 or len(data['carriers']) != n or len(data['output']) != m * n:
+                raise ValueError('invalid compact numerical certificate input')
+            vectors = [av, wv, data['carriers'], data['output']]
+            out.append('  {' + ','.join('{' + ','.join(str(v) + ('ULL' if i == 2 else 'LL')
+                       for v in values) + '}' for i, values in enumerate(vectors)) + '},')
+        out += ['};']
     return '\n'.join(out) + '\n'
 
 
-def fixture_source(golden: Path) -> str:
+def fixture_source(golden: Path, numerical: bool = False) -> str:
     text = rtl.generate_probe_source(golden)
     text = replace(text, 'static unsigned hardening_case = 0;',
                    'static unsigned hardening_case = 0;\n#include "accepted-cases.hpp"')
@@ -154,6 +174,27 @@ def fixture_source(golden: Path) -> str:
 }
 #endif
 '''
+    if numerical:
+        text = replace(text, '    work.activations.assign(a.m * a.k, 1);\n'
+                       '    work.weights.assign(a.k * a.n, 1);\n'
+                       '    work.carriers.assign(((a.k + 31) / 32) * a.n, 0);',
+                       '    const auto &numeric = accepted_numerical.at(std::stoull(argv[1]));\n'
+                       '    work.activations = numeric.a;\n'
+                       '    work.weights = numeric.w;\n'
+                       '    work.carriers = numeric.carriers;')
+        text = replace(text,
+                       '    check(std::all_of(output.begin(), output.end(), [&](std::int32_t x) {\n'
+                       '      return x == std::int32_t(a.k);\n'
+                       '    }), "accepted descriptor reference numerical mismatch");',
+                       '    check(output == numeric.expected, "accepted residual reference numerical mismatch");')
+        text = replace(text, '    if (dut.io_events_rawRow) hardening_event("array_output");',
+                       '    if (dut.io_events_rawRow) {\n'
+                       '      hardening_event("array_output");\n'
+                       '      hardening_observer << "SCU";\n'
+                       '      for (unsigned j = 0; j < dim; ++j)\n'
+                       '        hardening_observer << \',\' << std::int32_t(ROOT_SCU_DATA[j]);\n'
+                       '      hardening_observer << \'\\n\';\n'
+                       '    }')
     return text
 
 
@@ -167,14 +208,15 @@ def build(golden: Path, out: Path, profile: str, cases: list[dict[str, Any]]) ->
     flags = shlex.split(command[command.index('-CFLAGS') + 1])
     ldflags = shlex.split(command[command.index('-LDFLAGS') + 1])
     top = command[command.index('--top-module') + 1]
-    source = fixture_source(golden)
+    source = fixture_source(golden, numerical=bool(cases and 'numerical_input' in cases[0]))
     root = (obj / 'VIM2PGemminiWSHP1RtlTest___024root.h').read_text()
     names = {'ROOT_EX_FUNCT': '_reservation_io_issue_ex_cmd_cmd_inst_funct',
              'ROOT_MESH_INPUT': 'execute__DOT__mesh__DOT__input_next_row_into_spatial_array',
              'ROOT_MESH_ID': 'execute__DOT__mesh__DOT__matmul_id',
              'ROOT_MESH_ROW': 'execute__DOT__mesh__DOT__fire_counter',
              'ROOT_RAW_COMPLETED': '_execute_io_completed_valid',
-             'ROOT_RAW_ROB': '_execute_io_completed_bits'}
+             'ROOT_RAW_ROB': '_execute_io_completed_bits',
+             'ROOT_SCU_DATA': 'writeback__DOT__writes__DOT__queue__DOT____Vcellinp__ram_ext__W0_data'}
     for token, suffix in names.items():
         signal = top + '__DOT__control__DOT__' + suffix
         if signal not in root:

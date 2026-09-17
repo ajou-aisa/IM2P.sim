@@ -1,16 +1,16 @@
 #pragma once
 
-#include "../../ffi/im2p_verilator.h"
-#include "../../ffi/im2p_geometry_ffi.h"
-#include "../../ffi/im2p_config.h"
-#include "../../ffi/im2p_integrated_signal.hpp"
 #include "../../common/gemmini_schedule.hpp"
+#include "../../ffi/im2p_config.h"
+#include "../../ffi/im2p_geometry_ffi.h"
+#include "../../ffi/im2p_integrated_signal.hpp"
+#include "../../ffi/im2p_verilator.h"
 #include <VIM2PGemminiWSHP1Sim.h>
-#include <im2p_gemmini_hardware.h>
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <im2p_gemmini_hardware.h>
 #include <verilated.h>
 #if defined(IM2P_VERILATOR_TEST_HOOKS)
 #include "../../tests/cycle/accepted_work_observer.h"
@@ -24,9 +24,12 @@ static_assert(IM2P_DIM == IM2P_GEMMINI_DIM);
 static_assert(gemmini::HardwareShape::block_k == IM2P_GEMMINI_BLOCK_SIZE);
 static_assert(IM2P_GEMMINI_ACCUMULATOR_BITS == 32);
 static_assert(IM2P_ACCUMULATOR_ROWS == IM2P_GEMMINI_ACCUMULATOR_ROWS);
-static_assert(IM2P_GEMMINI_SCRATCHPAD_ROW_BYTES == IM2P_DIM * IM2P_ACTIVATION_BITS / 8);
-static_assert(IM2P_GEMMINI_ACCUMULATOR_ROW_BYTES == IM2P_DIM * sizeof(std::int32_t));
-// ARRAY_PARTIAL_BITS is the RTL array width; the C ABI retains full INT32 raw results.
+static_assert(IM2P_GEMMINI_SCRATCHPAD_ROW_BYTES ==
+              IM2P_DIM * IM2P_ACTIVATION_BITS / 8);
+static_assert(IM2P_GEMMINI_ACCUMULATOR_ROW_BYTES ==
+              IM2P_DIM * sizeof(std::int32_t));
+// ARRAY_PARTIAL_BITS is the RTL array width; the C ABI retains full INT32 raw
+// results.
 using Top = VIM2PGemminiWSHP1Sim;
 constexpr std::size_t kDim = IM2P_DIM;
 constexpr std::size_t kOperandBits = IM2P_ACTIVATION_BITS;
@@ -42,7 +45,6 @@ constexpr const char *kNumericalRevision = "signed-scu-sat-v2";
 constexpr std::uint64_t slot_address(std::uint64_t base, std::size_t slot) {
   return base + slot * kSlotStride;
 }
-
 
 enum class ReadKind : std::uint8_t { none, activation, weight, scale };
 
@@ -154,8 +156,9 @@ int publish_stripe(Runtime &runtime, std::uint32_t row_begin,
                    const im2p_production_geometry_v1_t *geometry);
 
 #if defined(IM2P_VERILATOR_TEST_HOOKS)
+void observe_rmd_scu(const Runtime &runtime);
 void observe_geometry(const Runtime &runtime, std::uint64_t event,
-                       const im2p_production_geometry_v1_t *geometry = nullptr);
+                      const im2p_production_geometry_v1_t *geometry = nullptr);
 #endif
 
 inline Runtime *as_runtime(im2p_handle_t handle) {
@@ -165,9 +168,12 @@ inline Runtime *as_runtime(im2p_handle_t handle) {
 template <ReadKind Kind>
 int get_read(im2p_handle_t handle, im2p_read_request_t *request) {
   auto *runtime = as_runtime(handle);
-  if (!runtime || !request) return IM2P_REQUEST_INVALID_ARGUMENT;
-  if (runtime->fault) return IM2P_REQUEST_INVALID_ARGUMENT;
-  if (!runtime->read.active || runtime->read.response || runtime->read.kind != Kind)
+  if (!runtime || !request)
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  if (runtime->fault)
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  if (!runtime->read.active || runtime->read.response ||
+      runtime->read.kind != Kind)
     return IM2P_REQUEST_ABSENT;
   request->tag = runtime->read.tag;
   request->address = runtime->read.address;
@@ -179,11 +185,14 @@ template <ReadKind Kind, typename Value>
 int stage_read(im2p_handle_t handle, std::uint64_t tag, const Value *values,
                std::uint32_t count) {
   auto *runtime = as_runtime(handle);
-  if (!runtime || !values || count > kDim) return IM2P_REQUEST_INVALID_ARGUMENT;
+  if (!runtime || !values || count > kDim)
+    return IM2P_REQUEST_INVALID_ARGUMENT;
   auto &pending = runtime->read;
-  if (!pending.active || pending.response || pending.kind != Kind || pending.tag != tag)
+  if (!pending.active || pending.response || pending.kind != Kind ||
+      pending.tag != tag)
     return IM2P_REQUEST_IDENTITY_MISMATCH;
-  if (count != pending.count) return IM2P_REQUEST_INVALID_ARGUMENT;
+  if (count != pending.count)
+    return IM2P_REQUEST_INVALID_ARGUMENT;
   pending.bytes.fill(0);
   if constexpr (Kind == ReadKind::scale) {
     for (std::size_t lane = 0; lane < count; ++lane) {
@@ -197,7 +206,8 @@ int stage_read(im2p_handle_t handle, std::uint64_t tag, const Value *values,
     for (std::size_t lane = 0; lane < count; ++lane) {
       const auto value = static_cast<std::int8_t>(values[lane]);
       if constexpr (kOperandBits == 4) {
-        if (value < -8 || value > 7) return IM2P_REQUEST_INVALID_ARGUMENT;
+        if (value < -8 || value > 7)
+          return IM2P_REQUEST_INVALID_ARGUMENT;
       }
       im2p::integrated::put_operand(pending.bytes, lane, value);
     }

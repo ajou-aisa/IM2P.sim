@@ -425,7 +425,8 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
     prefix = "VIM2PGemminiWSHP1RtlTest"
     source = "test_ws_rtl.cpp"
     executable = object_dir / prefix
-    sources = (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"))
+    sources = (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"),
+               str(LLAMA_ROOT / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"))
     link_flags = ("-LDFLAGS", " ".join((
         str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
         str(case.output / "host-build" / "libgemmini_hp1_ggml_numeric.a"),

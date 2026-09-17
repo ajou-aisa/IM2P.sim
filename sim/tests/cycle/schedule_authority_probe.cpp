@@ -114,6 +114,10 @@ struct Capture {
                  uint64_t &) {
     return IM2P_ERROR;
   }
+  static int scu(void *, const hp::RmdScuWork &, std::vector<int32_t> &,
+                 uint64_t &) {
+    return IM2P_ERROR;
+  }
 };
 
 bool same_plan(const hp::WorkPlanV1 &a, const hp::WorkPlanV1 &b) {
@@ -265,7 +269,8 @@ int main() {
             Capture::full,
             {&captured, Capture::begin, Capture::publish, Capture::poll,
              Capture::finish},
-            Capture::raw};
+            Capture::raw,
+            Capture::scu};
         require(ggml_gemmini_hp1_bind_executor(binding),
                 "bind capture callbacks");
         bool quantized = false;

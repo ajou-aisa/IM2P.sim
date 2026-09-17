@@ -1,7 +1,9 @@
 #include "rmd_rtl_fixture.hpp"
 
-#include "residual/rmd/rmd-compose.hpp"
 #include "quants/act/meta.hpp"
+#include "quants/common/hp1_scu.hpp"
+#include "residual/rmd/rmd-compose.hpp"
+#include "residual/rmd/rmd-reference.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +17,8 @@ namespace {
 namespace rmd = ggml::gemmini::rmd;
 
 void require(bool condition, const char *message) {
-  if (!condition) throw std::runtime_error(message);
+  if (!condition)
+    throw std::runtime_error(message);
 }
 
 int code(std::size_t column, std::size_t k) {
@@ -30,7 +33,7 @@ enum class Fault { none, missing, excess, execution };
 
 struct ObservedExecutor {
   void *context;
-  RmdRawExecute execute;
+  RmdScuExecute execute;
   std::size_t calls = 0;
   std::size_t raw_exact = 0;
   bool odd_k = false;
@@ -38,37 +41,55 @@ struct ObservedExecutor {
   Fault fault = Fault::none;
 };
 
-int observed_execute(void *opaque, const RmdRawWork &work,
-                      std::vector<std::int32_t> &values, std::uint64_t &cycles) {
+int observed_execute(void *opaque, const RmdScuWork &work,
+                     std::vector<std::int32_t> &values, std::uint64_t &cycles) {
   auto &observed = *static_cast<ObservedExecutor *>(opaque);
-  require(work.plan.kind == WorkKind::rmd_raw && work.plan.k <= 32,
-          "RMD callback lost raw/block32 work contract");
+  require(work.plan.kind == WorkKind::dense_hp1_final && work.plan.k <= 32 &&
+              work.carriers.size() == work.plan.n,
+          "RMD callback lost normal HP1 SCU work contract");
   std::vector<std::int32_t> expected(work.plan.m * work.plan.n);
   for (std::size_t row = 0; row < work.plan.m; ++row) {
     for (std::size_t column = 0; column < work.plan.n; ++column) {
-      std::int64_t dot = 0;
-      for (std::size_t k = 0; k < work.plan.k; ++k) {
-        dot += std::int64_t{work.activations[row * work.plan.k + k]} *
-                work.weights[k * work.plan.n + column];
+      std::int32_t acc = 0;
+      for (std::size_t base = 0; base < work.plan.k;
+           base += std::min<std::size_t>(DIM, 32)) {
+        std::int64_t dot = 0;
+        for (std::size_t k = base;
+             k < std::min<std::size_t>(static_cast<std::size_t>(work.plan.k),
+                                       base + std::min<std::size_t>(DIM, 32));
+             ++k)
+          dot += std::int64_t{work.activations[row * work.plan.k + k]} *
+                 work.weights[k * work.plan.n + column];
+        require(dot >= INT32_MIN && dot <= INT32_MAX,
+                "RMD raw fragment bound failed");
+        const auto q = ggml::gemmini::quants::hp1::apply_validated(
+            static_cast<std::int32_t>(dot), work.carriers[column]);
+        acc = base == 0 ? q : ggml::gemmini::quants::hp1::accumulate(acc, q);
+        observed.dense_clamp |= q == INT32_MIN || q == INT32_MAX;
       }
-      require(dot >= INT32_MIN && dot <= INT32_MAX, "RMD raw K32 bound failed");
-      expected[row * work.plan.n + column] = static_cast<std::int32_t>(dot);
-      observed.dense_clamp |= dot * (std::int64_t{1} << 24) > INT32_MAX ||
-                               dot * (std::int64_t{1} << 24) < INT32_MIN;
+      expected[row * work.plan.n + column] = acc;
     }
   }
   const int status = observed.execute(observed.context, work, values, cycles);
-  if (status != IM2P_OK) return status;
-  require(values == expected, "RMD raw RTL output differs from independent dot oracle");
+  if (status != IM2P_OK)
+    return status;
+  require(values == expected,
+          "RMD SCU RTL output differs from fragment numerical oracle");
   require(cycles > 0, "RMD callback returned no measured RTL cycles");
   ++observed.calls;
   observed.raw_exact += values.size();
   observed.odd_k |= work.plan.k % 2 != 0;
   switch (observed.fault) {
-  case Fault::missing: values.pop_back(); break;
-  case Fault::excess: values.push_back(0); break;
-  case Fault::execution: return IM2P_ERROR;
-  case Fault::none: break;
+  case Fault::missing:
+    values.pop_back();
+    break;
+  case Fault::excess:
+    values.push_back(0);
+    break;
+  case Fault::execution:
+    return IM2P_ERROR;
+  case Fault::none:
+    break;
   }
   return IM2P_OK;
 }
@@ -93,12 +114,11 @@ void assembler_negatives() {
           "RMD duplicate tile accepted");
 }
 
-}
+} // namespace
 
 RmdRtlFixture::RmdRtlFixture()
     : output(rows * columns, 0.0F), q4_(columns * 2), q8_(columns * 2),
-      residuals_(rows * k, 0),
-      exponents_{INT16_MIN, 0, 2, 7, 0, 24} {
+      residuals_(rows * k, 0), exponents_{INT16_MIN, 0, 2, 7, 0, 24} {
   args.I = rows;
   args.J = columns;
   args.K = k;
@@ -111,19 +131,24 @@ RmdRtlFixture::RmdRtlFixture()
   args.matmul_layer = "gemmini_hp1_rmd_rtl_fixture";
   require(args.A.allocate(rows, k, GGML_GEMMINI_ACTIVATION_BITS),
           "RMD activation fixture allocation failed");
-  args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 0.5F;
+  args.act_quant.storage()
+      .emplace<ggml::gemmini::quants::act::tensor::Meta>()
+      .scale = 0.5F;
   for (std::size_t column = 0; column < columns; ++column) {
     for (std::size_t block = 0; block < 2; ++block) {
       const auto index = column * 2 + block;
-      q4_[index].channel_scale = q8_[index].channel_scale = channel_scale(column);
+      q4_[index].channel_scale = q8_[index].channel_scale =
+          channel_scale(column);
       set_exponent(column, block, exponents_[index]);
       for (std::size_t lane = 0; lane < 32; ++lane) {
         const auto value = code(column, block * 32 + lane);
         q8_[index].qs[lane] = static_cast<std::int8_t>(value);
         const auto nibble = static_cast<std::uint8_t>(value + 8);
         auto &packed = q4_[index].qs[lane % 16];
-        packed = lane < 16 ? static_cast<std::uint8_t>((packed & 0xf0U) | nibble)
-                           : static_cast<std::uint8_t>((packed & 0x0fU) | (nibble << 4));
+        packed =
+            lane < 16
+                ? static_cast<std::uint8_t>((packed & 0xf0U) | nibble)
+                : static_cast<std::uint8_t>((packed & 0x0fU) | (nibble << 4));
       }
     }
   }
@@ -146,7 +171,8 @@ RmdRtlFixture::RmdRtlFixture()
     residual[3] = 0x12345678;
     residual[11] = -0x12345678;
     residual[31] = 1 << (GGML_GEMMINI_ACTIVATION_BITS * 2);
-    for (std::size_t lane = 0; lane < 5; ++lane) residual[32 + lane] = 7;
+    for (std::size_t lane = 0; lane < 5; ++lane)
+      residual[32 + lane] = 7;
     if (row % 3 == 1) {
       residual[32] = INT32_MAX;
       residual[33] = INT32_MIN;
@@ -159,77 +185,79 @@ RmdRtlFixture::RmdRtlFixture()
 }
 
 void RmdRtlFixture::set_exponent(std::size_t column, std::size_t block,
-                                std::int16_t exponent) {
+                                 std::int16_t exponent) {
   require(column < columns && block < 2, "RMD fixture exponent index invalid");
   const auto index = column * 2 + block;
   exponents_[index] = q4_[index].m = q8_[index].m = exponent;
 }
 
-rmd::StripePacketHandle RmdRtlFixture::packet(
-    std::size_t stripe_id, std::size_t row_begin, std::size_t row_count) const {
+rmd::StripePacketHandle RmdRtlFixture::packet(std::size_t stripe_id,
+                                              std::size_t row_begin,
+                                              std::size_t row_count) const {
   require(row_begin < rows && row_count <= rows - row_begin,
           "RMD fixture stripe range invalid");
   rmd::RmdStripeBuilder builder;
-  builder.reset(stripe_id, row_begin, row_count, k, columns, GGML_GEMMINI_ACTIVATION_BITS);
+  builder.reset(stripe_id, row_begin, row_count, k, columns,
+                GGML_GEMMINI_ACTIVATION_BITS);
   for (std::size_t row = 0; row < row_count; ++row) {
     for (std::size_t lane = 0; lane < k; ++lane) {
-      require(builder.add_residual(row, lane, residuals_[(row_begin + row) * k + lane]),
+      require(builder.add_residual(row, lane,
+                                   residuals_[(row_begin + row) * k + lane]),
               "RMD full INT32 builder rejected residual");
     }
   }
   const auto result = builder.finish();
-  require(result != nullptr && rmd::validate_packet(*result) == rmd::RmdStatus::success,
+  require(result != nullptr &&
+              rmd::validate_packet(*result) == rmd::RmdStatus::success,
           "RMD full INT32 packet invalid");
   return result;
 }
 
-std::vector<std::int64_t> RmdRtlFixture::expected_correction(
-    std::size_t row_begin, std::size_t row_count) const {
-  std::vector<std::int64_t> expected(row_count * columns);
-  for (std::size_t row = 0; row < row_count; ++row) {
-    for (std::size_t column = 0; column < columns; ++column) {
-      __int128 total = 0;
-      for (std::size_t lane = 0; lane < k; ++lane) {
-        const auto exponent = exponents_[column * 2 + lane / 32];
-        if (exponent == INT16_MIN) continue;
-        total += static_cast<__int128>(residuals_[(row_begin + row) * k + lane]) *
-                  code(column, lane) * (static_cast<__int128>(1) << exponent);
-      }
-      require(total >= INT64_MIN && total <= INT64_MAX, "RMD fixture golden overflow");
-      expected[row * columns + column] = static_cast<std::int64_t>(total);
-    }
-  }
+std::vector<std::int64_t>
+RmdRtlFixture::expected_correction(std::size_t row_begin,
+                                   std::size_t row_count) const {
+  std::vector<std::int64_t> expected;
+  const auto input = packet(0, row_begin, row_count);
+  require(rmd::reference_hp1_packet_correction(args, *input, expected) ==
+              rmd::RmdStatus::success,
+          "RMD fragment-SCU reference overflow");
   return expected;
 }
 
-std::vector<float> RmdRtlFixture::expected_merge(
-    std::size_t row_begin, std::size_t row_count) const {
+std::vector<float> RmdRtlFixture::expected_merge(std::size_t row_begin,
+                                                 std::size_t row_count) const {
   const auto integers = expected_correction(row_begin, row_count);
   std::vector<float> expected(integers.size());
   for (std::size_t row = 0; row < row_count; ++row)
     for (std::size_t column = 0; column < columns; ++column)
-      expected[row * columns + column] = static_cast<float>(
-          double(integers[row * columns + column]) * double(channel_scale(column)) * 0.5);
+      expected[row * columns + column] =
+          static_cast<float>(double(integers[row * columns + column]) *
+                             double(channel_scale(column)) * 0.5);
   return expected;
 }
 
 void run_rmd_ws_rtl_fixture(const Capability &capability, void *context,
-                           RmdRawExecute execute) {
-  require(capability.rmd && execute != nullptr, "RMD RTL capability/callback missing");
+                            RmdScuExecute execute) {
+  require(capability.rmd && execute != nullptr,
+          "RMD RTL capability/callback missing");
   RmdRtlFixture fixture;
   ObservedExecutor observed{context, execute};
-  RmdExecutorContext executor{capability, &observed, observed_execute};
+  RmdExecutorContext executor{capability, &observed, nullptr,
+                              0,          0,         observed_execute};
   const auto full = fixture.packet(0, 0, fixture.rows);
   const auto lane_count = GGML_GEMMINI_ACTIVATION_BITS == 4 ? 9U : 5U;
-  require(full->lane_capacity == lane_count, "RMD full INT32 lane capacity changed");
+  require(full->lane_capacity == lane_count,
+          "RMD full INT32 lane capacity changed");
   bool high_carry = false;
   bool all_lanes = false;
   for (const auto &block : full->blocks) {
     all_lanes |= block.active_lane_count == lane_count;
-    for (std::size_t position = 0; position < block.active_lane_count; ++position)
+    for (std::size_t position = 0; position < block.active_lane_count;
+         ++position)
       high_carry |= block.lane_ids[position] == lane_count - 1;
   }
-  require(high_carry && all_lanes, "RMD full INT32 lane/high carry coverage missing");
+  require(high_carry && all_lanes,
+          "RMD full INT32 lane/high carry coverage missing");
 
   std::size_t composed = 0;
   std::size_t merged = 0;
@@ -240,20 +268,25 @@ void run_rmd_ws_rtl_fixture(const Capability &capability, void *context,
     const auto packet = fixture.packet(pass, begin, rows);
     rmd::Correction correction;
     rmd::RmdExecutionMetrics metrics{};
-    require(execute_rmd_packet(executor, fixture.args, *packet, correction, &metrics) ==
-                rmd::RmdStatus::success, "RMD external packet execution failed");
-    const auto *integer = std::get_if<rmd::BlockScaledInt64Correction>(&correction);
-    require(integer && integer->values == fixture.expected_correction(begin, rows),
-            "RMD CPU block/radix composition differs from INT128 golden");
-    require(metrics.im2p_dot_calls > 0 && metrics.im2p_stats.work_total_cycles() > 0,
+    require(execute_rmd_packet(executor, fixture.args, *packet, correction,
+                               &metrics) == rmd::RmdStatus::success,
+            "RMD external packet execution failed");
+    const auto *integer =
+        std::get_if<rmd::BlockScaledInt64Correction>(&correction);
+    require(
+        integer && integer->values == fixture.expected_correction(begin, rows),
+        "RMD SCU/radix composition differs from hardware-equivalent reference");
+    require(metrics.im2p_dot_calls > 0 &&
+                metrics.im2p_stats.work_total_cycles() > 0,
             "RMD provider execution metrics missing");
     composed += integer->values.size();
     std::fill(fixture.output.begin(), fixture.output.end(), 0.0F);
     require(rmd::merge_rmd_correction(fixture.args, *packet, correction) ==
-                rmd::RmdStatus::success, "RMD CPU float merge failed");
+                rmd::RmdStatus::success,
+            "RMD CPU float merge failed");
     const auto expected = fixture.expected_merge(begin, rows);
     require(std::equal(expected.begin(), expected.end(),
-                        fixture.output.begin() + begin * fixture.columns),
+                       fixture.output.begin() + begin * fixture.columns),
             "RMD CPU float merge differs from independent golden");
     merged += expected.size();
   }
@@ -263,26 +296,39 @@ void run_rmd_ws_rtl_fixture(const Capability &capability, void *context,
     rmd::Correction correction = rmd::PreScaledFloat64Correction{{91.0}};
     rmd::RmdExecutionMetrics metrics{};
     metrics.packet_call_count = 73;
-    require(execute_rmd_packet(executor, fixture.args, *full, correction, &metrics) !=
-                rmd::RmdStatus::success &&
+    require(execute_rmd_packet(executor, fixture.args, *full, correction,
+                               &metrics) != rmd::RmdStatus::success &&
                 std::get<rmd::PreScaledFloat64Correction>(correction).values ==
-                    std::vector<double>{91.0} && metrics.packet_call_count == 73,
+                    std::vector<double>{91.0} &&
+                metrics.packet_call_count == 73,
             "RMD invalid hardware completion published output/metrics");
   }
   observed.fault = Fault::none;
   fixture.set_exponent(2, 0, 62);
   rmd::Correction unchanged = rmd::PreScaledFloat64Correction{{19.0}};
-  require(execute_rmd_packet(executor, fixture.args, *full, unchanged) ==
-              rmd::RmdStatus::overflow &&
-              std::get<rmd::PreScaledFloat64Correction>(unchanged).values ==
-                  std::vector<double>{19.0}, "RMD INT64 scale overflow not transactional");
+  std::vector<std::int64_t> high_expected;
+  const auto expected_status =
+      rmd::reference_hp1_packet_correction(fixture.args, *full, high_expected);
+  const auto actual_status =
+      execute_rmd_packet(executor, fixture.args, *full, unchanged);
+  require(
+      actual_status == expected_status &&
+          (actual_status == rmd::RmdStatus::success
+               ? std::get<rmd::BlockScaledInt64Correction>(unchanged).values ==
+                     high_expected
+               : std::get<rmd::PreScaledFloat64Correction>(unchanged).values ==
+                     std::vector<double>{19.0}),
+      "RMD high exponent SCU/radix status or transactionality mismatch");
   require(observed.odd_k && observed.dense_clamp,
           "RMD sparse odd K/dense clamp distinction not exercised");
-  std::printf("WS_RMD A%uW%uD%u rtl_callbacks=%zu raw_exact=%zu lanes=%u high_carry=1 "
-              "compose_exact=%zu merge_exact=%zu negative_tests=6 missing_reject=1 "
-              "duplicate_reject=1 overflow_reject=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n",
-              capability.activation_bits, capability.weight_bits, capability.dim,
-              observed.calls, observed.raw_exact, lane_count, composed, merged);
+  std::printf(
+      "WS_RMD_SCU A%uW%uD%u rtl_callbacks=%zu scaled_exact=%zu lanes=%u "
+      "high_carry=1 "
+      "compose_exact=%zu merge_exact=%zu negative_tests=6 missing_reject=1 "
+      "duplicate_reject=1 high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 "
+      "slots=0,1,0\n",
+      capability.activation_bits, capability.weight_bits, capability.dim,
+      observed.calls, observed.raw_exact, lane_count, composed, merged);
 }
 
-}
+} // namespace im2p::gemmini_hp1

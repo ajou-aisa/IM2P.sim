@@ -218,6 +218,9 @@ fn main() {
         build.define("IM2P_VERILATOR_TEST_HOOKS", None);
         if implementation == "GEMMINI_HP1" {
             build.file("tests/cycle/accepted_work_observer.cpp");
+            build.file("tests/cycle/rmd_scu_observer.cpp");
+            println!("cargo:rerun-if-changed=tests/cycle/rmd_scu_observer.cpp");
+            println!("cargo:rerun-if-changed=tests/cycle/rmd_scu_observer.h");
             println!("cargo:rerun-if-changed=tests/cycle/accepted_work_observer.cpp");
             println!("cargo:rerun-if-changed=tests/cycle/accepted_work_observer.h");
         }

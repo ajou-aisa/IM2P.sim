@@ -245,6 +245,9 @@ void stripe_copy_and_admission() {
     s.abi_version = IM2P_ABI_VERSION;
     s.activation_bits = GGML_GEMMINI_ACTIVATION_BITS;
     s.activation_storage_bytes = 1;
+    s.weight_bits = GGML_GEMMINI_WEIGHT_BITS;
+    s.weight_storage_bytes = 1;
+    s.dim = DIM;
     s.stripe_id = id;
     s.i_start = begin;
     s.rows = rows;
@@ -255,7 +258,7 @@ void stripe_copy_and_admission() {
     auto reject = [&](const im2p_production_geometry_v1_t *bad) {
       const auto before = records.size();
       require(im2p_publish_stripe_planned(stream.get(), &s, bad) ==
-                  IM2P_INVALID_ARGUMENT,
+                  IM2P_INVALID_LAYOUT,
               "invalid per-stripe companion admitted");
       require(records.size() == before, "rejected stripe advanced runtime");
       ++negatives;
@@ -276,7 +279,7 @@ void stripe_copy_and_admission() {
     bad = g;
     bad.stripe_rows++;
     reject(&bad);
-    require(im2p_publish_stripe(stream.get(), &s) == IM2P_INVALID_ARGUMENT,
+    require(im2p_publish_stripe(stream.get(), &s) == IM2P_INVALID_LAYOUT,
             "planned stream admitted a legacy publication");
     ++negatives;
     int status = 0;
