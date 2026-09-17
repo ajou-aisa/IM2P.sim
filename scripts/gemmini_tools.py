@@ -22,15 +22,26 @@ from typing import Final, TypeAlias
 JsonValue: TypeAlias = str | int | bool | None | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 ROOT: Final = Path(__file__).resolve().parents[1]
 
+if __package__ is None:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.im2p_paths import resolve_gemmini_work_root
+
 
 def build_environment(work_root: Path) -> Mapping[str, str]:
     environment = dict(os.environ)
+    environment.setdefault("IM2P_GEMMINI_WORK_ROOT", str(work_root.resolve()))
     if platform.system() == "Darwin":
+        configured_firtool = environment.get("CHISEL_FIRTOOL_PATH")
         pinned_firtool = (
             work_root / "deps/firtool-1.62.0-macos-x64"
             / "org.chipsalliance/llvm-firtool/macos-x64/bin"
         )
-        environment["CHISEL_FIRTOOL_PATH"] = str(pinned_firtool)
+        if not configured_firtool or not (Path(configured_firtool) / "firtool").is_file():
+            if (pinned_firtool / "firtool").is_file():
+                environment["CHISEL_FIRTOOL_PATH"] = str(pinned_firtool)
+            elif located_firtool := shutil.which("firtool", path=environment.get("PATH")):
+                environment["CHISEL_FIRTOOL_PATH"] = str(Path(located_firtool).resolve().parent)
         if "JAVA_HOME" not in environment:
             probe = subprocess.run(
                 ("/usr/libexec/java_home",), text=True, capture_output=True, check=False,
@@ -38,6 +49,10 @@ def build_environment(work_root: Path) -> Mapping[str, str]:
             java_home = Path(probe.stdout.strip())
             if probe.returncode == 0 and (java_home / "bin/java").is_file():
                 environment["JAVA_HOME"] = str(java_home)
+            elif located_java := shutil.which("java", path=environment.get("PATH")):
+                java_home = Path(located_java).resolve().parent.parent
+                if (java_home / "bin/java").is_file():
+                    environment["JAVA_HOME"] = str(java_home)
     return environment
 
 
@@ -100,9 +115,7 @@ def collect_tool_lock(work_root: Path, environment: Mapping[str, str]) -> Mappin
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Record selected Gemmini build tools without changing the system")
-    parser.add_argument("--work-root", type=Path, default=Path(os.environ.get(
-        "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab/build/im2p-gemmini",
-    )))
+    parser.add_argument("--work-root", type=Path, default=resolve_gemmini_work_root(ROOT))
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)

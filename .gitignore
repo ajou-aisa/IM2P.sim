@@ -26,3 +26,6 @@ src/gemmini/scu-core/target/
 src/gemmini/integration/target/
 src/gemmini/diagnostics/target/
 src/gemmini/diagnostics/test_run_dir/
+
+# Repo-local external tool/source dependencies.
+/deps/

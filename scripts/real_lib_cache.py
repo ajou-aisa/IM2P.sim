@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.im2p_config import profile_config
+from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.real_lib_manifest import (
     SCHEMA,
     CacheError,
@@ -271,9 +272,7 @@ def parser() -> argparse.ArgumentParser:
     ensure_parser.add_argument("--builder")
     ensure_parser.add_argument(
         "--gemmini-work-root", type=Path,
-        default=Path(os.environ.get(
-            "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab" / "build" / "im2p-gemmini",
-        )),
+        default=resolve_gemmini_work_root(ROOT),
     )
     return result
 

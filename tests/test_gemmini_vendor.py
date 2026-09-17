@@ -24,6 +24,9 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.im2p_paths import resolve_gemmini_work_root
+
 ROOT: Final = Path(__file__).resolve().parents[1]
 VENDOR: Final = ROOT / "scripts/gemmini_vendor.py"
 CHIPYARD_PIN: Final = "69eba860a352343e4ac6b6df0f3638a79a86ec78"
@@ -77,12 +80,7 @@ def run_vendor(source: Path, destination: Path, *, verify: bool = False) -> subp
 
 
 def source_checkout() -> Path:
-    work_root = Path(
-        os.environ.get(
-            "IM2P_GEMMINI_WORK_ROOT",
-            Path.home() / "aisa-lab/build/im2p-gemmini",
-        )
-    )
+    work_root = resolve_gemmini_work_root(ROOT)
     checkout = work_root / "deps/chipyard-1.13.0"
     assert checkout.is_dir(), f"pinned Chipyard checkout missing: {checkout}"
     return checkout

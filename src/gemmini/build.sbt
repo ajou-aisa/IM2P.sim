@@ -9,8 +9,13 @@ Global / allowUnsafeScalaLibUpgrade := true
 lazy val sourceRoot = file(".").getCanonicalFile
 lazy val portableSources = sourceRoot / "src/main/scala/im2p/gemmini"
 lazy val controlSources = sourceRoot / "control/src/main/scala/im2p/gemmini"
-lazy val workRoot = sys.env.get("IM2P_GEMMINI_WORK_ROOT").map(file)
-  .getOrElse(file(sys.props("user.home")) / "aisa-lab/build/im2p-gemmini")
+lazy val repositoryRoot = (sourceRoot / "../..").getCanonicalFile
+lazy val legacyWorkRoot = file(sys.props("user.home")) / "aisa-lab/build/im2p-gemmini"
+lazy val workRoot = sys.env.get("IM2P_GEMMINI_WORK_ROOT").map(file).getOrElse {
+  if ((repositoryRoot / "deps/chipyard-1.13.0").isDirectory) repositoryRoot
+  else if ((legacyWorkRoot / "deps/chipyard-1.13.0").isDirectory) legacyWorkRoot
+  else repositoryRoot
+}
 lazy val chipyardRoot = workRoot / "deps/chipyard-1.13.0"
 lazy val upstreamGemmini = ProjectRef(chipyardRoot.toURI, "gemmini")
 lazy val upstreamTargetUtils = ProjectRef(chipyardRoot.toURI, "midas_target_utils")
