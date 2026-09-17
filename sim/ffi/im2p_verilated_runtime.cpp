@@ -14,13 +14,16 @@ inline bool im2p_is_standard_console_fd(IData fpi) noexcept {
 } // namespace
 
 void VL_WRITEF_NX(const std::string &format, int argc, ...) VL_MT_SAFE {
-    (void)argc;
     static thread_local std::string output;
     output.clear();
 
     va_list ap;
     va_start(ap, argc);
+#if VERILATOR_VERSION_INTEGER >= 5050000
+    _vl_vsformat(output, format, argc, ap);
+#else
     _vl_vsformat(output, format, ap);
+#endif
     va_end(ap);
 
     if (!im2p_verilator_log_message(output.data(), output.size())) {
@@ -29,13 +32,16 @@ void VL_WRITEF_NX(const std::string &format, int argc, ...) VL_MT_SAFE {
 }
 
 void VL_FWRITEF_NX(IData fpi, const std::string &format, int argc, ...) VL_MT_SAFE {
-    (void)argc;
     static thread_local std::string output;
     output.clear();
 
     va_list ap;
     va_start(ap, argc);
+#if VERILATOR_VERSION_INTEGER >= 5050000
+    _vl_vsformat(output, format, argc, ap);
+#else
     _vl_vsformat(output, format, ap);
+#endif
     va_end(ap);
 
     if (im2p_is_standard_console_fd(fpi) &&
