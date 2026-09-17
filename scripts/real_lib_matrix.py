@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.im2p_config import ProfileConfig, profile_config
+from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.real_lib_manifest import ArtifactRow, read_manifest_summary, verify_manifest
 from scripts.real_lib_materialize import SELECTED_ARTIFACTS
 
@@ -111,9 +112,7 @@ def main() -> int:
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument(
         "--gemmini-work-root", type=Path,
-        default=Path(os.environ.get(
-            "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab" / "build" / "im2p-gemmini",
-        )),
+        default=resolve_gemmini_work_root(ROOT),
     )
     parser.add_argument("--print-identities", action="store_true")
     args = parser.parse_args()

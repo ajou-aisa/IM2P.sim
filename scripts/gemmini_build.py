@@ -35,6 +35,7 @@ if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.gemmini_tools import build_environment, collect_tool_lock
+from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.gemmini_hardware_contract import write_hardware_contract
 
 ROOT: Final = Path(__file__).resolve().parents[1]
@@ -45,9 +46,7 @@ DEFAULT_CATALOG: Final = ROOT / "config" / "gemmini_hp1_profiles.json"
 RESOLVER: Final = ROOT / "scripts" / "gemmini_resolve_profile.py"
 BOARD_RESOLVER: Final = ROOT / "scripts" / "gemmini_board.py"
 VENDOR: Final = ROOT / "scripts" / "gemmini_vendor.py"
-WORK_ROOT: Final = Path(os.environ.get(
-    "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab" / "build" / "im2p-gemmini",
-))
+WORK_ROOT: Final = resolve_gemmini_work_root(ROOT)
 MACOS_FIRTOOL_BIN: Final = (
     WORK_ROOT / "deps" / "firtool-1.62.0-macos-x64"
     / "org.chipsalliance" / "llvm-firtool" / "macos-x64" / "bin"

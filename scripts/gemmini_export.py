@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.gemmini_board import BoardError, load_board_manifest
 from scripts.gemmini_evidence import rmd_bound_runtime_evidence, rmd_runtime_evidence
+from scripts.im2p_paths import resolve_gemmini_work_root
 
 SOURCE_SUFFIXES: Final = frozenset({
     ".c", ".cc", ".cmake", ".cpp", ".h", ".hpp", ".json", ".md", ".patch", ".properties",
@@ -266,9 +267,7 @@ def dependency_snapshot(source_root: Path, output: Path) -> dict[str, JsonValue]
        not isinstance(upstream.get("gemmini"), dict):
         return {"schema_version": 1, "status": "NOT_RUN", "reason": "UPSTREAM_LOCK_INCOMPLETE"}
     workspace = Path(os.environ.get("IM2P_WORKSPACE_ROOT", source_root.parent)).resolve()
-    work_root = Path(os.environ.get(
-        "IM2P_GEMMINI_WORK_ROOT", Path.home() / "aisa-lab/build/im2p-gemmini",
-    )).resolve()
+    work_root = resolve_gemmini_work_root(source_root)
     chipyard = work_root / "deps/chipyard-1.13.0"
     llama = workspace / "llama.cpp-gemmini"
     include = workspace / "RISC-V-DynDNN-gemmini-include"

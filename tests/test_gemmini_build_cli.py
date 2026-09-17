@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Final
 
 ROOT: Final = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.im2p_paths import CHIPYARD_RELATIVE, resolve_gemmini_work_root
 RESOLVER: Final = ROOT / "scripts" / "gemmini_resolve_profile.py"
 BUILD: Final = ROOT / "scripts" / "gemmini_build.py"
 TEST: Final = ROOT / "scripts" / "gemmini_test.py"
@@ -380,7 +382,7 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
             "    pinned = pathlib.Path(work_root, 'deps', "
             "'firtool-1.62.0-macos-x64', 'org.chipsalliance', 'llvm-firtool', "
             "'macos-x64', 'bin')\n"
-            "    assert pathlib.Path(os.environ['CHISEL_FIRTOOL_PATH']) == pinned\n"
+            "    assert pathlib.Path(os.environ['CHISEL_FIRTOOL_PATH']).resolve() == pinned.resolve()\n"
             "assert pathlib.Path.cwd().name == 'gemmini'\n"
             "overlay_arg = next(arg for arg in sys.argv if arg.startswith('-Dim2p.gemmini.overlay='))\n"
             "assert pathlib.Path(overlay_arg.split('=', 1)[1]).is_dir()\n"
@@ -404,8 +406,23 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
         sbt.chmod(0o755)
         verilator.chmod(0o755)
         output = base / "rtl-build"
+        work_root = base / "gemmini-work"
+        dependencies = work_root / "deps"
+        dependencies.mkdir(parents=True)
+        chipyard = resolve_gemmini_work_root(ROOT) / CHIPYARD_RELATIVE
+        assert chipyard.is_dir(), f"pinned Chipyard checkout missing: {chipyard}"
+        (dependencies / "chipyard-1.13.0").symlink_to(chipyard, target_is_directory=True)
+        pinned_firtool = (
+            dependencies / "firtool-1.62.0-macos-x64"
+            / "org.chipsalliance/llvm-firtool/macos-x64/bin"
+        )
+        pinned_firtool.mkdir(parents=True)
+        firtool = pinned_firtool / "firtool"
+        firtool.write_text("#!/bin/sh\necho firtool test\n", encoding="utf-8")
+        firtool.chmod(0o755)
         environment = dict(os.environ)
         environment.pop("JAVA_HOME", None)
+        environment["IM2P_GEMMINI_WORK_ROOT"] = str(work_root)
         environment["CHISEL_FIRTOOL_PATH"] = str(tools / "incompatible-firtool")
         environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
 

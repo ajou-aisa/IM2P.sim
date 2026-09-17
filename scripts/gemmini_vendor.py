@@ -18,11 +18,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NewType, TypeAlias, TypedDict, final
+
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.im2p_paths import resolve_gemmini_work_root
 
 CommitSha = NewType("CommitSha", str)
 Artifacts: TypeAlias = dict[str, bytes]
@@ -33,6 +39,14 @@ GEMMINI_PIN: Final = CommitSha("25809f78323a729ef76fb68f3cedd8a24da2942b")
 CHIPYARD_REPOSITORY: Final = "https://github.com/ucb-bar/chipyard.git"
 GEMMINI_REPOSITORY: Final = "https://github.com/ucb-bar/gemmini.git"
 GEMMINI_GITLINK: Final = "generators/gemmini"
+CHIPYARD_BUILD_SUBMODULES: Final = (
+    GEMMINI_GITLINK,
+    "generators/rocket-chip",
+    "generators/hardfloat",
+    "generators/diplomacy",
+    "tools/cde",
+    "sims/firesim",
+)
 USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR] [--verify] [--overlay NEW_DIR]"
 PATCH_PATH: Final = "patches/0001-packed-input-controller-bytes.patch"
 RESET_PATCH_PATH: Final = "patches/0002-loop-head-reset.patch"
@@ -160,6 +174,45 @@ def git_text(repository: Path, arguments: list[str]) -> str:
     return run_git(repository, arguments).decode().strip()
 
 
+def bootstrap_source(source: Path) -> None:
+    """Materialize the pinned Chipyard checkout only when it is absent."""
+    if source.exists() or source.is_symlink():
+        return
+    source.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Gemmini dependencies: bootstrapping pinned Chipyard at {source}", file=sys.stderr)
+    temporary = source.parent / f".{source.name}.bootstrap-{os.getpid()}"
+    if temporary.exists() or temporary.is_symlink():
+        raise VendorError(f"bootstrap staging path already exists: {temporary}")
+    try:
+        temporary.mkdir()
+        run_git(temporary, ["init", "--quiet"])
+        run_git(temporary, ["remote", "add", "origin", CHIPYARD_REPOSITORY])
+        run_git(temporary, ["fetch", "--depth", "1", "origin", CHIPYARD_PIN])
+        run_git(temporary, ["checkout", "--quiet", "--detach", "FETCH_HEAD"])
+        run_git(temporary, [
+            "submodule", "update", "--init", "--depth", "1", *CHIPYARD_BUILD_SUBMODULES,
+        ])
+        if git_text(temporary, ["rev-parse", "HEAD"]) != CHIPYARD_PIN:
+            raise VendorError("bootstrapped Chipyard checkout has unexpected HEAD")
+        gemmini = temporary / GEMMINI_GITLINK
+        if git_text(gemmini, ["rev-parse", "HEAD"]) != GEMMINI_PIN:
+            raise VendorError("bootstrapped Gemmini checkout has unexpected HEAD")
+        if source.exists():
+            shutil.rmtree(temporary)
+        else:
+            try:
+                temporary.rename(source)
+            except OSError:
+                if source.is_dir():
+                    shutil.rmtree(temporary)
+                else:
+                    raise
+    except Exception:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+
+
 def verify_source(source: Path) -> Path:
     gemmini = source / GEMMINI_GITLINK
     chipyard_head = git_text(source, ["rev-parse", "HEAD"])
@@ -278,7 +331,7 @@ def materialize(request: VendorRequest, artifacts: Artifacts) -> None:
 
 
 def parse_arguments(arguments: list[str]) -> VendorRequest | None:
-    work_root = Path(os.environ.get("IM2P_GEMMINI_WORK_ROOT", str(Path.home() / "aisa-lab/build/im2p-gemmini")))
+    work_root = resolve_gemmini_work_root(ROOT)
     source = work_root / "deps/chipyard-1.13.0"
     destination = ROOT / "src/gemmini"
     verify = False
@@ -313,6 +366,7 @@ def main() -> int:
         if outcome is None:
             print(USAGE)
             return 0
+        bootstrap_source(outcome.source)
         gemmini = verify_source(outcome.source)
         if outcome.overlay is not None:
             materialize_overlay(gemmini, outcome.overlay)
