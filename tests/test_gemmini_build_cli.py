@@ -200,9 +200,13 @@ def test_plan_writes_resolved_profile() -> None:
         assert (output / "resolved-hardware.properties").is_file()
         assert (output / "im2p_gemmini_hardware.h").is_file()
         assert resolved["fixed_latencies"] == {"scratchpad_read_delay": 4, "accumulator_latency": 2}
-        assert resolved["rmd_raw"] is True
-        assert resolved["rmd_numerical_revision"] == "rmd-raw-k32-cpu-compose-v1"
-        assert resolved["work_kinds"] == ["DENSE_HP1_FINAL", "RMD_RAW"]
+        assert resolved["rmd_enabled"] is True
+        assert resolved["rmd_datapath"] == "NORMAL_HP1_SCALED"
+        assert resolved["rmd_raw"] is False
+        assert resolved["rmd_numerical_revision"] == "rmd-hp1-scu-sat32-radix-v1"
+        assert resolved["host_integer_block_multiply"] is False
+        assert resolved["work_kinds"] == ["DENSE_HP1_FINAL"]
+        assert resolved["diagnostic_work_kinds"] == ["RMD_RAW"]
         assert json.loads((output / "result.json").read_text())["status"] == "PASS"
 
 
@@ -243,6 +247,12 @@ def test_board_free_stages_validate_in_dry_run() -> None:
             )
             assert profile["host_artifact_role"] == "HOST_COMMON_ORCHESTRATION"
             assert profile["host_audit_role"] == "PHYSICAL_HOST"
+            assert profile["rmd_enabled"] is True
+            assert profile["rmd_datapath"] == "NORMAL_HP1_SCALED"
+            assert profile["rmd_raw"] is False
+            assert profile["host_integer_block_multiply"] is False
+            assert profile["work_kinds"] == ["DENSE_HP1_FINAL"]
+            assert profile["diagnostic_work_kinds"] == ["RMD_RAW"]
             assert profile["selected_top"] == "IM2PGemminiWSHP1A8W8D16"
             if stage in ("rtl", "export"):
                 commands = profile["commands"]
@@ -289,7 +299,10 @@ def test_board_free_stages_validate_in_dry_run() -> None:
                 assert "IM2PGemminiWSHP1A8W8D16" in commands[-2]["arguments"]
                 assert "VIM2PGemminiWSHP1RtlTest" in commands[-2]["arguments"]
                 rtl_sources = {Path(argument).name for argument in commands[-2]["arguments"]}
-                assert {"test_ws_rtl.cpp", "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp"} <= rtl_sources
+                assert {
+                    "test_ws_rtl.cpp", "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp",
+                    "rmd-reference.cpp",
+                } <= rtl_sources
                 assert "-DGGML_GEMMINI_ENABLE_RMD=1" in commands[-2]["arguments"][
                     commands[-2]["arguments"].index("-CFLAGS") + 1
                 ]
@@ -504,11 +517,11 @@ def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
             "    binary = root / name\n"
             "    binary.write_text('#!/bin/sh\\necho \\\'integrated upstream WS HP1 RTL passed "
             "' + label + ' loops=1 load_execute_overlap=1\\\'\\n' + "
-            "f'echo \\\'WS_RMD {label} rtl_callbacks=1 raw_exact=27 lanes={lanes} high_carry=1 "
+            "f'echo \\\'WS_RMD_SCU {label} rtl_callbacks=1 scaled_exact=27 lanes={lanes} high_carry=1 "
             "compose_exact=54 merge_exact=54 negative_tests=6 missing_reject=1 duplicate_reject=1 "
-            "overflow_reject=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\\\'\\n' + "
+            "high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\\\'\\n' + "
             "f'echo \\\'WS_RMD_BOUND bits={bits} DIM={dim} full_exact=27 pipeline_exact=27 "
-            "dense_calls=4 raw_calls=1 stripes=3 slots=0,1,0 rollback=2 public_entry=1\\\'\\n' + "
+            "dense_calls=4 scu_calls=1 stripes=3 slots=0,1,0 rollback=2 public_entry=1\\\'\\n' + "
             "'echo FLOW_UNIT_TEST_ONLY\\n')\n"
             "    binary.chmod(0o755)\n",
             encoding="utf-8",

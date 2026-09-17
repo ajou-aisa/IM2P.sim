@@ -33,11 +33,16 @@ model/session/stripe state, handshake sequencing and backing-memory translation.
 The C ABI shim is `sim/ffi/im2p_gemmini_integrated.cpp`.
 
 [Production scheduling authority](GEMMINI_CYCLE_SIM_DESIGN.md) traces the exact
-route boundaries. The bound HP1 host preserves `WorkPlanV1`, but the generic
-public IM2P C API does not yet forward the private tile-count companion through
-Rust. Its bounded I/J extents are not the original DIM-count factors and do not
-carry tile K. Fixture cycle agreement must not be presented as an end-to-end
-certificate for that generic production route.
+route boundaries. The selected DIM-count geometry is transported by the additive
+`im2p_production_geometry_v1_t` companion through the public C API and Rust
+runtime, so `sim/common/gemmini_schedule.*` lowers the actual production tile
+factors instead of reconstructing or re-tiling them. FULL and PIPELINE accepted
+RTL descriptors are certified against that geometry across all six profiles.
+
+Production RMD follows the same rule: residual identity is host provenance, not a
+second NPU datapath. The residual executor submits normal `DENSE_HP1_FINAL` work
+with `rmdRaw=false`, HP1 carriers, and the same SCU/Sat32 accumulator semantics as
+dense GEMM. Historical `RMD_RAW` support remains diagnostic only.
 
 The existing one-read/one-write runtime ownership, two stripe slots, per-drive
 generation advancement, load/execute/store overlap and logical endpoint semantics

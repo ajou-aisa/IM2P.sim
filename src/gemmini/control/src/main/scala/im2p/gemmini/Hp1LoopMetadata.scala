@@ -18,7 +18,8 @@ class Hp1LoopMetadata extends Bundle {
   val finalFragment = Bool()
   val rmdRaw = Bool()
 
-  // One compact block per raw result; the CPU owns radix and block-scale composition.
+  // Historical/diagnostic raw descriptors bypass HP1 scaling. Production residual
+  // work keeps rmdRaw=false and uses the normal HP1 SCU; the CPU owns radix only.
   def rawShapeValid(dim: Int): Bool = {
     val compactK = maxK * dim.U - padK
     !rmdRaw || (maxK =/= 0.U && padK < dim.U && compactK > 0.U &&

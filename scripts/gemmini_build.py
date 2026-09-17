@@ -315,9 +315,13 @@ def _top_metadata(top: Top, selection: ProfileSelection) -> Mapping[str, JsonVal
                 "cycle_scope": "logical_work_accept_to_final_backing_write_completion",
                 "host_artifact_role": "HOST_COMMON_ORCHESTRATION",
                 "host_audit_role": "PHYSICAL_HOST",
-                "rmd_raw": True,
-                "rmd_numerical_revision": "rmd-raw-k32-cpu-compose-v1",
-                "work_kinds": ["DENSE_HP1_FINAL", "RMD_RAW"],
+                "rmd_enabled": True,
+                "rmd_datapath": "NORMAL_HP1_SCALED",
+                "rmd_raw": False,
+                "rmd_numerical_revision": "rmd-hp1-scu-sat32-radix-v1",
+                "host_integer_block_multiply": False,
+                "work_kinds": ["DENSE_HP1_FINAL"],
+                "diagnostic_work_kinds": ["RMD_RAW"],
                 "selected_top": (
                     f"IM2PGemminiWSHP1A{selection.activation_bits}"
                     f"W{selection.weight_bits}D{selection.dim}"

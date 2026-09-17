@@ -319,10 +319,33 @@ test copy, preserving the original numerical assertions and production RTL.
 It compares relative event cycles/counters and repeats the identical scalar-only
 model request. This phase-alignment test does not replace the 268-case golden.
 
-## RMD_RAW timing certificate
+## Production RMD-SCU cycle certificate
 
-`rmdRaw` remains a hardware metadata bit, not a cycle-API semantic label. In the
-current RTL it does not bypass scale-loading, reservation, writeback-credit,
+Production residual work uses the normal HP1 scaled datapath:
+`DENSE_HP1_FINAL`, `rmdRaw=false`, HP1 carriers, fragment-local SCU Sat32 and the
+same signed32 accumulator semantics as dense GEMM. The host performs balanced-radix
+recomposition and final floating reconstruction only; it does not apply an HP1
+integer block multiplier after NPU output.
+
+`rmd_scu_certificate.py` captures accepted production residual work across all six
+A4W4/A8W8 DIM16/32/64 profiles and pairs it with the same normal HP1 hardware
+path. The paired descriptor, scale traffic, SCU/event stream, integer result and
+cycle behavior are exact for 72/72 pairs. `rmd_scu_timing.py` then feeds the
+accepted scalar geometry/timing facts—not tensor values or RTL duration answers—
+into the existing value-free dense HP1 cycle model. The resulting production
+residual certificate is **72/72 exact**, maximum cycle delta **0**, with exact
+endpoint/counters and selected per-cycle event-type multisets.
+
+A DIM16 compact K31 case remains one logical production residual GEMM while the
+hardware performs physical reductions 16 and 15. This certificate therefore
+covers the current hardware-owned fragmentation/accumulation boundary rather than
+a host-side split-and-sum model.
+
+## Historical RMD_RAW diagnostic timing certificate
+
+`rmdRaw` remains a hardware metadata bit for historical/diagnostic raw work, not
+a production residual label and not a cycle-API semantic label. In the current
+RTL it does not bypass scale-loading, reservation, writeback-credit,
 accumulator, store, or completion structures. `ScaleBackingLoader` still reads
 and emits the same scale lanes; `rmdRaw` selects carrier zero, and
 `UpstreamHp1Writeback` consumes that carrier through the same timing/control path.
@@ -337,8 +360,9 @@ carrier is valid exponent 0. The certified raw metadata domain is compact K 1..3
 load/store/scale request-response counts, context/writeback/commit behavior, and
 the selected per-cycle event-type multiset are identical in all 24 pairs.
 Therefore no RMD-specific or semantic mode field is added to cycle ABI v1 for
-this tested hardware domain. This is a timing-equivalence certificate, not a
-numerical-equivalence claim and not a claim about raw shapes outside the stated
+this tested diagnostic domain. This is a historical timing-equivalence
+certificate, not the production residual numerical contract, not a
+numerical-equivalence claim, and not a claim about raw shapes outside the stated
 domain.
 
 ## Limitations and preserved paths

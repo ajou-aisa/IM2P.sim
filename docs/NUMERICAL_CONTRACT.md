@@ -71,19 +71,27 @@ composition or fence does not authorize partially committed caller output.
 Independent golden checks compare exact integers and the specified floating
 reconstruction; changing goldens or tolerances to hide a failure is not allowed.
 
-## RMD boundary and known failure
+## RMD production boundary
 
-The current integrated RMD raw work is a bounded K<=32 dot with its existing raw
-identity contract. CPU checked radix composition/merge is separate from dense HP1
-fragment saturation. The current host fixtures exercise raw/compose/merge and
-transactional error cases. No new residual algorithm is defined by this cleanup.
-Old blanket statements that every residual route is unimplemented are not the
-current integrated contract; support remains gated by the existing backend/API.
+Production HP1 residual correction uses the normal scaled HP1 datapath, not the
+historical raw bypass. `RmdScuWork` carries the selected production geometry and
+HP1 carriers into a `DENSE_HP1_FINAL` work plan with `rmdRaw=false`. The WS array,
+HP1 SCU and signed32 Sat32 accumulator therefore apply the same numerical order as
+main GEMM. Host-side HP1 integer block multiplication is forbidden.
 
-The generic frontend-real runner remains a baseline-existing failure for the six
-Gemmini HP1 profiles: `failed to start IM2P stream`. A separate historical runtime
-fixture reported an outer-K oracle failure. Neither failure is converted into PASS
-or fixed by cleanup. The completed [refactor report](GEMMINI_REFACTOR_REPORT.md)
+Residual selection, balanced-radix packet construction, radix recomposition and
+the final floating reconstruction/merge remain CPU responsibilities. A compact
+logical residual GEMM is submitted once; hardware owns DIM/block32 fragmentation
+and signed32 accumulation. In particular, DIM16 K31 is one logical call with
+physical reductions 16 and 15, not two host-issued residual GEMMs.
+
+`RMD_RAW` remains implemented only for historical/diagnostic checks. Its presence
+in RTL metadata must not be interpreted as the production residual contract.
+Current export metadata states `rmd_enabled=true`, `rmd_raw=false`, datapath
+`NORMAL_HP1_SCALED`, and numerical revision `rmd-hp1-scu-sat32-radix-v1`.
+
+Older frontend/raw failures belong to their archived phase evidence and are not
+promoted into current RMD-SCU claims. The completed [refactor report](GEMMINI_REFACTOR_REPORT.md)
 records their distinction and the established numerical/cycle evidence.
 
 ## Retained executable checks

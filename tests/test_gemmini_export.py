@@ -113,8 +113,15 @@ def integrated_build_fixture(root: Path, rmd: bool = False) -> None:
         "cycle_scope": "logical_work_accept_to_final_backing_write_completion",
         "host_artifact_role": "HOST_COMMON_ORCHESTRATION",
         "host_audit_role": "PHYSICAL_HOST",
-        **({"rmd_raw": True, "rmd_numerical_revision": "rmd-raw-k32-cpu-compose-v1",
-            "work_kinds": ["DENSE_HP1_FINAL", "RMD_RAW"]} if rmd else {}),
+        **({
+            "rmd_enabled": True,
+            "rmd_datapath": "NORMAL_HP1_SCALED",
+            "rmd_raw": False,
+            "rmd_numerical_revision": "rmd-hp1-scu-sat32-radix-v1",
+            "host_integer_block_multiply": False,
+            "work_kinds": ["DENSE_HP1_FINAL"],
+            "diagnostic_work_kinds": ["RMD_RAW"],
+        } if rmd else {}),
     }) + "\n")
     write(profile / "rtl" / f"{top}.sv", f"module {top}; endmodule\n")
     write(profile / "filelist.f", f"rtl/{top}.sv\n")
@@ -146,6 +153,7 @@ def integrated_build_fixture(root: Path, rmd: bool = False) -> None:
         commands[0]["arguments"].extend([
             str(root / "source/rmd_rtl_fixture.cpp"),
             str(root / "source/bound_rmd_rtl_fixture.cpp"),
+            str(root / "source/rmd-reference.cpp"),
             "-LDFLAGS", " ".join(str(archive) for archive in archives),
         ])
     write(profile / "rtl-test-obj/VIM2PGemminiWSHP1RtlTest", b"rtl test")
@@ -156,11 +164,11 @@ def integrated_build_fixture(root: Path, rmd: bool = False) -> None:
     if rmd:
         with logs[-1].open("a", encoding="utf-8") as stream:
             _ = stream.write(
-                "WS_RMD A8W8D16 rtl_callbacks=12 raw_exact=36 lanes=5 high_carry=1 "
+                "WS_RMD_SCU A8W8D16 rtl_callbacks=13 scaled_exact=1053 lanes=5 high_carry=1 "
                 "compose_exact=54 merge_exact=54 negative_tests=6 missing_reject=1 "
-                "duplicate_reject=1 overflow_reject=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
+                "duplicate_reject=1 high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
                 "WS_RMD_BOUND bits=8 DIM=16 full_exact=27 pipeline_exact=27 dense_calls=6 "
-                "raw_calls=18 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
+                "scu_calls=14 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
             )
     results = [{**command, "returncode": 0, "reason": None, "log": str(log)}
                for command, log in zip(commands, logs)]
@@ -171,6 +179,15 @@ def integrated_build_fixture(root: Path, rmd: bool = False) -> None:
             "controller_kind": "UPSTREAM_GEMMINI_WS", "backing_memory": "INTEGRATED",
             "cycle_scope": "logical_work_accept_to_final_backing_write_completion",
             "host_artifact_role": "HOST_COMMON_ORCHESTRATION", "host_audit_role": "PHYSICAL_HOST",
+            **({
+                "rmd_enabled": True,
+                "rmd_datapath": "NORMAL_HP1_SCALED",
+                "rmd_raw": False,
+                "rmd_numerical_revision": "rmd-hp1-scu-sat32-radix-v1",
+                "host_integer_block_multiply": False,
+                "work_kinds": ["DENSE_HP1_FINAL"],
+                "diagnostic_work_kinds": ["RMD_RAW"],
+            } if rmd else {}),
             "resolved_profile": str(profile / "resolved-profile.json"),
             "status": "PASS", "reason": None, "commands": commands, "command_results": results,
         }],
@@ -295,8 +312,8 @@ def test_integrated_export_preserves_verified_profile_closure() -> None:
 
 
 def test_rmd_profile_requires_rmd_runtime_evidence() -> None:
-    # Given: dense runtime passed but the selected profile advertises RMD raw.
-    profile = {"profile": "a8w8-d16-hp1", "rmd_raw": True}
+    # Given: dense runtime passed but the selected profile advertises production RMD-SCU.
+    profile = {"profile": "a8w8-d16-hp1", "rmd_enabled": True, "rmd_raw": False}
     dense = "integrated upstream WS HP1 RTL passed A8W8D16 loops=11 load_execute_overlap=7\n"
 
     # When: export evaluates that profile's runtime log.
@@ -317,7 +334,7 @@ def test_dense_profile_retains_dense_runtime_contract() -> None:
     require_runtime_log({"profile": "a8w8-d16-hp1"}, dense)
 
     # Then: an explicit disabled capability behaves identically.
-    require_runtime_log({"profile": "a8w8-d16-hp1", "rmd_raw": False}, dense)
+    require_runtime_log({"profile": "a8w8-d16-hp1", "rmd_enabled": False}, dense)
 
 
 def test_rmd_export_retains_runtime_and_source_closure() -> None:
@@ -330,8 +347,17 @@ def test_rmd_export_retains_runtime_and_source_closure() -> None:
             result = create_export(ExportRequest(source, build, output, None))
         assert extract_export(result.archive, base / "relocated").status == "PASS"
         manifest = json.loads((output / "profile-manifest.json").read_text(encoding="utf-8"))
-        assert manifest["profiles"][0]["rmd_runtime_status"] == "PASS"
+        profile = manifest["profiles"][0]
+        assert profile["rmd_runtime_status"] == "PASS"
+        assert profile["rmd_enabled"] is True
+        assert profile["rmd_datapath"] == "NORMAL_HP1_SCALED"
+        assert profile["rmd_raw"] is False
+        assert profile["host_integer_block_multiply"] is False
+        assert profile["work_kinds"] == ["DENSE_HP1_FINAL"]
+        assert profile["diagnostic_work_kinds"] == ["RMD_RAW"]
         assert (output / "dependency/source/llama_cpp_gemmini/ggml/src/ggml.c").is_file()
+        assert (output / "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini/quants/common/hp1_scu.hpp").is_file()
+        assert (output / "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini/quants/common/weight_route.hpp").is_file()
         assert not tuple(output.rglob("*.a"))
         runtime = output / "generated/a8w8-d16-hp1/logs/03.log"
         write(runtime, runtime.read_text(encoding="utf-8").replace("public_entry=1", "public_entry=0"))
@@ -342,6 +368,24 @@ def test_rmd_export_retains_runtime_and_source_closure() -> None:
             assert "RMD public dispatch" in str(error)
         else:
             raise AssertionError("RMD export accepted incomplete public dispatch after relocation")
+
+
+def test_integrated_export_rejects_stale_rmd_metadata() -> None:
+    with tempfile.TemporaryDirectory(prefix="gemmini-rmd-export-stale-metadata-") as directory:
+        base = Path(directory)
+        source, build = base / "source", base / "build"
+        integrated_source_fixture(source)
+        integrated_build_fixture(build, rmd=True)
+        manifest = build / "a8w8-d16-hp1/resolved-profile.json"
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document["rmd_raw"] = True
+        manifest.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        try:
+            create_export(ExportRequest(source, build, base / "package", None))
+        except ExportError as error:
+            assert "RMD contract mismatch" in str(error)
+        else:
+            raise AssertionError("stale raw production metadata was exported")
 
 
 def test_integrated_export_rejects_incomplete_or_mixed_top_metadata() -> None:
@@ -718,6 +762,7 @@ def main() -> None:
     test_rmd_profile_requires_rmd_runtime_evidence()
     test_dense_profile_retains_dense_runtime_contract()
     test_rmd_export_retains_runtime_and_source_closure()
+    test_integrated_export_rejects_stale_rmd_metadata()
     test_integrated_export_rejects_incomplete_or_mixed_top_metadata()
     test_integrated_export_requires_passing_runtime_and_no_sim_evidence()
     test_packaged_integrated_evidence_cannot_change_matrix_or_profile_paths()

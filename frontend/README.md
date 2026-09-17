@@ -4,9 +4,12 @@ The shared API/ABI and numerical contracts are described in
 [API_CONTRACT](../docs/API_CONTRACT.md) and
 [NUMERICAL_CONTRACT](../docs/NUMERICAL_CONTRACT.md). The detailed simulator worker,
 legacy operation and independent dense/residual handle behavior below belongs to
-the retained simulator frontend. The integrated Gemmini external-executor path is
-validated separately; these descriptions do not claim every legacy operation is
-accepted by GEMMINI_HP1. No physical deployment transport is provided here.
+the retained simulator frontend. A separate residual handle is a simulator
+ownership/clock-domain boundary, not a separate HP1 numerical datapath: production
+HP1 residual work uses normal scaled HP1 execution with `rmdRaw=false`. The
+integrated Gemmini external-executor path is validated separately; these
+descriptions do not claim every legacy operation is accepted by GEMMINI_HP1. No
+physical deployment transport is provided here.
 
 `frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. 모든 route는 activation/weight width와 storage identity를 포함하는 단일 canonical ABI를 사용한다. Typed provider transport는 W4/W8/W16을 구분하고 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
 
@@ -34,9 +37,13 @@ accepted by GEMMINI_HP1. No physical deployment transport is provided here.
 
 Production matched ExSIA route에서 H1/HP1은 A4/Q4, A8/Q8, A16/Q16의
 width-matched artifact와 typed provider ABI를 사용해 별도 IM2P.sim residual
-handle에서 실행한다. H0는 FULL/PIPELINE 모두 CPU-direct이고 compact simulator
-call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시작 전에 fail
-closed하며 checked software, physical Gemmini, 다른 route로 fallback하지 않는다.
+handle에서 실행한다. HP1 residual의 NPU work는 normal scaled HP1 경로,
+`DENSE_HP1_FINAL`, `rmdRaw=false`를 사용하고 SCU/Sat32 이후 host integer block
+multiply를 수행하지 않는다. CPU는 balanced-radix recomposition과 최종 floating
+merge만 소유한다. H0는 FULL/PIPELINE 모두 명시적 CPU-direct이고 compact
+simulator call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시작 전에
+fail closed하며 checked software, physical Gemmini, 다른 route로 fallback하지
+않는다.
 
 Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_h1`, `q4_hp1`,
 `q16_h0`, `q16_h1`, `q16_hp1`을 수치 실행 경로에서 지원한다. Matched route는
@@ -58,11 +65,11 @@ RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-exte
 
 `q8_h2`와 `q8_hp2`의 선택 정보는 route-contract 검사 목적으로만 보존하며 수치 실행에는 사용하지 않는다.
 
-`activation_row_offset`는 메타데이터로만 복사한다. 원시 ABI descriptor는 이 값을 사용하지 않으므로, 실행 시점에 A가 이미 첫 activation 행을 가리켜야 한다. `tile_I`와 `tile_J`는 Gemmini tile 수다.
+`activation_row_offset`는 메타데이터로만 복사한다. 원시 ABI descriptor는 이 값을 사용하지 않으므로, 실행 시점에 A가 이미 첫 activation 행을 가리켜야 한다. `tile_I`, `tile_J`, `tile_K`는 production Gemmini tiler가 선택한 DIM-count factor다.
 
-각각에 `DIM`을 곱한 뒤 문제 범위와 RTL `DIM` tile 하나로 제한한다. 0은 tile 하나를 뜻하며 곱셈 오버플로는 거부한다. `tile_K`도 메타데이터로만 복사하며 원시 ABI의 reduction tiling은 변경하지 않는다.
+Legacy descriptor의 bounded I/J extent는 기존 ABI 호환을 위해 유지하지만, 현재 production route는 additive `im2p_production_geometry_v1_t` companion으로 원래의 I/J/K tile-count factor와 stripe identity를 C ABI/Rust/runtime까지 그대로 전달한다. Runtime lowerer는 이 companion을 검증한 뒤 사용하며 재-tiling하지 않는다. Companion이 없거나 shape/factor/stripe identity가 불일치하면 fail closed한다.
 
-K 실행은 `K`와 `block_size_k`로 결정한다.
+실제 K work는 `K`, block32 boundary와 전달된 production tile geometry를 함께 사용해 lowerer가 fragment로 전개한다.
 
 Residual-enabled 파이프라인에서는 전용 worker 하나가 dense stream simulator와 residual simulator의 두 handle을 생성·호출·파기한다. Raw dense in-flight depth는 1이며 accepted/raw-complete/RMD-pending을 포함한 semantic producer capacity는 2다. 순서는 `raw dense completion -> per-stripe residual execute -> checked merge -> semantic completion -> next dense`이고, capacity는 raw completion이 아니라 semantic completion에서 해제된다. 원시 `IM2P_BACKPRESSURE`는 내부에서 처리하며 high-level backpressure는 수락되지 않은 event를 뜻한다. Residual callback이 없는 일반 frontend route의 기존 lookahead 동작은 그대로다.
 

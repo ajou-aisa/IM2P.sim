@@ -7,10 +7,12 @@ regression timing profile, explicit submission-framing distinction and scoped RT
 certificates. `regression-tiles` remains 268/268 exact. Production
 `planner-blocks` is separately 262/262 exact over the representable subset of the
 same corpus, with six K8256 cases explicitly excluded by the 256-entry global
-scale-address contract and rejected by the model. RMD_RAW timing is separately
-certified equivalent in 24/24 paired cases over the documented compact raw domain.
-All event certificates mean selected per-cycle event-type multiset equality, not
-full signal/payload/event-stream equality. Numerical RTL remains the golden.
+scale-address contract and rejected by the model. Production RMD-SCU is 72/72
+exact across all six A4W4/A8W8 DIM16/32/64 profiles using normal HP1 work with
+`rmdRaw=false`. The older RMD_RAW 24/24 result is retained only as a historical
+compact-domain timing-equivalence certificate. All event certificates mean
+selected per-cycle event-type multiset equality, not full
+signal/payload/event-stream equality. Numerical RTL remains the golden.
 Op-trace replay, CPU/NPU system timelines and Fmax/resource/TOPS remain
 unimplemented; the refactor and cleanup reports retain their historical
 phase-specific states.

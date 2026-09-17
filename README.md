@@ -6,10 +6,12 @@ Gemmini synthesis support is retained for later characterization. The separate
 [cycle model](docs/GEMMINI_CYCLE_MODEL.md) in `sim/cycle/` has distinct scoped RTL
 certificates: `regression-tiles` 268/268 exact, production `planner-blocks` 262/262
 exact over the representable subset (six K8256 cases are explicit scale-capacity
-exclusions), and RMD_RAW timing equivalence 24/24 paired cases over its documented
-compact domain. These event certificates compare selected per-cycle event-type
-multisets, not full internal RTL event streams. Op-trace replay, CPU/NPU timelines
-and Fmax/resource/TOPS remain unimplemented.
+exclusions), and production RMD-SCU 72/72 exact over the six A4W4/A8W8 DIM16/32/64
+profiles. Production residual uses the normal HP1 scaled datapath with
+`rmdRaw=false`; the older RMD_RAW 24/24 result is retained only as historical
+compact-domain timing evidence. These event certificates compare selected
+per-cycle event-type multisets, not full internal RTL event streams. Op-trace
+replay, CPU/NPU timelines and Fmax/resource/TOPS remain unimplemented.
 
 | Responsibility | Current authority |
 |---|---|

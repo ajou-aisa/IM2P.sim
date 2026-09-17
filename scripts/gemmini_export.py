@@ -66,7 +66,14 @@ PROFILE_FIELDS: Final = (
     "selected_top", "controller_kind", "backing_memory", "cycle_scope",
 )
 INTEGRATED_PROFILE_FIELDS: Final = ("host_artifact_role", "host_audit_role")
-RMD_PROFILE_FIELDS: Final = ("rmd_raw", "rmd_numerical_revision", "work_kinds")
+RMD_PROFILE_FIELDS: Final = (
+    "rmd_enabled", "rmd_datapath", "rmd_raw", "rmd_numerical_revision",
+    "host_integer_block_multiply", "work_kinds", "diagnostic_work_kinds",
+)
+RMD_DATAPATH: Final = "NORMAL_HP1_SCALED"
+RMD_NUMERICAL_REVISION: Final = "rmd-hp1-scu-sat32-radix-v1"
+RMD_PRODUCTION_WORK_KINDS: Final = ("DENSE_HP1_FINAL",)
+RMD_DIAGNOSTIC_WORK_KINDS: Final = ("RMD_RAW",)
 INTEGRATED_CONTROLLER: Final = "UPSTREAM_GEMMINI_WS"
 INTEGRATED_MEMORY: Final = "INTEGRATED"
 INTEGRATED_CYCLE_SCOPE: Final = "logical_work_accept_to_final_backing_write_completion"
@@ -86,13 +93,20 @@ INTEGRATED_SOURCE_FILES: Final = (
 )
 RMD_LLAMA_SOURCES: Final = (
     "ggml/src/ggml-gemmini/residual/rmd/rmd-builder.cpp",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-builder.hpp",
     "ggml/src/ggml-gemmini/residual/rmd/rmd-compose.cpp",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-compose.hpp",
     "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.cpp",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.hpp",
     "ggml/src/ggml-gemmini/residual/rmd/rmd-im2p-executor.cpp",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-im2p-executor.hpp",
     "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp",
     "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.hpp",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-types.hpp",
     "ggml/src/ggml-gemmini/quants/common/hp1_scu.hpp",
     "ggml/src/ggml-gemmini/quants/common/weight_reader.cpp",
+    "ggml/src/ggml-gemmini/quants/common/weight_reader.hpp",
+    "ggml/src/ggml-gemmini/quants/common/weight_route.hpp",
     "ggml/src/ggml-gemmini/quants/common/dequant.cpp",
     "ggml/src/ggml-gemmini/quants/act/dispatch.cpp",
     "ggml/src/ggml.c",
@@ -393,6 +407,32 @@ def read_object(path: Path) -> dict[str, JsonValue]:
     return document
 
 
+def rmd_enabled(profile: Mapping[str, JsonValue]) -> bool:
+    return profile.get("rmd_enabled") is True
+
+
+def require_current_rmd_contract(profile: Mapping[str, JsonValue], label: str) -> None:
+    enabled = profile.get("rmd_enabled")
+    if enabled is None:
+        return
+    if type(enabled) is not bool:
+        raise ExportError(f"RMD capability must be boolean: {label}")
+    if not enabled:
+        if any(field in profile for field in RMD_PROFILE_FIELDS[1:]):
+            raise ExportError(f"disabled RMD profile carries production RMD metadata: {label}")
+        return
+    expected: dict[str, JsonValue] = {
+        "rmd_datapath": RMD_DATAPATH,
+        "rmd_raw": False,
+        "rmd_numerical_revision": RMD_NUMERICAL_REVISION,
+        "host_integer_block_multiply": False,
+        "work_kinds": list(RMD_PRODUCTION_WORK_KINDS),
+        "diagnostic_work_kinds": list(RMD_DIAGNOSTIC_WORK_KINDS),
+    }
+    if any(profile.get(field) != value for field, value in expected.items()):
+        raise ExportError(f"resolved profile RMD contract mismatch: {label}")
+
+
 def filelist_entries(root: Path) -> list[Path]:
     entries: list[Path] = []
     for name in regular_file(root / "filelist.f").read_text(encoding="utf-8").splitlines():
@@ -445,7 +485,9 @@ def require_runtime_log(profile: Mapping[str, JsonValue], content: str) -> None:
         content,
     ) is None:
         raise ExportError(f"integrated RTL runtime log lacks PASS evidence: {profile['profile']}")
-    if profile.get("rmd_raw") is True:
+    if rmd_enabled(profile):
+        if profile.get("rmd_raw") is not False:
+            raise ExportError(f"production RMD profile is not normal HP1 scaled: {profile['profile']}")
         try:
             _ = rmd_runtime_evidence(content, str(profile["profile"]))
             _ = rmd_bound_runtime_evidence(content, str(profile["profile"]))
@@ -465,7 +507,10 @@ def require_host_test_profile(
     evidence_profile_root = Path(resolved_profile).parent
     if profile_root is not None and evidence_profile_root.resolve() != profile_root.resolve():
         raise ExportError(f"integrated host-test resolved profile path mismatch: {name}")
-    for field in (*PROFILE_FIELDS, *INTEGRATED_PROFILE_FIELDS):
+    required_fields = (*PROFILE_FIELDS, *INTEGRATED_PROFILE_FIELDS)
+    if rmd_enabled(profile):
+        required_fields += RMD_PROFILE_FIELDS
+    for field in required_fields:
         if evidence.get(field) != profile[field]:
             raise ExportError(f"integrated host-test metadata mismatch for {name}: {field}")
     commands = evidence.get("commands")
@@ -500,11 +545,11 @@ def require_host_test_profile(
                   any(Path(argument).name == "test_ws_rtl.cpp" for argument in arguments)]
     if len(rtl_builds) != 1 or option_value(rtl_builds[0], "--top-module") != top:
         raise ExportError(f"integrated RTL runtime build evidence missing: {name}")
-    if profile.get("rmd_raw") is True and not {
-        "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp",
+    if rmd_enabled(profile) and not {
+        "rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.cpp", "rmd-reference.cpp",
     }.issubset({Path(argument).name for argument in rtl_builds[0]}):
         raise ExportError(f"RMD runtime compilation closure missing: {name}")
-    if profile.get("rmd_raw") is True:
+    if rmd_enabled(profile):
         linked = shlex.split(option_value(rtl_builds[0], "-LDFLAGS"))
         for archive in ("libgemmini_hp1_host_common.a", "libgemmini_hp1_ggml_numeric.a"):
             expected = str(evidence_profile_root / "host-build" / archive)
@@ -607,7 +652,7 @@ def attach_integrated_evidence(
         command_log_path = Path(command_log)
         result.append({
             **profile,
-            **({"rmd_runtime_status": "PASS"} if profile.get("rmd_raw") is True else {}),
+            **({"rmd_runtime_status": "PASS"} if rmd_enabled(profile) else {}),
             "status": "PASS",
             "runtime_status": "PASS",
             "no_sim_host_artifact": "PASS",
@@ -640,13 +685,7 @@ def resolved_profiles(build_root: Path | None) -> list[dict[str, JsonValue]]:
         for field in PROFILE_FIELDS:
             if not isinstance(document.get(field), str):
                 raise ExportError(f"resolved profile missing {field}: {manifest}")
-        if "rmd_raw" in document and type(document["rmd_raw"]) is not bool:
-            raise ExportError(f"resolved profile RMD capability must be boolean: {manifest}")
-        if document.get("rmd_raw") is True and (
-            document.get("rmd_numerical_revision") != "rmd-raw-k32-cpu-compose-v1"
-            or document.get("work_kinds") != ["DENSE_HP1_FINAL", "RMD_RAW"]
-        ):
-            raise ExportError(f"resolved profile RMD contract mismatch: {manifest}")
+        require_current_rmd_contract(document, str(manifest))
         rtl_count = sum(
             path.is_file() and not path.is_symlink() and path.suffix.lower() in RTL_SUFFIXES
             for path in manifest.parent.rglob("*")
@@ -718,7 +757,7 @@ def verify_integrated_closure(root: Path, profiles: list[dict[str, JsonValue]]) 
         if profile.get("status") != "PASS" or profile.get("runtime_status") != "PASS" or \
            profile.get("no_sim_host_artifact") != "PASS":
             raise ExportError(f"integrated profile lacks passing runtime gates: {profile['profile']}")
-        if profile.get("rmd_raw") is True and profile.get("rmd_runtime_status") != "PASS":
+        if rmd_enabled(profile) and profile.get("rmd_runtime_status") != "PASS":
             raise ExportError(f"integrated profile lacks RMD runtime gate: {profile['profile']}")
         profile_relative = safe_relative(str(profile["root"]))
         profile_root = root / profile_relative
@@ -762,7 +801,7 @@ def verify_integrated_closure(root: Path, profiles: list[dict[str, JsonValue]]) 
         raise ExportError("exactly one MeshWithDelays source snapshot is required")
     for name in INTEGRATED_SOURCE_FILES:
         _ = regular_file(root / safe_relative(name))
-    if any(profile.get("rmd_raw") is True for profile in profiles):
+    if any(rmd_enabled(profile) for profile in profiles):
         for name in RMD_HOST_SOURCES:
             _ = regular_file(root / "source/fpga/gemmini_hp1/host" / name)
         for name in RMD_LLAMA_SOURCES:
@@ -864,7 +903,7 @@ def create_export(request: ExportRequest) -> ExportResult:
     selected = source_files(source_root) + generated_files(build_root)
     profiles = resolved_profiles(build_root)
     kind = export_kind(profiles)
-    if any(profile.get("rmd_raw") is True for profile in profiles):
+    if any(rmd_enabled(profile) for profile in profiles):
         workspace = Path(os.environ.get("IM2P_WORKSPACE_ROOT", source_root.parent)).resolve()
         selected.extend(rmd_dependency_sources(workspace))
     if kind == "INTEGRATED":

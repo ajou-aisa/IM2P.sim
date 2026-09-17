@@ -109,18 +109,18 @@ def test_runtime_requires_real_large_and_overlap_cases() -> None:
             raise AssertionError("incomplete runtime evidence accepted")
 
 
-def test_rmd_runtime_requires_exact_raw_compose_and_negative_checks() -> None:
+def test_rmd_runtime_requires_scaled_scu_compose_and_negative_checks() -> None:
     marker = (
-        "WS_RMD A8W8D16 rtl_callbacks=12 raw_exact=12 lanes=5 high_carry=1 "
+        "WS_RMD_SCU A8W8D16 rtl_callbacks=12 scaled_exact=12 lanes=5 high_carry=1 "
         "compose_exact=6 merge_exact=6 negative_tests=4 missing_reject=1 "
-        "duplicate_reject=1 overflow_reject=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
+        "duplicate_reject=1 high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
     )
     result = rmd_runtime_evidence(marker, "a8w8-d16-hp1")
     assert result["rtl_callbacks"] == 12
     assert result["lanes"] == 5
     assert rmd_runtime_evidence(
-        marker.replace("raw_exact=12", "raw_exact=24"), "a8w8-d16-hp1",
-    )["raw_exact"] == 24
+        marker.replace("scaled_exact=12", "scaled_exact=24"), "a8w8-d16-hp1",
+    )["scaled_exact"] == 24
     assert rmd_runtime_evidence(
         marker.replace("A8W8D16", "A4W4D64").replace("lanes=5", "lanes=9"),
         "a4w4-d64-hp1",
@@ -128,14 +128,14 @@ def test_rmd_runtime_requires_exact_raw_compose_and_negative_checks() -> None:
     for broken in (
         "", marker + marker,
         marker.replace("rtl_callbacks=12", "rtl_callbacks=0"),
-        marker.replace("raw_exact=12", "raw_exact=11"),
+        marker.replace("scaled_exact=12", "scaled_exact=11"),
         marker.replace("lanes=5", "lanes=4"),
         marker.replace("high_carry=1", "high_carry=0"),
         marker.replace("compose_exact=6", "compose_exact=0"),
         marker.replace("merge_exact=6", "merge_exact=0"),
         marker.replace("missing_reject=1", "missing_reject=0"),
         marker.replace("duplicate_reject=1", "duplicate_reject=0"),
-        marker.replace("overflow_reject=1", "overflow_reject=0"),
+        marker.replace("high_exponent_scu=1", "high_exponent_scu=0"),
     ):
         try:
             _ = rmd_runtime_evidence(broken, "a8w8-d16-hp1")
@@ -148,7 +148,7 @@ def test_rmd_runtime_requires_exact_raw_compose_and_negative_checks() -> None:
 def test_rmd_public_entry_requires_full_pipeline_and_transactional_failures() -> None:
     marker = (
         "WS_RMD_BOUND bits=8 DIM=16 full_exact=27 pipeline_exact=27 dense_calls=6 "
-        "raw_calls=18 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
+        "scu_calls=18 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
     )
     result = rmd_bound_runtime_evidence(marker, "a8w8-d16-hp1")
     assert result["full_exact"] == result["pipeline_exact"] == 27
@@ -156,7 +156,7 @@ def test_rmd_public_entry_requires_full_pipeline_and_transactional_failures() ->
         "", marker + marker,
         marker.replace("bits=8", "bits=4"),
         marker.replace("full_exact=27", "full_exact=0"),
-        marker.replace("raw_calls=18", "raw_calls=0"),
+        marker.replace("scu_calls=18", "scu_calls=0"),
         marker.replace("pipeline_exact=27", "pipeline_exact=26"),
         marker.replace("rollback=2", "rollback=1"),
         marker.replace("public_entry=1", "public_entry=0"),
@@ -273,7 +273,7 @@ def test_no_sim_gate_requires_frontend_and_orchestration_symbols() -> None:
 
 if __name__ == "__main__":
     test_runtime_requires_real_large_and_overlap_cases()
-    test_rmd_runtime_requires_exact_raw_compose_and_negative_checks()
+    test_rmd_runtime_requires_scaled_scu_compose_and_negative_checks()
     test_rmd_public_entry_requires_full_pipeline_and_transactional_failures()
     test_layout_classifies_shared_failure_only_with_matching_probes_and_logs()
     test_marker_requires_every_mac_gate()
