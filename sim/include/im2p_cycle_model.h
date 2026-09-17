@@ -108,6 +108,9 @@ typedef struct im2p_cycle_event {
   uint64_t id;
   uint64_t cycle;
   uint64_t logical_work_id;
+  /* ABI v1 name retained: serialized hardware submission/frame index, not a
+     pure planner-loop ordinal. JSON diagnostics also expose
+     submission_index. */
   uint64_t loop;
   uint64_t fragment;
   uint64_t dependency;

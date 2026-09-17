@@ -139,6 +139,10 @@ struct Options {
   const StreamExecutor *stream_executor = nullptr;
   // Explicit arithmetic selection; existing callers retain the SCU contract.
   NumericalContract numerical_contract = NumericalContract::scu_final_integer;
+  // Generic Gemmini HP1 only. Carries exact selected DIM-count factors through
+  // the additive numerical C APIs; every publication requires its own snapshot.
+  // External/bound executors continue to use their existing prepare companion.
+  bool production_geometry = false;
 };
 
 struct StripeMetadata {
@@ -273,6 +277,9 @@ private:
   submit_stripe(Run &,
                 const ggml::gemmini::quants::act::exsia::StripeReadyEvent &,
                 StripeMetadata) noexcept;
+  friend Status submit_stripe_planned(
+      Run &, const ggml::gemmini::quants::act::exsia::StripeReadyEvent &,
+      const im2p_production_geometry_v1_t *, StripeMetadata) noexcept;
   friend struct FenceResult;
   friend FenceResult fence(Run &) noexcept;
   friend PipelineOutputStage acquire_pipeline_output_stage(Run &) noexcept;
@@ -326,6 +333,18 @@ struct ArgsLayoutFingerprint {
 submit_stripe(Run &run,
               const ggml::gemmini::quants::act::exsia::StripeReadyEvent &event,
               StripeMetadata metadata = {}) noexcept;
+
+// Pure snapshot, no tiler call. Use final dispatch args, not an earlier plan.
+[[nodiscard]] im2p_production_geometry_v1_t capture_production_geometry(
+    const ggml_gemmini_args_t &args, uint32_t scope, uint64_t row_begin,
+    uint64_t row_count, uint64_t stripe_id) noexcept;
+
+// A production_geometry Run requires a non-null, matching STRIPE companion.
+// The snapshot is copied at publication and need not outlive this call.
+[[nodiscard]] Status submit_stripe_planned(
+    Run &run, const ggml::gemmini::quants::act::exsia::StripeReadyEvent &event,
+    const im2p_production_geometry_v1_t *geometry,
+    StripeMetadata metadata = {}) noexcept;
 
 [[nodiscard]] FenceResult fence(Run &run) noexcept;
 

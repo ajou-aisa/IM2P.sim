@@ -9,6 +9,8 @@ use crate::{
 };
 
 mod contract;
+#[cfg(all(test, im2p_gemmini_integrated))]
+mod geometry_tests;
 mod helpers;
 mod stream;
 mod types;
@@ -89,7 +91,7 @@ pub unsafe extern "C" fn im2p_execute_matmul(
     descriptor: *const MatmulDescC,
     stats: *mut WorkStatsC,
 ) -> i32 {
-    match execute_matmul_value(sim, descriptor) {
+    match execute_matmul_value(sim, descriptor, None) {
         Ok(value) => {
             write_stats(stats, value);
             0
@@ -104,7 +106,26 @@ pub unsafe extern "C" fn im2p_execute_matmul_extended(
     descriptor: *const MatmulDescC,
     stats: *mut WorkStatsExtendedC,
 ) -> i32 {
-    match execute_matmul_value(sim, descriptor) {
+    match execute_matmul_value(sim, descriptor, None) {
+        Ok(value) => {
+            write_extended_stats(stats, value);
+            0
+        }
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_execute_matmul_planned(
+    sim: *mut SimBox,
+    descriptor: *const MatmulDescC,
+    geometry: *const crate::production_geometry::ProductionGeometry,
+    stats: *mut WorkStatsExtendedC,
+) -> i32 {
+    let Some(geometry) = geometry.as_ref() else {
+        return -4;
+    };
+    match execute_matmul_value(sim, descriptor, Some(geometry)) {
         Ok(value) => {
             write_extended_stats(stats, value);
             0
@@ -116,11 +137,23 @@ pub unsafe extern "C" fn im2p_execute_matmul_extended(
 unsafe fn execute_matmul_value(
     sim: *mut SimBox,
     descriptor: *const MatmulDescC,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
 ) -> Result<WorkStats, i32> {
     let Some(desc) = descriptor.as_ref() else {
         return Err(-4);
     };
     require_identity(Identity::from_matmul(desc))?;
+    if let Some(geometry) = geometry {
+        if !cfg!(im2p_gemmini_integrated) {
+            return Err(CONFIGURATION_MISMATCH);
+        }
+        geometry.validate(
+            desc.m,
+            desc.n,
+            desc.k,
+            crate::production_geometry::GEOMETRY_FULL,
+        )?;
+    }
     require_output_domain(
         desc.vector_op,
         desc.output_domain,
@@ -180,9 +213,9 @@ unsafe fn execute_matmul_value(
         return Err(-3);
     };
     let result = if any_provider {
-        execute_full_provider(simulator, &parsed, desc.provider.selected())
+        execute_full_provider(simulator, &parsed, desc.provider.selected(), geometry)
     } else {
-        execute_full(simulator, &parsed)
+        execute_full(simulator, &parsed, geometry)
     };
     result.map_err(|error| {
         simulator.reset();

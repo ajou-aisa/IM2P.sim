@@ -11,9 +11,15 @@ computation, generated RTL class, or Verilator dependency in this library.
 For **rtl-regression revision 1**, the preserved current integrated RTL corpus
 matches **268/268 logical-work cases**: start/done convention, elapsed cycles,
 work/loop counts and load/store/scale request/response counts are exact. The
-maximum absolute cycle difference is **0**. The observed per-cycle event-type
-multisets also match in all 268 cases. This does not mean every internal RTL
-signal, arbitrary input, timing profile, or submission policy has been certified.
+maximum absolute cycle difference is **0**. The **selected per-cycle event-type
+multiset** also matches in all 268 cases. `compare_rtl.py` treats either an
+endpoint/counter mismatch or a selected-event mismatch as a hard case failure;
+a deliberately shifted passive RTL event is verified to make the comparator exit
+non-zero. The selected-event comparison sorts `(cycle, normalized event type)`
+pairs. It does not compare every internal signal, payload, event ID, address,
+dependency, or same-cycle ordering, so it is not a byte-exact/full-event-stream
+claim. This does not mean arbitrary input, timing profile, or submission policy
+has been certified.
 
 | Profile | Exact logical-work cases |
 |---|---:|
@@ -123,9 +129,23 @@ runtime and the independent integrated numerical regression harness:
 
 For example, DIM32/K64/tile-K2 has two planner loops but one hardware descriptor
 in `regression-tiles`. The result reports `planner_loop_count` and `loop_count`
-separately. Only the regression framing has the complete 268-case certificate;
-block framing has unit/planner checks and must not inherit that certificate by
-renaming counts. Neither framing changes the numerical backend's schedule.
+separately.
+
+The production `planner-blocks` framing now has a separate RTL certificate using
+an external harness whose descriptors are emitted directly by
+`sim/common/gemmini_schedule.cpp`. Of the same 268 shape/tile corpus, **262 are
+production-representable and 262/262 are exact** for start/done/elapsed,
+logical-work/submission/planner-loop/fragment counts, load/store/scale counters,
+and the selected per-cycle event-type multiset; maximum cycle delta is **0**.
+The six excluded cases are exactly the K8256 case in each profile. Their global
+planner-block scale mapping requires row 258 of the 256-entry `ScaleMemory`, so
+`ScaleBackingLoader` rejects them (`endRowWide <= scaleEntries` fails). The cycle
+model now rejects the same planner-block requests as unsupported. The
+`regression-tiles` framing resets fragmentBase within a tile and therefore keeps
+its original 268/268 certificate, including those K8256 cases. The production
+certificate is scoped to a fresh/drained isolated single GEMM, full mode, host
+slot 0; it must not be generalized beyond that scope. Neither framing changes
+the numerical backend's schedule.
 
 Commands are expanded from those planned fragments into A/B row loads, preload,
 compute and final-store tokens. Deduplicating the fragments' required A/B tiles
@@ -196,8 +216,15 @@ then delayed commits and reservation completions. Stores wait for address
 hazards and backing acknowledgements. Scale release occurs after the current
 frame's completion before the next serialized descriptor.
 
-Optional diagnostic events contain cycle, event type, logical work ID, loop and
-fragment identity, resource, tile coordinates, causal parent and protocol detail.
+Optional diagnostic events contain cycle, event type, logical work ID, submission
+and fragment identity, resource, tile coordinates, causal parent and protocol
+detail. ABI v1 retains the field name `im2p_cycle_event_t.loop`, but its exact
+meaning is the serialized hardware **submission/frame index**, not a pure planner
+loop ordinal. JSON diagnostics expose the same value as `submission_index` while
+retaining `loop` for ABI compatibility. `planner_loop_count` reports planner
+`LoopPlan` count, `loop_count` reports hardware submission/frame count, and
+`fragment_count` reports planned fragments. A future ABI revision may rename the
+event field; this hardening phase does not bump ABI v1 for cosmetic naming.
 The engine's reservation dependency bitsets and credits are separate from the
 single diagnostic parent field; that field is not a complete serialized DAG.
 Stable event IDs and pre-edge traversal order make repeated diagnostic results
@@ -276,16 +303,43 @@ instrumented model, not only the release build.
 unchanged real RTL objects. In normal observer mode, each original complete
 numerical runtime log must remain byte-identical. `compare_rtl.py` passes only
 request/timing/profile facts to the separate model executable, then compares
-answers and reports the first divergent event. It never feeds expected durations
-or event traces to the model and never updates a golden to hide a mismatch.
-The preserved binaries/fixture used by this adapter are external evidence, not
-new runtime dependencies of the cycle library.
+answers and reports the first divergent selected event. Endpoint/counter equality,
+model-process success, and selected per-cycle event-type multiset equality are all
+required for a case PASS and for the aggregate PASS. It never feeds expected
+durations or event traces to the model and never updates a golden to hide a
+mismatch. `production_block_certificate.py` builds an external probe that emits
+production planner-block descriptors directly from the shared planner and checks
+the separately scoped production certificate. The preserved binaries/fixture used
+by these adapters are external evidence, not new runtime dependencies of the
+cycle library.
 
 `value_independence.py` separately reuses the original extremal and all-zero
 K32 numerical fixtures. It aligns actual acceptance-ready phase in an external
 test copy, preserving the original numerical assertions and production RTL.
 It compares relative event cycles/counters and repeats the identical scalar-only
 model request. This phase-alignment test does not replace the 268-case golden.
+
+## RMD_RAW timing certificate
+
+`rmdRaw` remains a hardware metadata bit, not a cycle-API semantic label. In the
+current RTL it does not bypass scale-loading, reservation, writeback-credit,
+accumulator, store, or completion structures. `ScaleBackingLoader` still reads
+and emits the same scale lanes; `rmdRaw` selects carrier zero, and
+`UpstreamHp1Writeback` consumes that carrier through the same timing/control path.
+
+This was verified rather than assumed. `rmd_raw_timing_certificate.py` ran
+**24/24 paired RTL cases exact**: all six A4/A8 DIM16/32/64 profiles, M=1, N=3,
+and compact K={1,16,31,32}. Each pair starts from a fresh/drained RTL state with
+the rtl-regression memory timing and identical descriptor geometry, scale data,
+and backing-ready phase; only the `rmdRaw` descriptor bit changes. The non-raw
+carrier is valid exponent 0. The certified raw metadata domain is compact K 1..32,
+`fragmentBase=0`, `accumulate=false`, `finalFragment=true`. Start/done/elapsed,
+load/store/scale request-response counts, context/writeback/commit behavior, and
+the selected per-cycle event-type multiset are identical in all 24 pairs.
+Therefore no RMD-specific or semantic mode field is added to cycle ABI v1 for
+this tested hardware domain. This is a timing-equivalence certificate, not a
+numerical-equivalence claim and not a claim about raw shapes outside the stated
+domain.
 
 ## Limitations and preserved paths
 

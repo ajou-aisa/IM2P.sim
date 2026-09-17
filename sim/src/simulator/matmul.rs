@@ -102,6 +102,16 @@ impl Im2pSimulator {
         output: &mut MatrixViewMut<'_, i32>,
         layout: MatmulLayout,
     ) -> Result<WorkStats, Error> {
+        self.execute_matmul_layout_with_geometry(work, output, layout, None)
+    }
+
+    pub(crate) fn execute_matmul_layout_with_geometry(
+        &mut self,
+        work: &MatmulWork<'_>,
+        output: &mut MatrixViewMut<'_, i32>,
+        layout: MatmulLayout,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+    ) -> Result<WorkStats, Error> {
         validate_work(work, output)?;
         if work.activations.rows > u32::MAX as usize
             || work.activations.columns > u32::MAX as usize
@@ -164,9 +174,7 @@ impl Im2pSimulator {
             vector_op: work.vector_op.encoding(),
         };
 
-        // SAFETY: the descriptor is copied synchronously and no pointer is retained.
-        let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
-        self.require_ready("start_matmul", started)?;
+        self.start_matmul_geometry(&descriptor, geometry, "start_matmul")?;
 
         let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
         loop {
@@ -200,6 +208,37 @@ impl Im2pSimulator {
         work_context: u64,
         layout: MatmulLayout,
         provider: MemoryProvider,
+    ) -> Result<WorkStats, Error> {
+        self.execute_matmul_provider_with_geometry(
+            activations,
+            rows,
+            columns,
+            reduction,
+            weight_row_stride,
+            output_row_stride,
+            block_size,
+            vector_op,
+            work_context,
+            layout,
+            provider,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_matmul_provider_with_geometry(
+        &mut self,
+        activations: MatrixView<'_, ActivationValue>,
+        rows: usize,
+        columns: usize,
+        reduction: usize,
+        weight_row_stride: usize,
+        output_row_stride: usize,
+        block_size: usize,
+        vector_op: crate::VectorOp,
+        work_context: u64,
+        layout: MatmulLayout,
+        provider: MemoryProvider,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
     ) -> Result<WorkStats, Error> {
         crate::activation_validation::validate_activation_matrix(&activations)?;
         if rows == 0
@@ -263,8 +302,7 @@ impl Im2pSimulator {
             PROVIDER_START_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(Error::ProviderFailure);
         }
-        let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
-        self.require_ready("start_matmul", started)?;
+        self.start_matmul_geometry(&descriptor, geometry, "start_matmul")?;
 
         let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
         loop {

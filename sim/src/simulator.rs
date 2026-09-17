@@ -263,6 +263,31 @@ impl Im2pSimulator {
         Ok(simulator)
     }
 
+    pub(crate) fn start_matmul_geometry(
+        &mut self,
+        descriptor: &ffi::MatmulDescriptor,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+        operation: &'static str,
+    ) -> Result<(), Error> {
+        let accepted = if let Some(geometry) = geometry {
+            #[cfg(im2p_gemmini_integrated)]
+            {
+                // Both scalar records are copied before any RTL edge.
+                unsafe {
+                    ffi::im2p_start_matmul_geometry(self.handle.as_ptr(), descriptor, geometry)
+                }
+            }
+            #[cfg(not(im2p_gemmini_integrated))]
+            {
+                let _ = geometry;
+                return Err(Error::InvalidLayout);
+            }
+        } else {
+            unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), descriptor) }
+        };
+        self.require_ready(operation, accepted)
+    }
+
     pub fn dim(&self) -> usize {
         self.dim
     }

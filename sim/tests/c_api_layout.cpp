@@ -16,6 +16,20 @@ using PollCompletedExtended = int (*)(im2p_stream_t *,
                                       im2p_stripe_completion_extended_t *);
 
 static_assert(IM2P_ABI_VERSION == 5);
+static_assert(IM2P_PRODUCTION_GEOMETRY_VERSION == 1);
+static_assert(sizeof(im2p_production_geometry_v1_t) == 104);
+static_assert(std::is_standard_layout_v<im2p_production_geometry_v1_t>);
+static_assert(std::is_trivially_copyable_v<im2p_production_geometry_v1_t>);
+static_assert(offsetof(im2p_production_geometry_v1_t, tile_k_count) == 64);
+using ExecutePlanned = int (*)(im2p_sim_t *, const im2p_matmul_desc_t *,
+    const im2p_production_geometry_v1_t *, im2p_work_stats_extended_t *);
+using BeginPlanned = int (*)(im2p_sim_t *, const im2p_stripe_work_desc_t *,
+    const im2p_production_geometry_v1_t *, im2p_stream_t **);
+using PublishPlanned = int (*)(im2p_stream_t *, const im2p_activation_stripe_t *,
+    const im2p_production_geometry_v1_t *);
+static_assert(std::is_same_v<decltype(&im2p_execute_matmul_planned), ExecutePlanned>);
+static_assert(std::is_same_v<decltype(&im2p_begin_striped_matmul_planned), BeginPlanned>);
+static_assert(std::is_same_v<decltype(&im2p_publish_stripe_planned), PublishPlanned>);
 static_assert(std::is_same_v<im2p_write_output_fn, WriteOutput>);
 using ReadScale = int (*)(void *, std::size_t, std::size_t, std::size_t, std::uint32_t *);
 static_assert(std::is_same_v<im2p_read_scale_fn, ReadScale>);

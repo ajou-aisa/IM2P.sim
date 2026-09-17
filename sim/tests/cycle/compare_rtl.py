@@ -103,13 +103,16 @@ def compare(model: Path, golden_root: Path, observed: Path, out: Path) -> dict:
                 load_cycles = [int(r[0]) for r in model_events if r[1] == 'load_dma']
                 if array_cycles and any(min(array_cycles) <= x <= max(array_cycles) for x in load_cycles):
                     coverage['load_execute_overlap'].append(f'{profile}/{case}')
+            endpoint_counter_exact = run.returncode == 0 and not differences
+            case_exact = endpoint_counter_exact and event_exact
             row = {'profile': profile, 'case': case, 'shape': golden['shape'],
                    'input': {'tile': list(map(int, data[6:9])), 'timing': list(map(int, data[9:15])),
                              'accepted_cycle': accepted, 'submission': 'tile-coalesced-planner'},
                    'rtl': rtl, 'model': actual, 'delta_cycles': delta,
-                   'status': 'PASS' if not differences else 'FAIL',
-                   'counter_and_endpoint_differences': differences,
+                   'endpoint_counter_exact': endpoint_counter_exact,
                    'observed_event_cycles_exact': event_exact,
+                   'status': 'PASS' if case_exact else 'FAIL',
+                   'counter_and_endpoint_differences': differences,
                    'first_event_divergence': first, 'returncode': run.returncode, 'error': run.stderr}
             rows.append(row)
             m, n, k = map(int, data[2:5])
@@ -123,16 +126,30 @@ def compare(model: Path, golden_root: Path, observed: Path, out: Path) -> dict:
                 if present: coverage[name].append(f'{profile}/{case}')
         selected = [r for r in rows if r['profile'] == profile]
         print(profile, sum(r['status'] == 'PASS' for r in selected), '/', len(selected),
-              'endpoint/counter exact;', sum(r['observed_event_cycles_exact'] for r in selected),
-              'event streams exact', flush=True)
+              'endpoint/counter + selected per-cycle event-type multiset exact;',
+              sum(r['observed_event_cycles_exact'] for r in selected), '/', len(selected),
+              'selected event-type multisets exact', flush=True)
     measured = [abs(r['delta_cycles']) for r in rows if r['delta_cycles'] is not None]
-    result = {'status': 'PASS' if all(r['status'] == 'PASS' for r in rows) else 'FAIL',
-              'cases_total': len(rows), 'cases_exact': sum(r['status'] == 'PASS' for r in rows),
+    cases_exact = sum(r['status'] == 'PASS' for r in rows)
+    selected_event_exact = sum(r['observed_event_cycles_exact'] for r in rows)
+    first_mismatch = next(({
+        'profile': r['profile'], 'case': r['case'], 'returncode': r['returncode'],
+        'endpoint_counter_exact': r['endpoint_counter_exact'],
+        'observed_event_cycles_exact': r['observed_event_cycles_exact'],
+        'counter_and_endpoint_differences': r['counter_and_endpoint_differences'],
+        'first_event_divergence': r['first_event_divergence'], 'error': r['error']}
+        for r in rows if r['status'] != 'PASS'), None)
+    aggregate_pass = (cases_exact == len(rows) and selected_event_exact == len(rows) and
+                      first_mismatch is None)
+    result = {'status': 'PASS' if aggregate_pass else 'FAIL',
+              'cases_total': len(rows), 'cases_exact': cases_exact,
               'max_abs_delta_cycles': max(measured) if measured else None,
-              'all_counter_fields_exact': all(not r['counter_and_endpoint_differences'] for r in rows),
-              'observed_event_streams_exact': sum(r['observed_event_cycles_exact'] for r in rows),
+              'first_mismatch': first_mismatch,
+              'all_counter_fields_exact': all(r['endpoint_counter_exact'] for r in rows),
+              'observed_event_streams_exact': selected_event_exact,
+              'selected_event_type_multisets_exact': selected_event_exact,
               'coverage': coverage, 'sources': sources, 'cases': rows,
-              'scope': 'serialized single-GEMM regression submissions; absolute acceptance epoch supplied; no timing lookup in model'}
+              'scope': 'serialized single-GEMM regression submissions; selected events compare sorted (cycle, normalized event type) pairs only; absolute acceptance epoch supplied; no timing lookup in model'}
     (out / 'cycle-model-vs-rtl.json').write_text(json.dumps(result, indent=2) + '\n')
     if any(not examples for examples in coverage.values()): raise ValueError('required coverage missing')
     return result

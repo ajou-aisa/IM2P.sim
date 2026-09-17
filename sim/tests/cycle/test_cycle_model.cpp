@@ -124,6 +124,16 @@ void validation() {
   r = r0;
   r.m = UINT64_C(1) << 32;
   invalid(r, IM2P_CYCLE_OVERFLOW);
+  r = r0;
+  r.m = r.n = 1;
+  r.k = 8256;
+  r.tile_k = 1;
+  r.submission = IM2P_CYCLE_BLOCK_SUBMISSIONS;
+  invalid(r, IM2P_CYCLE_UNSUPPORTED);
+  r.submission = IM2P_CYCLE_TILE_SUBMISSIONS;
+  r.tile_k = 64;
+  check(run(m.get(), r).loop_count > 1,
+        "regression-tile scale addressing lost relative fragmentBase reset");
   for (auto field :
        {&im2p_cycle_hardware_t::activation_bits,
         &im2p_cycle_hardware_t::weight_bits, &im2p_cycle_hardware_t::dim,

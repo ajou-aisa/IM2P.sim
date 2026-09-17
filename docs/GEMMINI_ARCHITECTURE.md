@@ -25,10 +25,19 @@ upstream source set, never a second compiled copy of a class.
 
 `sim/common/gemmini_schedule.{hpp,cpp}` owns the existing value-independent
 loop/fragment decomposition and request/byte extents. It has no Verilator model,
-numerical buffers, MAC/SCU oracle or timing policy. The Gemmini runtime consumes
-that one planning authority; `sim/backends/gemmini_hp1/` owns model/session/stripe
-state, handshake sequencing and backing-memory translation. The C ABI shim is
-`sim/ffi/im2p_gemmini_integrated.cpp`.
+numerical buffers, MAC/SCU oracle or timing policy. This is a deterministic
+hardware schedule lowerer, not a software auto-tiler: selected DIM-count factors
+belong to the shared production `ggml::gemmini::gemmini_set_tile_ws` function.
+The Gemmini runtime consumes that lowerer; `sim/backends/gemmini_hp1/` owns
+model/session/stripe state, handshake sequencing and backing-memory translation.
+The C ABI shim is `sim/ffi/im2p_gemmini_integrated.cpp`.
+
+[Production scheduling authority](GEMMINI_CYCLE_SIM_DESIGN.md) traces the exact
+route boundaries. The bound HP1 host preserves `WorkPlanV1`, but the generic
+public IM2P C API does not yet forward the private tile-count companion through
+Rust. Its bounded I/J extents are not the original DIM-count factors and do not
+carry tile K. Fixture cycle agreement must not be presented as an end-to-end
+certificate for that generic production route.
 
 The existing one-read/one-write runtime ownership, two stripe slots, per-drive
 generation advancement, load/execute/store overlap and logical endpoint semantics

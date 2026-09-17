@@ -16,6 +16,8 @@ void clear_inputs(Runtime &runtime) {
 void reset_state(Runtime &runtime) {
   const auto plan = runtime.plan;
   runtime.descriptor = {};
+  runtime.explicit_geometry = false;
+  runtime.geometry = {};
   runtime.edges = 0;
   runtime.tag_sequence = 0;
   runtime.last_start = 0;
@@ -103,6 +105,15 @@ void begin_next_stripe(Runtime &runtime) {
   runtime.stripe_head = (runtime.stripe_head + 1) % runtime.stripes.size();
   --runtime.stripe_count;
   runtime.have_stripe = true;
+  if (runtime.explicit_geometry) {
+    const auto &g = runtime.current_stripe.geometry;
+    runtime.schedule.tile = {static_cast<std::size_t>(g.tile_i_count),
+                             static_cast<std::size_t>(g.tile_j_count),
+                             static_cast<std::size_t>(g.tile_k_count),
+                             static_cast<std::size_t>(g.stripe_rows)};
+    // Global row origins retain the operation layout. The memory adapter maps
+    // each stripe's explicit row stride relative to its own backing range.
+  }
   runtime.cursor = {runtime.current_stripe.row_begin};
 }
 
@@ -236,7 +247,14 @@ void tick(Runtime &runtime) {
   }
   top.eval();
   const bool work_accepted = top.io_work_valid && top.io_work_ready;
+#if defined(IM2P_VERILATOR_TEST_HOOKS)
+  if (top.io_work_valid) observe_geometry(runtime, IM2P_OBSERVE_OFFERED);
+  if (work_accepted) observe_geometry(runtime, IM2P_OBSERVE_ACCEPTED);
+#endif
   const bool release_accepted = top.io_scaleRelease_valid && top.io_scaleRelease_ready;
+#if defined(IM2P_VERILATOR_TEST_HOOKS)
+  if (release_accepted) observe_geometry(runtime, IM2P_OBSERVE_RELEASE);
+#endif
   const bool read_accepted = top.io_readRequest_valid && top.io_readRequest_ready;
   const bool read_response_accepted = top.io_readBeat_valid && top.io_readBeat_ready;
   const bool write_accepted = top.io_writeRequest_valid && top.io_writeRequest_ready;
@@ -274,7 +292,12 @@ void tick(Runtime &runtime) {
     runtime.loop_inflight = false;
     advance_loop(runtime);
   }
-  if (logical_done) finish_stripe(runtime);
+  if (logical_done) {
+#if defined(IM2P_VERILATOR_TEST_HOOKS)
+    observe_geometry(runtime, IM2P_OBSERVE_DONE);
+#endif
+    finish_stripe(runtime);
+  }
   if (completion_ack && runtime.completion_count) {
     runtime.completion_head = (runtime.completion_head + 1) % runtime.completions.size();
     --runtime.completion_count;

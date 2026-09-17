@@ -3,6 +3,7 @@ mod activation_validation;
 mod c_api;
 mod ffi;
 mod matrix;
+pub mod production_geometry;
 mod simulator;
 mod stats;
 mod stripe;

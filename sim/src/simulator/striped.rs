@@ -54,6 +54,15 @@ impl StripedMatmul<'_> {
         stripe: ActivationStripe,
         activation_row_stride: usize,
     ) -> Result<(), Error> {
+        self.publish_stripe_layout_with_geometry(stripe, activation_row_stride, None)
+    }
+
+    pub(crate) fn publish_stripe_layout_with_geometry(
+        &mut self,
+        stripe: ActivationStripe,
+        activation_row_stride: usize,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+    ) -> Result<(), Error> {
         if self.next_row == self.descriptor.rows {
             return Err(Error::LateStripe);
         }
@@ -73,15 +82,36 @@ impl StripedMatmul<'_> {
         if activation_row_stride < self.descriptor.reduction {
             return Err(Error::InvalidActivationStride);
         }
-        // SAFETY: scalar metadata is copied synchronously.
-        let accepted = unsafe {
-            ffi::im2p_publish_activation_stripe(
-                self.simulator.handle.as_ptr(),
-                stripe.row_begin as u32,
-                stripe.row_count as u32,
-                activation_elements_to_address_bytes(activation_row_stride)
-                    .map_err(|_| Error::InvalidActivationStride)?,
-            )
+        let stride_bytes = activation_elements_to_address_bytes(activation_row_stride)
+            .map_err(|_| Error::InvalidActivationStride)?;
+        // Both publication records are copied only on acceptance, before an RTL edge.
+        let accepted = if let Some(geometry) = geometry {
+            #[cfg(im2p_gemmini_integrated)]
+            {
+                unsafe {
+                    ffi::im2p_publish_activation_stripe_geometry(
+                        self.simulator.handle.as_ptr(),
+                        stripe.row_begin as u32,
+                        stripe.row_count as u32,
+                        stride_bytes,
+                        geometry,
+                    )
+                }
+            }
+            #[cfg(not(im2p_gemmini_integrated))]
+            {
+                let _ = geometry;
+                return Err(Error::InvalidLayout);
+            }
+        } else {
+            unsafe {
+                ffi::im2p_publish_activation_stripe(
+                    self.simulator.handle.as_ptr(),
+                    stripe.row_begin as u32,
+                    stripe.row_count as u32,
+                    stride_bytes,
+                )
+            }
         };
         if accepted == 0 {
             return Err(Error::StripeQueueFull);

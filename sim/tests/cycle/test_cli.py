@@ -105,6 +105,12 @@ class CycleCliTest(unittest.TestCase):
         self.assertEqual(block['planner_loop_count'], 2)
         self.assertEqual(block['loop_count'], 2)
         self.assertEqual(tile['fragment_count'], block['fragment_count'])
+        large = self.request()
+        large['request'].update(m=1, n=1, k=8256, tile_k=1, submission='planner-blocks')
+        with self.assertRaises(ValueError):
+            cli.estimate(self.library, large)
+        large['request'].update(tile_k=64, submission='regression-tiles')
+        self.assertGreater(cli.estimate(self.library, large)['result']['loop_count'], 1)
 
     def test_event_identity_and_trace_is_optional(self) -> None:
         doc = self.request()
@@ -112,6 +118,7 @@ class CycleCliTest(unittest.TestCase):
         traced = cli.estimate(self.library, doc)
         events = traced['events']
         self.assertTrue(any(e['loop'] > 0 for e in events))
+        self.assertTrue(all(e['submission_index'] == e['loop'] for e in events))
         self.assertTrue(all(e['logical_work_id'] == 91 and e['dependency'] < e['id'] for e in events))
         doc['request']['record_events'] = 0
         quiet = cli.estimate(self.library, doc)

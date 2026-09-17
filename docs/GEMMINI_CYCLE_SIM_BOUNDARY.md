@@ -3,10 +3,17 @@
 This document preserves the integrated numerical RTL/planner boundary established
 by the refactor. The separate single-GEMM value-free model is now implemented in
 `sim/cycle/`; [GEMMINI_CYCLE_MODEL.md](GEMMINI_CYCLE_MODEL.md) defines its API,
-regression timing profile, explicit submission-framing distinction and certified
-268-case coverage. Numerical RTL remains the golden. Op-trace replay, CPU/NPU
-system timelines and Fmax/resource/TOPS remain unimplemented; the refactor and
-cleanup reports retain their historical phase-specific states.
+regression timing profile, explicit submission-framing distinction and scoped RTL
+certificates. `regression-tiles` remains 268/268 exact. Production
+`planner-blocks` is separately 262/262 exact over the representable subset of the
+same corpus, with six K8256 cases explicitly excluded by the 256-entry global
+scale-address contract and rejected by the model. RMD_RAW timing is separately
+certified equivalent in 24/24 paired cases over the documented compact raw domain.
+All event certificates mean selected per-cycle event-type multiset equality, not
+full signal/payload/event-stream equality. Numerical RTL remains the golden.
+Op-trace replay, CPU/NPU system timelines and Fmax/resource/TOPS remain
+unimplemented; the refactor and cleanup reports retain their historical
+phase-specific states.
 
 ## Inputs and dependency direction
 

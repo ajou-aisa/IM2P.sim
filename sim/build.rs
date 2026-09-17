@@ -45,6 +45,9 @@ fn verilator_root() -> PathBuf {
         })
 }
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(im2p_gemmini_integrated)");
+    println!("cargo:rerun-if-changed=include/im2p_geometry.h");
+    println!("cargo:rerun-if-changed=ffi/im2p_geometry_ffi.h");
     let implementation =
         env::var("IM2P_SIM_IMPLEMENTATION").unwrap_or_else(|_| "LEGACY_BSV".to_string());
     assert!(
@@ -168,7 +171,10 @@ fn main() {
     println!("cargo:rerun-if-changed={bridge_header}");
     if implementation == "GEMMINI_HP1" {
         let hardware = obj_dir.join("im2p_gemmini_hardware.h");
-        assert!(hardware.is_file(), "copy the generated resolved hardware header into the model object directory");
+        assert!(
+            hardware.is_file(),
+            "copy the generated resolved hardware header into the model object directory"
+        );
         println!("cargo:rerun-if-changed={}", hardware.display());
         println!("cargo:rerun-if-changed=ffi/im2p_integrated_signal.hpp");
     }
@@ -195,17 +201,26 @@ fn main() {
             "common/gemmini_schedule.cpp",
             "backends/gemmini_hp1/runtime.cpp",
             "backends/gemmini_hp1/backing_memory.cpp",
+            "backends/gemmini_hp1/geometry.cpp",
         ] {
             println!("cargo:rerun-if-changed={source}");
             build.file(source);
         }
-        for header in ["common/gemmini_schedule.hpp", "common/operand_packing.hpp",
-                       "backends/gemmini_hp1/runtime.hpp"] {
+        for header in [
+            "common/gemmini_schedule.hpp",
+            "common/operand_packing.hpp",
+            "backends/gemmini_hp1/runtime.hpp",
+        ] {
             println!("cargo:rerun-if-changed={header}");
         }
     }
     if env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() {
         build.define("IM2P_VERILATOR_TEST_HOOKS", None);
+        if implementation == "GEMMINI_HP1" {
+            build.file("tests/cycle/accepted_work_observer.cpp");
+            println!("cargo:rerun-if-changed=tests/cycle/accepted_work_observer.cpp");
+            println!("cargo:rerun-if-changed=tests/cycle/accepted_work_observer.h");
+        }
     }
 
     let entries = fs::read_dir(&obj_dir).expect("run make verilator target first");

@@ -21,6 +21,18 @@ void map_read(Runtime &runtime) {
   if (address >= a_base && address < a_base + loop.activation_packed_bytes) {
     pending.kind = ReadKind::activation;
     extent = gemmini::activation_read(runtime.schedule, loop, address - a_base);
+    if (runtime.explicit_geometry && extent.valid && extent.element_count) {
+      const auto stride = runtime.descriptor.activation_row_stride;
+      const auto row = extent.byte_offset / stride;
+      const auto column = extent.byte_offset % stride;
+      const auto &stripe = runtime.current_stripe;
+      if (row < stripe.row_begin || row - stripe.row_begin >= stripe.row_count) {
+        runtime.fault = true;
+        return;
+      }
+      extent.byte_offset = stripe.row_begin * stride +
+          (row - stripe.row_begin) * stripe.row_stride + column;
+    }
     host_base = runtime.descriptor.activation_base;
   } else if (address >= b_base && address < b_base + loop.weight_packed_bytes) {
     pending.kind = ReadKind::weight;

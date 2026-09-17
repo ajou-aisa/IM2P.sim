@@ -109,33 +109,7 @@ extern "C" int im2p_start_matmul(im2p_handle_t handle,
                                    const im2p_matmul_descriptor_t *descriptor) {
   auto *runtime = as_runtime(handle);
   if (!runtime || !descriptor) return IM2P_REQUEST_INVALID_ARGUMENT;
-  if (runtime->active) return 0;
-  if (!valid_descriptor(*descriptor)) return IM2P_REQUEST_INVALID_ARGUMENT;
-  runtime->descriptor = *descriptor;
-  const auto &d = *descriptor;
-  runtime->schedule = {
-      {d.row_count, d.column_count, d.reduction_count}, {kDim, kOperandBits},
-      {static_cast<std::size_t>(runtime->plan.tile_i),
-       static_cast<std::size_t>(runtime->plan.tile_j),
-       static_cast<std::size_t>(runtime->plan.tile_k),
-       static_cast<std::size_t>(runtime->plan.activation_rows_per_stripe)},
-      {d.activation_row_stride, d.weight_row_stride, d.scale_row_stride,
-       d.output_row_stride, d.k_origin},
-      d.vector_op != 0, d.vector_op != 0, d.accumulate_first_fragment != 0};
-  runtime->active = true;
-  runtime->async = descriptor->mode == 1;
-  runtime->matrix_done = false;
-  runtime->fault = false;
-  runtime->published_rows = 0;
-  runtime->next_stripe_id = 0;
-  runtime->last_start = runtime->top.io_coreCycle;
-  if (!runtime->async) {
-    Stripe stripe{0, 0, descriptor->row_count, descriptor->activation_row_stride,
-                  runtime->top.io_coreCycle, 0};
-    if (!enqueue_stripe(*runtime, stripe)) return 0;
-    runtime->published_rows = descriptor->row_count;
-  }
-  return 1;
+  return start_matmul(*runtime, *descriptor, nullptr);
 }
 
 extern "C" int im2p_publish_activation_stripe(im2p_handle_t handle,
@@ -143,21 +117,8 @@ extern "C" int im2p_publish_activation_stripe(im2p_handle_t handle,
                                                 std::uint32_t row_count,
                                                 std::uint64_t row_stride) {
   auto *runtime = as_runtime(handle);
-  if (!runtime || !runtime->active || !runtime->async) return IM2P_PUBLISH_LATE;
-  if (row_begin < runtime->published_rows) return IM2P_PUBLISH_DUPLICATE;
-  if (row_begin != runtime->published_rows || row_count == 0 ||
-      row_count > runtime->descriptor.row_count - row_begin ||
-      row_stride < runtime->descriptor.reduction_count * kStorageBytes)
-    return IM2P_PUBLISH_INVALID;
-  Stripe stripe{runtime->next_stripe_id, row_begin, row_count, row_stride,
-                runtime->top.io_coreCycle,
-                static_cast<std::uint8_t>(runtime->next_stripe_id & 1U)};
-  if (!enqueue_stripe(*runtime, stripe)) return IM2P_PUBLISH_BACKPRESSURE;
-  ++runtime->next_stripe_id;
-  runtime->published_rows += row_count;
-  ++runtime->counters.stripes_published;
-  runtime->counters.stripe_rows_published += row_count;
-  return IM2P_PUBLISH_ACCEPTED;
+  if (!runtime) return IM2P_PUBLISH_LATE;
+  return publish_stripe(*runtime, row_begin, row_count, row_stride, nullptr);
 }
 
 extern "C" int im2p_activation_stripe_ready(im2p_handle_t handle) {

@@ -26,6 +26,31 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul(
     descriptor: *const StripeWorkDescC,
     output: *mut *mut StreamBox,
 ) -> i32 {
+    begin_striped_matmul_impl(sim, descriptor, output, None)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_begin_striped_matmul_planned(
+    sim: *mut SimBox,
+    descriptor: *const StripeWorkDescC,
+    geometry: *const crate::production_geometry::ProductionGeometry,
+    output: *mut *mut StreamBox,
+) -> i32 {
+    if let Some(out) = output.as_mut() {
+        *out = ptr::null_mut();
+    }
+    let Some(geometry) = geometry.as_ref() else {
+        return -4;
+    };
+    begin_striped_matmul_impl(sim, descriptor, output, Some(geometry))
+}
+
+unsafe fn begin_striped_matmul_impl(
+    sim: *mut SimBox,
+    descriptor: *const StripeWorkDescC,
+    output: *mut *mut StreamBox,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
+) -> i32 {
     let Some(output_ref) = output.as_mut() else {
         return -1;
     };
@@ -35,6 +60,22 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul(
     };
     if let Err(status) = require_identity(Identity::from_striped(desc)) {
         return status;
+    }
+    if let Some(g) = geometry {
+        if !cfg!(im2p_gemmini_integrated) {
+            return -7;
+        }
+        if let Err(status) = g.validate(
+            desc.m,
+            desc.n,
+            desc.k,
+            crate::production_geometry::GEOMETRY_STREAM,
+        ) {
+            return status;
+        }
+        if desc.stripe_count as u64 != g.m.div_ceil(g.stripe_rows) {
+            return -4;
+        }
     }
     if let Err(status) = require_output_domain(
         desc.vector_op,
@@ -85,6 +126,7 @@ pub unsafe extern "C" fn im2p_begin_striped_matmul(
         &parsed,
         output,
         any_provider.then(|| desc.provider.selected()),
+        geometry,
     )
 }
 
@@ -93,6 +135,7 @@ unsafe fn begin_striped_matmul_value(
     desc: &StripeWorkDesc,
     output: *mut *mut StreamBox,
     provider: Option<crate::simulator::MemoryProvider>,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
 ) -> i32 {
     let (Some(owner), Some(output)) = (sim.as_mut(), output.as_mut()) else {
         return -1;
@@ -234,11 +277,12 @@ unsafe fn begin_striped_matmul_value(
         tile_j_columns,
     };
     let provider_block_size = provider.map(|_| desc.block_size);
-    match simulator.begin_striped_matmul_provider_recover(
+    match simulator.begin_striped_matmul_provider_with_geometry_recover(
         &work,
         layout,
         provider,
         provider_block_size,
+        geometry,
     ) {
         Ok(job) => {
             *output = Box::into_raw(Box::new(StreamBox {
@@ -250,6 +294,7 @@ unsafe fn begin_striped_matmul_value(
                 columns: desc.n,
                 reduction: desc.k,
                 failed: false,
+                geometry: geometry.copied(),
             }));
             0
         }
@@ -382,6 +427,26 @@ pub unsafe extern "C" fn im2p_publish_stripe(
     stream: *mut StreamBox,
     stripe: *const ActivationStripeC,
 ) -> i32 {
+    publish_stripe_impl(stream, stripe, None)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_publish_stripe_planned(
+    stream: *mut StreamBox,
+    stripe: *const ActivationStripeC,
+    geometry: *const crate::production_geometry::ProductionGeometry,
+) -> i32 {
+    let Some(geometry) = geometry.as_ref() else {
+        return -4;
+    };
+    publish_stripe_impl(stream, stripe, Some(geometry))
+}
+
+unsafe fn publish_stripe_impl(
+    stream: *mut StreamBox,
+    stripe: *const ActivationStripeC,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
+) -> i32 {
     let Some(stripe) = stripe.as_ref() else {
         return -4;
     };
@@ -398,6 +463,27 @@ pub unsafe extern "C" fn im2p_publish_stripe(
     let Some(stream) = stream.as_mut() else {
         return -1;
     };
+    match (stream.geometry.as_ref(), geometry) {
+        (Some(initial), Some(g)) => {
+            if let Err(status) = g.validate(
+                initial.m as usize,
+                initial.n as usize,
+                initial.k as usize,
+                crate::production_geometry::GEOMETRY_STRIPE,
+            ) {
+                return status;
+            }
+            if g.row_begin != stripe.i_start as u64
+                || g.row_count != stripe.rows as u64
+                || g.stripe_id != stripe.stripe_id as u64
+                || g.stripe_rows != initial.stripe_rows
+            {
+                return -4;
+            }
+        }
+        (None, None) => {}
+        _ => return -4,
+    }
     if stripe.activations.is_null()
         || !(stripe.activations as usize).is_multiple_of(align_of::<ActivationValue>())
     {
@@ -431,7 +517,7 @@ pub unsafe extern "C" fn im2p_publish_stripe(
     let Some(job) = stream.job.as_mut() else {
         return -6;
     };
-    match job.publish_stripe_layout(metadata, row_stride) {
+    match job.publish_stripe_layout_with_geometry(metadata, row_stride, geometry) {
         Ok(()) => {
             stream.stripes.push(PublishedStripe {
                 row_begin: stripe.i_start,

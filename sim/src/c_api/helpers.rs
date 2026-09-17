@@ -89,6 +89,7 @@ fn activation_error(error: ActivationError) -> crate::SimError {
 pub(super) unsafe fn execute_full(
     simulator: &mut Im2pSimulator,
     desc: &MatmulDesc,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
 ) -> Result<WorkStats, crate::SimError> {
     let op = vector_op(desc.vector_op).ok_or(crate::SimError::InvalidDimension)?;
     if desc.activations.is_null() || desc.weights.is_null() || desc.output.is_null() {
@@ -124,7 +125,7 @@ pub(super) unsafe fn execute_full(
         vector_op: op,
     };
     let mut output = MatrixViewMut::new(output, desc.m, desc.n, desc.output_row_stride)?;
-    simulator.execute_matmul_layout(
+    simulator.execute_matmul_layout_with_geometry(
         &work,
         &mut output,
         MatmulLayout {
@@ -139,6 +140,7 @@ pub(super) unsafe fn execute_full(
                 desc.tile_j_columns
             },
         },
+        geometry,
     )
 }
 
@@ -146,6 +148,7 @@ pub(super) unsafe fn execute_full_provider(
     simulator: &mut Im2pSimulator,
     desc: &MatmulDesc,
     provider: crate::simulator::MemoryProvider,
+    geometry: Option<&crate::production_geometry::ProductionGeometry>,
 ) -> Result<WorkStats, crate::SimError> {
     let op = vector_op(desc.vector_op).ok_or(crate::SimError::InvalidDimension)?;
     if desc.activations.is_null() {
@@ -160,7 +163,7 @@ pub(super) unsafe fn execute_full_provider(
     let activations = slice::from_raw_parts(desc.activations, activation_len);
     let activations = activation_view(activations, desc.m, desc.k, desc.activation_row_stride)
         .map_err(activation_error)?;
-    simulator.execute_matmul_provider(
+    simulator.execute_matmul_provider_with_geometry(
         activations,
         desc.m,
         desc.n,
@@ -183,6 +186,7 @@ pub(super) unsafe fn execute_full_provider(
             },
         },
         provider,
+        geometry,
     )
 }
 

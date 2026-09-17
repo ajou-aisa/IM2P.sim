@@ -190,6 +190,20 @@ unsafe extern "C" {
     pub fn im2p_read_accumulator_row_i64(handle: *mut c_void, row: u32, values: *mut i64) -> i32;
 
     pub fn im2p_start_matmul(handle: *mut c_void, descriptor: *const MatmulDescriptor) -> i32;
+    #[cfg(im2p_gemmini_integrated)]
+    pub fn im2p_start_matmul_geometry(
+        handle: *mut c_void,
+        descriptor: *const MatmulDescriptor,
+        geometry: *const crate::production_geometry::ProductionGeometry,
+    ) -> i32;
+    #[cfg(im2p_gemmini_integrated)]
+    pub fn im2p_publish_activation_stripe_geometry(
+        handle: *mut c_void,
+        row_begin: u32,
+        row_count: u32,
+        row_stride: u64,
+        geometry: *const crate::production_geometry::ProductionGeometry,
+    ) -> i32;
     pub fn im2p_publish_activation_stripe(
         handle: *mut c_void,
         row_begin: u32,

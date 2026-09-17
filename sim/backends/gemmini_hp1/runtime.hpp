@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../ffi/im2p_verilator.h"
+#include "../../ffi/im2p_geometry_ffi.h"
 #include "../../ffi/im2p_config.h"
 #include "../../ffi/im2p_integrated_signal.hpp"
 #include "../../common/gemmini_schedule.hpp"
@@ -11,6 +12,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <verilated.h>
+#if defined(IM2P_VERILATOR_TEST_HOOKS)
+#include "../../tests/cycle/accepted_work_observer.h"
+#endif
 
 namespace im2p::gemmini_hp1 {
 
@@ -49,6 +53,7 @@ struct Stripe {
   std::uint64_t row_stride = 0;
   std::uint64_t publish_cycle = 0;
   std::uint8_t slot = 0;
+  im2p_production_geometry_v1_t geometry{};
 };
 
 struct Completion {
@@ -93,6 +98,9 @@ struct Runtime {
   std::uint64_t edges = 0;
   std::uint64_t tag_sequence = 0;
   im2p_ffi_work_plan_t plan{1, 1, 1, 1};
+  // Per-operation explicit companion; never overwrites the legacy plan above.
+  bool explicit_geometry = false;
+  im2p_production_geometry_v1_t geometry{};
   std::uint64_t last_start = 0;
   std::uint64_t last_done = 0;
   std::uint64_t last_cycles = 0;
@@ -134,6 +142,21 @@ bool valid_descriptor(const im2p_matmul_descriptor_t &descriptor);
 bool enqueue_stripe(Runtime &runtime, const Stripe &stripe);
 void map_read(Runtime &runtime);
 void map_write(Runtime &runtime);
+bool valid_geometry(const im2p_production_geometry_v1_t &geometry,
+                    const im2p_matmul_descriptor_t &descriptor,
+                    std::uint32_t scope);
+bool geometry_fits(const im2p_production_geometry_v1_t &geometry,
+                   std::size_t rows, std::uint8_t slot);
+int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &descriptor,
+                 const im2p_production_geometry_v1_t *geometry);
+int publish_stripe(Runtime &runtime, std::uint32_t row_begin,
+                   std::uint32_t row_count, std::uint64_t row_stride,
+                   const im2p_production_geometry_v1_t *geometry);
+
+#if defined(IM2P_VERILATOR_TEST_HOOKS)
+void observe_geometry(const Runtime &runtime, std::uint64_t event,
+                       const im2p_production_geometry_v1_t *geometry = nullptr);
+#endif
 
 inline Runtime *as_runtime(im2p_handle_t handle) {
   return static_cast<Runtime *>(handle);

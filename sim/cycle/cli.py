@@ -149,6 +149,10 @@ def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
             if lib.im2p_cycle_model_event(handle, index, C.byref(event)):
                 raise RuntimeError('event retrieval failed')
             row = {key: getattr(event, key) for key in EVENT_U64 + EVENT_U32 if key != 'reserved'}
+            # ABI v1 names this field `loop`, but the engine stores the serialized
+            # hardware submission/frame index there. Keep the ABI field and expose
+            # an unambiguous JSON alias for diagnostics.
+            row['submission_index'] = row['loop']
             row['type'] = lib.im2p_cycle_event_name(event.type).decode('utf-8')
             row['resource'] = lib.im2p_cycle_resource_name(event.resource).decode('utf-8')
             trace.append(row)

@@ -1,11 +1,15 @@
 # IM2P.sim
 
 IM2P.sim maintains two active purposes: end-to-end build/API/numerical RTL
-verification, and a value-independent boundary for a future NPU cycle simulator.
-Existing generic Gemmini synthesis support is retained for later characterization.
-The separate [single-GEMM value-free cycle model](docs/GEMMINI_CYCLE_MODEL.md)
-is implemented in `sim/cycle/` and tested against the existing 268-case RTL corpus.
-Op-trace replay, CPU/NPU timelines and Fmax/resource/TOPS remain unimplemented.
+verification, and value-free single-GEMM NPU cycle simulation. Existing generic
+Gemmini synthesis support is retained for later characterization. The separate
+[cycle model](docs/GEMMINI_CYCLE_MODEL.md) in `sim/cycle/` has distinct scoped RTL
+certificates: `regression-tiles` 268/268 exact, production `planner-blocks` 262/262
+exact over the representable subset (six K8256 cases are explicit scale-capacity
+exclusions), and RMD_RAW timing equivalence 24/24 paired cases over its documented
+compact domain. These event certificates compare selected per-cycle event-type
+multisets, not full internal RTL event streams. Op-trace replay, CPU/NPU timelines
+and Fmax/resource/TOPS remain unimplemented.
 
 | Responsibility | Current authority |
 |---|---|

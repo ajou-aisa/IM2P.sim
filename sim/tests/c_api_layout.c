@@ -4,6 +4,12 @@
 #include <stdint.h>
 
 _Static_assert(IM2P_ABI_VERSION == 5, "ABI identity changed");
+_Static_assert(IM2P_PRODUCTION_GEOMETRY_VERSION == 1, "geometry version");
+_Static_assert(sizeof(im2p_production_geometry_v1_t) == 104, "geometry layout");
+_Static_assert(offsetof(im2p_production_geometry_v1_t, m) == 24, "geometry shape offset");
+_Static_assert(offsetof(im2p_production_geometry_v1_t, tile_i_count) == 48, "geometry tile units");
+_Static_assert(offsetof(im2p_production_geometry_v1_t, tile_k_count) == 64, "geometry K transport");
+_Static_assert(offsetof(im2p_production_geometry_v1_t, stripe_id) == 96, "geometry stripe identity");
 _Static_assert(sizeof(im2p_work_stats_t) == 27 * sizeof(uint64_t),
                "base stats layout changed");
 _Static_assert(sizeof(im2p_work_stats_extended_t) == 41 * sizeof(uint64_t),

@@ -115,10 +115,13 @@ Schedule expand_work(const im2p_cycle_model_config_t &c,
     w.reduction += loop.ks;
     w.scale_rows += loop.scale_rows;
     w.final_store = loop.final_contribution;
+    const auto fragments_per_block = std::max(1u, 32u / dim);
+    const uint64_t first_scale_row =
+        uint64_t(w.fragment_base / fragments_per_block) * w.max_j;
     if (uint64_t(w.max_i + w.max_j) * w.max_k * dim >
             uint64_t(c.hardware.bank_rows) * c.hardware.bank_count / 2 ||
         uint64_t(w.max_i) * w.max_j * dim > c.hardware.accumulator_rows / 2 ||
-        w.scale_rows > RtlTimingProfile::scale_entries)
+        first_scale_row + w.scale_rows > RtlTimingProfile::scale_entries)
       throw Error(
           IM2P_CYCLE_UNSUPPORTED,
           "hardware loop exceeds scratchpad, accumulator or scale capacity");
