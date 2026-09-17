@@ -3,8 +3,9 @@
 IM2P.sim maintains two active purposes: end-to-end build/API/numerical RTL
 verification, and a value-independent boundary for a future NPU cycle simulator.
 Existing generic Gemmini synthesis support is retained for later characterization.
-The value-free cycle simulator, op-trace replay, Fmax/resource analysis and TOPS
-calculation are **not implemented by this cleanup**.
+The separate [single-GEMM value-free cycle model](docs/GEMMINI_CYCLE_MODEL.md)
+is implemented in `sim/cycle/` and tested against the existing 268-case RTL corpus.
+Op-trace replay, CPU/NPU timelines and Fmax/resource/TOPS remain unimplemented.
 
 | Responsibility | Current authority |
 |---|---|
@@ -45,7 +46,8 @@ validation, with the pre-delete [inventory](docs/REPOSITORY_CLEANUP_INVENTORY.js
 
 [RTL cycle accounting](docs/RTL_CYCLE_ACCOUNTING.md) and
 [cycle-simulation preparation](docs/GEMMINI_CYCLE_SIM_BOUNDARY.md) describe existing
-logical endpoints and planning facts, not an implemented CPU/NPU timeline model.
+logical endpoints and planning facts shared by the separate cycle model, not a
+CPU/NPU timeline model.
 [Export and synthesis](docs/SYNTHESIS.md) retain generic current infrastructure;
 there is no physical-board deployment, programming or flash workflow in scope.
 The current host `uart.*` files are packet codecs used by API tests, not a physical

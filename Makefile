@@ -187,6 +187,16 @@ gemmini-hp1-plan gemmini-hp1-rtl gemmini-hp1-test gemmini-hp1-host-test gemmini-
 	  --scu hp1-left-shift --memory-contract-dir config/gemmini_host_memory_contracts \
 	  --stage $(patsubst gemmini-hp1-%,%,$@) --out "$(GEMMINI_HP1_OUT)"
 
+# Independent value-free library; no numerical runtime/build dependency.
+IM2P_CYCLE_BUILD_DIR ?= $(IM2P_GEMMINI_WORK_ROOT)/build/cycle-model
+.PHONY: cycle-model cycle-model-test
+cycle-model:
+	cmake -S sim/cycle -B "$(IM2P_CYCLE_BUILD_DIR)" -DCMAKE_BUILD_TYPE=Release
+	cmake --build "$(IM2P_CYCLE_BUILD_DIR)" --parallel 2
+
+cycle-model-test: cycle-model
+	ctest --test-dir "$(IM2P_CYCLE_BUILD_DIR)" --output-on-failure
+
 .PHONY: gemmini-schedule-test
 gemmini-schedule-test:
 	$(PYTHON) tests/test_gemmini_schedule.py

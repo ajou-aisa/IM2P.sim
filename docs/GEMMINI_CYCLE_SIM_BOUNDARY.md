@@ -1,14 +1,16 @@
-# Gemmini scheduling boundary (no cycle model)
+# Gemmini scheduling and cycle-model boundary
 
-This document describes the existing integrated RTL execution boundary after the
-IM2P.sim-only refactor. It does not implement a cycle estimator, event simulator,
-trace reader, system simulator, Fmax calculation, or TOPS calculation. Numerical
-RTL verification remains authoritative; see `GEMMINI_REFACTOR_REPORT.md` for the
-actual validation status and unresolved baseline failures.
+This document preserves the integrated numerical RTL/planner boundary established
+by the refactor. The separate single-GEMM value-free model is now implemented in
+`sim/cycle/`; [GEMMINI_CYCLE_MODEL.md](GEMMINI_CYCLE_MODEL.md) defines its API,
+regression timing profile, explicit submission-framing distinction and certified
+268-case coverage. Numerical RTL remains the golden. Op-trace replay, CPU/NPU
+system timelines and Fmax/resource/TOPS remain unimplemented; the refactor and
+cleanup reports retain their historical phase-specific states.
 
 ## Inputs and dependency direction
 
-A later value-free consumer needs GEMM M/N/K, the resolved hardware profile, the
+The value-free consumer needs GEMM M/N/K, the resolved hardware profile, the
 existing tile plan, the actual published stripe range/height, and layout/stride
 facts that change memory requests. It does not need activation values, weight
 values, SCU result values, main-versus-RMD algorithm labels, llama layer semantics,
@@ -26,7 +28,7 @@ root standalone (HostCommandBridge, ScaleBackingLoader, backing adapter/top)
 Verilator runtime / stable C ABI
 
 sim/common/gemmini_schedule.{hpp,cpp} <- integrated runtime
-                                   <- future value-free consumer (not implemented)
+                                   <- single-GEMM cycle model (sim/cycle/)
 ```
 
 The four SBT source sets are declared in `src/gemmini/build.sbt`. The `diagnostics` project now contains only lower-level tests; its production
@@ -97,7 +99,7 @@ payload counts include only valid final stores, not row-stride gaps.
 
 These byte counts are **request/buffer extents, not measured total bus traffic**.
 Repeated requests, actual arbitration, stalls, queue occupancy, overlap and
-completion remain RTL facts. A future timing model may consume this boundary,
+completion remain RTL facts. The separate timing model consumes this boundary,
 but must not mistake unique logical payload for a DMA transaction count.
 
 The production runtime calls these helpers when driving work and resolving reads.
@@ -143,5 +145,6 @@ supported separately. This preparation does not claim that every legacy frontend
 operation is accepted by GEMMINI_HP1. In particular, the existing main_external
 frontend regression requests operation 3 while this integrated bridge admits HP1
 operation 5 or raw operation 0; that baseline failure is not bypassed by this
-refactor. See the report for precise passing and failing gates. No standalone
-value-free cycle simulator exists after this task.
+refactor. See the report for precise passing and failing gates. The separate cycle library is now available under the explicitly scoped
+[cycle-model contract](GEMMINI_CYCLE_MODEL.md); it does not extend numerical
+backend admission or implement multi-operation/system simulation.

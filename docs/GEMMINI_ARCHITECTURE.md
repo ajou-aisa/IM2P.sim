@@ -41,5 +41,6 @@ The current host/API/numerical code remains under `fpga/gemmini_hp1/host/`.
 Generic part/board manifests and the existing synthesis Tcl remain under
 `fpga/gemmini_hp1/{boards,flow}/`; see [synthesis](SYNTHESIS.md).
 BSV is an explicitly retained [reference implementation](legacy/README.md), not
-an obsolete physical-board provider. The future value-free simulator is only a
-prepared [planning boundary](GEMMINI_CYCLE_SIM_BOUNDARY.md), not an implementation.
+an obsolete physical-board provider. The shared [planning boundary](GEMMINI_CYCLE_SIM_BOUNDARY.md) now feeds the
+separate [single-GEMM cycle model](GEMMINI_CYCLE_MODEL.md). Its regression-profile
+certificate is not an arbitrary workload/system timing guarantee.
