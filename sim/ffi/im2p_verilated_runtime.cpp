@@ -19,7 +19,7 @@ void VL_WRITEF_NX(const std::string &format, int argc, ...) VL_MT_SAFE {
 
     va_list ap;
     va_start(ap, argc);
-#if VERILATOR_VERSION_INTEGER >= 5050000
+#if VERILATOR_VERSION_INTEGER >= 5048000
     _vl_vsformat(output, format, argc, ap);
 #else
     _vl_vsformat(output, format, ap);
@@ -37,7 +37,46 @@ void VL_FWRITEF_NX(IData fpi, const std::string &format, int argc, ...) VL_MT_SA
 
     va_list ap;
     va_start(ap, argc);
-#if VERILATOR_VERSION_INTEGER >= 5050000
+#if VERILATOR_VERSION_INTEGER >= 5048000
+    _vl_vsformat(output, format, argc, ap);
+#else
+    _vl_vsformat(output, format, ap);
+#endif
+    va_end(ap);
+
+    if (im2p_is_standard_console_fd(fpi) &&
+        im2p_verilator_log_message(output.data(), output.size())) {
+        return;
+    }
+
+    Verilated::threadContextp()->impp()->fdWrite(fpi, output);
+}
+
+void VL_WRITEF_NX(const char *format, int argc, ...) VL_MT_SAFE {
+    static thread_local std::string output;
+    output.clear();
+
+    va_list ap;
+    va_start(ap, argc);
+#if VERILATOR_VERSION_INTEGER >= 5048000
+    _vl_vsformat(output, format, argc, ap);
+#else
+    _vl_vsformat(output, format, ap);
+#endif
+    va_end(ap);
+
+    if (!im2p_verilator_log_message(output.data(), output.size())) {
+        VL_PRINTF_MT("%s", output.c_str());
+    }
+}
+
+void VL_FWRITEF_NX(IData fpi, const char *format, int argc, ...) VL_MT_SAFE {
+    static thread_local std::string output;
+    output.clear();
+
+    va_list ap;
+    va_start(ap, argc);
+#if VERILATOR_VERSION_INTEGER >= 5048000
     _vl_vsformat(output, format, argc, ap);
 #else
     _vl_vsformat(output, format, ap);
