@@ -32,11 +32,17 @@ def build_environment(work_root: Path) -> Mapping[str, str]:
     environment = dict(os.environ)
     environment.setdefault("IM2P_GEMMINI_WORK_ROOT", str(work_root.resolve()))
     if platform.system() == "Darwin":
+        configured_firtool = environment.get("CHISEL_FIRTOOL_PATH")
         pinned_firtool = (
             work_root / "deps/firtool-1.62.0-macos-x64"
             / "org.chipsalliance/llvm-firtool/macos-x64/bin"
         )
-        environment["CHISEL_FIRTOOL_PATH"] = str(pinned_firtool)
+        if (pinned_firtool / "firtool").is_file():
+            environment["CHISEL_FIRTOOL_PATH"] = str(pinned_firtool)
+        elif configured_firtool and (Path(configured_firtool) / "firtool").is_file():
+            environment["CHISEL_FIRTOOL_PATH"] = configured_firtool
+        elif located_firtool := shutil.which("firtool", path=environment.get("PATH")):
+            environment["CHISEL_FIRTOOL_PATH"] = str(Path(located_firtool).resolve().parent)
         if "JAVA_HOME" not in environment:
             probe = subprocess.run(
                 ("/usr/libexec/java_home",), text=True, capture_output=True, check=False,

@@ -417,9 +417,14 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
         sbt.chmod(0o755)
         verilator.chmod(0o755)
         output = base / "rtl-build"
+        incompatible_firtool = tools / "incompatible-firtool"
+        incompatible_firtool.mkdir()
+        incompatible = incompatible_firtool / "firtool"
+        incompatible.write_text("#!/bin/sh\necho incompatible firtool\n", encoding="utf-8")
+        incompatible.chmod(0o755)
         environment = dict(os.environ)
         environment.pop("JAVA_HOME", None)
-        environment["CHISEL_FIRTOOL_PATH"] = str(tools / "incompatible-firtool")
+        environment["CHISEL_FIRTOOL_PATH"] = str(incompatible_firtool)
         environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
 
         # When: actual orchestration runs instead of dry-run planning.
