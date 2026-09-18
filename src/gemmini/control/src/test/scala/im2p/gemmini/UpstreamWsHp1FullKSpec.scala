@@ -118,7 +118,7 @@ final class UpstreamWsHp1FullKSpec extends AnyFlatSpec with ChiselScalatestTeste
         work.bStrideBytes.poke(spBytes.U)
         work.cStrideBytes.poke(accBytes.U)
         work.scaleBase.poke(0.U)
-        work.scaleGeneration.poke(1.U)
+        work.scaleGeneration.poke((if (first) 1 else 2).U)
         work.fragmentBase.poke(fragment.U)
         work.workBase.poke(0.U)
         work.accumulate.poke((!first).B)
@@ -126,7 +126,9 @@ final class UpstreamWsHp1FullKSpec extends AnyFlatSpec with ChiselScalatestTeste
         work.firstLoop.poke(first.B)
         work.finalLoop.poke((!first).B)
         work.logicalWorkId.poke(11.U)
-        work.hostSlot.poke((!first).B)
+        // Both K32 loops belong to one production stripe/host slot. The scale
+        // cache row is reused only after generation-1 ownership is released.
+        work.hostSlot.poke(false.B)
         work.rmdRaw.poke(false.B)
         dut.io.work.valid.poke(true.B)
         while (!dut.io.work.ready.peek().litToBoolean) dut.clock.step()
@@ -179,6 +181,20 @@ final class UpstreamWsHp1FullKSpec extends AnyFlatSpec with ChiselScalatestTeste
       runLoop(expectLogicalDone = false)
       assert(stored.isEmpty && outputCompletions == 0)
       dut.io.busy.expect(true.B)
+
+      // Production releases every physical scale lane after a loop completes,
+      // then reuses the same local row under a fresh generation.
+      for (column <- 0 until profile.dim) {
+        dut.io.scaleRelease.bits.column.poke(column.U)
+        dut.io.scaleRelease.bits.address.poke(0.U)
+        dut.io.scaleRelease.bits.generation.poke(1.U)
+        dut.io.scaleRelease.valid.poke(true.B)
+        while (!dut.io.scaleRelease.ready.peek().litToBoolean) dut.clock.step()
+        dut.clock.step()
+      }
+      dut.io.scaleRelease.valid.poke(false.B)
+      dut.clock.step()
+
       submit(a1, b1, c, scale1, fragment = 1, first = false)
       runLoop(expectLogicalDone = true)
 

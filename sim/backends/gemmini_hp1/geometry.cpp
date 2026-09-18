@@ -28,13 +28,19 @@ bool geometry_fits(const im2p_production_geometry_v1_t &g, std::size_t rows,
       (std::min<std::uint64_t>(rows, g.tile_i_count * kDim) + kDim - 1) / kDim;
   const auto max_j = (std::min(g.n, g.tile_j_count * kDim) + kDim - 1) / kDim;
   const auto max_k = (std::min<std::uint64_t>(g.k, 32) + kDim - 1) / kDim;
-  // Reject unrepresentable work; never substitute smaller tile factors.
+  const auto fragments_per_block = std::max<std::size_t>(1, 32 / kDim);
+  const auto scale_blocks =
+      (max_k + fragments_per_block - 1) / fragments_per_block;
+  const auto scale_rows = scale_blocks * max_j;
+  // Scale rows are generation-tagged and released after each loop, so physical
+  // cache capacity is a per-loop/per-slot constraint rather than an all-K
+  // bound. Reject unrepresentable work; never substitute smaller tile factors.
   return max_i * max_j <= 64 &&
          (max_i + max_j) * max_k * kDim <=
              IM2P_GEMMINI_BANK_COUNT * IM2P_GEMMINI_BANK_ROWS / 2 &&
          max_i * max_j * kDim <= IM2P_GEMMINI_ACCUMULATOR_ROWS / 2 &&
          (g.k - 1) / std::min<std::size_t>(kDim, 32) <= UINT16_MAX &&
-         slot * 128 + ((g.k + 31) / 32) * max_j <= 256;
+         slot * 128 + scale_rows <= 256;
 }
 
 int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &d,

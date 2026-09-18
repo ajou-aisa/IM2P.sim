@@ -102,6 +102,48 @@ final class ScaleBackingLoaderSpec extends AnyFlatSpec with ChiselScalatestTeste
     }
   }
 
+  it should "reuse local scale rows for late dense K blocks while preserving global fragment identity" in {
+    test(new ScaleBackingLoader(profile, scaleEntries = 64)) { dut =>
+      initialize(dut)
+      pokeWork(dut, maxJ = 3, maxK = 2)
+      dut.io.work.bits.fragmentBase.poke(190.U)
+      dut.io.work.bits.accumulate.poke(true.B)
+      dut.io.work.valid.poke(true.B)
+      dut.io.work.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.work.valid.poke(false.B)
+
+      for (row <- 0 until 3) {
+        dut.io.readRequest.valid.expect(true.B)
+        dut.io.readRequest.bits.address.expect((0x4000 + row * profile.dim * 4).U)
+        dut.clock.step()
+
+        val packed = (0 until profile.dim).foldLeft(BigInt(0)) { (bits, column) =>
+          bits | (BigInt(row + column) << (column * 32))
+        }
+        dut.io.readBeat.bits.id.poke(15.U)
+        dut.io.readBeat.bits.data.poke(packed.U)
+        dut.io.readBeat.bits.last.poke(true.B)
+        dut.io.readBeat.bits.error.poke(false.B)
+        dut.io.readBeat.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.readBeat.valid.poke(false.B)
+
+        for (column <- 0 until profile.dim) {
+          dut.io.scaleLoad.valid.expect(true.B)
+          dut.io.scaleLoad.bits.address.expect((4 + row).U)
+          dut.io.scaleLoad.bits.generation.expect(7.U)
+          dut.clock.step()
+        }
+      }
+
+      dut.io.loadedWork.valid.expect(true.B)
+      dut.io.loadedWork.bits.fragmentBase.expect(190.U)
+      dut.io.loadedWork.bits.accumulate.expect(true.B)
+      dut.io.error.expect(false.B)
+    }
+  }
+
   it should "consume an early reserved response and fail closed" in {
     test(new ScaleBackingLoader(profile, scaleEntries = 64)) { dut =>
       initialize(dut)

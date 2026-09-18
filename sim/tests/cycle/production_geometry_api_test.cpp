@@ -354,11 +354,105 @@ void stripe_copy_and_admission() {
             << ",\"varied_factors\":" << (changed ? "true" : "false")
             << ",\"aggregate_timing\":\"NOT_IMPLEMENTED\"}\n";
 }
+
+void large_k_scale_cache_admission() {
+  Fixture f(128, 768, 3072);
+  Memory mem(128, 768, 3072);
+  const auto &a = f.args;
+#if GGML_GEMMINI_ACTIVATION_BITS == 8 && GGML_GEMMINI_WEIGHT_BITS == 8 &&      \
+    DIM == 16
+  require(a.tile_I == 5 && a.tile_J == 5 && a.tile_K == 51,
+          "GPT-2 down-projection production tile changed");
+#endif
+  const auto whole =
+      lower::capture_production_geometry(a, IM2P_GEOMETRY_STREAM, 0, a.I, 0);
+
+  const auto full = full_desc(f, mem);
+  im2p_stripe_work_desc_t d{};
+  d.abi_version = full.abi_version;
+  d.activation_bits = full.activation_bits;
+  d.activation_storage_bytes = 1;
+  d.weight_bits = full.weight_bits;
+  d.weight_storage_bytes = 1;
+  d.dim = DIM;
+  d.m = a.I;
+  d.n = a.J;
+  d.k = a.K;
+  d.weight_row_stride_bytes = a.J;
+  d.output_row_stride = a.J;
+  d.tile_i_rows = std::min(a.I, size_t(DIM));
+  d.tile_j_columns = std::min(a.J, size_t(DIM));
+  d.block_size = 32;
+  d.scale_total_k = a.K;
+  d.scale_row_stride = a.J;
+  d.scale_valid_columns = a.J;
+  d.stripe_count = (a.I + whole.stripe_rows - 1) / whole.stripe_rows;
+  d.vector_op = IM2P_VECTOR_LEFT_SHIFT;
+  d.output_domain = IM2P_OUTPUT_SCU_FINAL;
+  d.provider = mem.provider();
+
+  Simulator sim(im2p_sim_create(), im2p_sim_destroy);
+  require(bool(sim), "create large-K simulator");
+  im2p_stream_t *raw = nullptr;
+  require(im2p_begin_striped_matmul_planned(sim.get(), &d, &whole, &raw) ==
+                  IM2P_OK &&
+              raw,
+          "large-K planned stream admission");
+  Stream stream(raw, im2p_destroy_stream);
+
+  const size_t rows = std::min<size_t>(whole.stripe_rows, a.I);
+  const auto stripe_geometry =
+      lower::capture_production_geometry(a, IM2P_GEOMETRY_STRIPE, 0, rows, 0);
+  require(stripe_geometry.tile_i_count == a.tile_I &&
+              stripe_geometry.tile_j_count == a.tile_J &&
+              stripe_geometry.tile_k_count == a.tile_K,
+          "large-K stripe lost production tile");
+
+  im2p_activation_stripe_t stripe{};
+  stripe.abi_version = IM2P_ABI_VERSION;
+  stripe.activation_bits = GGML_GEMMINI_ACTIVATION_BITS;
+  stripe.activation_storage_bytes = 1;
+  stripe.weight_bits = GGML_GEMMINI_WEIGHT_BITS;
+  stripe.weight_storage_bytes = 1;
+  stripe.dim = DIM;
+  stripe.stripe_id = 0;
+  stripe.i_start = 0;
+  stripe.rows = rows;
+  stripe.activations = a.A.raw_data();
+  stripe.activation_row_stride_bytes = a.A.row_stride_bytes;
+  stripe.context = 1;
+
+  require(im2p_publish_stripe_planned(stream.get(), &stripe,
+                                      &stripe_geometry) == IM2P_OK,
+          "large-K production stripe 0 rejected by scale-cache admission");
+
+  const size_t second_begin = rows;
+  const size_t second_rows = std::min<size_t>(whole.stripe_rows, a.I - second_begin);
+  auto second_geometry = lower::capture_production_geometry(
+      a, IM2P_GEOMETRY_STRIPE, second_begin, second_rows, 1);
+  stripe.stripe_id = 1;
+  stripe.i_start = second_begin;
+  stripe.rows = second_rows;
+  stripe.activations =
+      static_cast<const uint8_t *>(a.A.raw_data()) +
+      second_begin * a.A.row_stride_bytes;
+  const int second_status =
+      im2p_publish_stripe_planned(stream.get(), &stripe, &second_geometry);
+  require(second_status == IM2P_OK,
+          "large-K production stripe 1 rejected by scale-cache admission");
+
+  std::cout
+      << "{\"test\":\"large_k_scale_cache_admission\",\"status\":\"PASS\","
+         "\"m\":128,\"n\":768,\"k\":3072,\"tile\":["
+      << a.tile_I << ',' << a.tile_J << ',' << a.tile_K
+      << "],\"stripes_published\":2}\n";
+}
 } // namespace
 int main() {
   try {
     full_isolation_and_passivity();
     stripe_copy_and_admission();
+    large_k_scale_cache_admission();
   } catch (const std::exception &e) {
     im2p_test_set_work_observer(nullptr, nullptr);
     std::cerr << "PRODUCTION_GEOMETRY_API_TEST_FAIL " << e.what() << '\n';

@@ -74,11 +74,10 @@ final class UpstreamWsHp1Top(
   private val releasesRemaining = Reg(Vec(2, UInt(releaseCountWidth.W)))
   private val releaseOwnershipError = RegInit(false.B)
 
-  private val firstBlock = io.work.bits.fragmentBase / fragmentsPerBlock.U
-  private val lastFragment = io.work.bits.fragmentBase +& io.work.bits.maxK - 1.U
-  private val lastBlock = lastFragment / fragmentsPerBlock.U
-  private val incomingScaleStart = io.work.bits.scaleBase +& firstBlock * io.work.bits.maxJ
-  private val incomingScaleRows = (lastBlock - firstBlock + 1.U) * io.work.bits.maxJ
+  private val localLastFragment = io.work.bits.maxK - 1.U
+  private val localLastBlock = localLastFragment / fragmentsPerBlock.U
+  private val incomingScaleStart = io.work.bits.scaleBase
+  private val incomingScaleRows = (localLastBlock + 1.U) * io.work.bits.maxJ
   private val incomingScaleEnd = incomingScaleStart +& incomingScaleRows
   private val incomingRangeValid = io.work.bits.maxK =/= 0.U &&
     incomingScaleEnd <= scaleEntries.U
@@ -96,7 +95,7 @@ final class UpstreamWsHp1Top(
     val slot = io.work.bits.hostSlot
     activeSlots(slot) := true.B
     completedSlots(slot) := false.B
-    scaleStarts(slot) := incomingScaleStart(intervalWidth - 1, 0)
+    scaleStarts(slot) := incomingScaleStart
     scaleEnds(slot) := incomingScaleEnd(intervalWidth - 1, 0)
     scaleGenerations(slot) := io.work.bits.scaleGeneration
     releasesRemaining(slot) := (incomingScaleRows * profile.dim.U)(releaseCountWidth - 1, 0)

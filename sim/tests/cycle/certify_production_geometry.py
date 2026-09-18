@@ -122,7 +122,16 @@ def main() -> None:
                 rc = run_logged(out, [str(exe)], exe.parent / 'api-test.log')
                 summaries = [json.loads(line) for line in (exe.parent / 'api-test.log').read_text().splitlines()
                              if line.startswith('{')]
-                passed = rc == 0 and len(summaries) == 2 and all(r['status'] == 'PASS' for r in summaries)
+                expected_tests = {
+                    'full_isolation_and_observer_passivity',
+                    'stripe_snapshot_admission',
+                    'large_k_scale_cache_admission',
+                }
+                passed = (
+                    rc == 0
+                    and {r.get('test') for r in summaries} == expected_tests
+                    and all(r.get('status') == 'PASS' for r in summaries)
+                )
                 results.append({'profile': profile, 'status': 'PASS' if passed else 'FAIL',
                                 'returncode': rc, 'tests': summaries, 'log': str(exe.parent / 'api-test.log')})
                 if not passed:

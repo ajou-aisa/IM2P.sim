@@ -202,12 +202,9 @@ void drive_release(Runtime &runtime) {
     return;
   auto &top = runtime.top;
   top.io_scaleRelease_valid = 1;
-  const auto first_block = runtime.current_loop.scale_first_block;
-  const auto rows_per_block = runtime.current_loop.scale_rows_per_block;
   top.io_scaleRelease_bits_column = runtime.release_head % kDim;
-  top.io_scaleRelease_bits_address = runtime.current_loop.scale_base +
-                                     first_block * rows_per_block +
-                                     runtime.release_head / kDim;
+  top.io_scaleRelease_bits_address =
+      runtime.current_loop.scale_base + runtime.release_head / kDim;
   top.io_scaleRelease_bits_generation = runtime.current_loop.generation;
 }
 

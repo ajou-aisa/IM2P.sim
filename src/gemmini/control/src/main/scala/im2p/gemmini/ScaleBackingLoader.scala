@@ -50,7 +50,9 @@ final class ScaleBackingLoader(
   private val firstBlock = work.fragmentBase / fragmentsPerBlock.U
   private val finalFragment = work.fragmentBase +& work.maxK - 1.U
   private val lastBlock = finalFragment / fragmentsPerBlock.U
-  private val firstRowWide = work.scaleBase +& firstBlock * work.maxJ
+  // Physical scale rows are loop-local. fragmentBase remains the global K-fragment
+  // identity, while generation/release ownership makes these rows safe to reuse.
+  private val firstRowWide = work.scaleBase
   private val rowCountWide = (lastBlock - firstBlock + 1.U) * work.maxJ
   private val endRowWide = firstRowWide +& rowCountWide
   private val backingEnd = work.scaleBackingAddress +& rowCountWide * rowBytes.U

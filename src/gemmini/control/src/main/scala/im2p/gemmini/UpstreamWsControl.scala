@@ -139,7 +139,9 @@ final class UpstreamWsControl(
   private val validRows = DIM.U - Mux(contextI === metadata.maxI - 1.U, metadata.padI, 0.U)
   private val validColumns = DIM.U - Mux(contextJ === metadata.maxJ - 1.U, metadata.padJ, 0.U)
   private val fragmentsPerBlock = math.max(1, 32 / DIM)
-  private val scaleBlock = (metadata.fragmentBase + contextK) / fragmentsPerBlock.U
+  // Scale-cache addressing is local to this loop. fragmentBase stays global for
+  // fragment identity, but must not force the finite scale cache to cover all K.
+  private val scaleBlock = contextK / fragmentsPerBlock.U
   private val scaleAddress = metadata.scaleBase + scaleBlock * metadata.maxJ + contextJ
   private val workId = metadata.workBase + contextI * metadata.maxJ + contextJ
   private val validFinalK = DIM.U - metadata.padK
