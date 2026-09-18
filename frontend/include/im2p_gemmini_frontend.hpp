@@ -139,6 +139,13 @@ struct Options {
   const StreamExecutor *stream_executor = nullptr;
   // Explicit arithmetic selection; existing callers retain the SCU contract.
   NumericalContract numerical_contract = NumericalContract::scu_final_integer;
+  // Optional observation of the complete worker. Called once at worker entry
+  // and once at worker exit on the worker thread.
+  void *worker_timing_context = nullptr;
+  void (*worker_timing)(void *, bool begin) noexcept = nullptr;
+  // Optional same-thread host-stage observation. Stage names are static strings.
+  void *host_stage_context = nullptr;
+  void (*host_stage_timing)(void *, const char *stage, bool begin) noexcept = nullptr;
   // Generic Gemmini HP1 only. Carries exact selected DIM-count factors through
   // the additive numerical C APIs; every publication requires its own snapshot.
   // External/bound executors continue to use their existing prepare companion.

@@ -36,6 +36,25 @@ namespace {
 namespace wroute = ggml::gemmini::quants::wroute;
 namespace exsia = ggml::gemmini::quants::act::exsia;
 
+class HostStageTiming {
+public:
+  HostStageTiming(const Options &options, const char *stage) noexcept
+      : options_(options), stage_(stage) {
+    if (options_.host_stage_timing)
+      options_.host_stage_timing(options_.host_stage_context, stage_, true);
+  }
+  ~HostStageTiming() noexcept {
+    if (options_.host_stage_timing)
+      options_.host_stage_timing(options_.host_stage_context, stage_, false);
+  }
+  HostStageTiming(const HostStageTiming &) = delete;
+  HostStageTiming &operator=(const HostStageTiming &) = delete;
+
+private:
+  const Options &options_;
+  const char *stage_;
+};
+
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
 std::atomic<bool> fail_timing_reserve_injected{false};
 #endif
@@ -640,6 +659,7 @@ struct Run::Impl {
   size_t final_output_count = 0;
 
   bool retain_legacy_operands() {
+    HostStageTiming timing(options, "frontend.input_snapshot");
     size_t weight_count = 0, output_count = 0;
     const size_t sb = scalars.sb ? scalars.sb : scalars.j;
     const size_t sc = scalars.sc ? scalars.sc : scalars.j;
@@ -662,6 +682,7 @@ struct Run::Impl {
   }
 
   bool retain_provider_operands() {
+    HostStageTiming timing(options, "frontend.input_snapshot");
     try {
       switch (route) {
       case Route::q8_0_unpacked_to_h1: {
@@ -812,6 +833,7 @@ struct Run::Impl {
   }
 
   void commit_output() noexcept {
+    HostStageTiming timing(options, "frontend.output_copy");
     if (integer_output_stage && integer_output_destination) {
       auto *destination = static_cast<int32_t *>(integer_output_destination);
       const size_t stride = scalars.sc ? scalars.sc : scalars.j;
@@ -1409,9 +1431,13 @@ struct Run::Impl {
                             "external FULL executor required"));
       return;
     }
-    result = options.full_executor(options.full_executor_context, &d, &stats);
+    {
+      HostStageTiming timing(options, "frontend.device_host_call");
+      result = options.full_executor(options.full_executor_context, &d, &stats);
+    }
 #else
     if (options.full_executor) {
+      HostStageTiming timing(options, "frontend.device_host_call");
       result = options.full_executor(options.full_executor_context, &d, &stats);
     } else {
       std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
@@ -1420,14 +1446,17 @@ struct Run::Impl {
                               "failed to create IM2P simulator"));
         return;
       }
+      {
+        HostStageTiming timing(options, "frontend.device_host_call");
 #if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
-      const auto g = geometry_snapshot(scalars, IM2P_GEOMETRY_FULL, 0, scalars.i, 0);
-      result = options.production_geometry
-          ? im2p_execute_matmul_planned(sim.get(), &d, &g, &stats)
-          : im2p_execute_matmul_extended(sim.get(), &d, &stats);
+        const auto g = geometry_snapshot(scalars, IM2P_GEOMETRY_FULL, 0, scalars.i, 0);
+        result = options.production_geometry
+            ? im2p_execute_matmul_planned(sim.get(), &d, &g, &stats)
+            : im2p_execute_matmul_extended(sim.get(), &d, &stats);
 #else
-      result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+        result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
 #endif
+      }
     }
 #endif
     if (provider_failed)
@@ -1439,6 +1468,7 @@ struct Run::Impl {
   }
 
   int publish(im2p_stream_t *stream, const DenseEvent &e) {
+    HostStageTiming timing(options, "frontend.stripe_submit");
     size_t offset = 0;
     const size_t stride = scalars.activation_row_stride_bytes;
     if (!checked_mul(e.row_begin, stride, offset))
@@ -1802,6 +1832,7 @@ struct Run::Impl {
         std::unique_lock lock(mutex);
         if (ready.empty() && in_flight.empty() && !residual_pending &&
             lifecycle != Lifecycle::closing && final_status.ok()) {
+          HostStageTiming timing(options, "frontend.worker_queue_wait");
           changed.wait(lock, [&] {
             return !ready.empty() || !in_flight.empty() || residual_pending ||
                    lifecycle == Lifecycle::closing || !final_status.ok();
@@ -2216,6 +2247,8 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       auto *impl_ptr = &x;
       x.worker = std::thread([impl_ptr] {
         auto &state = *impl_ptr;
+        if (state.options.worker_timing)
+          state.options.worker_timing(state.options.worker_timing_context, true);
         try {
           if (state.mode == Mode::full)
             state.run_full();
@@ -2230,6 +2263,8 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                                           state.route, state.native,
                                           "IM2P worker exception"));
         }
+        if (state.options.worker_timing)
+          state.options.worker_timing(state.options.worker_timing_context, false);
       });
       x.lifecycle = Run::Impl::Lifecycle::running;
     } catch (const std::bad_alloc &) {
@@ -2246,6 +2281,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   }
   if (mode == Mode::stripe_pipeline) {
     std::unique_lock lock(x.mutex);
+    HostStageTiming startup_wait(x.options, "frontend.startup_wait");
     x.changed.wait(lock,
                    [&] { return x.startup_done || !x.final_status.ok(); });
     if (!x.final_status.ok())
@@ -2293,6 +2329,7 @@ Status submit_stripe_planned(Run &run, const exsia::StripeReadyEvent &e,
   if (x.outstanding >= Run::Impl::producer_slot_count) {
     ++x.blocked_producers;
     x.changed.notify_all();
+    HostStageTiming capacity_wait(x.options, "frontend.producer_capacity_wait");
     x.changed.wait(lock, [&] {
       return x.outstanding < Run::Impl::producer_slot_count ||
              !x.final_status.ok();
@@ -2374,6 +2411,7 @@ FenceResult fence(Run &run) noexcept {
       x.changed.notify_all();
     }
     if (x.join_in_progress) {
+      HostStageTiming waiter(x.options, "frontend.fence_wait");
       x.changed.wait(
           lock, [&] { return x.lifecycle == Run::Impl::Lifecycle::terminal; });
       return result_locked();
@@ -2381,8 +2419,10 @@ FenceResult fence(Run &run) noexcept {
     x.join_in_progress = true;
     worker = std::move(x.worker);
   }
-  if (worker.joinable())
+  if (worker.joinable()) {
+    HostStageTiming join_wait(x.options, "frontend.worker_join_wait");
     worker.join();
+  }
   {
     std::lock_guard lock(x.mutex);
     if (x.final_status.ok() && x.scu_route() &&
