@@ -51,7 +51,7 @@ def build(golden: Path, cargo: Path, cycle: Path, config: Path,
     sources += [backend / path for path in (
         'quants/common/weight_reader.cpp', 'quants/common/dequant.cpp',
         'quants/act/dispatch.cpp', 'quants/act/exsia/exsia.cpp', 'ggml-gemmini-telemetry.cpp')]
-    sources += [llama / ('ggml-gemmini-utils/src/' + x + '.cpp') for x in ('cycle', 'debug')]
+    sources += [llama / ('ggml-gemmini-utils/src/' + x + '.cpp') for x in ('cycle', 'debug', 'optrace')]
     archives = [cargo / profile / 'debug/libim2p_sim.a', cycle / 'libim2p_cycle_model.a',
                 golden / 'after-matrix' / profile / 'host-build/libgemmini_hp1_ggml_numeric.a']
     if any(not f.is_file() for f in [*sources, *archives]):

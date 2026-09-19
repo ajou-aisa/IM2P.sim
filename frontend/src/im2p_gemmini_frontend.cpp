@@ -1,4 +1,5 @@
 #include "im2p_gemmini_frontend.hpp"
+#include "im2p_production_trace.hpp"
 
 #include "ggml-gemmini-args.h"
 #include "ggml-gemmini-config.hpp"
@@ -579,6 +580,8 @@ struct Run::Impl {
       : scalars(snapshot_scalars(*source)),
         pointers(snapshot_pointers(*source)), mode(requested_mode),
         options(requested_options),
+        trace_context(source->optrace_context),
+        trace_layer(trace_context ? source->matmul_layer : std::string{}),
         stall_cycle_limit(
             std::max(requested_options.max_stalled_cycles,
                      minimum_stall_cycles)),
@@ -594,6 +597,8 @@ struct Run::Impl {
   PointerSnapshot pointers;
   Mode mode;
   Options options;
+  std::shared_ptr<const ggml::gemmini::optrace::Context> trace_context;
+  std::string trace_layer;
   uint64_t stall_cycle_limit;
   Route route;
   bool native;
@@ -1453,6 +1458,9 @@ struct Run::Impl {
         result = options.production_geometry
             ? im2p_execute_matmul_planned(sim.get(), &d, &g, &stats)
             : im2p_execute_matmul_extended(sim.get(), &d, &stats);
+        if (trace_context && result == IM2P_OK)
+          trace_context->session->accepted(
+              *trace_context, production_trace::full(d, g, trace_layer));
 #else
         result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
 #endif
@@ -1465,6 +1473,10 @@ struct Run::Impl {
     else if (result != IM2P_OK)
       set_error(
           from_c_status(result, route, "IM2P full execution failed", native));
+    else if (trace_context)
+      // Count successful production calls independently of serialization.
+      trace_context->session->independent_count(
+          *trace_context, trace_layer, "dense_main", 1);
   }
 
   int publish(im2p_stream_t *stream, const DenseEvent &e) {
@@ -1498,8 +1510,16 @@ struct Run::Impl {
         : im2p_publish_stripe(stream, &s);
 #endif
     if (result == IM2P_OK) {
-      std::lock_guard lock(mutex);
-      in_flight.emplace(s.stripe_id, e);
+      {
+        std::lock_guard lock(mutex);
+        in_flight.emplace(s.stripe_id, e);
+      }
+      // Only runtime-accepted publications are work. A retry/backpressure
+      // return must never allocate a trace sequence or increment trace count.
+      if (trace_context)
+        trace_context->session->accepted(*trace_context,
+            production_trace::stripe(stripe_descriptor(), s, e.geometry,
+                                     trace_layer, e.slot));
     }
     return result;
   }
@@ -1920,6 +1940,11 @@ struct Run::Impl {
       else if (result != IM2P_OK)
         set_error(
             from_c_status(result, route, "IM2P stream fence failed", native));
+      else if (trace_context)
+        // The runtime owns this acceptance counter; it is not computed from
+        // publication callbacks or from the op-trace writer's count.
+        trace_context->session->independent_count(
+            *trace_context, trace_layer, "dense_main", stats.base.stripes_published);
     } else if (provider_failed) {
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -2090,6 +2115,13 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                                  x.native, "unknown Gemmini weight route");
   }
   if (!x.final_status.ok()) {
+    x.lifecycle = Run::Impl::Lifecycle::terminal;
+    return {x.final_status, std::move(run)};
+  }
+  if (x.trace_context && (!*x.trace_context || !options.production_geometry ||
+                          options.full_executor || options.stream_executor)) {
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                 "optrace requires an owned phase and generic planned HP1 dispatch");
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }

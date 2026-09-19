@@ -130,6 +130,9 @@ def main() -> int:
         (
             "ggml/src/ggml-gemmini/**/*.h",
             "ggml/src/ggml-gemmini/**/*.hpp",
+            # The frontend now transports this value-free ABI to the writer.
+            # A header layout change must invalidate its cached native archive.
+            "ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp",
             "ggml/src/ggml-common.h",
             "ggml/include/ggml.h",
         ),

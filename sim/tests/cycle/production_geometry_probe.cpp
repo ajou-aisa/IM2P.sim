@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <gemmini/optrace.hpp>
 
 namespace {
 std::vector<im2p_accepted_work_observation_t> observed;
@@ -286,7 +287,8 @@ size_t verify_accepted(const ggml_gemmini_args_t &args, bool pipeline) {
 
 int main(int argc, char **argv) {
   try {
-    require(argc == 6, "M N K full|pipeline observation-jsonl required");
+    require(argc == 6 || argc == 7,
+            "M N K full|pipeline observation-jsonl [production-trace-jsonl] required");
     const size_t m = std::stoull(argv[1]), n = std::stoull(argv[2]),
                  k = std::stoull(argv[3]);
     const std::string mode = argv[4];
@@ -301,6 +303,30 @@ int main(int argc, char **argv) {
       std::fill(std::begin(b.qs), std::end(b.qs), int8_t{1});
 #endif
     }
+    std::shared_ptr<ggml::gemmini::optrace::Session> trace;
+    if (argc == 7) {
+      namespace ot = ggml::gemmini::optrace;
+      ot::RunInfo info;
+      info.model = "production-geometry-test-fixture";
+      info.activation_bits = GGML_GEMMINI_ACTIVATION_BITS;
+      info.weight_bits = GGML_GEMMINI_WEIGHT_BITS;
+      info.dim = DIM;
+      info.profile = "a" + std::to_string(info.activation_bits) + "w" +
+                     std::to_string(info.weight_bits) + "-d" +
+                     std::to_string(DIM) + "-hp1";
+      info.backend = "IM2P_SIM/GEMMINI_HP1";
+      info.mode = mode == "full" ? "FULL" : "STRIPE_PIPELINE";
+      // Deliberately fixture identities, never claimed as a real-model trace.
+      // The probe compiler records actual source/archive hashes separately.
+      for (const char *name : {"IM2P.sim", "llama.cpp-gemmini", "headers"}) {
+        info.source_commits[name] = std::string(40, '0');
+        info.source_worktree_sha256[name] = std::string(64, '0');
+      }
+      trace = ot::Session::start(argv[6], info);
+      fixture.args.matmul_layer = "fixture.projection";
+      fixture.args.optrace_context = std::make_shared<const ot::Context>(
+          trace->phase("prefill", std::nullopt, m));
+    }
     im2p_test_set_work_observer(observe, nullptr);
     const auto completion =
         mode == "full"
@@ -312,6 +338,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error(std::string("generic adapter execution: ") +
                                completion.result.message);
     const auto count = verify_accepted(fixture.args, mode == "pipeline");
+    if (trace)
+      trace->finish();
     require(std::all_of(fixture.output.begin(), fixture.output.end(),
                         [k](float x) { return x == static_cast<float>(k); }),
             "numerical all-one GEMM result mismatch");

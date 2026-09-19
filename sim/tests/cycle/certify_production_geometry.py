@@ -57,7 +57,8 @@ def build_native(golden: Path, cargo: Path, cycle: Path, llama_config: Path,
     support = [llama / 'ggml/src/ggml-gemmini/ggml-gemmini-telemetry.cpp',
                llama / 'ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp',
                llama / 'ggml/src/ggml-gemmini-utils/src/cycle.cpp',
-               llama / 'ggml/src/ggml-gemmini-utils/src/debug.cpp']
+               llama / 'ggml/src/ggml-gemmini-utils/src/debug.cpp',
+               llama / 'ggml/src/ggml-gemmini-utils/src/optrace.cpp']
     command = ['c++', *flags, '-O2', '-MMD', '-MF', str(dep),
                str(source), str(frontend), str(adapter), *map(str, support),
                str(archive), str(cycle / 'libim2p_cycle_model.a'),
