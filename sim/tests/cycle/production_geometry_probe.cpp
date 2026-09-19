@@ -170,9 +170,11 @@ size_t verify_accepted(const ggml_gemmini_args_t &args, bool pipeline) {
       equal(last_accept->scale_generation, x.release_generation,
             "release generation", releases);
       equal(releases % DIM, x.release_column, "release lane", releases);
-      equal(last_accept->scale_base +
-                (last_accept->k / 32) * last_accept->max_j + releases / DIM,
-            x.release_address, "release address", releases);
+      // K/fragment_base identify logical work globally. Physical scale rows
+      // restart at scale_base for each accepted loop; generation and release
+      // ownership permit reuse, so a global K offset must not enter this address.
+      equal(last_accept->scale_base + releases / DIM, x.release_address,
+            "loop-local release address", releases);
       ++releases;
     }
     if (x.event == IM2P_OBSERVE_DONE)

@@ -129,7 +129,8 @@ void validation() {
   r.k = 8256;
   r.tile_k = 1;
   r.submission = IM2P_CYCLE_BLOCK_SUBMISSIONS;
-  invalid(r, IM2P_CYCLE_UNSUPPORTED);
+  check(run(m.get(), r).loop_count == 258,
+        "planner-block K8256 must reuse loop-local scale rows");
   r.submission = IM2P_CYCLE_TILE_SUBMISSIONS;
   r.tile_k = 64;
   check(run(m.get(), r).loop_count > 1,
@@ -220,6 +221,86 @@ void deterministic() {
   check(run(slow.get(), r).total_cycles == 730,
         "certified delayed fixture changed");
 }
+void loop_local_scales() {
+  using namespace im2p::cycle;
+  for (unsigned bits : {4u, 8u})
+    for (unsigned dim : {16u, 32u, 64u})
+      for (unsigned k : {32u, 64u, 96u, 3072u, 8256u}) {
+        const auto c = config(bits, dim);
+        auto r = request();
+        r.m = 1;
+        // DIM64's declared accumulator half holds two output tiles. Keep the
+        // requested 2/4/3 factors unchanged; choose a legal synthetic shape.
+        r.n = (dim == 64 ? 2 : 4) * dim - 1;
+        r.k = k;
+        r.tile_i = 2;
+        r.tile_j = 4;
+        r.tile_k = 3;
+        r.submission = IM2P_CYCLE_BLOCK_SUBMISSIONS;
+        r.record_events = 0;
+        const auto schedule = expand_work(c, r);
+        uint64_t expected_scale_rows = 0;
+        for (const auto &work : schedule.work) {
+          const auto &loop = work.first_plan;
+          check(work.fragment_base == loop.k / std::min(dim, 32u),
+                "global planner fragment identity was reset to fit scale cache");
+          check(work.scale_rows == loop.scale_rows && work.scale_rows <= 4,
+                "physical scale capacity is not loop-local");
+          for (const auto &fragment : work.fragments) {
+            const auto &f = fragment.plan;
+            const auto local_k = (f.k - loop.k) / dim;
+            const auto physical_row = local_k / std::max(1u, 32u / dim) *
+                                          work.max_j + (f.j - loop.j) / dim;
+            check(f.fragment_index == loop.fragment_index + local_k,
+                  "logical fragment identity changed during scale lowering");
+            check(physical_row < work.scale_rows,
+                  "local context references an unowned scale row");
+          }
+          expected_scale_rows += work.scale_rows;
+        }
+        Handle model(im2p_cycle_model_create(&c), im2p_cycle_model_destroy);
+        const auto result = run(model.get(), r);
+        check(result.loop_count == schedule.work.size() &&
+                  result.planner_loop_count == schedule.planner_loops &&
+                  result.scale_request_count == expected_scale_rows &&
+                  result.scale_response_count == expected_scale_rows,
+              "large-K loop/scale request conservation failed");
+        // The serialized single-work adapter must release every row/lane before
+        // reuse. The last frame's release is after logicalDone, outside the
+        // public timing interval. Generation values are ownership tags, not a
+        // global-K physical row offset or an extra timing input.
+        if (k == 96 || k == 8256) {
+          r.n = 1;
+          r.record_events = 1;
+          const auto traced_schedule = expand_work(c, r);
+          const auto traced_result = run(model.get(), r);
+          (void)traced_result;
+          const auto trace = events(model.get());
+          std::vector<uint64_t> releases(traced_schedule.work.size(), 0);
+          std::vector<bool> completed(traced_schedule.work.size(), false);
+          for (const auto &event : trace) {
+            const auto frame = static_cast<size_t>(event.loop);
+            check(frame < releases.size(), "invalid scale ownership frame");
+            if (event.type == static_cast<unsigned>(EventType::LoopDone))
+              completed[frame] = true;
+            if (event.type == static_cast<unsigned>(EventType::ScaleRelease)) {
+              check(completed[frame], "scale release preceded loop completion");
+              check(event.detail == releases[frame]++,
+                    "scale release is not a loop-local row/lane sequence");
+            }
+            if (event.type == static_cast<unsigned>(EventType::Work) && frame)
+              check(releases[frame - 1] ==
+                        traced_schedule.work[frame - 1].scale_rows * dim,
+                    "scale rows reused before all prior ownership was released");
+          }
+          for (size_t frame = 0; frame + 1 < releases.size(); ++frame)
+            check(releases[frame] == traced_schedule.work[frame].scale_rows * dim,
+                  "missing scale release before row reuse");
+        }
+        std::cout << "CYCLE_LARGE_K A" << bits << "D" << dim << " K=" << k
+                  << " loops=" << result.loop_count << " PASS\n";
+      }
+}
 void profiles_and_planner() {
   using namespace im2p::cycle;
   for (unsigned bits : {4u, 8u})
@@ -284,6 +365,7 @@ int main() {
     validation();
     deterministic();
     profiles_and_planner();
+    loop_local_scales();
     std::vector<std::future<uint64_t>> parallel;
     for (int i = 0; i < 4; ++i)
       parallel.push_back(std::async(std::launch::async, [] {

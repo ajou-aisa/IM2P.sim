@@ -328,14 +328,12 @@ struct Adapter {
   }
 
   void release_scales(std::size_t js, std::size_t kb, std::size_t ke,
-                      std::size_t tile_start, std::uint32_t generation,
+                      std::size_t /*tile_start*/, std::uint32_t generation,
                       std::size_t scale_base) {
     const auto max_j = padded(js) / dim;
-    const auto fragments_per_block = std::max<std::size_t>(1, 32 / dim);
-    const auto fragment_base =
-        (kb - tile_start) / std::min<std::size_t>(dim, 32);
-    const auto first_address =
-        scale_base + fragment_base / fragments_per_block * max_j;
+    // Match ScaleBackingLoader and production drive_release: fragmentBase is
+    // logical provenance; each accepted generation owns loop-local rows only.
+    const auto first_address = scale_base;
     const auto rows = ((ke - kb + 31) / 32) * max_j;
     check(first_address + rows <= 256,
           "WorkPlan scale footprint exceeds integrated ScaleMemory");

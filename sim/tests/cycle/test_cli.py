@@ -107,8 +107,8 @@ class CycleCliTest(unittest.TestCase):
         self.assertEqual(tile['fragment_count'], block['fragment_count'])
         large = self.request()
         large['request'].update(m=1, n=1, k=8256, tile_k=1, submission='planner-blocks')
-        with self.assertRaises(ValueError):
-            cli.estimate(self.library, large)
+        large['request']['record_events'] = 0
+        self.assertEqual(cli.estimate(self.library, large)['result']['loop_count'], 258)
         large['request'].update(tile_k=64, submission='regression-tiles')
         self.assertGreater(cli.estimate(self.library, large)['result']['loop_count'], 1)
 

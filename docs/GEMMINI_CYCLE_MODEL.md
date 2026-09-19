@@ -8,8 +8,9 @@ existing resolved Gemmini hardware contract and pure schedule planner. There is
 no numerical runtime flag, numerical ABI change, tensor pointer, MAC/SCU result
 computation, generated RTL class, or Verilator dependency in this library.
 
-For **rtl-regression revision 1**, the preserved current integrated RTL corpus
-matches **268/268 logical-work cases**: start/done convention, elapsed cycles,
+The following **historical rtl-regression revision 1 certificate predates the
+loop-local scale-cache change at `0782667`**. Its preserved integrated RTL corpus
+matched **268/268 logical-work cases**: start/done convention, elapsed cycles,
 work/loop counts and load/store/scale request/response counts are exact. The
 maximum absolute cycle difference is **0**. The **selected per-cycle event-type
 multiset** also matches in all 268 cases. `compare_rtl.py` treats either an
@@ -131,21 +132,65 @@ For example, DIM32/K64/tile-K2 has two planner loops but one hardware descriptor
 in `regression-tiles`. The result reports `planner_loop_count` and `loop_count`
 separately.
 
-The production `planner-blocks` framing now has a separate RTL certificate using
-an external harness whose descriptors are emitted directly by
-`sim/common/gemmini_schedule.cpp`. Of the same 268 shape/tile corpus, **262 are
-production-representable and 262/262 are exact** for start/done/elapsed,
-logical-work/submission/planner-loop/fragment counts, load/store/scale counters,
-and the selected per-cycle event-type multiset; maximum cycle delta is **0**.
-The six excluded cases are exactly the K8256 case in each profile. Their global
-planner-block scale mapping requires row 258 of the 256-entry `ScaleMemory`, so
-`ScaleBackingLoader` rejects them (`endRowWide <= scaleEntries` fails). The cycle
-model now rejects the same planner-block requests as unsupported. The
-`regression-tiles` framing resets fragmentBase within a tile and therefore keeps
-its original 268/268 certificate, including those K8256 cases. The production
-certificate is scoped to a fresh/drained isolated single GEMM, full mode, host
-slot 0; it must not be generalized beyond that scope. Neither framing changes
-the numerical backend's schedule.
+The historical production `planner-blocks` certificate used an external harness
+whose descriptors came directly from `sim/common/gemmini_schedule.cpp`. It
+reported 262/262 exact cases and excluded six K8256 cases under the **old global
+physical scale-row assumption**. Those exclusions and counts are not evidence
+for the current source and must not be carried forward as a current certificate.
+`production_block_certificate.py` and its archived inputs describe that earlier
+revision; use the current-source procedure below for loop-local hardware.
+
+### Current loop-local scale ownership and recertification
+
+`fragment_base` remains the global logical K-fragment identity for production
+planner blocks. It must not be reset to make a large reduction fit the cache.
+Physical rows instead begin at the descriptor's `scaleBase`; the isolated slot0
+model uses base zero. `ScaleBackingLoader` loads only the current loop's rows,
+`UpstreamWsControl` addresses those rows with loop-local K/J indices, and the
+accepted generation plus post-completion release governs reuse. The cycle
+model's serialized control engine releases the current frame's rows before the
+next frame starts. Generation tag values are not an additional timing input.
+
+Admission therefore checks the current frame's `scale_rows <= 256`, independently
+of global fragment identity. Scratchpad, accumulator and fragment-width checks
+remain unchanged. The numerical RTL test adapter releases the same loop-local
+rows as production `drive_release`; it does not derive a physical release address
+from `fragmentBase`. No cache enlargement, tile-factor reduction or model-specific
+shape exception is used.
+
+`current_rtl_certificate.py` consumes a fresh six-profile `host-test` build. A
+passive observer first captures the actual fixture geometry and timing inputs;
+after removing its additional summary columns, stdout must match the original
+numerical fixture byte-for-byte. Every captured case is then run from fresh reset
+under both declared submission framings. The additional K32/64/96/3072/8256
+synthetic cases are labeled separately from captured work. No historical shape
+count or K8256 exclusion is assumed. Actual endpoint/counter results and selected
+per-cycle event-type multisets must match; one unresolved mismatch stops the
+certificate. Physical scale rows, generation, release lanes and reuse boundaries
+are checked independently. Event-only shift/delete/duplicate mutations must fail
+the same hard comparison predicate even when endpoint counters are unchanged.
+
+From `IM2P.sim`, with a new evidence directory outside the repository:
+
+```sh
+OUT="$(pwd)/../evidence/model-cycle-replay-$(date -u +%Y%m%dT%H%M%SZ)"
+cmake -S sim/cycle -B "$OUT/cycle" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$OUT/cycle" --parallel 2
+ctest --test-dir "$OUT/cycle" --output-on-failure
+python3 -B scripts/gemmini_build.py --matrix a4w4,a8w8 --dims 16,32,64 \
+  --scu hp1-left-shift --memory-contract-dir "$PWD/config/gemmini_host_memory_contracts" \
+  --stage host-test --out "$OUT/rtl"
+python3 -B sim/tests/cycle/current_rtl_certificate.py --build-root "$OUT/rtl" \
+  --library "$OUT/cycle/libim2p_cycle_model.dylib" --out "$OUT/certificate"
+# Linux uses libim2p_cycle_model.so.
+python3 -B sim/tests/cycle/test_current_rtl_certificate.py
+```
+
+`current-certificate.json` records the actual attempted/admitted/exact counts,
+first mismatch, selected event scope and source/object hashes. A previous
+certificate or a passing CTest alone cannot justify
+`IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT`. These are isolated work certificates, not
+whole-model, aggregate PIPELINE or CPU/NPU system timing.
 
 Commands are expanded from those planned fragments into A/B row loads, preload,
 compute and final-store tokens. Deduplicating the fragments' required A/B tiles
