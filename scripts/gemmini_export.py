@@ -152,7 +152,11 @@ HOST_LLAMA_SOURCES: Final = RMD_LLAMA_SOURCES + (
     "ggml/src/ggml-gemmini-utils/src/cycle_reader-capi.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle_reader_aarch64.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle_reader_internal.h",
+    "ggml/src/ggml-gemmini-utils/src/semantic.cpp",
     "ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp",
+    "ggml/src/ggml-gemmini-utils/include/gemmini/cpu_log_context.hpp",
+    "ggml/src/ggml-gemmini-utils/include/gemmini/semantic.hpp",
+    "ggml/src/ggml-gemmini-utils/include/gemmini/semantic.h",
     "scripts/optrace-build-info.py",
 )
 
@@ -445,6 +449,7 @@ def linux_instructions(dependencies: dict[str, JsonValue]) -> str:
         "",
         "Restore dependencies from their recorded remote and exact HEAD (a verified immutable Git-object archive is also acceptable), then apply nonempty tracked patches and allowed overlays before the source copy above. `allowed_overlay_paths` limits the llama patch to the host compilation closure; unrelated local scripts/editor/model files are excluded. `source-manifest.json` records the copied source snapshot.",
         "This minimum target is external-executor-only. Trace OFF works without Git metadata; explicit production tracing is unsupported and fails closed. The ordinary IM2P_SIM trace ON producer build is a separate runtime-dependent flow, not certified by this host rebuild.",
+        "The exported host contract uses CYCLE_SIM=0. Semantic metadata helpers are included because existing CPU-log sources depend on them; this does not export or certify the PoTal collector. CYCLE_SIM=1 requires a complete llama root build and its CPU-functional source closure, and is rejected by this standalone host build.",
         "Checksum verification proves content identity, not dependency closure. The export verifier separately requires public/frontend headers, Python helpers and all utility implementation files. Preserve compile dependency files and Python module origins when checking relocation. macOS execution does not certify a Linux binary.",
         "",
         "## Value-free replay tools",

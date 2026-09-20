@@ -1,5 +1,8 @@
 #include "im2p_gemmini_frontend.hpp"
 #include "im2p_production_trace.hpp"
+#if CYCLE_SIM
+#include "im2p_cycle_sim.hpp"
+#endif
 
 #include "ggml-gemmini-args.h"
 #include "ggml-gemmini-config.hpp"
@@ -31,6 +34,12 @@
 static_assert(DIM == IM2P_GEMMINI_FRONTEND_EXPECTED_DIM,
               "Gemmini parameter DIM does not match the selected IM2P RTL");
 #endif
+#if CYCLE_SIM
+static_assert(BANK_NUM == IM2P_GEMMINI_BANK_COUNT &&
+                  BANK_ROWS == IM2P_GEMMINI_BANK_ROWS &&
+                  ACC_ROWS == IM2P_ACCUMULATOR_ROWS,
+              "CPU-functional production header differs from the target memory contract");
+#endif
 
 namespace im2p::gemmini {
 namespace {
@@ -39,12 +48,41 @@ namespace exsia = ggml::gemmini::quants::act::exsia;
 
 class HostStageTiming {
 public:
-  HostStageTiming(const Options &options, const char *stage) noexcept
+  HostStageTiming(const Options &options, const char *stage
+#if CYCLE_SIM
+                  , const cycle_sim::log::Context &context = {},
+                  std::vector<uint64_t> *host_dependencies = nullptr
+#endif
+                  ) noexcept
       : options_(options), stage_(stage) {
+#if CYCLE_SIM
+    context_ = context;
+    host_dependencies_ = host_dependencies;
+    if (std::strcmp(stage_, "frontend.input_snapshot") == 0 && context_) {
+      try {
+        host_stage_ = std::make_unique<cycle_sim::HostStageScope>(context_, stage_,
+            "POTAL_HOST", "IM2P.sim", "frontend/src/im2p_gemmini_frontend.cpp:retain_provider_operands",
+            nullptr, std::vector<uint64_t>{}, host_dependencies_ ? *host_dependencies_ : std::vector<uint64_t>{}, true);
+      } catch (...) { context_.session->record_failure("input snapshot declaration failed"); }
+    } else if (std::strcmp(stage_, "frontend.output_copy") == 0)
+      cpu_start_ = ggml::gemmini::read_matmul_cpu_sample();
+#endif
     if (options_.host_stage_timing)
       options_.host_stage_timing(options_.host_stage_context, stage_, true);
   }
   ~HostStageTiming() noexcept {
+#if CYCLE_SIM
+    if (host_stage_) {
+      host_stage_->finish();
+      if (host_dependencies_ && host_stage_->id()) {
+        try { host_dependencies_->push_back(*host_stage_->id()); }
+        catch (...) { context_.session->record_failure("input snapshot dependency failed"); }
+      }
+    }
+    if (cpu_start_.collected)
+      cycle_sim::record_cpu_stage(nullptr, stage_, cpu_start_,
+          ggml::gemmini::read_matmul_cpu_sample(), true);
+#endif
     if (options_.host_stage_timing)
       options_.host_stage_timing(options_.host_stage_context, stage_, false);
   }
@@ -54,6 +92,12 @@ public:
 private:
   const Options &options_;
   const char *stage_;
+#if CYCLE_SIM
+  ggml::gemmini::MatmulCpuSample cpu_start_;
+  cycle_sim::log::Context context_;
+  std::vector<uint64_t> *host_dependencies_ = nullptr;
+  std::unique_ptr<cycle_sim::HostStageScope> host_stage_;
+#endif
 };
 
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
@@ -582,6 +626,11 @@ struct Run::Impl {
         options(requested_options),
         trace_context(source->optrace_context),
         trace_layer(trace_context ? source->matmul_layer : std::string{}),
+#if CYCLE_SIM
+        cycle_sim_context(source->cycle_sim_context),
+        cycle_sim_layer(source->matmul_layer),
+        cycle_sim_host_dependencies(source->cycle_sim_host_dependencies),
+#endif
         stall_cycle_limit(
             std::max(requested_options.max_stalled_cycles,
                      minimum_stall_cycles)),
@@ -599,6 +648,13 @@ struct Run::Impl {
   Options options;
   std::shared_ptr<const ggml::gemmini::optrace::Context> trace_context;
   std::string trace_layer;
+#if CYCLE_SIM
+  cycle_sim::log::Context cycle_sim_context;
+  std::string cycle_sim_layer;
+  std::vector<uint64_t> cycle_sim_host_dependencies;
+  std::vector<uint64_t> cycle_sim_reconstruction_stages;
+  std::vector<uint64_t> cycle_sim_work_ids;
+#endif
   uint64_t stall_cycle_limit;
   Route route;
   bool native;
@@ -664,7 +720,11 @@ struct Run::Impl {
   size_t final_output_count = 0;
 
   bool retain_legacy_operands() {
-    HostStageTiming timing(options, "frontend.input_snapshot");
+    HostStageTiming timing(options, "frontend.input_snapshot"
+#if CYCLE_SIM
+        , cycle_sim_context, &cycle_sim_host_dependencies
+#endif
+    );
     size_t weight_count = 0, output_count = 0;
     const size_t sb = scalars.sb ? scalars.sb : scalars.j;
     const size_t sc = scalars.sc ? scalars.sc : scalars.j;
@@ -687,7 +747,11 @@ struct Run::Impl {
   }
 
   bool retain_provider_operands() {
-    HostStageTiming timing(options, "frontend.input_snapshot");
+    HostStageTiming timing(options, "frontend.input_snapshot"
+#if CYCLE_SIM
+        , cycle_sim_context, &cycle_sim_host_dependencies
+#endif
+    );
     try {
       switch (route) {
       case Route::q8_0_unpacked_to_h1: {
@@ -837,8 +901,8 @@ struct Run::Impl {
     return true;
   }
 
-  void commit_output() noexcept {
-    HostStageTiming timing(options, "frontend.output_copy");
+  bool commit_output() noexcept {
+    const auto copy = [&] {
     if (integer_output_stage && integer_output_destination) {
       auto *destination = static_cast<int32_t *>(integer_output_destination);
       const size_t stride = scalars.sc ? scalars.sc : scalars.j;
@@ -854,6 +918,26 @@ struct Run::Impl {
           float_output_destination[row * rs + column * cs] =
               (*float_output_stage)[row * rs + column * cs];
     }
+    };
+#if CYCLE_SIM
+    if (integer_output_stage && integer_output_destination)
+      return cycle_sim::publish_output(cycle_sim_context, "frontend.output_copy", "IM2P.sim",
+          "frontend/src/im2p_gemmini_frontend.cpp:commit_output", cycle_sim_layer.c_str(),
+          static_cast<int32_t *>(integer_output_destination), scalars.i, scalars.j,
+          scalars.sc ? scalars.sc : scalars.j, 1, cycle_sim_work_ids,
+          cycle_sim_reconstruction_stages, copy);
+    if (float_output_stage && float_output_destination)
+      return cycle_sim::publish_output(cycle_sim_context, "frontend.output_copy", "IM2P.sim",
+          "frontend/src/im2p_gemmini_frontend.cpp:commit_output", cycle_sim_layer.c_str(),
+          float_output_destination, scalars.i, scalars.j,
+          scalars.stride_f_out ? scalars.stride_f_out : scalars.j,
+          scalars.col_stride_f_out ? scalars.col_stride_f_out : 1,
+          cycle_sim_work_ids, cycle_sim_reconstruction_stages, copy);
+#else
+    HostStageTiming timing(options, "frontend.output_copy");
+#endif
+    copy();
+    return true;
   }
 
   struct FactorCache {
@@ -1305,7 +1389,20 @@ struct Run::Impl {
                                    size_t column, size_t count,
                                    const int64_t *values, uint32_t domain) {
     auto &x = *static_cast<Impl *>(context);
-    const int result = x.write_output(block, row, column, count, values, domain);
+#if CYCLE_SIM
+    cycle_sim::HostStageScope host_stage(cycle_sim::log::current_context(),
+        "im2p.output_reconstruction", "POTAL_HOST", "IM2P.sim",
+        "frontend/src/im2p_gemmini_frontend.cpp:provider_write_output", x.cycle_sim_layer.c_str(),
+        cycle_sim::continuation_work_ids(), {}, true);
+#endif
+    int result = x.write_output(block, row, column, count, values, domain);
+#if CYCLE_SIM
+    host_stage.finish(result == IM2P_OK);
+    try {
+      if (x.cycle_sim_context) x.cycle_sim_context.session->ensure_healthy();
+      if (host_stage.id()) x.cycle_sim_reconstruction_stages.push_back(*host_stage.id());
+    } catch (...) { result = IM2P_ERROR; }
+#endif
     if (result != IM2P_OK)
       x.provider_failed = true;
     return result;
@@ -1322,6 +1419,10 @@ struct Run::Impl {
   }
 
   void set_error(Status value) noexcept {
+#if CYCLE_SIM
+    if (cycle_sim_context)
+      cycle_sim_context.session->record_failure(value.message);
+#endif
     std::lock_guard lock(mutex);
     if (final_status.ok())
       final_status = value;
@@ -1329,6 +1430,10 @@ struct Run::Impl {
   }
 
   void worker_failed(Status value) noexcept {
+#if CYCLE_SIM
+    if (cycle_sim_context)
+      cycle_sim_context.session->record_failure(value.message);
+#endif
     std::lock_guard lock(mutex);
     if (final_status.ok())
       final_status = value;
@@ -1455,12 +1560,25 @@ struct Run::Impl {
         HostStageTiming timing(options, "frontend.device_host_call");
 #if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
         const auto g = geometry_snapshot(scalars, IM2P_GEOMETRY_FULL, 0, scalars.i, 0);
+#if CYCLE_SIM
+        auto selected_work = cycle_sim::full(d, g);
+        selected_work.required_host_stage_ids = cycle_sim_host_dependencies;
+        cycle_sim::DispatchEvents dispatch_events(cycle_sim_context, &selected_work);
+        cpu_functional::TimingRegistration dispatch_registration(dispatch_events.observer());
+#endif
         result = options.production_geometry
             ? im2p_execute_matmul_planned(sim.get(), &d, &g, &stats)
             : im2p_execute_matmul_extended(sim.get(), &d, &stats);
+#if CYCLE_SIM
+        if (result == IM2P_OK) dispatch_events.complete();
+#endif
         if (trace_context && result == IM2P_OK)
           trace_context->session->accepted(
               *trace_context, production_trace::full(d, g, trace_layer));
+#if CYCLE_SIM
+        if (cycle_sim_context && result == IM2P_OK)
+          cycle_sim_context.session->ensure_healthy();
+#endif
 #else
         result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
 #endif
@@ -1498,6 +1616,15 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
+#if CYCLE_SIM
+    auto selected_work = cycle_sim::stripe(stripe_descriptor(), s, e.geometry, e.slot);
+    selected_work.required_host_stage_ids = cycle_sim_host_dependencies;
+    cycle_sim::append_host_dependencies(selected_work.required_host_stage_ids,
+                                        e.residual_event.cycle_sim_host_dependencies);
+    cycle_sim::DispatchEvents dispatch_events(cycle_sim_context, &selected_work,
+                                             cycle_sim::log::CallKind::Stripe);
+    cpu_functional::TimingRegistration dispatch_registration(dispatch_events.observer());
+#endif
 #if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
     const int result = options.stream_executor->publish(
         options.stream_executor->context, &s);
@@ -1510,6 +1637,9 @@ struct Run::Impl {
         : im2p_publish_stripe(stream, &s);
 #endif
     if (result == IM2P_OK) {
+#if CYCLE_SIM
+      dispatch_events.complete();
+#endif
       {
         std::lock_guard lock(mutex);
         in_flight.emplace(s.stripe_id, e);
@@ -1520,6 +1650,10 @@ struct Run::Impl {
         trace_context->session->accepted(*trace_context,
             production_trace::stripe(stripe_descriptor(), s, e.geometry,
                                      trace_layer, e.slot));
+#if CYCLE_SIM
+      if (cycle_sim_context)
+        cycle_sim_context.session->ensure_healthy();
+#endif
     }
     return result;
   }
@@ -2087,6 +2221,17 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "failed to allocate IM2P run"),
             {}};
   auto &x = *run->impl_;
+#if CYCLE_SIM
+  cycle_sim::log::ScopedContext cycle_context(x.cycle_sim_context);
+  if (x.trace_context || (x.cycle_sim_context &&
+      (!x.cycle_sim_context.operation_id || !options.production_geometry ||
+       options.full_executor || options.stream_executor))) {
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                 "CPU-functional work requires target context, not production optrace");
+    x.lifecycle = Run::Impl::Lifecycle::terminal;
+    return {x.final_status, std::move(run)};
+  }
+#endif
   const RoutePolicy policy = route_policy(x.route);
   const bool hp1_residual_supported =
 #if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
@@ -2290,6 +2435,18 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       return {x.final_status, std::move(run)};
     }
   }
+#if CYCLE_SIM
+  if (x.cycle_sim_context) {
+    try {
+      x.cycle_sim_context = x.cycle_sim_context.session->new_dispatch(x.cycle_sim_context);
+    } catch (...) {
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "cycle-sim dispatch declaration failed");
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      return {x.final_status, std::move(run)};
+    }
+  }
+#endif
   {
     std::lock_guard lock(x.mutex);
     x.lifecycle = Run::Impl::Lifecycle::starting;
@@ -2300,6 +2457,12 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
         if (state.options.worker_timing)
           state.options.worker_timing(state.options.worker_timing_context, true);
         try {
+#if CYCLE_SIM
+          cycle_sim::log::ScopedContext cycle_context(state.cycle_sim_context);
+          cycle_sim::WorkCollector work_collector(state.cycle_sim_work_ids);
+          cycle_sim::DispatchEvents dispatch_events(state.cycle_sim_context);
+          cpu_functional::TimingRegistration timing_registration(dispatch_events.observer());
+#endif
           if (state.mode == Mode::full)
             state.run_full();
           else
@@ -2429,6 +2592,10 @@ Status submit_stripe_planned(Run &run, const exsia::StripeReadyEvent &e,
 
 FenceResult fence(Run &run) noexcept {
   auto &x = *run.impl_;
+#if CYCLE_SIM
+  cycle_sim::log::ScopedContext cycle_context(x.cycle_sim_context);
+  cycle_sim::log::Context fence_context;
+#endif
   const auto result_locked = [&x]() noexcept {
     FenceResult result{};
     result.status = x.final_status;
@@ -2468,6 +2635,18 @@ FenceResult fence(Run &run) noexcept {
     }
     x.join_in_progress = true;
     worker = std::move(x.worker);
+#if CYCLE_SIM
+    if (x.cycle_sim_context) {
+      try {
+        fence_context = x.cycle_sim_context.session->call_begin(
+            x.cycle_sim_context, cycle_sim::log::CallKind::Fence);
+        fence_context.session->call_event(fence_context, cycle_sim::log::CallStage::Invoke);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim fence declaration failed");
+      }
+    }
+#endif
   }
   if (worker.joinable()) {
     HostStageTiming join_wait(x.options, "frontend.worker_join_wait");
@@ -2490,10 +2669,6 @@ FenceResult fence(Run &run) noexcept {
       x.final_status = make_status(StatusCode::execution_failure, x.route,
                                    x.native,
                                    "incomplete residual stage coverage");
-    if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
-      x.commit_output();
-      x.output_committed = true;
-    }
     if (x.final_status.ok() && x.trace_context) {
       try {
         x.trace_context->session->parent_end(*x.trace_context);
@@ -2501,6 +2676,40 @@ FenceResult fence(Run &run) noexcept {
         x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
                                      "optrace parent completion failed");
       }
+    }
+#if CYCLE_SIM
+    if (x.final_status.ok() && fence_context) {
+      try {
+        fence_context.session->call_event(fence_context,
+            cycle_sim::log::CallStage::CompleteRequired, x.cycle_sim_work_ids);
+        fence_context.session->call_event(fence_context,
+            cycle_sim::log::CallStage::Fence);
+        fence_context.session->call_event(fence_context, cycle_sim::log::CallStage::Continuation);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim fence completion failed");
+      }
+    }
+#endif
+    if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
+#if CYCLE_SIM
+      if (x.cycle_sim_context) {
+        try {
+          x.cycle_sim_context.session->ensure_healthy();
+        } catch (...) {
+          x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                       "cycle-sim provenance failed before output commit");
+        }
+      }
+      if (x.final_status.ok()) {
+#endif
+      x.output_committed = x.commit_output();
+      if (!x.output_committed)
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "output publication provenance failed");
+#if CYCLE_SIM
+      }
+#endif
     }
     x.timing_view_frozen = true;
     x.join_in_progress = false;
@@ -2544,8 +2753,21 @@ Status authorize_output_commit(Run &run, bool rmd_succeeded) noexcept {
     return x.final_status;
   }
   if (!x.output_committed) {
-    x.commit_output();
-    x.output_committed = true;
+#if CYCLE_SIM
+    if (x.cycle_sim_context) {
+      try {
+        x.cycle_sim_context.session->ensure_healthy();
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim provenance failed before output commit");
+        return x.final_status;
+      }
+    }
+#endif
+    x.output_committed = x.commit_output();
+    if (!x.output_committed)
+      x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                   "output publication provenance failed");
   }
   return x.final_status;
 }

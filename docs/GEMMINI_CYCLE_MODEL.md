@@ -413,7 +413,7 @@ domain.
 ## Certified production op-trace entry points
 
 The production JSONL schema is `im2p-production-optrace` **version 2**. The
-certificate schema is `im2p-single-gemm-cycle-certificate` **version 1**. Numerical
+certificate schema is `im2p-single-gemm-cycle-certificate` **version 2**. Numerical
 C ABI v5 and cycle C ABI v1 are unchanged. Historical trace v1 lacks runtime
 contract binding and parent declarations: current replay rejects it with a
 recollection diagnostic. Do not insert guessed fields or rewrite historical
@@ -449,6 +449,23 @@ generator emits `IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT`; adding that string by ha
 is insufficient. `_replay_fixture` is internal, explicitly
 `UNCERTIFIED_SYNTHETIC_FIXTURE`, and cannot confer producer provenance.
 
+Certificate v2 additionally requires six `rtl_build_bindings` and an independent
+`corpus_authority`. Official `--stage host-test` captures hardware/fixture inputs
+before building, checks they stayed unchanged, and hashes the actual emitted
+RTL, object files, host archives and resolved hardware. Fresh certificate
+generation verifies those files against the build-time binding before using
+them. A missing binding or old artifact with a different current contract fails;
+exporting existing RTL does not manufacture a fresh build binding.
+
+`sim/cycle/corpus-authority-v1.json` is the reviewed corpus input authority,
+bound to fixture source hashes. It fixes every captured ID, shape, tile, timing
+and provenance; the five explicit large-K cases are added by its shared reader.
+Certificate results, expected IDs, summaries and captured/reuse counts cannot
+jointly redefine this denominator. A fixture change requires a separately
+reviewed corpus revision, not reducing the certificate to its surviving cases.
+Version 1 certificates must be regenerated or verifiably reaggregated; their
+missing authorities are not inferred at replay time.
+
 Retained raw evidence may be reaggregated without rerunning RTL only when source,
 artifact, request/result and raw-event checks all succeed against the unchanged
 compiled library:
@@ -462,6 +479,9 @@ python3 -B sim/tests/cycle/current_rtl_certificate.py \
 This produces `REAGGREGATED_FROM_VERIFIED_EVIDENCE`, not a fresh RTL run. Changing
 an old certificate's library hash is not re-certification. Corpus exactness also
 does not mean every subsequently admitted production work was compared to RTL.
+Each reused RTL binding is marked `VERIFIED_REUSE` only after original source
+inventory, raw comparisons and retained RTL/object hashes are checked. These
+content links are audit evidence, not signatures against deliberate forgery.
 
 ### Producer/model compatibility and memory assumptions
 
@@ -520,6 +540,110 @@ Small v2 FULL/PIPELINE/residual fixtures exercise the official CLI. They are not
 whole-model certification. Unless separately recorded for a new complete run,
 `full_model_on_new_trace_schema: NOT_RUN` applies; historical v1 GPT-2 replay is
 not current v2 evidence.
+
+## Three-source collection and structural reconstruction
+
+`CYCLE_SIM=0|1` is a llama build option, resolved by the existing `build-*.sh`
+configuration flow. It does not enable `LOG_CYCLE`, `GGML_CPU_CYCLE_LOG` or
+`CYCLE_DETAIL`, and there is no runtime simulator-enable flag. The four logging
+combinations remain independent. A collection with CPU logging disabled can
+produce NPU work, but cannot supply missing PoTal host measurements for a
+three-source join.
+
+The three timing authorities are deliberately separate:
+
+| Execution node | Authoritative source |
+|---|---|
+| Ordinary target CPU operation | Full CPU run's existing `cycle-log.jsonl` |
+| PoTal-specific preparation/recomposition/dequantization | PoTal collection's existing `cycle-log.jsonl` |
+| Exact target NPU work | Offline certified IM2P cycle-library result |
+| CPU functional NPU calculation | Excluded from target performance |
+
+The PoTal run writes `output/log/npu-cycle-trace.jsonl`, schema
+`im2p-npu-cycle-trace` version 1. It contains target routing, exact final geometry,
+NPU call/fence relationships and host-stage declarations, not copies of CPU
+timing intervals. `NPU_WORK` means selected target work, **not actual RTL
+acceptance**. Numerical progression uses the CPU HP1 reference implementation;
+no NPU cycle estimate delays or schedules collection. Production optrace remains
+a separate schema and provenance mechanism. Neither parser accepts the other's
+files.
+
+`semantic-graph.jsonl` is a value-free identity sidecar, not another timing
+source. Nodes are captured before backend graph partitioning, identified by
+phase/decode index, graph occurrence and original node ordinal. The join also
+compares original operation/static parameters, types, shapes and input edges;
+layer/op/shape alone is insufficient. Opaque custom-operation parameters are
+unsupported rather than serializing function/userdata pointers. Local numeric
+IDs and `workload-0` are references into their manifests, not content hashes.
+
+Use matched native builds with the same model, prompt, generation, thread and
+ordinary CPU kernel configuration. The HP1 model is not supported by a plain
+ggml CPU-only build: the existing Gemmini `OPTION=CPU` host implementation may
+supply numerical progression for the Full CPU run. Its CPU-only build and
+execution proof must pass. Its offloaded matmul costs are marked
+`REPLACED_BY_NPU`, never reused as ordinary target CPU cost.
+
+The collection wrapper binds actual model bytes, compiler/kernel inputs,
+executable/project shared libraries, command arguments and output files. It
+uses an existing configured Ninja build only as a configuration reference, then
+freshly configures/compiles `output/native-build`. Actual preprocessor dependency
+bytes are checked before compilation and against Ninja's dependencies afterward.
+Inputs that change during collection are rejected. Old build directories are
+not cleaned. This bounded collection wrapper is not a build-option parser:
+
+```sh
+python3 -B -m sim.cycle.collect --build "$FULL_CPU_BUILD" --model "$MODEL" \
+  --role FULL_CPU --output "$OUT/full-cpu" -- \
+  -f "$PROMPT" -n 5 -t 1 -tb 1 --no-warmup --temp 0 --seed 1
+python3 -B -m sim.cycle.collect --build "$POTAL_BUILD" --model "$MODEL" \
+  --role POTAL_COLLECTION --output "$OUT/potal" -- \
+  -f "$PROMPT" -n 5 -t 1 -tb 1 --no-warmup --temp 0 --seed 1
+python3 -B -m sim.cycle.npu_trace "$OUT/potal/output/log/npu-cycle-trace.jsonl" \
+  --library "$CYCLE_LIBRARY" --cycle-certificate "$CURRENT_CERTIFICATE" \
+  --output "$OUT/npu-cycle-result.jsonl" --summary "$OUT/npu-summary.json"
+python3 -B -m sim.cycle.reconstruct \
+  --full-cpu-log "$OUT/full-cpu/output/log/cycle-log.jsonl" \
+  --full-cpu-graph "$OUT/full-cpu/output/log/semantic-graph.jsonl" \
+  --full-cpu-provenance "$OUT/full-cpu/collection-provenance.json" \
+  --potal-log "$OUT/potal/output/log/cycle-log.jsonl" \
+  --potal-graph "$OUT/potal/output/log/semantic-graph.jsonl" \
+  --potal-provenance "$OUT/potal/collection-provenance.json" \
+  --npu-trace "$OUT/potal/output/log/npu-cycle-trace.jsonl" \
+  --npu-results "$OUT/npu-cycle-result.jsonl" \
+  --library "$CYCLE_LIBRARY" --cycle-certificate "$CURRENT_CERTIFICATE" \
+  --output "$OUT/three-source-dataset.jsonl.gz" --summary "$OUT/source-join.json"
+```
+
+Hardware contract, current certificate and library SHA admission are unchanged.
+Replay uses recorded tiles, `planner-blocks`, `accepted_cycle=1` and the declared
+reference-memory profile. It does not consume Full CPU or PoTal CPU timing.
+
+The structural reconstruction consumer takes both CPU logs, both semantic graph
+sidecars, both `collection-provenance.json` manifests, the NPU trace and its
+offline results. Required ordinary costs, independently declared PoTal host
+stages, work/result identities and dependency references must join without
+missing, duplicate, ambiguous or unexplained extra entries. PoTal ordinary CPU
+measurements are observations, not replacement costs. Functional-emulation
+envelopes and collection-only rollback machinery contribute no target cost.
+For large datasets, an output ending in `.gz` stores the same JSONL through
+deterministic gzip compression (empty filename and zero timestamp). Other output
+paths remain plain JSONL. `storage_encoding` identifies this storage choice;
+`gzip -dc` recovers the records. Source logs, NPU results, identities, durations
+and admission checks are unchanged. Invalid final input still publishes neither
+the dataset nor its summary.
+Prompt contents, generation length and normalized sampling/thread arguments must
+match. Decode token fingerprints are retained as observations: generated values
+may differ, but phase positions, operation identities and complete graph
+structure must still match. This is operation-cost correspondence, not a claim
+that the Full CPU implementation is numerically identical to the HP1 target.
+
+Worker interval vectors, counter sources and units are retained. A native host
+timestamp is not relabeled CPU cycles; invalid readings cannot become costs.
+There is no worker sum/max latency heuristic, shared-frequency conversion,
+validated scheduler, pipeline critical path, CPU/NPU overlap, TTFT or TPOT.
+Content hashes bind evidence; they are not third-party signatures. Small
+fixtures do not certify a new whole-model run, and admitted work does not imply
+per-work RTL comparison. Report the actual fresh/reused/full-model gates.
 
 ## Limitations and preserved paths
 

@@ -34,6 +34,9 @@ def test_required_source_closure_when_checksums_are_recomputed() -> None:
             "source/scripts/im2p_paths.py",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/optrace.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/debug.cpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/semantic.cpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/semantic.hpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/semantic.h",
         )
         for index, name in enumerate(required):
             assert (package / name).is_file(), f"source closure missing: {name}"
