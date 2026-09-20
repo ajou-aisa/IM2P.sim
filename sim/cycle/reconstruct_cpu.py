@@ -83,7 +83,7 @@ def valid_measurement(record: Record) -> None:
     require(end >= start and delta == end-start, 'CPU interval endpoint/delta mismatch')
     require((text(record, 'source'), text(record, 'unit')) in (
         ('host_tick', 'tick'), ('riscv_cycle', 'cycle'), ('linux_perf_cpu_cycles', 'cycle'),
-        ('steady_clock', 'nanosecond')), 'unknown CPU clock source/unit')
+        ('thread_cpu_clock', 'nanosecond'), ('steady_clock', 'nanosecond')), 'unknown CPU clock source/unit')
     require(record.get('operation_success', True) is True, 'host operation failed')
 
 

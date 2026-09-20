@@ -106,6 +106,16 @@ class ReconstructionTests(unittest.TestCase):
             'FUNCTIONAL_EMULATION': 0, 'EXCLUDED': 0, 'UNSUPPORTED': 0})
         self.assertEqual(summary['execution_node_count'], sum(row['is_execution_node'] is True for row in rows))
 
+    def test_thread_cpu_clock_is_a_valid_cpu_duration_source(self):
+        rows = list(json_records(self.inputs.full_cpu.log))
+        rows[0].update(source='thread_cpu_clock', unit='nanosecond', start=1000, end=1010, delta=10)
+        write_rows(self.inputs.full_cpu.log, rows)
+        refresh_proofs(self.inputs)
+        reconstruct(self.inputs, self.outputs)
+        ordinary = next(row for row in json_records(self.outputs.results)
+                        if row['kind'] == 'SERVICE' and row['node_class'] == 'ORDINARY_CPU')
+        self.assertEqual(object_value(ordinary['duration'])['worker_intervals'][0]['source'], 'thread_cpu_clock')
+
     def test_missing_and_duplicate_costs_rejected_after_rehash(self):
         full, potal = list(json_records(self.inputs.full_cpu.log)), list(json_records(self.inputs.potal.log))
         for source, rows in ((self.inputs.full_cpu.log, full[1:]), (self.inputs.full_cpu.log, full+full[:1]),
