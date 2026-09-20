@@ -11,13 +11,14 @@ from typing import Final
 
 from scripts.gemmini_replay_contract import contract_digest, validate_contract
 from scripts.gemmini_resolve_profile import JsonValue
+from scripts.gemmini_rtl_build_binding import BuildBindingError, validate_binding
+from sim.cycle.corpus_authority import LARGE_K, CorpusError, validate_corpus
 
 SCHEMA: Final = 'im2p-single-gemm-cycle-certificate'
-VERSION: Final = 1
+VERSION: Final = 2
 MARKER: Final = 'IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT'
 PROFILES: Final = tuple(f'a{b}w{b}-d{d}-hp1' for b in (4, 8) for d in (16, 32, 64))
 FRAMINGS: Final = ('regression-tiles', 'planner-blocks')
-LARGE_K: Final = (32, 64, 96, 3072, 8256)
 SELECTED_EVENTS: Final = frozenset((
     'work', 'load_issue', 'execute_issue', 'store_issue', 'context', 'load_dma',
     'read_request', 'read_response', 'scratchpad_read', 'array_input', 'raw_completed',
@@ -165,6 +166,17 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
     require(set(contracts) == set(PROFILES), 'hardware contract coverage incomplete')
     for profile in PROFILES:
         validate_contract(object_value(contracts[profile], profile), profile)
+    bindings = object_value(document.get('rtl_build_bindings'), 'RTL build bindings')
+    require(set(bindings) == set(PROFILES), 'RTL build binding coverage incomplete')
+    try:
+        for profile in PROFILES:
+            binding = object_value(bindings[profile], profile)
+            kind = 'FRESH_BUILD' if document['execution_kind'] == 'FRESH_RUN' else 'VERIFIED_REUSE'
+            require(binding.get('execution_kind') == kind, 'RTL build binding execution kind mismatch')
+            validate_binding(binding, object_value(contracts[profile], profile))
+        validate_corpus(document)
+    except (BuildBindingError, CorpusError) as error:
+        raise CertificateError(str(error)) from error
     validate_reference(object_value(document.get('reference_memory'), 'reference memory'))
     require(set(unique_strings(document.get('selected_events'), 'selected events')) == SELECTED_EVENTS,
             'selected event coverage mismatch')

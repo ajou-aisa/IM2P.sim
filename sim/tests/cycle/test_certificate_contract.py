@@ -126,6 +126,9 @@ class OfficialReplayTests(unittest.TestCase):
                 else:
                     contract['facts'][field] = 'global-fragment-address-v0'
                 contract['sha256'] = contract_digest(contract)
+                binding = model['rtl_build_bindings'][profile]
+                binding['hardware_contract'] = copy.deepcopy(contract)
+                binding['sha256'] = contract_digest(binding)
                 validate_certificate(model, self.library)
                 root = Path(directory)
                 certificate = root/'model-B.json'

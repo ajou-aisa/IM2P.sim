@@ -127,6 +127,8 @@ def observed_source(framing: str, single: bool) -> str:
 
 def build_probe(profile: dict[str, Any], destination: Path, framing: str,
                 single: bool) -> Path:
+    from scripts.gemmini_rtl_build_binding import verify_build
+    verify_build(Path(profile['resolved_profile']).parent, profile['profile'])
     destination.mkdir(parents=True, exist_ok=False)
     if profile['status'] != 'PASS':
         raise ValueError(f"current host-test failed: {profile['profile']}")
@@ -331,6 +333,8 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
         raise ValueError('a fresh passing host-test build is required')
     profiles = manifest['profiles']
     require_profiles(profiles)
+    from scripts.gemmini_rtl_build_binding import verify_build
+    bindings = {p['profile']: verify_build(Path(p['resolved_profile']).parent, p['profile']) for p in profiles}
     results: list[dict[str, Any]] = []
     captures = {}
     corpora = {}
@@ -382,6 +386,8 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
               'selected_events': sorted(rtl.SELECTED_EVENTS), 'event_mutation': mutation,
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
+              'rtl_build_bindings': bindings,
+              'hardware_contracts': {name: binding['hardware_contract'] for name, binding in bindings.items()},
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}
     result = complete_document(result, expected, library, 'FRESH_RUN')

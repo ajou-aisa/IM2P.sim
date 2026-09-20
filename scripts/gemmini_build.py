@@ -37,6 +37,7 @@ if __package__ is None:
 from scripts.gemmini_tools import build_environment, collect_tool_lock
 from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.gemmini_hardware_contract import write_hardware_contract
+from scripts.gemmini_rtl_build_binding import BuildBindingError, build_inputs, seal_build
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT: Final = Path(os.environ.get("IM2P_WORKSPACE_ROOT", ROOT.parent))
@@ -662,6 +663,9 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
     )
     profile_documents: list[Mapping[str, JsonValue]] = []
     for case, commands in zip(cases, command_sets):
+        binding_inputs = build_inputs(case.selection.name) if request.stage is Stage.HOST_TEST else None
+        if binding_inputs is not None:
+            _write_json(case.output / 'rtl-build-inputs.json', binding_inputs)
         _write_json(case.manifest, case.resolved)
         try:
             write_hardware_contract(case.resolved, case.output)
@@ -682,6 +686,11 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
             results.append(result)
             if result.returncode != 0:
                 break
+        if binding_inputs is not None and results and all(result.returncode == 0 for result in results):
+            try:
+                _write_json(case.output / 'rtl-build-binding.json', seal_build(case.output, binding_inputs))
+            except (BuildBindingError, OSError) as error:
+                raise BuildFailure(FailureReason.VALIDATION, str(error)) from error
         profile_documents.append(_case_document(request, case, commands, tuple(results)))
     status = "PASS" if all(profile["status"] == "PASS" for profile in profile_documents) else "FAIL"
     if request.stage is Stage.EXPORT:

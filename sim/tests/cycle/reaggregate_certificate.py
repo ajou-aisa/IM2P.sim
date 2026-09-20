@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import re
 
-from scripts.gemmini_replay_contract import hardware_contract, reference_memory_contract
+from scripts.gemmini_replay_contract import contract_digest, hardware_contract, reference_memory_contract
+from sim.cycle.corpus_authority import authority
 from sim.tests.cycle.certificate_document import JsonObject, JsonValue, complete_document
 from sim.tests.cycle import current_rtl_certificate as current
 from sim.tests.cycle import rtl_hardening as rtl
@@ -54,6 +55,7 @@ def source_proof(evidence: Path, hashes: dict[str, str]) -> JsonObject:
     for profile in rtl.PROFILES:
         wanted.update(mapping(hardware_contract(profile)['source_sha256']))
     wanted.update(mapping(reference_memory_contract()['source_sha256']))
+    wanted.update(mapping(authority()['fixture_source_sha256']))
     for pattern in ('sim/cycle/*.cpp', 'sim/cycle/*.hpp', 'sim/common/*.cpp', 'sim/common/*.hpp'):
         wanted.update({p.relative_to(current.ROOT).as_posix(): rtl.sha256(p)
                        for p in current.ROOT.glob(pattern)})
@@ -167,6 +169,7 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
         raise EvidenceError('reaggregation requires the identical previously certified model library')
     proof = source_proof(evidence, hashes)
     corpora: dict[str, list[JsonObject]] = {}
+    bindings: JsonObject = {}
     artifact_count = 0
     for profile in rtl.PROFILES:
         root = evidence / 'cycle-release-certificate' / profile
@@ -177,6 +180,25 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
                                 'provenance': 'synthetic_large_k'} for k in (32, 64, 96, 3072, 8256))
         for framing in current.FRAMINGS:
             artifact_count += probe_proof(root / framing, evidence, hashes)
+        provenance_path = root / 'planner-blocks/provenance.json'
+        provenance = mapping(json.loads(checked_file(provenance_path, evidence, hashes)))
+        command = mapping(json.loads(checked_file(root / 'planner-blocks/commands.jsonl', evidence, hashes).splitlines()[0]))
+        archive = next(Path(text(arg)) for arg in sequence(command['argv'])
+                       if text(arg).endswith('VIM2PGemminiWSHP1RtlTest__ALL.a'))
+        build_manifest = archive.parent.parent.parent / 'result.json'
+        if rtl.sha256(build_manifest) != previous['build_manifest_sha256']:
+            raise EvidenceError('original RTL build manifest hash differs')
+        artifacts = {'rtl-test-obj/' + name: digest for name, digest in mapping(provenance['retained_objects_sha256']).items()}
+        artifacts.update({'rtl/' + name: digest for name, digest in mapping(provenance['rtl_sha256']).items()})
+        binding: JsonObject = {'schema': 'im2p-rtl-build-binding', 'version': 1, 'execution_kind': 'VERIFIED_REUSE',
+            'hardware_contract': hardware_contract(profile), 'artifact_sha256': artifacts,
+            'fixture_source_sha256': authority()['fixture_source_sha256'],
+            'verified_source_inventory_sha256': proof['inventory_sha256'],
+            'verified_probe_provenance_sha256': rtl.sha256(provenance_path),
+            'verified_build_manifest_sha256': rtl.sha256(build_manifest),
+            'verified_evidence_checksums_sha256': rtl.sha256(evidence / 'SHA256SUMS')}
+        binding['sha256'] = contract_digest(binding)
+        bindings[profile] = binding
     expected = {name: [text(case['case']) for case in cases] for name, cases in corpora.items()}
     current.write_json(out / 'expected-corpus.json', expected)
     results = [reaggregate_case(case, profile, framing, evidence, hashes)
@@ -196,6 +218,8 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
         'cases': list(results), 'summaries': summaries, 'first_mismatch': mismatch,
         'selected_events': [event for event in sorted(rtl.SELECTED_EVENTS)], 'event_mutation': mutation,
         'model_library_sha256': rtl.sha256(library), 'build_manifest_sha256': previous['build_manifest_sha256'],
+        'rtl_build_bindings': bindings,
+        'hardware_contracts': {name: mapping(binding)['hardware_contract'] for name, binding in bindings.items()},
         'captured_corpus_counts': {name: len(cases) - 5 for name, cases in corpora.items()},
         'historical_goldens_used': False, 'historical_exclusions_used': False,
         'reuse_proof': {'evidence_root': str(evidence), 'checksums_sha256': rtl.sha256(evidence / 'SHA256SUMS'),
