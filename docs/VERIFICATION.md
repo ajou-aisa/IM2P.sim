@@ -62,6 +62,19 @@ campaign packager. Audit role strings are retained compatibility metadata, not
 physical execution. Use the export CLI's create/verify/extract commands and
 fresh external destinations.
 
+Every package now carries the public `im2p_sim.h` / `im2p_geometry.h` pair,
+frontend trace headers, Python build helpers and the official host's llama
+utility implementation closure. Verification rejects missing required inputs
+even after checksums are recomputed. Dependency patches and overlays contain
+only the host source closure; unrelated local files are not restoration inputs.
+Follow the generated `LINUX_BUILD.md` minimum host procedure in a new workspace:
+restore locked llama/header revisions, apply the recorded source overlays, run
+the packaged `gemmini_build.py --stage plan`, then configure/build/CTest the
+packaged `fpga/gemmini_hp1/host` target. That external-only build needs no
+numerical simulator, Verilator, Git source metadata or physical hardware.
+Explicit tracing there remains unsupported. Sanitized include/import paths and
+compiler dependency files establish isolation; checksums alone do not.
+
 Run `git diff --check`, vendor verification, Python/static checks on modified
 scripts, and the relevant build/export tests. [Generic synthesis](SYNTHESIS.md)
 can be checked with board schema and non-Vivado planning tests. Actual synthesis,

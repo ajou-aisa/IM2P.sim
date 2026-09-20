@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.gemmini_export import (
+    HOST_LLAMA_SOURCES,
+    REQUIRED_SOURCE_FILES,
     RMD_HOST_SOURCES,
     RMD_LLAMA_SOURCES,
     ExportError,
@@ -75,10 +77,17 @@ def source_fixture(root: Path) -> None:
     write(root / "fpga/gemmini_hp1/host/uart.cpp", "int host_transport;\n")
     write(root / "fpga/gemmini_hp1/host/uart.hpp", "extern int host_transport;\n")
     write(root / "scripts/gemmini_build.py", "# build\n")
+    for name in REQUIRED_SOURCE_FILES:
+        write(root / name, "// source closure fixture\n")
+    for name in HOST_LLAMA_SOURCES:
+        write(root.parent / "llama.cpp-gemmini" / name, "// llama source fixture\n")
+    write(root.parent / "llama.cpp-gemmini/ggml/include/ggml.h", "// header fixture\n")
     write(root / "models/forbidden.gguf", b"model")
     write(root / "src/gemmini/target/forbidden.class", b"class")
     write(root / "src/gemmini/test_run_dir/forbidden.sv", "module generated_test; endmodule\n")
     write(root / "src/gemmini/.bloop/forbidden.json", "{}\n")
+    write(root / "src/gemmini/.vscode/forbidden.json", "{}\n")
+    write(root / "src/gemmini/.zed/forbidden.json", "{}\n")
     (root / "src/gemmini/external-link").symlink_to(Path("/tmp"))
 
 

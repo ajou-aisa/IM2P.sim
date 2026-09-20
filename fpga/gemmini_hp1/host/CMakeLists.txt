@@ -74,6 +74,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 find_package(Threads REQUIRED)
+add_subdirectory("${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils"
+                 "${CMAKE_CURRENT_BINARY_DIR}/gemmini-utils")
 
 add_library(gemmini_hp1_host_profile INTERFACE)
 target_compile_features(gemmini_hp1_host_profile INTERFACE cxx_std_20)
@@ -123,7 +125,7 @@ add_library(gemmini_hp1_host_common STATIC
 target_compile_definitions(gemmini_hp1_host_common PUBLIC GGML_GEMMINI_ENABLE_RMD=1)
 target_compile_options(gemmini_hp1_host_common PRIVATE -O2 -fno-fast-math)
 target_link_libraries(gemmini_hp1_host_common PUBLIC
-  gemmini_hp1_host_profile gemmini_hp1_ggml_numeric Threads::Threads)
+  gemmini_hp1_host_profile gemmini_hp1_ggml_numeric ggml-gemmini-utils Threads::Threads)
 
 add_executable(gemmini_hp1_host_contract_test test_host.cpp)
 target_link_libraries(gemmini_hp1_host_contract_test PRIVATE gemmini_hp1_codec)

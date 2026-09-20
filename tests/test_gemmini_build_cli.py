@@ -197,6 +197,11 @@ def test_plan_writes_resolved_profile() -> None:
         resolved = json.loads((output / "resolved-profile.json").read_text())
         assert (output / "resolved-hardware.properties").is_file()
         assert (output / "im2p_gemmini_hardware.h").is_file()
+        host_params = (output / "host-params" / "gemmini_params.h").read_text()
+        assert "#define DIM 16" in host_params
+        assert "#define BANK_NUM 4" in host_params
+        assert "#define BANK_ROWS 4096" in host_params
+        assert "#define ACC_ROWS 1024" in host_params
         assert resolved["fixed_latencies"] == {"scratchpad_read_delay": 4, "accumulator_latency": 2}
         assert resolved["rmd_enabled"] is True
         assert resolved["rmd_datapath"] == "NORMAL_HP1_SCALED"

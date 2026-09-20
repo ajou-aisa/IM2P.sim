@@ -667,7 +667,7 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
             write_hardware_contract(case.resolved, case.output)
         except (OSError, ValueError) as error:
             raise BuildFailure(FailureReason.VALIDATION, str(error)) from error
-        if request.stage in (Stage.HOST_TEST, Stage.EXPORT):
+        if request.stage in (Stage.PLAN, Stage.HOST_TEST, Stage.EXPORT):
             _write_host_params(case)
         if tool_lock is not None and not (case.output / "tool-lock.json").exists():
             _write_json(case.output / "tool-lock.json", tool_lock)
