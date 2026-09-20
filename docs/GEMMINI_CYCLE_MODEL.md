@@ -410,6 +410,117 @@ certificate, not the production residual numerical contract, not a
 numerical-equivalence claim, and not a claim about raw shapes outside the stated
 domain.
 
+## Certified production op-trace entry points
+
+The production JSONL schema is `im2p-production-optrace` **version 2**. The
+certificate schema is `im2p-single-gemm-cycle-certificate` **version 1**. Numerical
+C ABI v5 and cycle C ABI v1 are unchanged. Historical trace v1 lacks runtime
+contract binding and parent declarations: current replay rejects it with a
+recollection diagnostic. Do not insert guessed fields or rewrite historical
+evidence to promote it to current certification.
+
+Generate a certificate with the current-source command above, then pass its
+unmodified output to the official CLI:
+
+```sh
+python3 -B sim/cycle/optrace.py "$TRACE" \
+  --library "$OUT/cycle/libim2p_cycle_model.dylib" \
+  --sources "$PRODUCER_BUILD_MANIFEST" \
+  --cycle-certificate "$OUT/certificate/current-certificate.json" \
+  --output "$OUT/replay-summary.json"
+```
+
+Use the actual producer build's `source-identities.json`, not a manifest
+constructed from the trace. Linux libraries use `.so`. Output files are created
+exclusively. The production Python entry has the identical admission boundary:
+
+```python
+from pathlib import Path
+from sim.cycle.optrace import ReplayArtifacts, replay
+
+summary = replay(Path(trace), ReplayArtifacts(Path(library), Path(sources), Path(certificate)))
+```
+
+The shared certificate validator requires complete, nonempty six-profile and
+two-framing coverage, independently fixed expected case identities, exact
+attempted/admitted/endpoint/counter/event aggregates, ownership checks, mutation
+gates, hardware contracts and the actual library SHA256. Only the validated
+generator emits `IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT`; adding that string by hand
+is insufficient. `_replay_fixture` is internal, explicitly
+`UNCERTIFIED_SYNTHETIC_FIXTURE`, and cannot confer producer provenance.
+
+Retained raw evidence may be reaggregated without rerunning RTL only when source,
+artifact, request/result and raw-event checks all succeed against the unchanged
+compiled library:
+
+```sh
+python3 -B sim/tests/cycle/current_rtl_certificate.py \
+  --reuse-verified-evidence "$PREVIOUS_EVIDENCE" \
+  --library "$PREVIOUS_LIBRARY" --out "$NEW_CERTIFICATE_DIR"
+```
+
+This produces `REAGGREGATED_FROM_VERIFIED_EVIDENCE`, not a fresh RTL run. Changing
+an old certificate's library hash is not re-certification. Corpus exactness also
+does not mean every subsequently admitted production work was compared to RTL.
+
+### Producer/model compatibility and memory assumptions
+
+Three independent checks are required: trace source identities equal the
+producer build manifest; the loaded model library equals its certificate hash;
+and producer/model hardware-lowering contracts match. The single canonical
+implementation is `scripts/gemmini_replay_contract.py`, imported by the producer
+build-info generator. It covers profile/packing/stride units, block32 and Sat32
+ordering, memory capacities and fixed latencies, lowering/tile units and
+loop-local scale generation/release semantics. SHA256 uses sorted, compact ASCII
+JSON, excluding its own hash field, with explicit revision and authoritative
+source-content hashes. Whole Git HEAD equality is not the compatibility test.
+
+The producer binding comes from its selected runtime cache manifest and actual
+frontend/runtime archive hashes. A custom cache builder needs verified original
+source/artifact proof (`--runtime-source-proof`) before it may stamp a reused
+runtime contract. Latest checkout hashes alone cannot certify an old archive.
+Unbound runtimes remain usable with tracing OFF; explicit tracing fails clearly.
+Hash binding is not a third-party signature or protection from forged evidence.
+
+Reference-memory identity is separate from hardware compatibility and source
+identity. Accounting still uses `rtl-regression`, independently drained
+`accepted_cycle=1`, `planner-blocks`, and the existing byte/uint32 stride units.
+The producer's actual backing-provider latency need not equal that reference.
+The per-work software cycle limit is not a hardware capacity or latency.
+
+### Parent/stripe integrity and build support
+
+Production owns parent IDs and emits begin/end records with descriptor shape,
+mode and geometry. Each accepted work carries that ID. Validation checks declared
+and live phase membership, slots 0/1, ordered unique stripe IDs, row ranges and
+nonoverlapping complete row coverage at successful completion. Separate parents
+may interleave and may have identical layer/shape/ranges. PIPELINE final stripe
+tile counts may legally differ from initial parent factors: replay preserves
+each final descriptor's factors. FULL and compact parents require exact factors.
+Residual parents describe each actual compact dispatch separately; source stripe
+rows do not impose dense coverage on compact row stacking. K31 at DIM16 remains
+one logical GEMM, with hardware-owned [16, 15] fragmentation.
+
+Independent accepted-dispatch counts remain required. Count equality does not
+prove stripe integrity. Parent checks do not prove buffer-release lifetimes or
+cross-work scheduling. A writer mutex serializes output, not thread scheduling.
+Neither isolated cycle sums nor per-stripe accounting are system latency.
+
+Official generic HP1 CMake links `ggml-gemmini-utils`; trace OFF and ON use the
+same implementation. The external-executor-only host also links that utility
+target, with tracing OFF, without numerical simulator or Verilator dependencies.
+Explicit tracing remains unsupported for that path. No fake Session symbols or
+ignored undefined references are used. Git/build identity generation is not
+required for a trace-OFF external host. See [export verification](VERIFICATION.md)
+and generated `LINUX_BUILD.md` for pinned dependency restoration and the isolated
+minimum host build. Package checksums and source-closure validation are separate
+gates; a checksum-consistent package can still lack required sources.
+
+Small v2 FULL/PIPELINE/residual fixtures exercise the official CLI. They are not
+whole-model certification. Unless separately recorded for a new complete run,
+`full_model_on_new_trace_schema: NOT_RUN` applies; historical v1 GPT-2 replay is
+not current v2 evidence.
+
 ## Limitations and preserved paths
 
 Certified framing/timing and input bounds are explicit above. Independent
@@ -426,7 +537,7 @@ known generic frontend-real `failed to start IM2P stream` failure remains
 `BASELINE_EXISTING_FAIL` and is not repaired or counted as PASS here. The separate
 historical outer-K oracle failure must not be relabeled as that signature.
 
-Op-trace replay, multi-operation/system timelines, CPU/NPU co-simulation,
+Multi-operation/system timelines, CPU/NPU co-simulation,
 frequency conversion, synthesis, Fmax/resource/TOPS work, new transport, physical
 FPGA execution and actual Chipyard integration are outside this implementation.
 Source and evidence must not be committed automatically by the implementation

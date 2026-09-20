@@ -60,11 +60,12 @@ def test_manifest_requires_current_semantics() -> None:
                 assert verify_manifest(path) == (False, "schema")
 
 
-def fingerprint(root: Path) -> str:
+def fingerprint(root: Path, implementation: str = "LEGACY_BSV") -> str:
     args = [
         "real_matrix_fingerprint.py", "--bits", "8", "--weight-bits", "8",
         "--dim", "16", "--gemmini-root", str(root / "gemmini"),
         "--params-root", str(root / "params/include"),
+        "--implementation", implementation,
     ]
     output = io.StringIO()
     with patch.object(sys, "argv", args), patch.object(real_matrix_fingerprint, "ROOT", root):
@@ -103,7 +104,52 @@ def test_fingerprint_includes_semantics_and_generated_sources() -> None:
                 assert fingerprint(root) != baseline, f"ignored semantic field {field}"
 
 
+def test_hp1_trace_contract_inputs_invalidate_fingerprint() -> None:
+    with tempfile.TemporaryDirectory(prefix="im2p-optrace-fingerprint-") as raw:
+        root = Path(raw)
+        required = (
+            "Makefile", "sim/Cargo.toml", "sim/Cargo.lock", "sim/build.rs",
+            "config/im2p_profiles.json", "scripts/im2p_config.py", "src/common/Config.bsv",
+            "sim/ffi/im2p_config.h", "params/gemmini_params.h",
+            "gemmini/ggml/src/ggml-gemmini/ggml-gemmini-args.h",
+            "gemmini/ggml/src/ggml-common.h", "gemmini/ggml/include/ggml.h",
+            "src/gemmini/build.sbt", "src/gemmini/vendor-manifest.json",
+            "config/gemmini_hp1_profiles.json",
+        )
+        traced = (
+            "frontend/include/im2p_production_trace.hpp", "frontend/src/im2p_gemmini_frontend.cpp",
+            "sim/include/im2p_geometry.h", "scripts/gemmini_replay_contract.py",
+            "config/gemmini_host_memory_contracts/a8w8-d16-hp1.json",
+            "gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp",
+        )
+        for relative in (*required, *traced):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("baseline\n")
+        baseline = fingerprint(root, "GEMMINI_HP1")
+        (root / "artifact.a").write_bytes(b"fingerprint contract fixture")
+        manifest = root / "real-lib.json"
+        identity: IdentityData = {
+            **profile_config(8, 8, 16), "id": "a8-w8-d16", "block_size": 32,
+            "implementation": "GEMMINI_HP1", "platform": "test",
+            "platform_release": "test", "arch": "test",
+        }
+        atomic_json(manifest, {"schema": SCHEMA, "fingerprint": baseline,
+            "identity": identity, "toolchains": {}, "build_config": {},
+            "artifact_root": ".", "artifacts": artifact_rows(root, (Path("artifact.a"),))})
+        assert verify_manifest(manifest, expected_fingerprint=baseline) == (True, "ok")
+        for relative in traced:
+            path = root / relative
+            path.write_text("changed\n")
+            changed = fingerprint(root, "GEMMINI_HP1")
+            assert changed != baseline, f"ignored optrace input {relative}"
+            assert verify_manifest(manifest, expected_fingerprint=changed) == (False, "fingerprint")
+            path.write_text("baseline\n")
+            assert fingerprint(root, "GEMMINI_HP1") == baseline
+
+
 if __name__ == "__main__":
     test_manifest_requires_current_semantics()
     test_fingerprint_includes_semantics_and_generated_sources()
+    test_hp1_trace_contract_inputs_invalidate_fingerprint()
     print("REAL LIB SEMANTIC IDENTITY PASS")

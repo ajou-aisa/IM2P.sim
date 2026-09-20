@@ -10,9 +10,33 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim.tests.cycle.current_rtl_certificate import exact_result, observed_source, ownership
+from sim.tests.cycle import current_rtl_certificate as certificate
 
 
 class CurrentCertificateTest(unittest.TestCase):
+    def test_document_serialization_does_not_depend_on_mapping_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / 'first.json', Path(directory) / 'second.json'
+            certificate.write_json(first, {'z': 1, 'a': {'y': 2, 'b': 3}})
+            certificate.write_json(second, {'a': {'b': 3, 'y': 2}, 'z': 1})
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_expected_corpus_rejects_duplicate_or_missing_profiles(self) -> None:
+        profiles = [{'profile': name} for name in certificate.rtl.PROFILES]
+        certificate.require_profiles(profiles)
+        for invalid in (profiles[:-1], profiles + [profiles[0]], profiles[:-1] + [profiles[0]]):
+            with self.subTest(profiles=invalid), self.assertRaises(ValueError):
+                certificate.require_profiles(invalid)
+
+    def test_event_comparison_binds_both_nonempty_multisets(self) -> None:
+        expected = [(1, 'work'), (3, 'load_issue'), (5, 'logical_done')]
+        result = certificate.event_comparison(expected, expected)
+        self.assertEqual(result['model_event_count'], 3)
+        self.assertEqual(result['rtl_event_count'], 3)
+        self.assertEqual(result['model_multiset_sha256'], result['rtl_multiset_sha256'])
+        changed = certificate.event_comparison(expected, expected + [expected[1]])
+        self.assertNotEqual(changed['model_multiset_sha256'], changed['rtl_multiset_sha256'])
+
     def test_selected_events_are_a_hard_gate_even_when_endpoints_match(self) -> None:
         expected = [(1, 'work'), (15, 'load_issue'), (40, 'logical_done')]
         self.assertTrue(exact_result({}, expected, expected))

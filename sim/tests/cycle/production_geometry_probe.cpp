@@ -316,6 +316,8 @@ int main(int argc, char **argv) {
                      std::to_string(DIM) + "-hp1";
       info.backend = "IM2P_SIM/GEMMINI_HP1";
       info.mode = mode == "full" ? "FULL" : "STRIPE_PIPELINE";
+      info.hardware_contract_sha256 = std::string(64, '0');
+      info.runtime_manifest_sha256 = std::string(64, '0');
       // Deliberately fixture identities, never claimed as a real-model trace.
       // The probe compiler records actual source/archive hashes separately.
       for (const char *name : {"IM2P.sim", "llama.cpp-gemmini", "headers"}) {

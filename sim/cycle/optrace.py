@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict production op-trace v1 validation and isolated C-model accounting.
+"""Certified production op-trace v2 and isolated C-model accounting.
 
 No numerical data, tiler, or timing equation lives here. Final tile factors and
 strides are mandatory. Observed RTL timing is validation-only and never enters
@@ -12,200 +12,76 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
-import re
+from pathlib import Path, PurePosixPath
 import sys
-from typing import Any, Final
+from typing import Any, NotRequired, TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from sim.cycle import cli
+from scripts.gemmini_replay_contract import compatible
+from scripts.gemmini_resolve_profile import JsonValue
+from sim.cycle.certificate_contract import (
+    SCHEMA as CERTIFICATE_SCHEMA, VERSION as CERTIFICATE_VERSION,
+    array_value, digest_value, number, object_value, read_document, validate_certificate,
+)
 
-SCHEMA = 'im2p-production-optrace'
-VERSION = 1
-# Software admission guard for complete vocabulary projections, not a timing
-# prediction or a hardware capacity. Never derive this limit from observations.
-REPLAY_MAX_CYCLES: Final = 100_000_000
-COMMON = {'kind','sequence','run_id'}
-RUN = COMMON | {'schema','version','model','profile','activation_bits','weight_bits','dim',
-                'backend','mode','residual_enabled','prompt_tokens','requested_generated_tokens',
-                'source_commits','source_worktree_sha256'}
-PHASE = COMMON | {'phase_id','phase_kind','decode_index','input_tokens'}
-WORK_NUMBERS = {'phase_id','activation_bits','weight_bits','dim','m','n','k','tile_i_count',
-                'tile_j_count','tile_k_count','geometry_m','row_begin','row_count',
-                'activation_stride_bytes','weight_stride_bytes','output_stride_bytes',
-                'scale_stride_elements','block_size','vector_op','output_domain',
-                'production_geometry_version','work_context','source_row_begin','source_row_count',
-                'column_begin','group_index','logical_work_id'}
-WORK_OPTIONALS = {'stripe_id','host_slot','original_block_id'}
-WORK_STRINGS = {'layer','operation','provenance','numerical_datapath','scope'}
-WORK = COMMON | WORK_NUMBERS | WORK_OPTIONALS | WORK_STRINGS | {'rmd_raw','host_integer_block_multiply'}
-OBSERVATIONS = {'observed_rtl_start','observed_rtl_done','observed_rtl_elapsed'}
-END = COMMON | {'status','reason','work_count','independent_counts'}
-SOURCE_NAMES = {'IM2P.sim','llama.cpp-gemmini','headers'}
-
-class TraceError(ValueError):
-    """A trace is incomplete, incompatible, ambiguous, or not production work."""
-
-@dataclass
-class Trace:
-    run: dict[str, Any]
-    phases: list[dict[str, Any]]
-    works: list[dict[str, Any]]
-    end: dict[str, Any]
+from sim.cycle.optrace_schema import (
+    SCHEMA, VERSION, REPLAY_MAX_CYCLES, Trace, TraceError, require, integer,
+    fields, text, validate_work, validate_records, no_duplicate_keys, read_trace,
+)
 
 
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        raise TraceError(message)
+class WorkResult(TypedDict):
+    sequence: int
+    layer: str
+    phase_id: int
+    parent_invocation_id: int
+    provenance: str
+    scope: str
+    shape: list[int]
+    tile_counts: list[int]
+    model_status: str
+    model_result: dict[str, int]
+    submission_count: int
 
 
-def integer(value: Any, name: str, positive: bool = False) -> int:
-    require(type(value) is int and (1 if positive else 0) <= value <= 2**64-1,
-            f'{name}: expected {"positive" if positive else "nonnegative"} uint64')
-    return value
-
-
-def text(value: Any, name: str) -> str:
-    require(isinstance(value, str) and bool(value), f'{name}: nonempty string required')
-    return value
-
-
-def fields(record: dict[str, Any], required: set[str], optional: set[str] | None = None) -> None:
-    require(required <= record.keys(), f'missing fields: {sorted(required-record.keys())}')
-    require(record.keys() <= required | (optional or set()),
-            f'unknown fields: {sorted(record.keys()-required-(optional or set()))}')
-
-
-def validate_work(w: dict[str, Any], run: dict[str, Any], phase_id: int) -> None:
-    fields(w, WORK, OBSERVATIONS)
-    for k in WORK_NUMBERS:
-        integer(w[k], k)
-    for k in WORK_OPTIONALS | OBSERVATIONS:
-        if w.get(k) is not None:
-            integer(w[k], k)
-    for k in WORK_STRINGS:
-        text(w[k], k)
-    require(w['phase_id'] == phase_id, 'work does not belong to current explicit phase')
-    require(all(w[k] == run[k] for k in ('activation_bits','weight_bits','dim')), 'work/run profile mismatch')
-    for k in ('m','n','k','tile_i_count','tile_j_count','tile_k_count'):
-        integer(w[k], k, True)
-    require(w['tile_i_count'] <= 65535//w['dim'] and w['tile_j_count'] <= 65535//w['dim']
-            and w['tile_k_count'] <= (2**32-1)//w['dim'], 'tile factor exceeds hardware domain')
-    require(w['row_count'] == w['m'] and w['row_begin']+w['row_count'] <= w['geometry_m'],
-            'invalid accepted stripe/compact row range')
-    require(w['activation_stride_bytes'] >= w['k'] and w['weight_stride_bytes'] >= w['n']
-            and w['output_stride_bytes'] >= 4*w['n'] and w['output_stride_bytes']%4 == 0
-            and w['scale_stride_elements'] >= w['n'], 'invalid descriptor strides')
-    require((w['block_size'],w['vector_op'],w['output_domain'],w['production_geometry_version'])
-            == (32,5,2,1), 'unsupported production HP1 descriptor contract')
-    require(w['numerical_datapath'] == 'hp1_scu' and w['rmd_raw'] is False
-            and w['host_integer_block_multiply'] is False, 'raw/host-integer work is not production HP1 SCU')
-    require(w['logical_work_id'] == w['sequence'], 'logical work identity must match the deterministic sequence')
-    if w['provenance'] == 'residual':
-        require(run['residual_enabled'] is True, 'residual work in residual-disabled run')
-        require(w['scope']=='residual_compact' and w['k']<=32 and w['original_block_id'] is not None,
-                'residual requires compact geometry and original block id')
-    else:
-        require(w['provenance']=='dense_main' and w['scope'] in ('full','stripe')
-                and w['original_block_id'] is None, 'invalid dense provenance/scope')
-    if w['scope']=='stripe':
-        require(w['stripe_id'] is not None and w['host_slot'] is not None, 'stripe id and host slot required')
-    else:
-        require(w['row_begin']==0 and w['geometry_m']==w['m'], 'full/compact geometry must describe exactly this work')
-
-
-def validate_records(records: list[dict[str, Any]]) -> Trace:
-    require(len(records)>=3, 'incomplete trace')
-    run=records[0]
-    require(isinstance(run,dict),'JSONL run record must be an object')
-    fields(run,RUN)
-    require(run['kind']=='run' and run['schema']==SCHEMA and type(run['version']) is int
-            and run['version']==VERSION, 'unsupported trace schema/version')
-    for k in ('run_id','model','profile','backend','mode'):
-        text(run[k],k)
-    for k in ('activation_bits','weight_bits','dim','prompt_tokens','requested_generated_tokens'):
-        integer(run[k],k)
-    bits,dim=run['activation_bits'],run['dim']
-    require(bits in (4,8) and bits==run['weight_bits'] and dim in (16,32,64)
-            and run['profile']==f'a{bits}w{bits}-d{dim}-hp1', 'invalid run profile')
-    require(run['backend']=='IM2P_SIM/GEMMINI_HP1', 'unsupported production backend')
-    require(type(run['residual_enabled']) is bool, 'residual_enabled must be boolean')
-    for field,length in (('source_commits',40),('source_worktree_sha256',64)):
-        values=run[field]
-        require(isinstance(values,dict) and set(values)==SOURCE_NAMES, 'missing source identities')
-        require(all(isinstance(v,str) and re.fullmatch('[0-9a-f]{'+str(length)+'}',v) for v in values.values()),
-                f'invalid {field}')
-    phases: list[dict[str, Any]]=[]
-    works: list[dict[str, Any]]=[]
-    observed_counts: Counter[tuple[int,str,str]]=Counter()
-    for sequence,r in enumerate(records):
-        require(isinstance(r,dict), 'JSONL record must be an object')
-        require(type(r.get('sequence')) is int and r['sequence']==sequence, 'duplicate/gapped/nonmonotonic sequence')
-        require(r.get('run_id')==run['run_id'], 'mixed run identity')
-        if sequence==0:
-            continue
-        kind=r.get('kind')
-        if kind=='phase':
-            fields(r,PHASE)
-            integer(r['phase_id'],'phase_id');integer(r['input_tokens'],'input_tokens')
-            require(r['phase_id']==len(phases), 'nonmonotonic phase identity')
-            if not phases:
-                require(r['phase_kind']=='prefill' and r['decode_index'] is None, 'first phase must be prefill')
-            else:
-                integer(r['decode_index'],'decode_index')
-                require(r['phase_kind']=='decode' and r['decode_index']==len(phases)-1, 'decode indices must start at zero')
-            phases.append(r)
-        elif kind=='npu_work':
-            require(bool(phases),'work before phase')
-            validate_work(r,run,phases[-1]['phase_id'])
-            works.append(r);observed_counts[(r['phase_id'],r['layer'],r['provenance'])]+=1
-        elif kind=='run_end':
-            require(sequence==len(records)-1,'record after run end')
-            fields(r,END)
-            require(r['status']=='success','production run did not complete successfully')
-            require(isinstance(r['reason'],str),'run-end reason must be a string')
-            integer(r['work_count'],'work_count')
-            require(r['work_count']==len(works),'run-end work count mismatch')
-            require(isinstance(r['independent_counts'],list),'independent production counts required')
-            counts: Counter[tuple[int,str,str]]=Counter()
-            for c in r['independent_counts']:
-                require(isinstance(c,dict),'invalid independent count record')
-                fields(c,{'phase_id','layer','provenance','count'})
-                integer(c['phase_id'],'counter phase_id');integer(c['count'],'counter count',True)
-                text(c['layer'],'counter layer');text(c['provenance'],'counter provenance')
-                key=(c['phase_id'],c['layer'],c['provenance'])
-                require(key not in counts,'duplicate independent counter key')
-                counts[key]=c['count']
-            require(counts==observed_counts,'trace vs independent accepted-dispatch count mismatch')
-        else:
-            raise TraceError(f'unsupported record kind: {kind}')
-    require(records[-1]['kind']=='run_end' and bool(phases),'missing run end or explicit phases')
-    return Trace(run,phases,works,records[-1])
-
-
-def no_duplicate_keys(pairs: list[tuple[str,Any]]) -> dict[str,Any]:
-    result: dict[str,Any]={}
-    for key,value in pairs:
-        require(key not in result,f'duplicate JSON key: {key}')
-        result[key]=value
-    return result
-
-
-def read_trace(path: Path) -> Trace:
-    records=[]
-    try:
-        with path.open(encoding='utf-8') as stream:
-            for number,line in enumerate(stream,1):
-                require(bool(line.strip()),f'blank record at line {number}')
-                try:
-                    records.append(json.loads(line,object_pairs_hook=no_duplicate_keys))
-                except (json.JSONDecodeError,TraceError) as error:
-                    raise TraceError(f'line {number}: {error}') from error
-    except UnicodeError as error:
-        raise TraceError('trace must be valid UTF-8') from error
-    return validate_records(records)
+class ReplaySummary(TypedDict):
+    schema: str
+    version: int
+    status: str
+    accounting_kind: str
+    trace_schema: str
+    trace_version: int
+    profile: str
+    run_id: str
+    source_commits: dict[str, str]
+    source_worktree_sha256: dict[str, str]
+    cycle_library_sha256: str
+    timing_contract: str
+    software_limits: dict[str, int]
+    work_count: int
+    dense_work_count: int
+    residual_work_count: int
+    phase_count: int
+    works: list[WorkResult]
+    isolated_cycle_sum: int
+    per_layer_cycle_sums: dict[str, int]
+    prefill_cycle_sum: int
+    per_decode_token_cycle_sums: dict[str, int]
+    per_phase_cycle_sums: dict[str, int]
+    trace_accepted_work_equality: str
+    measured_answer_injection: bool
+    not_modeled: list[str]
+    validation_scope: NotRequired[str]
+    source_compatibility: NotRequired[str]
+    hardware_contract_sha256: NotRequired[str]
+    runtime_manifest_sha256: NotRequired[str]
+    reference_memory: NotRequired[dict[str, JsonValue]]
+    certificate_schema: NotRequired[str]
+    certificate_version: NotRequired[int]
+    certificate_sha256: NotRequired[str]
 
 
 def check_sources(trace: Trace, expected: dict[str,Any]) -> None:
@@ -226,11 +102,10 @@ def model_document(trace: Trace, work: dict[str,Any]) -> dict[str,Any]:
         'submission':'planner-blocks','record_events':0}}
 
 
-def replay(trace: Trace, library: Path, sources: dict[str,Any]) -> dict[str,Any]:
-    check_sources(trace,sources)
+def _estimate_trace(trace: Trace, library: Path) -> ReplaySummary:
     per_layer: dict[str,int]=defaultdict(int)
     per_phase: dict[int,int]=defaultdict(int)
-    works=[]
+    works: list[WorkResult]=[]
     for w in trace.works:
         answer=cli.estimate(library,model_document(trace,w))
         require(answer.get('status')=='PASS',f'first model rejection: sequence {w["sequence"]}: {answer.get("diagnostic",answer.get("status"))}')
@@ -238,15 +113,16 @@ def replay(trace: Trace, library: Path, sources: dict[str,Any]) -> dict[str,Any]
         cycles=integer(result['total_cycles'],'model total_cycles')
         per_layer[w['layer']]+=cycles;per_phase[w['phase_id']]+=cycles
         works.append({'sequence':w['sequence'],'layer':w['layer'],'phase_id':w['phase_id'],
+                      'parent_invocation_id':w['parent_invocation_id'],
                       'provenance':w['provenance'],'scope':w['scope'],'shape':[w['m'],w['n'],w['k']],
                       'tile_counts':[w['tile_i_count'],w['tile_j_count'],w['tile_k_count']],
                       'model_status':answer['status'],'model_result':result,'submission_count':result['loop_count']})
     counts=Counter(w['provenance'] for w in trace.works)
-    return {'schema':'im2p-production-cycle-replay','version':1,'status':'PASS',
+    return {'schema':'im2p-production-cycle-replay','version':2,'status':'ESTIMATED',
             'accounting_kind':'isolated-work-accounting','trace_schema':SCHEMA,'trace_version':VERSION,
             'profile':trace.run['profile'],'run_id':trace.run['run_id'],
             'source_commits':trace.run['source_commits'],'source_worktree_sha256':trace.run['source_worktree_sha256'],
-            'source_compatibility':'PASS','cycle_library_sha256':hashlib.sha256(library.read_bytes()).hexdigest(),
+            'cycle_library_sha256':hashlib.sha256(library.read_bytes()).hexdigest(),
             'timing_contract':'rtl-regression reference memory, independently drained accepted_cycle=1 per work',
             'software_limits':{'max_cycles_per_work':REPLAY_MAX_CYCLES},
             'work_count':len(works),'dense_work_count':counts['dense_main'],'residual_work_count':counts['residual'],
@@ -259,6 +135,63 @@ def replay(trace: Trace, library: Path, sources: dict[str,Any]) -> dict[str,Any]
             'not_modeled':['aggregate overlapped pipeline latency','CPU/NPU overlap','system timeline','wall-clock latency','frequency conversion']}
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayArtifacts:
+    library: Path
+    sources: Path
+    certificate: Path
+
+
+def _producer_binding(trace: Trace, sources: dict[str, JsonValue], cert: dict[str, JsonValue]) -> None:
+    check_sources(trace, sources)
+    producer = object_value(sources.get('hardware_contract'), 'producer hardware contract')
+    contracts = object_value(cert.get('hardware_contracts'), 'certificate hardware contracts')
+    model = object_value(contracts.get(trace.run['profile']), 'model hardware contract')
+    compatible(producer, model)
+    require(trace.run['hardware_contract_sha256'] == producer['sha256'], 'trace/producer hardware contract mismatch')
+    runtime = object_value(sources.get('runtime_artifact'), 'producer runtime artifact')
+    require(runtime.get('hardware_contract_sha256') == producer['sha256'], 'runtime/hardware contract mismatch')
+    require(digest_value(runtime.get('manifest_sha256'), 'runtime manifest') == trace.run['runtime_manifest_sha256'],
+            'trace/selected runtime manifest mismatch')
+    digest_value(runtime.get('fingerprint'), 'runtime fingerprint')
+    require(runtime.get('execution_kind') in ('FRESH_BUILD', 'VERIFIED_REUSE'), 'runtime build provenance missing')
+    names: list[str] = []
+    for item in array_value(runtime.get('artifacts'), 'runtime artifacts'):
+        artifact = object_value(item, 'runtime archive')
+        name = artifact.get('path')
+        if not isinstance(name, str) or not name:
+            raise TraceError('runtime archive path must be a nonempty string')
+        path = PurePosixPath(name)
+        require(not path.is_absolute() and '..' not in path.parts, 'runtime archive path must be relative')
+        names.append(path.name)
+        digest_value(artifact.get('sha256'), 'runtime archive')
+        require(number(artifact.get('size'), 'runtime archive size') > 0, 'empty runtime archive')
+    require(sorted(names) == ['libim2p_gemmini_frontend.a', 'libim2p_sim.a'], 'runtime archive closure mismatch')
+
+
+def replay(trace_path: Path, artifacts: ReplayArtifacts) -> ReplaySummary:
+    cert = read_document(artifacts.certificate)
+    validate_certificate(cert, artifacts.library)
+    trace = read_trace(trace_path)
+    sources = read_document(artifacts.sources)
+    _producer_binding(trace, sources, cert)
+    result = _estimate_trace(trace, artifacts.library)
+    result.update(status='PASS', validation_scope='CURRENT_CERTIFIED', source_compatibility='PASS',
+                  hardware_contract_sha256=trace.run['hardware_contract_sha256'],
+                  runtime_manifest_sha256=trace.run['runtime_manifest_sha256'],
+                  reference_memory=object_value(cert['reference_memory'], 'reference memory'),
+                  certificate_schema=CERTIFICATE_SCHEMA, certificate_version=CERTIFICATE_VERSION,
+                  certificate_sha256=hashlib.sha256(artifacts.certificate.read_bytes()).hexdigest())
+    return result
+
+
+def _replay_fixture(trace: Trace, library: Path) -> ReplaySummary:
+    result = _estimate_trace(trace, library)
+    result.update(status='FIXTURE_ONLY', validation_scope='UNCERTIFIED_SYNTHETIC_FIXTURE',
+                  source_compatibility='NOT_CERTIFIED')
+    return result
+
+
 def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('trace',type=Path)
@@ -268,10 +201,7 @@ def main() -> int:
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     try:
-        cert=json.loads(args.cycle_certificate.read_text())
-        require(cert.get('status')=='PASS' and cert.get('marker')=='IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT', 'current single-GEMM certification required')
-        require(cert.get('model_library_sha256')==hashlib.sha256(args.library.read_bytes()).hexdigest(),'cycle library differs from certificate')
-        result=replay(read_trace(args.trace),args.library,json.loads(args.sources.read_text()))
+        result=replay(args.trace,ReplayArtifacts(args.library,args.sources,args.cycle_certificate))
         with args.output.open('x',encoding='utf-8') as stream:
             json.dump(result,stream,indent=2,sort_keys=True);stream.write('\n')
         print(json.dumps({k:result[k] for k in ('status','work_count','isolated_cycle_sum','accounting_kind')}))

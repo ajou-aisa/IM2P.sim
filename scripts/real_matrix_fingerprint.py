@@ -116,6 +116,8 @@ def main() -> int:
             "src/gemmini/patches/*.patch",
             "scripts/gemmini_resolve_profile.py",
             "scripts/gemmini_hardware_contract.py",
+            "scripts/gemmini_replay_contract.py",
+            "config/gemmini_host_memory_contracts/*.json",
             "src/gemmini/**/*.scala",
             "patches/*.patch",
             "src/gemmini/vendor-manifest.json",

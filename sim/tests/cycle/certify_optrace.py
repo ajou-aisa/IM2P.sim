@@ -93,9 +93,8 @@ def main() -> int:
                 observations=[json.loads(line) for line in observation.read_text().splitlines()]
                 result=compare(trace,observations,mode)
                 result.update(profile=profile,mode=mode,shape=shape,trace=str(tracefile))
-                sources={k:trace.run[k] for k in ('source_commits','source_worktree_sha256','profile')}
                 library=a.cycle_build/('libim2p_cycle_model.dylib' if sys.platform=='darwin' else 'libim2p_cycle_model.so')
-                first=optrace.replay(trace,library,sources);second=optrace.replay(trace,library,sources)
+                first=optrace._replay_fixture(trace,library);second=optrace._replay_fixture(trace,library)
                 if first!=second:
                     raise ValueError('nondeterministic replay')
                 (case/'replay-summary.json').write_text(json.dumps(first,indent=2)+'\n')

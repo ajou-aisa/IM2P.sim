@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.im2p_config import profile_config
+from scripts.gemmini_replay_contract import (
+    CONTRACT_KEY, ContractError, canonical_json, hardware_contract,
+    verify_runtime_source_proof,
+)
 from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.real_lib_manifest import (
     SCHEMA,
@@ -26,6 +30,7 @@ from scripts.real_lib_manifest import (
     artifact_rows,
     atomic_json,
     verify_manifest,
+    sha256,
 )
 from scripts.real_lib_materialize import (
     SELECTED_ARTIFACTS,
@@ -119,6 +124,8 @@ def run_builder(
 
 
 def ensure(args: argparse.Namespace) -> int:
+    if args.runtime_source_proof and (not args.builder or args.implementation != "GEMMINI_HP1"):
+        raise CacheError("runtime source proof requires a custom GEMMINI_HP1 builder")
     if args.bits != args.weight_bits:
         raise CacheError(
             "real library cache requires matched activation/weight widths"
@@ -137,6 +144,16 @@ def ensure(args: argparse.Namespace) -> int:
         raise CacheError("LEGACY_BSV requires BSC Verilog runtime inputs")
     identity = f"a{args.bits}-w{args.weight_bits}-d{args.dim}"
     tools, build_config = collect_toolchain(args)
+    contract = None
+    runtime_digest = None
+    profile = f"a{args.bits}w{args.weight_bits}-d{args.dim}-hp1"
+    if args.implementation == "GEMMINI_HP1" and (not args.builder or args.runtime_source_proof):
+        contract = hardware_contract(profile)
+        if args.builder:
+            runtime_digest = verify_runtime_source_proof(args.runtime_source_proof, profile, contract)
+            build_config["runtime_source_proof_sha256"] = sha256(args.runtime_source_proof)
+        build_config[CONTRACT_KEY] = canonical_json(contract)
+        build_config["runtime_execution_kind"] = "VERIFIED_REUSE" if args.builder else "FRESH_BUILD"
     fingerprint = identity_fingerprint(args, tools, build_config)
     identity_data: IdentityData = {
         **profile_config(args.bits, args.weight_bits, args.dim),
@@ -193,7 +210,11 @@ def ensure(args: argparse.Namespace) -> int:
             status = run_builder(args, stage_build, identity, tools)
             if status:
                 return status
+            if contract is not None and canonical_json(hardware_contract(profile)) != build_config[CONTRACT_KEY]:
+                raise CacheError("hardware contract sources changed while building")
             relatives = artifact_relatives(args.implementation, identity)
+            if runtime_digest is not None and sha256(stage_build / relatives[1]) != runtime_digest:
+                raise CacheError("builder runtime differs from verified source-proof archive")
             for relative in relatives:
                 source = stage_build / relative
                 destination = publish / "artifacts" / relative
@@ -270,6 +291,8 @@ def parser() -> argparse.ArgumentParser:
     ensure_parser.add_argument("--bsc-extra-flags", default="")
     ensure_parser.add_argument("--extra-input", type=Path)
     ensure_parser.add_argument("--builder")
+    ensure_parser.add_argument("--runtime-source-proof", type=Path,
+                              help="original source/artifact proof for an HP1 runtime reused by --builder")
     ensure_parser.add_argument(
         "--gemmini-work-root", type=Path,
         default=resolve_gemmini_work_root(ROOT),
@@ -298,7 +321,7 @@ def main() -> int:
             print(f"REAL_LIB_CACHE_VERIFY PASS manifest={args.manifest}")
             return 0
         return ensure(args)
-    except (OSError, CacheError) as error:
+    except (OSError, CacheError, ContractError) as error:
         print(f"REAL_LIB_CACHE ERROR: {error}", file=sys.stderr)
         return 2
 

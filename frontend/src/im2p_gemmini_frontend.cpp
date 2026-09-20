@@ -2272,6 +2272,24 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
+  if (x.trace_context) {
+    try {
+      const auto scope = mode == Mode::full ? IM2P_GEOMETRY_FULL : IM2P_GEOMETRY_STREAM;
+      const auto geometry = geometry_snapshot(x.scalars, scope, 0, x.scalars.i, 0);
+      auto parent = mode == Mode::full
+          ? production_trace::full(x.full_descriptor(), geometry, x.trace_layer)
+          : production_trace::common(x.stripe_descriptor(), geometry, x.trace_layer);
+      parent.scope = mode == Mode::full ? "full" : "stripe";
+      parent.activation_stride_bytes = x.scalars.activation_row_stride_bytes;
+      x.trace_context = std::make_shared<const ggml::gemmini::optrace::Context>(
+          x.trace_context->session->parent_begin(*x.trace_context, parent));
+    } catch (...) {
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "optrace parent declaration failed");
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      return {x.final_status, std::move(run)};
+    }
+  }
   {
     std::lock_guard lock(x.mutex);
     x.lifecycle = Run::Impl::Lifecycle::starting;
@@ -2475,6 +2493,14 @@ FenceResult fence(Run &run) noexcept {
     if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
       x.commit_output();
       x.output_committed = true;
+    }
+    if (x.final_status.ok() && x.trace_context) {
+      try {
+        x.trace_context->session->parent_end(*x.trace_context);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                     "optrace parent completion failed");
+      }
     }
     x.timing_view_frozen = true;
     x.join_in_progress = false;

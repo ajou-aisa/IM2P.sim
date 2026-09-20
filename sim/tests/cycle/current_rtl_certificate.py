@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import shlex
 import subprocess
 import sys
 from typing import Any
+from collections.abc import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -33,9 +35,23 @@ FRAMINGS = ('regression-tiles', 'planner-blocks')
 SOURCE = ROOT / 'fpga/gemmini_hp1/host/test_ws_rtl.cpp'
 
 
+def require_profiles(profiles: Sequence[Mapping[str, str]]) -> None:
+    names = [profile['profile'] for profile in profiles]
+    if len(names) != len(rtl.PROFILES) or set(names) != set(rtl.PROFILES):
+        raise ValueError('current certificate requires each of the six profiles exactly once')
+
+
+def event_comparison(model: list[tuple[int, str]], observed: list[tuple[int, str]]) -> dict[str, int | str]:
+    return {
+        'model_event_count': len(model), 'rtl_event_count': len(observed),
+        'model_multiset_sha256': hashlib.sha256(json.dumps(sorted(model), separators=(',', ':')).encode()).hexdigest(),
+        'rtl_multiset_sha256': hashlib.sha256(json.dumps(sorted(observed), separators=(',', ':')).encode()).hexdigest(),
+    }
+
+
 def write_json(path: Path, data: Any) -> None:
     with path.open('x') as stream:
-        json.dump(data, stream, indent=2)
+        json.dump(data, stream, indent=2, sort_keys=True)
         stream.write('\n')
 
 
@@ -189,8 +205,8 @@ def capture(profile: dict[str, Any], out: Path) -> list[dict[str, Any]]:
         rows = [r for r in csv.reader(stream) if r and r[0] == 'CASE']
     if [int(r[1]) for r in rows] != list(range(1, len(rows) + 1)) or not rows:
         raise ValueError('captured work identity/count is not contiguous')
-    result = [{'case': f'captured-{int(r[1]):03}', 'shape': tuple(map(int, r[2:5])),
-               'tile': tuple(map(int, r[6:9])), 'timing': tuple(map(int, r[9:14])),
+    result = [{'case': f'captured-{int(r[1]):03}', 'shape': list(map(int, r[2:5])),
+               'tile': list(map(int, r[6:9])), 'timing': list(map(int, r[9:14])),
                'raw': bool(int(r[15])), 'provenance': r[16], 'captured_case': int(r[1])}
               for r in rows]
     write_json(out / 'captured-corpus.json', result)
@@ -280,6 +296,7 @@ def compare_case(executable: Path, profile: str, framing: str, case: dict[str, A
                   rtl_summary=observed['summary'], model_summary=model['result'],
                   delta_cycles=model['result']['total_cycles'] - observed['summary']['cycles'],
                   selected_event_multiset_exact=not event_difference,
+                  event_comparison=event_comparison(model_events, observed['selected_events']),
                   scale_ownership={key: value for key, value in scale.items() if key != 'details'})
     return result
 
@@ -313,10 +330,10 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
     if manifest.get('status') != 'PASS' or manifest.get('stage') != 'host-test':
         raise ValueError('a fresh passing host-test build is required')
     profiles = manifest['profiles']
-    if {p['profile'] for p in profiles} != set(rtl.PROFILES):
-        raise ValueError('current certificate requires all six profiles')
+    require_profiles(profiles)
     results: list[dict[str, Any]] = []
     captures = {}
+    corpora = {}
     first_mismatch = None
     for profile in profiles:
         name = profile['profile']
@@ -325,12 +342,18 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
         corpus = capture(profile, profile_out)
         captures[name] = len(corpus)
         # Additional explicit synthetic coverage, never mislabeled model trace.
-        extra = [{'case': f'large-k-{k}', 'shape': (1, 1, k), 'tile': (1, 1, 3),
-                  'timing': (3, 13, 17, 11, 5), 'raw': False,
+        extra = [{'case': f'large-k-{k}', 'shape': [1, 1, k], 'tile': [1, 1, 3],
+                  'timing': [3, 13, 17, 11, 5], 'raw': False,
                   'provenance': 'synthetic_large_k'} for k in (32, 64, 96, 3072, 8256)]
+        corpora[name] = corpus + extra
+    expected = {name: [case['case'] for case in cases] for name, cases in corpora.items()}
+    write_json(out / 'expected-corpus.json', expected)
+    for profile in profiles:
+        name = profile['profile']
+        profile_out = out / name
         for framing in FRAMINGS:
             executable = build_probe(profile, profile_out / framing, framing, True)
-            for case in corpus + extra:
+            for case in corpora[name]:
                 row = compare_case(executable, name, framing, case, library)
                 results.append(row)
                 print(name, framing, case['case'], row['status'], flush=True)
@@ -353,25 +376,33 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
             'cases_model_admitted': sum(r['model_admitted'] for r in subset),
             'cases_exact': sum(r['status'] == 'PASS' for r in subset),
             'max_abs_delta_cycles': max((abs(r['delta_cycles']) for r in subset if 'delta_cycles' in r), default=None)}
+    from sim.tests.cycle.certificate_document import complete_document
     result = {'status': 'PASS' if not first_mismatch and mutation['status'] == 'PASS' else 'FAIL',
-              'scope': 'fresh-reset isolated single-GEMM reference-memory accounting; no system/pipeline latency',
               'captured_corpus_counts': captures, 'summaries': summaries, 'first_mismatch': first_mismatch,
               'selected_events': sorted(rtl.SELECTED_EVENTS), 'event_mutation': mutation,
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}
+    result = complete_document(result, expected, library, 'FRESH_RUN')
     write_json(out / 'current-certificate.json', result)
     return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--build-root', type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--build-root', type=Path)
+    source.add_argument('--reuse-verified-evidence', type=Path,
+                        help='historical evidence root with checksums, source inventory, and raw comparisons')
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
-    result = certify(args.build_root.resolve(), args.library.resolve(), args.out.resolve())
+    if args.reuse_verified_evidence is not None:
+        from sim.tests.cycle.reaggregate_certificate import reaggregate
+        result = reaggregate(args.reuse_verified_evidence.resolve(), args.library.resolve(), args.out.resolve())
+    else:
+        result = certify(args.build_root.resolve(), args.library.resolve(), args.out.resolve())
     print(json.dumps({k: v for k, v in result.items() if k != 'cases'}, indent=2))
     return 0 if result['status'] == 'PASS' else 1
 
