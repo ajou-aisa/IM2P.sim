@@ -10,6 +10,7 @@ import sqlite3
 from scripts.gemmini_replay_contract import contract_digest
 from sim.cycle.npu_trace_schema import Record, SemanticKey, integer, object_value, require, semantic_key, text, unique_pairs
 from sim.cycle.reconstruct_graph import Manifest, array, json_records, sha256
+from sim.cycle.reconstruct_timing import NAMED_TIMING_FIELDS, duration_sample, validate_named_timing, valid_measurement
 
 CPU_STAGE_ALIASES = {'SOFT_MAX': 'cpu.softmax', 'SOFT_MAX_BACK': 'cpu.softmax_back'}
 
@@ -77,22 +78,6 @@ def encoded_key(key: SemanticKey) -> str:
     return json.dumps(key, separators=(',', ':'))
 
 
-def valid_measurement(record: Record) -> None:
-    require(record.get('valid') is True and record.get('cpu_service') is True, 'required CPU service measurement invalid/excluded')
-    start, end, delta = (integer(record, key) for key in ('start', 'end', 'delta'))
-    require(end >= start and delta == end-start, 'CPU interval endpoint/delta mismatch')
-    require((text(record, 'source'), text(record, 'unit')) in (
-        ('host_tick', 'tick'), ('riscv_cycle', 'cycle'), ('linux_perf_cpu_cycles', 'cycle'),
-        ('thread_cpu_clock', 'nanosecond'), ('steady_clock', 'nanosecond')), 'unknown CPU clock source/unit')
-    require(record.get('operation_success', True) is True, 'host operation failed')
-
-
-def duration_sample(record: Record) -> Record:
-    keys = ('source', 'unit', 'start', 'end', 'delta', 'valid', 'worker_id', 'worker_count',
-            'reason', 'sample_reason', 'source_line')
-    return {**{name: record[name] for name in keys if name in record}, 'stage': record['op']}
-
-
 class CpuIndex:
     def __init__(self, connection: sqlite3.Connection, target: Manifest) -> None:
         self.db = connection
@@ -101,12 +86,29 @@ class CpuIndex:
         self.db.execute('CREATE TABLE samples(role TEXT, semantic TEXT, stage TEXT, worker INTEGER, workers INTEGER, host INTEGER, body TEXT)')
         self.db.execute('CREATE UNIQUE INDEX host_identity ON samples(role,host) WHERE host IS NOT NULL')
         self.db.execute('CREATE UNIQUE INDEX worker_identity ON samples(role,semantic,stage,worker) WHERE host IS NULL')
+        self.db.execute('CREATE TABLE canonical_host_intervals(execution TEXT NOT NULL, thread INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL)')
 
     def load(self, path: Path, manifest: Manifest) -> None:
         role = text(manifest.run, 'source_role')
+        canonical_batch: list[tuple[str, int, int, int]] = []
         for source_line, record in enumerate(json_records(path), 1):
+            if record.get('schema') is None:
+                require(record.get('kind') in ('cpu', 'segment') and
+                        record.get('duration_role') == 'OBSERVATION_ONLY' and
+                        record.get('exclusion_reason') == 'outside_collection' and
+                        record.get('host_stage_id') is None and
+                        record.get('semantic_phase_kind') is None,
+                        'unclassified compact CPU telemetry')
+                self.observations[role + ':compact_' + str(record['kind'])] += 1
+                continue
             require(record.get('schema') == 'gemmini.cycle' and type(record.get('version')) is int and record['version'] == 2,
                     'unsupported CPU CycleLog schema/version')
+            if record.get('record_type') != 'CYCLE_INTERVAL':
+                require(record.get('duration_role') not in ('ORDINARY_CPU_REFERENCE', 'POTAL_HOST') and
+                        record.get('host_stage_id') is None,
+                        'non-interval telemetry cannot claim reconstruction duration authority')
+                self.observations[role + ':telemetry'] += 1
+                continue
             if record.get('exclusion_reason') == 'outside_collection':
                 require(record.get('duration_role') == 'OBSERVATION_ONLY', 'outside-collection record claimed duration authority')
                 self.observations[role + ':outside_collection'] += 1
@@ -119,9 +121,12 @@ class CpuIndex:
             allowed = ('ORDINARY_CPU_REFERENCE', 'OBSERVATION_ONLY') if role == 'FULL_CPU' else ('POTAL_HOST', 'OBSERVATION_ONLY')
             require(duration_role in allowed, 'CPU duration ownership mismatch')
             host = None if record.get('host_stage_id') is None else integer(record, 'host_stage_id')
-            if record.get('record_type') != 'CYCLE_INTERVAL':
-                require(duration_role == 'OBSERVATION_ONLY' and host is None, 'non-interval telemetry cannot be CPU service cost')
-                self.observations[role + ':telemetry'] += 1
+            if duration_role == 'OBSERVATION_ONLY':
+                interval_class = text(record, 'interval_class')
+                require(interval_class in ('PER_WORKER_CPU_WORK', 'FUNCTIONAL_EMULATION', 'WAIT',
+                                            'NON_ADDITIVE', 'STRUCTURAL', 'DIAGNOSTIC'),
+                        'invalid non-authoritative interval class')
+                self.observations[role + ':' + interval_class] += 1
                 continue
             op = text(record, 'op')
             logical_op = text(object_value(manifest.nodes[key]['payload']), 'op')
@@ -134,6 +139,16 @@ class CpuIndex:
                 continue
             require(host is None or role == 'POTAL_COLLECTION', 'FullCPU cannot own PoTal host stages')
             if duration_role == 'POTAL_HOST': require(host is not None, 'PoTal host cost lacks declared stage identity')
+            try:
+                validate_named_timing(record, host)
+            except ValueError as error:
+                raise ValueError(f'{path.name}:{source_line}:{op}: {error}') from error
+            if duration_role == 'POTAL_HOST':
+                canonical_batch.append((text(record, 'host_execution_id'), integer(record, 'thread_id'),
+                                        integer(record, 'host_start_ns'), integer(record, 'host_end_ns')))
+                if len(canonical_batch) == 8192:
+                    self.db.executemany('INSERT INTO canonical_host_intervals VALUES(?,?,?,?)', canonical_batch)
+                    canonical_batch.clear()
             worker = None if record.get('worker_id') is None else integer(record, 'worker_id')
             workers = None if record.get('worker_count') is None else integer(record, 'worker_count')
             if host is None:
@@ -143,12 +158,26 @@ class CpuIndex:
             try:
                 keys = ('source', 'unit', 'start', 'end', 'delta', 'valid', 'worker_id', 'worker_count',
                         'reason', 'sample_reason', 'op', 'cpu_service', 'cpu_service_exclusion',
-                        'duration_role', 'operation_success')
+                        'duration_role', 'operation_success', *NAMED_TIMING_FIELDS)
                 stored: Record = {**{name: record[name] for name in keys if name in record}, 'source_line': source_line}
                 self.db.execute('INSERT INTO samples VALUES(?,?,?,?,?,?,?)',
                                 (role, encoded_key(key), op, worker, workers, host, json.dumps(stored, sort_keys=True)))
             except sqlite3.IntegrityError as error:
                 raise ValueError('duplicate/ambiguous CPU interval identity') from error
+        if canonical_batch:
+            self.db.executemany('INSERT INTO canonical_host_intervals VALUES(?,?,?,?)', canonical_batch)
+
+    def validate_potal_host_additivity(self) -> None:
+        self.db.execute('CREATE INDEX canonical_host_interval_overlap ON canonical_host_intervals(execution,thread,start,end)')
+        overlap = self.db.execute(
+            'SELECT 1 FROM ('
+            'SELECT start,MAX(end) OVER ('
+            'PARTITION BY execution,thread ORDER BY start,end '
+            'ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prior_end '
+            'FROM canonical_host_intervals WHERE end>start) '
+            'WHERE prior_end IS NOT NULL AND start<prior_end LIMIT 1').fetchone()
+        require(overlap is None, 'positive canonical host interval overlap')
+        self.db.execute('DROP TABLE canonical_host_intervals')
 
     def ordinary(self, key: SemanticKey) -> list[Record]:
         values = list(self.db.execute('SELECT body FROM samples WHERE role=? AND semantic=? AND host IS NULL ORDER BY stage,worker',
@@ -178,7 +207,8 @@ class CpuIndex:
                 require(observation['duration_role'] == 'OBSERVATION_ONLY' and observation.get('cpu_service') is False,
                         'functional emulation claimed target CPU cost')
         else:
-            require(row is not None, 'missing measured PoTal host stage')
+            require(row is not None,
+                    f'missing measured PoTal host stage id={identity} stage={record.get("stage_name")}')
             if row is None: raise ValueError('missing host measurement')
             require(row[0] == encoded_key(semantic_key(record)), 'host measurement semantic identity mismatch')
             measurement = object_value(json.loads(row[1], object_pairs_hook=unique_pairs))
@@ -193,3 +223,4 @@ class CpuIndex:
     def finish(self) -> None:
         require(self.db.execute('SELECT COUNT(*) FROM samples WHERE host IS NOT NULL').fetchone()[0] == 0,
                 'unexplained extra host measurement')
+        self.validate_potal_host_additivity()

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 from typing import TextIO
@@ -52,6 +53,47 @@ class ReplayArtifacts:
 class ReplayOutputs:
     results: Path
     summary: Path
+
+
+@dataclass(frozen=True, slots=True)
+class InputSnapshot:
+    """One immutable input copy plus the source identity to recheck at publication."""
+    source: Path
+    snapshot: Path
+    identity: tuple[int, int, int, int, int]
+
+
+def _identity(path: Path) -> tuple[int, int, int, int, int]:
+    state = path.stat()
+    return state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns
+
+
+def snapshot_inputs(paths: tuple[Path, ...], directory: Path) -> tuple[InputSnapshot, ...]:
+    """Copy each source through one descriptor before parsing any source content."""
+    snapshots: list[InputSnapshot] = []
+    for index, original in enumerate(paths):
+        source = original.resolve(strict=True)
+        descriptor = os.open(source, os.O_RDONLY)
+        try:
+            before = _identity(source)
+            snapshot = directory / f'{index:02d}-{source.name}'
+            with os.fdopen(descriptor, 'rb', closefd=False) as reader, snapshot.open('xb') as writer:
+                shutil.copyfileobj(reader, writer, 1024 * 1024)
+            descriptor_state = os.fstat(descriptor)
+            descriptor_identity = (descriptor_state.st_dev, descriptor_state.st_ino, descriptor_state.st_size,
+                                   descriptor_state.st_mtime_ns, descriptor_state.st_ctime_ns)
+            require(before == _identity(source) == descriptor_identity,
+                    'input changed while snapshotting')
+            snapshots.append(InputSnapshot(source, snapshot, before))
+        finally:
+            os.close(descriptor)
+    return tuple(snapshots)
+
+
+def verify_input_snapshots(snapshots: tuple[InputSnapshot, ...], context: str) -> None:
+    """Reject changed sources before a result can be published."""
+    require(all(snapshot.identity == _identity(snapshot.source) for snapshot in snapshots),
+            'input changed during ' + context)
 
 
 def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Record:
@@ -125,17 +167,16 @@ def replay(trace_path: Path, artifacts: ReplayArtifacts, outputs: ReplayOutputs)
              outputs.results.resolve(), outputs.summary.resolve())
     require(len(set(paths)) == len(paths), 'input/output paths must be distinct')
     require(not outputs.results.exists() and not outputs.summary.exists(), 'outputs must be new files')
-    before = trace_path.stat()
-    with tempfile.TemporaryDirectory(prefix='npu-result-', dir=outputs.results.parent) as result_dir, \
+    with tempfile.TemporaryDirectory(prefix='npu-snapshot-', dir=outputs.results.parent) as snapshot_dir, \
+         tempfile.TemporaryDirectory(prefix='npu-result-', dir=outputs.results.parent) as result_dir, \
          tempfile.TemporaryDirectory(prefix='npu-summary-', dir=outputs.summary.parent) as summary_dir:
+        snapshots = snapshot_inputs((trace_path, artifacts.certificate, artifacts.library), Path(snapshot_dir))
+        trace_snapshot, certificate_snapshot, library_snapshot = (snapshot.snapshot for snapshot in snapshots)
         result = Path(result_dir)/'result.jsonl'
         summary_path = Path(summary_dir)/'summary.json'
         with result.open('x', encoding='utf-8') as stream:
-            summary = _replay(trace_path, artifacts, stream)
-        after = trace_path.stat()
-        require(all(getattr(before, key) == getattr(after, key)
-                    for key in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')),
-                'input trace changed during validation/replay')
+            summary = _replay(trace_snapshot, ReplayArtifacts(library_snapshot, certificate_snapshot), stream)
+        verify_input_snapshots(snapshots, 'replay')
         with summary_path.open('x', encoding='utf-8') as stream:
             json.dump(summary, stream, indent=2, sort_keys=True, allow_nan=False)
             stream.write('\n')

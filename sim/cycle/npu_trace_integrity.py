@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
+import gzip
 from pathlib import Path
 
 from sim.cycle.npu_trace_schema import (
@@ -188,7 +189,8 @@ class TraceState:
 
 
 def read_records(path: Path) -> Iterator[Record]:
-    with path.open(encoding='utf-8') as stream:
+    with (gzip.open(path, 'rt', encoding='utf-8') if path.suffix == '.gz'
+          else path.open(encoding='utf-8')) as stream:
         for sequence, line in enumerate(stream):
             require(bool(line.strip()), f'blank JSONL record at line {sequence+1}')
             record = parse_record(line)

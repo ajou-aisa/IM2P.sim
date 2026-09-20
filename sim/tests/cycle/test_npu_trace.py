@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts.gemmini_replay_contract import contract_digest, hardware_contract
 from scripts.gemmini_resolve_profile import JsonValue
@@ -117,6 +120,28 @@ class NpuTraceTests(unittest.TestCase):
             trace = Path(directory)/'trace.jsonl'
             trace.write_text('{"schema":"im2p-npu-cycle-trace","schema":"im2p-npu-cycle-trace"}\n')
             with self.assertRaises(ValueError): npu_trace.validate_trace(trace)
+
+    def test_gzip_trace_input_matches_plain_validation(self):
+        from sim.cycle import npu_trace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain, compressed = root/'trace.jsonl', root/'trace.jsonl.gz'
+            write_trace(plain, records())
+            with gzip.open(compressed, 'wt', encoding='utf-8') as stream:
+                stream.write(plain.read_text())
+            self.assertEqual(npu_trace.validate_trace(compressed), npu_trace.validate_trace(plain))
+
+    def test_snapshot_rejects_replaced_input(self):
+        from sim.cycle import npu_trace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, replacement = root/'source.jsonl', root/'replacement.jsonl'
+            source.write_text('before\n')
+            snapshots = npu_trace.snapshot_inputs((source,), root)
+            replacement.write_text('before\n')
+            os.replace(replacement, source)
+            with self.assertRaisesRegex(ValueError, 'input changed during replay'):
+                npu_trace.verify_input_snapshots(snapshots, 'replay')
 
     def test_same_shape_operations_may_interleave(self):
         rows = records(); second = copy.deepcopy(rows[2:8])
@@ -241,6 +266,41 @@ class NpuTraceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'hardware lowering contract mismatch'):
                 npu_trace.replay(trace, artifacts, failed)
             self.assertFalse(failed.results.exists())
+
+    @unittest.skipUnless(os.getenv('IM2P_CYCLE_LIBRARY') and os.getenv('IM2P_CYCLE_CERTIFICATE'), 'certified C library required')
+    def test_replay_rejects_each_replaced_source_after_snapshot(self):
+        """A replay must not publish an answer from a source replaced mid-run."""
+        from sim.cycle import npu_trace
+        library = Path(os.environ['IM2P_CYCLE_LIBRARY'])
+        certificate = Path(os.environ['IM2P_CYCLE_CERTIFICATE'])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('trace', 'certificate', 'library'):
+                with self.subTest(source=name):
+                    trace, local_certificate, local_library = root/'trace.jsonl', root/'certificate.json', root/'library.dylib'
+                    write_trace(trace, records())
+                    shutil.copyfile(certificate, local_certificate)
+                    shutil.copyfile(library, local_library)
+                    source = {'trace': trace, 'certificate': local_certificate, 'library': local_library}[name]
+                    output = npu_trace.ReplayOutputs(root/(name+'-result.jsonl'), root/(name+'-summary.json'))
+                    original_estimate = npu_trace.cli.estimate
+                    mutated = False
+
+                    def estimate(replay_library: Path, document: Record) -> Record:
+                        nonlocal mutated
+                        if not mutated:
+                            mutated = True
+                            replacement = root/(name+'-replacement')
+                            shutil.copyfile(source, replacement)
+                            os.replace(replacement, source)
+                            if name == 'library':
+                                self.assertNotEqual(replay_library.resolve(), source.resolve())
+                        return original_estimate(replay_library, document)
+
+                    with mock.patch.object(npu_trace.cli, 'estimate', side_effect=estimate):
+                        with self.assertRaisesRegex(ValueError, 'input changed during replay'):
+                            npu_trace.replay(trace, npu_trace.ReplayArtifacts(local_library, local_certificate), output)
+                    self.assertFalse(output.results.exists() or output.summary.exists())
 
 
 if __name__ == '__main__':

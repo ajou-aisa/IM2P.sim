@@ -4,14 +4,17 @@ import json
 import graphlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts.gemmini_replay_contract import contract_digest
 from sim.cycle.npu_trace import ReplayArtifacts, ReplayOutputs, replay
 from sim.cycle.npu_trace_schema import Record, object_value
+from sim.cycle import reconstruct as reconstruct_module
 from sim.cycle.reconstruct import Inputs, reconstruct
 from sim.cycle.reconstruct_cpu import CollectionFiles, duration_sample
 from sim.cycle.reconstruct_graph import array, json_records, sha256
@@ -24,6 +27,11 @@ def cpu_record(role: str, ordinal: int, duration: int) -> Record:
     return dict(schema='gemmini.cycle', version=2, record_type='CYCLE_INTERVAL', source='host_tick', unit='tick',
         op='cpu.add' if ordinal == 0 else 'cpu.mul_mat', layer='same', run_id=0, stripe_id=None, slot=None,
         node_id=ordinal, worker_id=0, worker_count=1, start=100, end=100+duration, delta=duration, valid=True,
+        cpu_work_cycles=duration, cpu_work_cycles_source='fixture_cpu_cycles', cpu_work_cycles_unit='cycle',
+        cpu_work_cycles_valid=True, cpu_work_cycles_reason=None, thread_cpu_ns=duration*2,
+        thread_cpu_valid=True, thread_cpu_reason=None, host_elapsed_ns=duration, host_elapsed_valid=True,
+        host_elapsed_reason=None, host_start_ns=100, host_end_ns=100+duration,
+        host_execution_id='fixture-execution', thread_id=1, interval_class='PER_WORKER_CPU_WORK',
         cpu_service=True, semantic_phase_kind='prefill', semantic_decode_index=None,
         semantic_graph_occurrence=0, semantic_node_ordinal=ordinal, run_config_id='workload-0', source_role=role,
         duration_source=role, duration_role='ORDINARY_CPU_REFERENCE' if role == 'FULL_CPU' else 'OBSERVATION_ONLY',
@@ -54,7 +62,8 @@ def fixture(root: Path, artifacts: ReplayArtifacts) -> Inputs:
     potal = CollectionFiles(root/'potal-cycle.jsonl', root/'potal-graph.jsonl', root/'potal-provenance.json')
     write_rows(full.graph, graph_records('FULL_CPU')); write_rows(potal.graph, graph_records('POTAL_COLLECTION'))
     write_rows(full.log, [cpu_record('FULL_CPU', 0, 10), cpu_record('FULL_CPU', 1, 90000)])
-    host = cpu_record('POTAL_COLLECTION', 1, 20); host.update(op='recompose', host_stage_id=0, duration_role='POTAL_HOST')
+    host = cpu_record('POTAL_COLLECTION', 1, 20); host.update(
+        op='recompose', host_stage_id=0, duration_role='POTAL_HOST', interval_class='CANONICAL_ADDITIVE')
     write_rows(potal.log, [cpu_record('POTAL_COLLECTION', 0, 999), host])
     rows = records()
     stage: Record = dict(kind='HOST_STAGE', phase_id=0, operation_id=0, node_id=0,
@@ -80,7 +89,10 @@ class ReconstructionTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        self.inputs = fixture(self.root, ReplayArtifacts(Path(os.environ['IM2P_CYCLE_LIBRARY']), Path(os.environ['IM2P_CYCLE_CERTIFICATE'])))
+        library, certificate = self.root/'library.dylib', self.root/'certificate.json'
+        shutil.copyfile(Path(os.environ['IM2P_CYCLE_LIBRARY']), library)
+        shutil.copyfile(Path(os.environ['IM2P_CYCLE_CERTIFICATE']), certificate)
+        self.inputs = fixture(self.root, ReplayArtifacts(library, certificate))
         self.outputs = ReplayOutputs(self.root/'dataset.jsonl', self.root/'summary.json')
 
     def test_three_sources_choose_owned_durations_without_aggregation(self):
@@ -114,7 +126,8 @@ class ReconstructionTests(unittest.TestCase):
         reconstruct(self.inputs, self.outputs)
         ordinary = next(row for row in json_records(self.outputs.results)
                         if row['kind'] == 'SERVICE' and row['node_class'] == 'ORDINARY_CPU')
-        self.assertEqual(object_value(ordinary['duration'])['worker_intervals'][0]['source'], 'thread_cpu_clock')
+        sample = object_value(array(object_value(ordinary['duration'])['worker_intervals'])[0])
+        self.assertEqual(sample['source'], 'thread_cpu_clock')
 
     def test_missing_and_duplicate_costs_rejected_after_rehash(self):
         full, potal = list(json_records(self.inputs.full_cpu.log)), list(json_records(self.inputs.potal.log))
@@ -226,6 +239,26 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root/'again.jsonl').read_bytes(), self.outputs.results.read_bytes())
         self.assertEqual((self.root/'again.json').read_bytes(), self.outputs.summary.read_bytes())
+
+    def test_reconstruction_rejects_input_replaced_after_early_parse(self):
+        source = self.inputs.full_cpu.graph
+        original_read_manifest = reconstruct_module.read_manifest
+        replaced = False
+
+        def read_manifest(path: Path):
+            nonlocal replaced
+            manifest = original_read_manifest(path)
+            if not replaced:
+                replaced = True
+                replacement = self.root/'graph-replacement.jsonl'
+                shutil.copyfile(source, replacement)
+                os.replace(replacement, source)
+            return manifest
+
+        with mock.patch.object(reconstruct_module, 'read_manifest', side_effect=read_manifest):
+            with self.assertRaisesRegex(ValueError, 'input changed during reconstruction'):
+                reconstruct(self.inputs, self.outputs)
+        self.assertFalse(self.outputs.results.exists() or self.outputs.summary.exists())
 
 
 if __name__ == '__main__':

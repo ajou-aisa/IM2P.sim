@@ -75,6 +75,9 @@ inline void record_cpu_stage(const char *layer, const char *stage,
   try {
     ggml::gemmini::log::CycleRecord record{layer, stage, 0, 0, nullptr, 0, nullptr,
         ggml::gemmini::kNativeCycleSource, ggml::gemmini::kNativeCycleUnit};
+    record.timing_interval_class = start.correlation.host_stage_id != UINT64_MAX
+        ? ggml::gemmini::cycle::TimingIntervalClass::canonical_additive
+        : ggml::gemmini::cycle::TimingIntervalClass::diagnostic;
     ggml::gemmini::log::cycle.write_json(
         ggml::gemmini::serialize_matmul_cpu_interval(record, start, end, success));
   } catch (...) {

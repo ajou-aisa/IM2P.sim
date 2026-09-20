@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 import graphlib
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -26,7 +27,8 @@ WORKLOAD = {'model', 'prompt_tokens', 'generated_tokens', 'context_tokens', 'bat
 
 
 def json_records(path: Path) -> Iterator[Record]:
-    with path.open(encoding='utf-8') as stream:
+    with (gzip.open(path, 'rt', encoding='utf-8') if path.suffix == '.gz'
+          else path.open(encoding='utf-8')) as stream:
         for line in stream:
             require(bool(line.strip()), 'blank JSONL record')
             yield object_value(json.loads(line, object_pairs_hook=unique_pairs))

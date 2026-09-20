@@ -8,7 +8,8 @@ import tempfile
 import unittest
 
 from sim.cycle.npu_trace import ReplayArtifacts, ReplayOutputs
-from sim.cycle.reconstruct import reconstruct
+from sim.cycle.reconstruct import Inputs, reconstruct
+from sim.cycle.reconstruct_cpu import CollectionFiles
 from sim.cycle.reconstruct_graph import json_records
 from sim.tests.cycle.test_reconstruct import write_rows
 from sim.tests.cycle.test_reconstruct_join import fixture, refresh_proofs
@@ -51,6 +52,22 @@ class ReconstructionStorageTests(unittest.TestCase):
             reconstruct(self.inputs, output)
         self.assertFalse(output.results.exists())
         self.assertFalse(output.summary.exists())
+
+    def test_gzip_cpu_logs_are_valid_reconstruction_inputs(self):
+        def compress(files: CollectionFiles, name: str) -> CollectionFiles:
+            target = self.root/name
+            with gzip.open(target, 'wb') as stream:
+                stream.write(files.log.read_bytes())
+            proof = json.loads(files.provenance.read_text())
+            from sim.cycle.reconstruct_graph import sha256
+            proof['artifacts']['cycle_log'] = {'path': str(target), 'sha256': sha256(target)}
+            provenance = self.root/(name+'.provenance.json')
+            provenance.write_text(json.dumps(proof))
+            return CollectionFiles(target, files.graph, provenance)
+        inputs = Inputs(compress(self.inputs.full_cpu, 'full.jsonl.gz'),
+                        compress(self.inputs.potal, 'potal.jsonl.gz'), self.inputs.npu)
+        output = ReplayOutputs(self.root/'gzip-input.jsonl.gz', self.root/'gzip-input-summary.json')
+        self.assertEqual(reconstruct(inputs, output)['ordinary_cpu_bijection'], 'PASS')
 
 
 if __name__ == '__main__':
