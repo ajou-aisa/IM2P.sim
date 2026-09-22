@@ -10,11 +10,12 @@ from scripts.gemmini_replay_contract import canonical_json, compatible, hardware
 from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.certificate_contract import read_document, validate_certificate
 from sim.cycle.cli import RESULT_FIELDS
-from sim.cycle.npu_trace import ReplayArtifacts
+from sim.cycle.npu_trace import ReplayArtifacts, work_binding
 from sim.cycle.npu_trace_schema import Record, SEMANTIC_FIELDS, SemanticKey, integer, object_value, require, semantic_key
 from sim.cycle.npu_trace_integrity import read_records, start_trace
 from sim.cycle.reconstruct_cpu import CpuIndex, duration_sample, encoded_key
 from sim.cycle.reconstruct_graph import Manifest, array, emit, fields, json_records, service_identity, sha256
+from sim.cycle.run_aware_certificate import validate_run_certificate
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,10 @@ class NpuJoin:
     def write(self, stream: TextIO) -> Record:
         cert = read_document(self.files.artifacts.certificate)
         validate_certificate(cert, self.files.artifacts.library)
+        run_certificate = self.files.artifacts.run_certificate
+        run_scope = (validate_run_certificate(run_certificate, self.files.artifacts.library)
+                     if run_certificate is not None else None)
+        run_hash = sha256(run_certificate) if run_certificate is not None else None
         certificate_hash, library_hash = sha256(self.files.artifacts.certificate), sha256(self.files.artifacts.library)
         records = read_records(self.files.trace)
         state = start_trace(records)
@@ -45,7 +50,7 @@ class NpuJoin:
         results = json_records(self.files.results)
         phase_index = 0
         for record in records:
-            state.consume(record)
+            work = state.consume(record)
             kind = record['kind']
             if kind == 'PHASE':
                 require(phase_index < len(self.graph.phases), 'extra NPU phase')
@@ -77,15 +82,27 @@ class NpuJoin:
                     self.targets.add(key)
             elif kind == 'NPU_WORK':
                 require(execution == 'TARGET_NPU', 'NPU work belongs to non-NPU node')
+                if work is None:
+                    raise ValueError('NPU work was not admitted by trace validator')
+                require(work.provenance != 'residual' or bool(work.runs),
+                        'legacy block-local residual trace cannot be upgraded to run-aware join')
+                require(work.provenance != 'residual' or run_scope == 'PRODUCTION_GENERATED',
+                        'production-generated run-aware certificate required for current residual join')
                 result = next(results, None)
                 require(result is not None, 'missing NPU model result')
                 if result is None: raise ValueError('missing result')
                 extra = {'profile', 'cycle_library_sha256', 'certificate_sha256', 'certificate_schema', 'certificate_version',
                          'producer_execution_kind', 'target_work_validation', 'cycle_model_validation',
-                         'actual_rtl_acceptance_in_collection', 'accounting_kind', 'cycle_unit', 'trace_sequence', 'modeled'}
+                         'actual_rtl_acceptance_in_collection', 'accounting_kind', 'cycle_unit', 'trace_sequence',
+                         'run_view_sha256', 'run_aware_certificate_sha256', 'run_aware_certificate_scope', 'modeled'}
                 fields(result, set(record) | extra)
-                require(result['schema'] == 'im2p-npu-cycle-result' and integer(result, 'version') == 1 and result['kind'] == 'NPU_WORK_RESULT', 'invalid NPU result schema')
+                require(result['schema'] == 'im2p-npu-cycle-result' and
+                        integer(result, 'version') == record['version'] and
+                        result['kind'] == 'NPU_WORK_RESULT', 'invalid NPU result schema')
                 require(integer(result, 'sequence') == record['work_id'] and integer(result, 'trace_sequence') == record['sequence'], 'NPU result identity/order mismatch')
+                require(result['run_view_sha256'] == work_binding(work), 'NPU result run view mismatch')
+                require((result['run_aware_certificate_sha256'], result['run_aware_certificate_scope']) ==
+                        (run_hash, run_scope), 'NPU result run-aware certificate mismatch')
                 expected = {name: value for name, value in record.items() if name not in ('schema', 'kind', 'sequence')}
                 require(canonical_json({name: result[name] for name in expected}) == canonical_json(expected), 'NPU work/result field mismatch')
                 require((result['profile'], result['certificate_sha256'], result['cycle_library_sha256']) ==
@@ -150,4 +167,6 @@ class NpuJoin:
         return {'npu_work_count': self.counts['npu_work_count'], 'target_npu_operation_count': len(self.targets),
                 'potal_host_count': self.counts['potal_host_count'], 'functional_emulation_count': self.counts['functional_emulation_count'],
                 'certificate_sha256': certificate_hash, 'cycle_library_sha256': library_hash,
+                'run_aware_certificate_sha256': run_hash, 'run_aware_certificate_scope': run_scope,
+                'residual_work_revision': state.run.residual_work_revision,
                 'npu_work_result_bijection': 'PASS', 'host_stage_measurement_coverage': 'PASS', 'structural_dependency_dag': 'PASS'}

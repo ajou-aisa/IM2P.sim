@@ -51,11 +51,17 @@ struct RmdExecutorContext {
   std::uint32_t next_work_id = 0;
   std::uint32_t host_slot = 0;
   RmdScuExecute execute_scu = nullptr;
+  RmdRunExecute execute_runs = nullptr;
 };
 
 int execute_rmd_scu_descriptor(void *, const im2p_matmul_desc_t *,
                                const im2p_production_geometry_v1_t *,
                                im2p_work_stats_extended_t *);
+
+int execute_rmd_runs_descriptor(void *, const im2p_matmul_desc_t *,
+                                const im2p_production_geometry_v1_t *,
+                                const im2p_compact_runs_t *,
+                                im2p_work_stats_extended_t *);
 
 int execute_rmd_raw_descriptor(void *, const im2p_matmul_desc_t *,
                                im2p_work_stats_extended_t *);

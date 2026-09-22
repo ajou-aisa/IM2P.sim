@@ -39,6 +39,7 @@ private:
 
 // Frozen raw-mode evidence links the historical overload from its saved object.
 void run_rmd_ws_rtl_fixture(const Capability &, void *, RmdRawExecute);
-void run_rmd_ws_rtl_fixture(const Capability &, void *, RmdScuExecute);
+void run_rmd_ws_rtl_fixture(const Capability &, void *, RmdScuExecute,
+                            RmdRunExecute);
 
 } // namespace im2p::gemmini_hp1

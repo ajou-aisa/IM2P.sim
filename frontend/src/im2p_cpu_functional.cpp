@@ -18,9 +18,10 @@ void set_dispatch_observer(DispatchCallback callback, void *context) noexcept {
   dispatch_context = context;
 }
 void observe(const im2p_matmul_desc_t &d,
-             const im2p_production_geometry_v1_t &g) noexcept {
+             const im2p_production_geometry_v1_t &g,
+             const im2p_compact_runs_t *runs = nullptr) noexcept {
   std::lock_guard lock(observation_mutex);
-  if (dispatch_callback) dispatch_callback(dispatch_context, d, g);
+  if (dispatch_callback) dispatch_callback(dispatch_context, d, g, runs);
 }
 }
 #endif
@@ -125,6 +126,9 @@ int im2p_execute_matmul_planned_runs(im2p_sim_t *sim,
     int status = cf::prepare_runs(operands, *d, runs, view->original_k);
     if (status == IM2P_OK) status = cf::execute_runs(operands, runs);
     if (status == IM2P_OK && stats) *stats = {};
+#if defined(IM2P_CPU_FUNCTIONAL_TEST_HOOKS)
+    if (status == IM2P_OK) cf::observe(*d, *g, view);
+#endif
     return status;
   } catch (...) {
     return IM2P_ERROR;

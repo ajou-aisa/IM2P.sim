@@ -12,8 +12,8 @@ import unittest
 from unittest import mock
 
 from scripts.gemmini_replay_contract import contract_digest
-from sim.cycle.npu_trace import ReplayArtifacts, ReplayOutputs, replay
-from sim.cycle.npu_trace_schema import Record, object_value
+from sim.cycle.npu_trace import ReplayArtifacts, ReplayOutputs, replay, work_binding
+from sim.cycle.npu_trace_schema import Record, object_value, parse_run, parse_work
 from sim.cycle import reconstruct as reconstruct_module
 from sim.cycle.reconstruct import Inputs, reconstruct
 from sim.cycle.reconstruct_cpu import CollectionFiles, duration_sample
@@ -259,6 +259,44 @@ class ReconstructionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'input changed during reconstruction'):
                 reconstruct(self.inputs, self.outputs)
         self.assertFalse(self.outputs.results.exists() or self.outputs.summary.exists())
+
+
+@unittest.skipUnless(os.getenv('IM2P_CYCLE_LIBRARY') and os.getenv('IM2P_CYCLE_CERTIFICATE') and
+                     os.getenv('IM2P_RUN_CERTIFICATE'), 'certified run fixtures required')
+class RunAwareJoinTests(unittest.TestCase):
+    def test_legacy_residual_cannot_join_as_current_run_aware_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, certificate = root/'library.dylib', root/'certificate.json'
+            shutil.copyfile(Path(os.environ['IM2P_CYCLE_LIBRARY']), library)
+            shutil.copyfile(Path(os.environ['IM2P_CYCLE_CERTIFICATE']), certificate)
+            artifacts = ReplayArtifacts(library, certificate,
+                                        Path(os.environ['IM2P_RUN_CERTIFICATE']))
+            assert artifacts.run_certificate is not None
+            # Fixture isolates join policy; current host-source edit separately
+            # requires fresh base RTL certification.
+            with mock.patch('sim.cycle.npu_trace.validate_certificate'), \
+                 mock.patch('sim.cycle.reconstruct_npu.validate_certificate'):
+                inputs = fixture(root, artifacts)
+                scoped = reconstruct(inputs, ReplayOutputs(root/'pre-dataset.jsonl', root/'pre-summary.json'))
+                self.assertEqual(scoped['run_aware_certificate_scope'], 'FIXTURE_ONLY')
+                self.assertEqual(scoped['run_aware_certificate_sha256'], sha256(artifacts.run_certificate))
+                trace_rows = list(json_records(inputs.npu.trace))
+                work = next(row for row in trace_rows if row['kind'] == 'NPU_WORK')
+                work.update(provenance='residual', scope='residual_compact', k=31,
+                            tile_k_count=2, original_block_id=96)
+                for row in trace_rows:
+                    if row['kind'] == 'NPU_CALL': row['call_kind'] = 'RESIDUAL_COMPACT'
+                write_rows(inputs.npu.trace, trace_rows)
+                modeled_rows = list(json_records(inputs.npu.results))
+                modeled = modeled_rows[0]
+                modeled.update({key: value for key, value in work.items()
+                                if key not in ('schema', 'kind', 'sequence')})
+                modeled['run_view_sha256'] = work_binding(parse_work(work, parse_run(trace_rows[0])))
+                write_rows(inputs.npu.results, modeled_rows)
+                refresh_proofs(inputs)
+                with self.assertRaisesRegex(ValueError, 'legacy block-local residual trace'):
+                    reconstruct(inputs, ReplayOutputs(root/'dataset.jsonl', root/'summary.json'))
 
 
 if __name__ == '__main__':

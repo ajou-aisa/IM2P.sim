@@ -16,11 +16,23 @@ from sim.tests.cycle.certificate_document import complete_document
 
 PINNED = Path(__file__).resolve().parents[4] / 'evidence/rmd-run-aware-20260921T062828Z/llama-develop'
 ARCHIVED = Path(__file__).resolve().parents[4] / 'evidence/rmd-run-aware-20260921T062828Z/task-06-legacy-baseline/source'
+ARCHIVED_V2 = Path(__file__).resolve().parents[4] / 'evidence/task-10-current-export-Mxdryz/candidate-package/source'
 PROFILES = tuple(f'a{bits}w{bits}-d{dim}-hp1' for bits in (4, 8) for dim in (16, 32, 64))
 
 
 class CorpusAuthorityV2Test(unittest.TestCase):
-    def test_v1_accepts_archived_source_but_rejects_current_fixture(self) -> None:
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / 'IM2P.sim').symlink_to(ARCHIVED_V2, target_is_directory=True)
+        (root / 'RISC-V-DynDNN-gemmini-include').symlink_to(
+            corpus_source.ROOT.parent / 'RISC-V-DynDNN-gemmini-include', target_is_directory=True)
+        replacement = patch.object(corpus_source, 'ROOT', root / 'IM2P.sim')
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
+    def test_v1_accepts_legacy_source_but_rejects_v2_fixture(self) -> None:
         self.assertEqual(corpus_source.authority('v1', fixture_root=ARCHIVED)['version'], 1)
         with self.assertRaisesRegex(corpus_source.CorpusError, 'fixture changed'):
             corpus_source.authority('v1', fixture_root=corpus_source.ROOT)

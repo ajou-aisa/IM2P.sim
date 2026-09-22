@@ -346,11 +346,21 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
     from sim.cycle.corpus_authority import authority, authority_reference
     sources = [profile.get('llama_source') for profile in profiles]
     if not all(source == sources[0] for source in sources) or not isinstance(sources[0], dict):
-        raise ValueError('official pinned develop source identity missing or inconsistent')
+        raise ValueError('current candidate package identity missing or inconsistent')
     llama_source = sources[0]
-    if llama_source.get('head') != '71a8c0328cd436226b8ec5fad03adafac93940ed':
-        raise ValueError('official pinned develop source identity differs')
-    authority('v2', fixture_root=ROOT, llama_root=Path(llama_source['root']))
+    if set(llama_source) != {'root', 'base_head', 'source_manifest_sha256', 'dependency_lock_sha256'}:
+        raise ValueError('current candidate package identity differs')
+    source_root = llama_source['root']
+    if not isinstance(source_root, str) or not source_root:
+        raise ValueError('current candidate llama source root missing')
+    reviewed = authority('v3', fixture_root=ROOT, llama_root=Path(source_root))
+    source_manifest = Path(source_root).parents[2] / 'source-manifest.json'
+    if (not source_manifest.is_file() or
+            hashlib.sha256(source_manifest.read_bytes()).hexdigest() != llama_source['source_manifest_sha256']):
+        raise ValueError('current candidate source manifest differs')
+    if (llama_source['base_head'] != reviewed['producer_base_head'] or
+            llama_source['dependency_lock_sha256'] != reviewed['dependency_lock_sha256']):
+        raise ValueError('current candidate package identity differs')
     from scripts.gemmini_rtl_build_binding import verify_build
     bindings = {p['profile']: verify_build(Path(p['resolved_profile']).parent, p['profile']) for p in profiles}
     results: list[dict[str, Any]] = []
@@ -401,11 +411,13 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
     from sim.tests.cycle.certificate_document import complete_document
     result = {'status': 'PASS' if not first_mismatch and mutation['status'] == 'PASS' else 'FAIL',
               'captured_corpus_counts': captures, 'summaries': summaries, 'first_mismatch': first_mismatch,
+              'observed_corpus_counts': dict(captures),
+              'moved_historical_residual_case_ids': reviewed['moved_historical_residual_case_ids'],
               'selected_events': sorted(rtl.SELECTED_EVENTS), 'event_mutation': mutation,
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
               'rtl_build_bindings': bindings,
-              'llama_source': llama_source, 'corpus_authority': authority_reference('v2'),
+              'llama_source': llama_source, 'corpus_authority': authority_reference('v3'),
               'hardware_contracts': {name: binding['hardware_contract'] for name, binding in bindings.items()},
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}

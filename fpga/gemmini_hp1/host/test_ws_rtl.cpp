@@ -7,6 +7,8 @@ int im2p_gemmini_hp1_ws_rtl_test_requires_generated_model;
 #include "im2p_integrated_signal.hpp"
 #include "im2p_sim.h"
 #include "rmd_rtl_fixture.hpp"
+#include "../../../sim/common/gemmini_schedule.hpp"
+#include "quants/common/hp1_scu.hpp"
 #include <VIM2PGemminiWSHP1RtlTest.h>
 
 #include <algorithm>
@@ -600,6 +602,8 @@ int execute_scu(void *opaque, const RmdScuWork &scaled,
   return status;
 }
 
+#include "run_aware_rtl_driver.inc"
+
 void run_dual_loop_overlap(Adapter &state) {
   const auto old_loads = state.loads, old_executes = state.executes;
   const auto old_stores = state.stores, old_overlap = state.overlap;
@@ -898,7 +902,7 @@ int main(int argc, char **argv) {
         state.pipeline_activation_bases ==
             std::vector<std::uint64_t>{a_base, a_base + a_slot_stride, a_base},
         "PIPELINE activation backing slots did not cycle 0->1->0");
-    run_rmd_ws_rtl_fixture(capability, &state, execute_scu);
+    run_rmd_ws_rtl_fixture(capability, &state, execute_scu, execute_runs);
     RmdRawWork raw_boundary;
     raw_boundary.plan = {
         1, 1, 32, 1, 1, (32 + dim - 1) / dim, 1, Mode::full, WorkKind::rmd_raw};
@@ -922,7 +926,8 @@ int main(int argc, char **argv) {
           "RMD all-zero first contribution did not replace prior accumulator");
     std::cout
         << "WS_RMD_RAW_BOUNDARY compact_k=32 extremal_exact=1 zero_replace=1\n";
-    run_bound_rmd_ws_rtl_fixture(capability, &state, execute, execute_scu);
+    run_bound_rmd_ws_rtl_fixture(capability, &state, execute, execute_scu,
+                                 execute_runs);
     std::cout << "integrated upstream WS HP1 RTL passed A" << IM2P_OPERAND_BITS
               << "W" << IM2P_OPERAND_BITS << "D" << IM2P_DIM
               << " loops=" << state.loops

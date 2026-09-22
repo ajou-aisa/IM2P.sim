@@ -231,6 +231,9 @@ is `FIXTURE_ONLY`; exact source, binary, library and raw-event hashes are in
 The earlier `task-09-fixture.json` certificate remains historical for its
 source bytes. The 48 fixture cases are separate from the v2 production-geometry
 corpus below and prove no production cross-block dispatch.
+The pinned clean `develop` checkout in the following fixture command is
+historical fixture provenance only; production run-aware integration must be
+built from the active llama `cycle-sim` candidate source bytes.
 
 For the official six-profile host build, use the clean read-only llama `develop`
 checkout at `71a8c0328cd436226b8ec5fad03adafac93940ed`. Check
@@ -659,13 +662,22 @@ The three timing authorities are deliberately separate:
 | CPU functional NPU calculation | Excluded from target performance |
 
 The PoTal run writes `output/log/npu-cycle-trace.jsonl`, schema
-`im2p-npu-cycle-trace` version 1. It contains target routing, exact final geometry,
+`im2p-npu-cycle-trace` version 2 for current run-aware residual work. It
+contains target routing, exact final geometry,
 NPU call/fence relationships and host-stage declarations, not copies of CPU
 timing intervals. `NPU_WORK` means selected target work, **not actual RTL
 acceptance**. Numerical progression uses the CPU HP1 reference implementation;
 no NPU cycle estimate delays or schedules collection. Production optrace remains
 a separate schema and provenance mechanism. Neither parser accepts the other's
 files.
+
+Each v2 residual work records `original_k`, an ordered gap-free `runs[]`
+array with original K32 block IDs/masks and compact K spans, and a global
+`row_map` of source rows and original radix lane IDs. The same caller-selected
+tile factors are passed to numerical execution and `im2p_cycle_estimate_runs`;
+the offline reader never retiles. The trace and result contain no carriers,
+tensor values or numerical outputs. A v1 block-local residual trace remains
+historical; replay refuses to guess a cross-block request from its records.
 
 `semantic-graph.jsonl` is a value-free identity sidecar, not another timing
 source. Nodes are captured before backend graph partitioning, identified by
@@ -699,6 +711,7 @@ python3 -B -m sim.cycle.collect --build "$POTAL_BUILD" --model "$MODEL" \
   -f "$PROMPT" -n 5 -t 1 -tb 1 --no-warmup --temp 0 --seed 1
 python3 -B -m sim.cycle.npu_trace "$OUT/potal/output/log/npu-cycle-trace.jsonl" \
   --library "$CYCLE_LIBRARY" --cycle-certificate "$CURRENT_CERTIFICATE" \
+  --run-aware-certificate "$RUN_AWARE_CERTIFICATE" \
   --output "$OUT/npu-cycle-result.jsonl" --summary "$OUT/npu-summary.json"
 python3 -B -m sim.cycle.reconstruct \
   --full-cpu-log "$OUT/full-cpu/output/log/cycle-log.jsonl" \
@@ -710,10 +723,19 @@ python3 -B -m sim.cycle.reconstruct \
   --npu-trace "$OUT/potal/output/log/npu-cycle-trace.jsonl" \
   --npu-results "$OUT/npu-cycle-result.jsonl" \
   --library "$CYCLE_LIBRARY" --cycle-certificate "$CURRENT_CERTIFICATE" \
+  --run-aware-certificate "$RUN_AWARE_CERTIFICATE" \
   --output "$OUT/three-source-dataset.jsonl.gz" --summary "$OUT/source-join.json"
 ```
 
 Hardware contract, current certificate and library SHA admission are unchanged.
+The run-aware certificate is independently bound to the current cycle library,
+cycle sources and eight-case/six-profile corpus. Its existing 48-case scope is
+`FIXTURE_ONLY`: it certifies the run-aware timing seam, not that a production
+llama invocation has been integrated or that whole-model RTL timing is exact.
+The historical v2 base certificate is source-bound to the old host `rmd.cpp`.
+After the run-aware host adapter change, official replay rejects that certificate
+until a reviewed independent corpus revision and fresh current-source RTL
+comparison replace it. Low-level `cli.estimate` admission is not certification.
 Replay uses recorded tiles, `planner-blocks`, `accepted_cycle=1` and the declared
 reference-memory profile. It does not consume Full CPU or PoTal CPU timing.
 

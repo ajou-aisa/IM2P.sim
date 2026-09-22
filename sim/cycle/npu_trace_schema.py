@@ -10,7 +10,9 @@ from scripts.gemmini_resolve_profile import JsonValue
 
 Record: TypeAlias = dict[str, JsonValue]
 SCHEMA: Final = 'im2p-npu-cycle-trace'
-VERSION: Final = 1
+VERSION: Final = 2
+LEGACY_VERSION: Final = 1
+RUN_REVISION: Final = 'cross-block-run-aware-v1'
 COMMON: Final = {'schema', 'version', 'kind', 'sequence', 'run_id', 'collection_run_id', 'run_config_id', 'source_role'}
 SEMANTIC_FIELDS: Final = {'semantic_phase_kind', 'semantic_decode_index', 'semantic_graph_occurrence', 'semantic_node_ordinal'}
 INPUT_KEYS: Final = ('m', 'n', 'k', 'tile_i_count', 'tile_j_count', 'tile_k_count',
@@ -37,6 +39,11 @@ FIELDS: Final = {
                 'target_npu_count', 'ordinary_cpu_count', 'unsupported_count', 'excluded_count',
                 'npu_work_count', 'call_count', 'phase_count', 'host_stage_count', 'completed_host_stage_count',
                 'potal_host_count', 'functional_emulation_count'},
+}
+FIELDS_V2: Final = {
+    **FIELDS,
+    'RUN': FIELDS['RUN'] | {'residual_work_revision'},
+    'NPU_WORK': FIELDS['NPU_WORK'] | {'original_k', 'runs', 'row_map', 'residual_work_revision'},
 }
 CLASSES: Final = ('TARGET_NPU', 'ORDINARY_CPU', 'UNSUPPORTED', 'EXCLUDED')
 SemanticKey: TypeAlias = tuple[str, int | None, int, int]
@@ -89,12 +96,15 @@ def semantic_key(record: Record) -> SemanticKey:
 
 def parse_record(line: str) -> Record:
     record = object_value(json.loads(line, object_pairs_hook=unique_pairs))
-    require(record.get('schema') == SCHEMA and type(record.get('version')) is int and
-            record['version'] == VERSION, 'unsupported schema/version; production optrace is a separate format')
+    version = record.get('version')
+    require(record.get('schema') == SCHEMA and type(version) is int and
+            version in (LEGACY_VERSION, VERSION),
+            'unsupported schema/version; production optrace is a separate format')
     kind = text(record, 'kind')
     require(kind in FIELDS, 'unknown record kind')
     semantic = SEMANTIC_FIELDS if kind in ('TARGET_OPERATION', 'NPU_WORK', 'NPU_CALL', 'HOST_STAGE') else set()
-    require(set(record) == COMMON | FIELDS[kind] | semantic, 'missing/unknown ' + kind + ' fields')
+    expected = FIELDS_V2 if version == VERSION else FIELDS
+    require(set(record) == COMMON | expected[kind] | semantic, 'missing/unknown ' + kind + ' fields')
     integer(record, 'sequence'); integer(record, 'collection_run_id'); text(record, 'run_id')
     text(record, 'run_config_id')
     require(record['source_role'] == 'POTAL_COLLECTION', 'NPU trace requires PoTal collection ownership')
@@ -112,6 +122,22 @@ class Run:
     widths_dim: tuple[int, int, int]
     contract: Record
     contract_hash: str
+    trace_version: int
+    residual_work_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RunSpan:
+    original_block_id: int
+    original_k_mask: int
+    compact_k_begin: int
+    compact_k_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RowIdentity:
+    source_row: int
+    lane_id: int
 
 
 def parse_run(record: Record) -> Run:
@@ -129,8 +155,13 @@ def parse_run(record: Record) -> Run:
     validate_contract(contract, profile)
     digest = text(record, 'hardware_contract_sha256')
     require(contract['sha256'] == digest, 'run hardware contract hash mismatch')
+    version = integer(record, 'version')
+    revision = None
+    if version == VERSION:
+        require(record['residual_work_revision'] == RUN_REVISION, 'unsupported residual work revision')
+        revision = RUN_REVISION
     return Run(text(record, 'run_id'), integer(record, 'collection_run_id'), text(record, 'run_config_id'),
-               profile, (a, w, dim), contract, digest)
+               profile, (a, w, dim), contract, digest, version, revision)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +180,10 @@ class Work:
     row_begin: int
     stripe_id: int | None
     inputs: tuple[int, ...]
+    original_k: int | None
+    runs: tuple[RunSpan, ...]
+    row_map: tuple[RowIdentity, ...]
+    residual_work_revision: str | None
 
 
 def parse_work(record: Record, run: Run) -> Work:
@@ -175,9 +210,26 @@ def parse_work(record: Record, run: Run) -> Work:
     require(record['row_count'] == m and begin+m <= rows, 'invalid parent row range')
     require(record['host_slot'] is None or record['host_slot'] in (0, 1), 'host slot outside [0,1]')
     provenance, scope = text(record, 'provenance'), text(record, 'scope')
-    require((provenance == 'dense_main' and scope in ('full', 'stripe') and record['original_block_id'] is None) or
-            (provenance == 'residual' and scope == 'residual_compact' and k <= 32 and record['original_block_id'] is not None),
-            'invalid dense/residual scope')
+    version = integer(record, 'version')
+    if version == VERSION:
+        require((provenance == 'dense_main' and scope in ('full', 'stripe')) or
+                (provenance == 'residual' and scope == 'residual_compact'), 'invalid dense/residual scope')
+        require(record['original_block_id'] is None, 'v2 original block identity belongs in runs')
+        if provenance == 'residual':
+            from sim.cycle.npu_trace_runs import parse_run_view
+            original_k, runs, row_map = parse_run_view(record, run.widths_dim, m, n, k)
+            require(record['residual_work_revision'] == run.residual_work_revision,
+                    'work/run residual revision mismatch')
+            revision = run.residual_work_revision
+        else:
+            require(record['original_k'] is None and record['runs'] == [] and record['row_map'] == [] and
+                    record['residual_work_revision'] is None, 'dense work cannot carry residual runs')
+            original_k, runs, row_map, revision = None, (), (), None
+    else:
+        require((provenance == 'dense_main' and scope in ('full', 'stripe') and record['original_block_id'] is None) or
+                (provenance == 'residual' and scope == 'residual_compact' and k <= 32 and record['original_block_id'] is not None),
+                'invalid legacy dense/residual scope')
+        original_k, runs, row_map, revision = None, (), (), None
     stripe = None
     if scope == 'stripe':
         stripe = integer(record, 'stripe_id'); integer(record, 'host_slot')
@@ -186,4 +238,4 @@ def parse_work(record: Record, run: Run) -> Work:
     return Work(integer(record, 'phase_id'), integer(record, 'operation_id'), integer(record, 'parent_id'),
                 integer(record, 'node_id'), integer(record, 'call_id'),
                 integer(record, 'work_id'), text(record, 'layer'), text(record, 'operation'), provenance, scope,
-                rows, begin, stripe, values)
+                rows, begin, stripe, values, original_k, runs, row_map, revision)

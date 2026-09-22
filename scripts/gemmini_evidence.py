@@ -123,8 +123,8 @@ class RuntimeEvidence(TypedDict):
 
 
 class RmdRuntimeEvidence(TypedDict):
-    rtl_callbacks: int
-    scaled_exact: int
+    run_callbacks: int
+    compact_exact: int
     lanes: int
     high_carry: int
     compose_exact: int
@@ -132,7 +132,8 @@ class RmdRuntimeEvidence(TypedDict):
     negative_tests: int
     missing_reject: int
     duplicate_reject: int
-    high_exponent_scu: int
+    missing_runs_reject: int
+    high_exponent_run: int
     sparse_k: int
     odd_k: int
     stripes: int
@@ -143,7 +144,7 @@ class RmdBoundEvidence(TypedDict):
     full_exact: int
     pipeline_exact: int
     dense_calls: int
-    scu_calls: int
+    runs_calls: int
     stripes: int
     slots: list[int]
     rollback: int
@@ -167,13 +168,14 @@ def rmd_runtime_evidence(text: str, profile: str) -> RmdRuntimeEvidence:
     match = re.fullmatch(r"a(?P<bits>[48])w(?P=bits)-d(?P<dim>16|32|64)-hp1", profile)
     if match is None:
         raise ValueError(f"invalid RMD profile: {profile}")
-    lines = [line for line in text.splitlines() if line.startswith("WS_RMD_SCU ")]
+    lines = [line for line in text.splitlines() if line.startswith("WS_RMD_RUNS_DIAGNOSTIC ")]
     fields = (
-        "rtl_callbacks", "scaled_exact", "lanes", "high_carry", "compose_exact",
+        "run_callbacks", "compact_exact", "lanes", "high_carry", "compose_exact",
         "merge_exact", "negative_tests", "missing_reject", "duplicate_reject",
-        "high_exponent_scu", "sparse_k", "odd_k", "stripes",
+        "missing_runs_reject",
+        "high_exponent_run", "sparse_k", "odd_k", "stripes",
     )
-    pattern = rf"WS_RMD_SCU A{match['bits']}W{match['bits']}D{match['dim']} "
+    pattern = rf"WS_RMD_RUNS_DIAGNOSTIC A{match['bits']}W{match['bits']}D{match['dim']} "
     pattern += " ".join(rf"{field}=(?P<{field}>\d+)" for field in fields)
     pattern += r" slots=0,1,0"
     marker = re.fullmatch(pattern, lines[0]) if len(lines) == 1 else None
@@ -181,12 +183,13 @@ def rmd_runtime_evidence(text: str, profile: str) -> RmdRuntimeEvidence:
         raise ValueError(f"RMD runtime marker missing or malformed: {profile}")
     values = {name: int(value) for name, value in marker.groupdict().items()}
     required_flags = (
-        "high_carry", "missing_reject", "duplicate_reject", "high_exponent_scu",
+        "high_carry", "missing_reject", "duplicate_reject", "missing_runs_reject",
+        "high_exponent_run",
         "sparse_k", "odd_k",
     )
     if (
-        values["rtl_callbacks"] < 1
-        or values["scaled_exact"] < values["rtl_callbacks"]
+        values["run_callbacks"] < 1
+        or values["compact_exact"] < values["run_callbacks"]
         or values["lanes"] != (9 if match["bits"] == "4" else 5)
         or values["compose_exact"] < 1
         or values["merge_exact"] != values["compose_exact"]
@@ -202,11 +205,11 @@ def rmd_bound_runtime_evidence(text: str, profile: str) -> RmdBoundEvidence:
     match = re.fullmatch(r"a(?P<bits>[48])w(?P=bits)-d(?P<dim>16|32|64)-hp1", profile)
     if match is None:
         raise ValueError(f"invalid RMD profile: {profile}")
-    lines = [line for line in text.splitlines() if line.startswith("WS_RMD_BOUND ")]
-    pattern = rf"WS_RMD_BOUND bits={match['bits']} DIM={match['dim']} "
+    lines = [line for line in text.splitlines() if line.startswith("WS_RMD_BOUND_RUNS_DIAGNOSTIC ")]
+    pattern = rf"WS_RMD_BOUND_RUNS_DIAGNOSTIC bits={match['bits']} DIM={match['dim']} "
     pattern += (
         r"full_exact=(?P<full_exact>\d+) pipeline_exact=(?P<pipeline_exact>\d+) "
-        + r"dense_calls=(?P<dense_calls>\d+) scu_calls=(?P<scu_calls>\d+) "
+        + r"dense_calls=(?P<dense_calls>\d+) runs_calls=(?P<runs_calls>\d+) "
         + r"stripes=(?P<stripes>\d+) slots=0,1,0 rollback=(?P<rollback>\d+) "
         + r"public_entry=(?P<public_entry>\d+)"
     )
@@ -216,7 +219,7 @@ def rmd_bound_runtime_evidence(text: str, profile: str) -> RmdBoundEvidence:
     values = {name: int(value) for name, value in marker.groupdict().items()}
     if (
         values["full_exact"] != 27 or values["pipeline_exact"] != 27
-        or values["dense_calls"] < 4 or values["scu_calls"] < 1
+        or values["dense_calls"] < 4 or values["runs_calls"] < 1
         or values["stripes"] != 3 or values["rollback"] != 2
         or values["public_entry"] != 1
     ):

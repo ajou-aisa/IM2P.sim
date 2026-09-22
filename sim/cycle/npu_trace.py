@@ -24,6 +24,7 @@ from sim.cycle.certificate_contract import read_document, validate_certificate
 from sim.cycle.npu_trace_integrity import read_records, start_trace
 from sim.cycle.npu_trace_schema import INPUT_KEYS, Record, SCHEMA, VERSION, Work, integer, object_value, require
 from sim.cycle.optrace_schema import REPLAY_MAX_CYCLES
+from sim.cycle.run_aware_certificate import validate_run_certificate
 
 
 def validate_trace(path: Path) -> Record:
@@ -40,13 +41,32 @@ def model_document(profile: str, work: Work) -> Record:
     keys = ('m', 'n', 'k', 'tile_i', 'tile_j', 'tile_k', *INPUT_KEYS[6:])
     request: Record = dict(zip(keys, work.inputs, strict=True))
     request.update(accepted_cycle=1, logical_work_id=work.identity, submission='planner-blocks', record_events=0)
-    return {'profile': profile, 'limits': {'max_cycles': REPLAY_MAX_CYCLES}, 'request': request}
+    document: Record = {'profile': profile, 'limits': {'max_cycles': REPLAY_MAX_CYCLES}, 'request': request}
+    if work.provenance == 'residual':
+        require(work.original_k is not None and bool(work.runs),
+                'legacy block-local residual trace cannot be current run-aware work')
+        document['original_k'] = work.original_k
+        document['runs'] = [{'original_block_id': span.original_block_id,
+                             'original_k_mask': span.original_k_mask,
+                             'compact_k_begin': span.compact_k_begin,
+                             'compact_k_count': span.compact_k_count} for span in work.runs]
+    return document
+
+
+def work_binding(work: Work) -> str:
+    view = {'inputs': work.inputs, 'original_k': work.original_k,
+            'runs': [(span.original_block_id, span.original_k_mask,
+                      span.compact_k_begin, span.compact_k_count) for span in work.runs],
+            'row_map': [(row.source_row, row.lane_id) for row in work.row_map],
+            'residual_work_revision': work.residual_work_revision}
+    return hashlib.sha256(json.dumps(view, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayArtifacts:
     library: Path
     certificate: Path
+    run_certificate: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +119,8 @@ def verify_input_snapshots(snapshots: tuple[InputSnapshot, ...], context: str) -
 def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Record:
     cert = read_document(artifacts.certificate)
     validate_certificate(cert, artifacts.library)
+    run_scope = (validate_run_certificate(artifacts.run_certificate, artifacts.library)
+                 if artifacts.run_certificate is not None else None)
     records = read_records(trace_path)
     state = start_trace(records)
     contracts = object_value(cert['hardware_contracts'])
@@ -111,25 +133,34 @@ def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Rec
                           'producer_execution_kind': 'CPU_FUNCTIONAL', 'target_work_validation': 'PASS',
                           'cycle_model_validation': 'CURRENT_CERTIFIED',
                           'actual_rtl_acceptance_in_collection': 'NOT_APPLICABLE',
+                          'run_aware_certificate_sha256': (hashlib.sha256(artifacts.run_certificate.read_bytes()).hexdigest()
+                                                           if artifacts.run_certificate is not None else None),
+                          'run_aware_certificate_scope': run_scope,
                           'accounting_kind': 'isolated-work-accounting', 'cycle_unit': 'cycles'}
     per_layer: defaultdict[str, int] = defaultdict(int)
     per_phase: defaultdict[int, int] = defaultdict(int)
     large_k: dict[tuple[str, int, tuple[int, ...]], Record] = {}
 
-    cache: dict[tuple[int, ...], Record] = {}
+    cache: dict[str, Record] = {}
     for record in records:
         work = state.consume(record)
         if work is None:
             continue
-        if work.inputs not in cache:
+        require(work.provenance != 'residual' or bool(work.runs),
+                'legacy block-local residual trace cannot be upgraded to run-aware replay')
+        require(work.provenance != 'residual' or run_scope == 'PRODUCTION_GENERATED',
+                'production-generated run-aware certificate required for current residual replay')
+        binding = work_binding(work)
+        if binding not in cache:
             answer = cli.estimate(artifacts.library, model_document(state.run.profile, work))
             require(answer.get('status') == 'PASS', 'cycle model rejected target work')
             if len(cache) == 4096:
                 cache.pop(next(iter(cache)))
-            cache[work.inputs] = object_value(answer['result'])
-        result = cache[work.inputs]
+            cache[binding] = object_value(answer['result'])
+        result = cache[binding]
         row: Record = {**record, **identities, 'schema': 'im2p-npu-cycle-result', 'kind': 'NPU_WORK_RESULT',
-                       'trace_sequence': record['sequence'], 'sequence': work.identity, 'modeled': result}
+                       'trace_sequence': record['sequence'], 'sequence': work.identity,
+                       'run_view_sha256': binding, 'modeled': result}
         stream.write(json.dumps(row, sort_keys=True, separators=(',', ':'), allow_nan=False)+'\n')
         cycles = integer(result, 'total_cycles')
         per_layer[work.layer] += cycles
@@ -147,8 +178,11 @@ def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Rec
             large_k[key]['work_count'] = integer(large_k[key], 'work_count') + 1
     summary = state.summary()
     summary.update(identities)
-    summary.update(schema='im2p-npu-cycle-summary', version=1, status='PASS',
-        trace_schema=SCHEMA, trace_version=VERSION, producer_execution_kind='CPU_FUNCTIONAL',
+    summary.update(schema='im2p-npu-cycle-summary', version=2, status='PASS',
+        trace_schema=SCHEMA, trace_version=state.run.trace_version,
+        residual_work_revision=state.run.residual_work_revision,
+        producer_integration_validation='NOT_CERTIFIED_BY_FIXTURE' if summary['residual_work_count'] else 'NOT_APPLICABLE',
+        producer_execution_kind='CPU_FUNCTIONAL',
         validation_scope='CURRENT_CERTIFIED', cycle_model_validation='CURRENT_CERTIFIED',
         actual_rtl_acceptance_in_collection='NOT_APPLICABLE',
         accounting_kind='isolated-work-accounting', measured_answer_injection=False,
@@ -163,19 +197,21 @@ def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Rec
 
 
 def replay(trace_path: Path, artifacts: ReplayArtifacts, outputs: ReplayOutputs) -> Record:
-    paths = (trace_path.resolve(), artifacts.library.resolve(), artifacts.certificate.resolve(),
-             outputs.results.resolve(), outputs.summary.resolve())
+    inputs = (trace_path, artifacts.certificate, artifacts.library) + (
+        (artifacts.run_certificate,) if artifacts.run_certificate is not None else ())
+    paths = tuple(path.resolve() for path in inputs) + (outputs.results.resolve(), outputs.summary.resolve())
     require(len(set(paths)) == len(paths), 'input/output paths must be distinct')
     require(not outputs.results.exists() and not outputs.summary.exists(), 'outputs must be new files')
     with tempfile.TemporaryDirectory(prefix='npu-snapshot-', dir=outputs.results.parent) as snapshot_dir, \
          tempfile.TemporaryDirectory(prefix='npu-result-', dir=outputs.results.parent) as result_dir, \
          tempfile.TemporaryDirectory(prefix='npu-summary-', dir=outputs.summary.parent) as summary_dir:
-        snapshots = snapshot_inputs((trace_path, artifacts.certificate, artifacts.library), Path(snapshot_dir))
-        trace_snapshot, certificate_snapshot, library_snapshot = (snapshot.snapshot for snapshot in snapshots)
+        snapshots = snapshot_inputs(inputs, Path(snapshot_dir))
+        trace_snapshot, certificate_snapshot, library_snapshot = (snapshot.snapshot for snapshot in snapshots[:3])
+        run_snapshot = snapshots[3].snapshot if len(snapshots) == 4 else None
         result = Path(result_dir)/'result.jsonl'
         summary_path = Path(summary_dir)/'summary.json'
         with result.open('x', encoding='utf-8') as stream:
-            summary = _replay(trace_snapshot, ReplayArtifacts(library_snapshot, certificate_snapshot), stream)
+            summary = _replay(trace_snapshot, ReplayArtifacts(library_snapshot, certificate_snapshot, run_snapshot), stream)
         verify_input_snapshots(snapshots, 'replay')
         with summary_path.open('x', encoding='utf-8') as stream:
             json.dump(summary, stream, indent=2, sort_keys=True, allow_nan=False)
@@ -190,11 +226,13 @@ def main() -> int:
     parser.add_argument('trace', type=Path)
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--cycle-certificate', type=Path, required=True)
+    parser.add_argument('--run-aware-certificate', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--summary', type=Path, required=True)
     args = parser.parse_args()
     try:
-        summary = replay(args.trace, ReplayArtifacts(args.library, args.cycle_certificate),
+        summary = replay(args.trace, ReplayArtifacts(args.library, args.cycle_certificate,
+                                                     args.run_aware_certificate),
                          ReplayOutputs(args.output, args.summary))
         print(json.dumps({key: summary[key] for key in ('status', 'npu_work_count', 'isolated_cycle_sum')}))
     except (OSError, ValueError, BuildFailure, RuntimeError) as error:

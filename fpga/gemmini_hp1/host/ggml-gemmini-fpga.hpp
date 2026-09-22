@@ -64,8 +64,8 @@ struct ggml_gemmini_hp1_executor {
               im2p_work_stats_extended_t *) = nullptr;
   im2p::gemmini::StreamExecutor stream;
   im2p::gemmini_hp1::RmdRawExecute raw = nullptr; // optional legacy diagnostic
-  im2p::gemmini_hp1::RmdScuExecute scu =
-      nullptr; // required production residual
+  im2p::gemmini_hp1::RmdScuExecute scu = nullptr;
+  im2p::gemmini_hp1::RmdRunExecute runs = nullptr;
 };
 
 im2p::gemmini_hp1::Capability ggml_gemmini_hp1_capability();

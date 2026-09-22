@@ -115,6 +115,35 @@ class PassiveCaptureLogTest(unittest.TestCase):
         # Then only complete diagnostic records are discarded for comparison.
         self.assertEqual(cases, ['captured-001'])
 
+    def test_capture_ignores_current_device_diagnostic_even_mid_line(self) -> None:
+        # Given the current producer's complete diagnostic shape within stdout.
+        record = {
+            'op': 'rmd.device_host_call', 'kind': 'segment', 'layer': 'gemmini_hp1_rmd_rtl_fixture',
+            'start': 0, 'end': 0, 'delta': None, 'cpu_work_cycles': None,
+            'cpu_work_cycles_valid': False, 'cpu_work_cycles_source': None,
+            'cpu_work_cycles_unit': 'cycle', 'cpu_work_cycles_reason': 'not_thread_cpu_counter',
+            'thread_cpu_ns': 1, 'thread_cpu_valid': True, 'thread_cpu_reason': None,
+            'host_elapsed_ns': 1, 'host_elapsed_valid': True, 'host_elapsed_reason': None,
+            'host_execution_id': '1-1', 'host_start_ns': 1, 'host_end_ns': 2,
+            'host_start_tid': 1, 'host_end_tid': 1, 'host_thread_id': 1, 'thread_id': 1,
+            'ns_start': 1, 'ns_end': 2, 'tid': 1, 'valid': False,
+            'reason': 'not_thread_cpu_counter', 'operation_success': True,
+            'interval_class': 'DIAGNOSTIC', 'duration_role': 'OBSERVATION_ONLY',
+            'exclusion_reason': 'outside_collection',
+        }
+        diagnostic = json.dumps(record, separators=(',', ':')) + '\n'
+        original = 'WS RTL FULL rows=1 cycles=10 tile=1/1/1\nNUMERIC PASS\n'
+        observed = ('WS RTL FULL rows=1 cycles=10 start=1 done=11 work_count=1 loop_count=1 '
+                    'load_req=0 load_resp=0 store_req=0 store_resp=0 scale_req=0 scale_resp=0 '
+                    'tile=1/' + diagnostic + '1/1\nNUMERIC PASS\n')
+        # When capture strips only the complete diagnostic record.
+        self.assertEqual(self.check_capture(original, observed), ['captured-001'])
+        # Then changed diagnostic closure still fails the byte guard.
+        for changed in (diagnostic.replace(',"thread_id":1', ''),
+                        diagnostic.replace('"host_elapsed_ns":1', '"host_elapsed_ns":1,"extra":1')):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, 'passive observer changed'):
+                self.check_capture(original, observed.replace(diagnostic, changed))
+
     def test_capture_rejects_other_output_and_incomplete_diagnostics(self) -> None:
         original = 'WS RTL FULL rows=1 cycles=10 tile=1/1/1\nNUMERIC PASS\n'
         observed = ('WS RTL FULL rows=1 cycles=10 start=1 done=11 work_count=1 loop_count=1 '

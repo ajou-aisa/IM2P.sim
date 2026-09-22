@@ -141,8 +141,10 @@ route:
 }
 ```
 
-Export verification requires the current `WS_RMD_SCU` and `WS_RMD_BOUND` runtime
-markers for an RMD-enabled profile. It also packages the RMD executor/reference,
+Export verification requires the current `WS_RMD_RUNS_DIAGNOSTIC` and
+`WS_RMD_BOUND_RUNS_DIAGNOSTIC` runtime markers for an RMD-enabled profile.
+These markers check the host/RTL capability, FULL/PIPELINE execution, and rollback;
+they are not a production-generated run-aware cycle certificate. The export also packages the RMD executor/reference,
 HP1 SCU/carrier helpers and relevant GGML headers under the dependency source
 snapshot, plus exact dependency HEAD/patch/overlay provenance.
 

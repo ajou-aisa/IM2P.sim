@@ -13,7 +13,8 @@ struct TimingObserver {
 TimingObserver set_timing_observer(TimingObserver observer) noexcept;
 #if defined(IM2P_CPU_FUNCTIONAL_TEST_HOOKS)
 using DispatchCallback = void (*)(void *, const im2p_matmul_desc_t &,
-                                 const im2p_production_geometry_v1_t &) noexcept;
+                                 const im2p_production_geometry_v1_t &,
+                                 const im2p_compact_runs_t *) noexcept;
 void set_dispatch_observer(DispatchCallback callback, void *context) noexcept;
 #endif
 class TimingRegistration {

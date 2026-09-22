@@ -175,11 +175,11 @@ def integrated_build_fixture(root: Path, rmd: bool = False) -> None:
     if rmd:
         with logs[-1].open("a", encoding="utf-8") as stream:
             _ = stream.write(
-                "WS_RMD_SCU A8W8D16 rtl_callbacks=13 scaled_exact=1053 lanes=5 high_carry=1 "
-                "compose_exact=54 merge_exact=54 negative_tests=6 missing_reject=1 "
-                "duplicate_reject=1 high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
-                "WS_RMD_BOUND bits=8 DIM=16 full_exact=27 pipeline_exact=27 dense_calls=6 "
-                "scu_calls=14 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
+                "WS_RMD_RUNS_DIAGNOSTIC A8W8D16 run_callbacks=13 compact_exact=1053 lanes=5 high_carry=1 "
+                "compose_exact=54 merge_exact=54 negative_tests=7 missing_reject=1 "
+                "duplicate_reject=1 missing_runs_reject=1 high_exponent_run=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\n"
+                "WS_RMD_BOUND_RUNS_DIAGNOSTIC bits=8 DIM=16 full_exact=27 pipeline_exact=27 dense_calls=6 "
+                "runs_calls=14 stripes=3 slots=0,1,0 rollback=2 public_entry=1\n"
             )
     results = [{**command, "returncode": 0, "reason": None, "log": str(log)}
                for command, log in zip(commands, logs)]

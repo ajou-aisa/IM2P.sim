@@ -34,12 +34,22 @@ def test_required_source_closure_when_checksums_are_recomputed() -> None:
         create_export(ExportRequest(source, None, package, None))
         required = (
             "source/sim/include/im2p_compact_runs.h",
+            "source/sim/cycle/npu_trace_runs.py",
+            "source/sim/cycle/run_aware_certificate.py",
+            "source/sim/cycle/reconstruct_npu.py",
+            "source/frontend/include/im2p_cpu_functional.hpp",
+            "source/frontend/src/im2p_cpu_functional.cpp",
             "source/sim/ffi/im2p_geometry_ffi.h",
             "source/sim/backends/gemmini_hp1/runtime.hpp",
             "source/sim/backends/gemmini_hp1/runtime.cpp",
             "source/sim/backends/gemmini_hp1/backing_memory.cpp",
             "source/sim/tests/cycle/test_run_aware_cycle.cpp",
             "source/sim/tests/cycle/run_aware_corpus.json",
+            "source/sim/cycle/corpus-authority-v3.json",
+            "source/sim/tests/cycle/production_run_work.py",
+            "source/sim/cycle/run_aware_production_evidence.py",
+            "source/sim/tests/cycle/production_run_aware_corpus.json",
+            "source/sim/tests/cycle/certify_production_run_aware.py",
             "source/sim/tests/cycle/run_aware_fixture.py",
             "source/sim/tests/cycle/run_aware_events.py",
             "source/sim/tests/cycle/certify_run_aware.py",
@@ -49,12 +59,14 @@ def test_required_source_closure_when_checksums_are_recomputed() -> None:
             "source/fpga/gemmini_hp1/host/CMakeLists.txt",
             "source/fpga/gemmini_hp1/host/rmd.hpp",
             "source/fpga/gemmini_hp1/host/rmd.cpp",
+            "source/fpga/gemmini_hp1/host/run_aware_rtl_driver.inc",
             "source/fpga/gemmini_hp1/host/test_run_aware_rtl.cpp",
             "source/fpga/gemmini_hp1/host/test_run_aware_bridge.cpp",
             "source/sim/include/im2p_geometry.h",
             "source/frontend/include/im2p_production_trace.hpp",
             "source/scripts/im2p_paths.py",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/optrace.cpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini/residual/rmd/rmd-run-aware.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/debug.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/semantic.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/semantic.hpp",
@@ -188,6 +200,18 @@ def test_relocated_run_headers_and_fixture_cli() -> None:
             cwd=base, env=clean_env, text=True, capture_output=True, check=False,
         )
         assert current.returncode == 0, current.stderr
+        offline = subprocess.run(
+            (sys.executable, "-B", str(relocated / "source/sim/cycle/npu_trace.py"), "--help"),
+            cwd=base, env=clean_env, text=True, capture_output=True, check=False,
+        )
+        assert offline.returncode == 0, offline.stderr
+        assert "--run-aware-certificate" in offline.stdout
+        joined = subprocess.run(
+            (sys.executable, "-B", str(relocated / "source/sim/cycle/reconstruct.py"), "--help"),
+            cwd=base, env=clean_env, text=True, capture_output=True, check=False,
+        )
+        assert joined.returncode == 0, joined.stderr
+        assert "--run-aware-certificate" in joined.stdout
 
 
 if __name__ == "__main__":

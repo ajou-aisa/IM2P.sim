@@ -1,23 +1,20 @@
 #define main legacy_ws_rtl_main
 #include "test_ws_rtl.cpp"
 #undef main
-#include "../../../sim/common/gemmini_schedule.hpp"
-#include "quants/common/hp1_scu.hpp"
-
 #include <cstdlib>
+#include <charconv>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <VIM2PGemminiWSHP1RtlTest___024root.h>
 
 #define IM2P_ROOT_SYMBOL_INNER(top, suffix) top##__DOT__control__DOT__##suffix
 #define IM2P_ROOT_SYMBOL(top, suffix) IM2P_ROOT_SYMBOL_INNER(top, suffix)
 
 namespace {
-namespace schedule = im2p::gemmini;
 std::ofstream events;
 unsigned observed_case = 0;
-std::uint32_t observed_block = 0, observed_generation = 0;
-std::size_t observed_compact_k = 0, observed_compact_count = 0;
 
 void observe(Adapter &state) {
   auto &dut = state.dut;
@@ -87,180 +84,6 @@ void observe(Adapter &state) {
          dut.io_scaleRelease_bits_column, dut.io_scaleRelease_bits_generation);
 }
 
-void run_loop(Adapter &state, const RmdRunWork &work,
-              const schedule::LoopPlan &loop, std::size_t run,
-              std::uint32_t generation, bool stale_generation = false) {
-  const auto slot = work.host_slot;
-  state.active_slot = slot;
-  state.a[slot].assign(loop.activation_packed_bytes, 0);
-  state.b[slot].assign(loop.weight_packed_bytes, 0);
-  state.s[slot].assign(loop.scale_packed_bytes, 0);
-  for (std::size_t i = 0; i < loop.is; ++i)
-    for (std::size_t k = 0; k < loop.ks; ++k)
-      put_operand(state.a[slot], i * loop.kp + k,
-                  work.activations.at((loop.i + i) * work.plan.k + loop.k + k));
-  for (std::size_t k = 0; k < loop.ks; ++k)
-    for (std::size_t j = 0; j < loop.js; ++j)
-      put_operand(state.b[slot], k * loop.jp + j,
-                  work.weights.at((loop.k + k) * work.plan.n + loop.j + j));
-  for (std::size_t row = 0; row < loop.scale_rows; ++row)
-    for (std::size_t lane = 0; lane < dim && row * dim + lane < loop.js;
-         ++lane) {
-      const auto carrier = work.carriers.at(run * work.plan.n + loop.j +
-                                             row * dim + lane);
-      for (std::size_t byte = 0; byte < 4; ++byte)
-        state.s[slot][row * acc_bytes + lane * 4 + byte] =
-            static_cast<std::uint8_t>(carrier >> (byte * 8));
-    }
-  auto &dut = state.dut;
-  dut.io_work_bits_maxI = loop.ip / dim;
-  dut.io_work_bits_maxJ = loop.jp / dim;
-  dut.io_work_bits_maxK = loop.kp / dim;
-  dut.io_work_bits_padI = loop.ip - loop.is;
-  dut.io_work_bits_padJ = loop.jp - loop.js;
-  dut.io_work_bits_padK = loop.kp - loop.ks;
-  dut.io_work_bits_aAddress = slot_address(a_base, slot);
-  dut.io_work_bits_bAddress = slot_address(b_base, slot);
-  dut.io_work_bits_cAddress = loop.final_contribution
-                                  ? slot_address(c_base, slot) +
-                                        loop.i * state.c_stride[slot] + loop.j * 4
-                                  : 0;
-  dut.io_work_bits_scaleBackingAddress = slot_address(s_base, slot);
-  dut.io_work_bits_aStrideBytes = loop.kp * IM2P_OPERAND_BITS / 8;
-  dut.io_work_bits_bStrideBytes = loop.jp * IM2P_OPERAND_BITS / 8;
-  dut.io_work_bits_cStrideBytes = state.c_stride[slot];
-  dut.io_work_bits_scaleBase = slot * 128;
-  dut.io_work_bits_scaleGeneration = generation;
-  dut.io_work_bits_fragmentBase = loop.fragment_base;
-  dut.io_work_bits_workBase = slot * 64;
-  dut.io_work_bits_accumulate = loop.accumulate;
-  dut.io_work_bits_finalFragment = loop.final_contribution;
-  dut.io_work_bits_firstLoop = loop.first;
-  dut.io_work_bits_finalLoop = loop.last;
-  dut.io_work_bits_logicalWorkId = work.work_id & 255U;
-  dut.io_work_bits_hostSlot = slot;
-  dut.io_work_bits_rmdRaw = 0;
-  observed_block = loop.original_block_id;
-  observed_generation = generation;
-  observed_compact_k = loop.k;
-  observed_compact_count = loop.ks;
-  dut.io_work_valid = 1;
-  state.accept([&] { return dut.io_work_ready; }, "run descriptor stalled");
-  dut.io_work_valid = 0;
-  state.accept([&] { return dut.io_loopDone_valid; }, "run loop stalled");
-  check(state.reads.empty() && state.writes.empty(),
-        "run loop left backing traffic pending");
-  if (stale_generation) {
-    dut.io_scaleRelease_bits_column = 0;
-    dut.io_scaleRelease_bits_address = slot * 128;
-    dut.io_scaleRelease_bits_generation = generation + 1;
-    dut.io_scaleRelease_valid = 1;
-    try {
-      state.step();
-    } catch (const std::runtime_error &) {
-      dut.io_scaleRelease_valid = 0;
-      check(dut.io_error, "stale generation failed for unrelated reason");
-      return;
-    }
-    dut.io_scaleRelease_valid = 0;
-    dut.eval();
-    check(dut.io_error, "stale scale generation was accepted");
-    return;
-  }
-  state.release_scales(loop.js, loop.k, loop.k + loop.ks, 0, generation,
-                       slot * 128);
-}
-
-int execute_runs_impl(void *opaque, const RmdRunWork &work,
-                      std::vector<std::int32_t> &output,
-                      std::uint64_t &cycles, bool stale_generation) {
-  auto &state = *static_cast<Adapter *>(opaque);
-  const auto m = work.plan.m, n = work.plan.n, k = work.plan.k;
-  if (!m || !n || !k || work.host_slot > 1 ||
-      work.plan.kind != WorkKind::dense_hp1_final ||
-      work.activations.size() != m * k || work.weights.size() != k * n ||
-      work.carriers.size() != work.runs.size() * n ||
-      work.geometry.tile_i_count != work.plan.tile_i ||
-      work.geometry.tile_j_count != work.plan.tile_j ||
-      work.geometry.tile_k_count != work.plan.tile_k)
-    return IM2P_INVALID_LAYOUT;
-  schedule::ScheduleConfig config{{m, n, k}, {dim, IM2P_OPERAND_BITS},
-                                  {work.plan.tile_i, work.plan.tile_j,
-                                   work.plan.tile_k, m},
-                                  {}, true, true, false};
-  const im2p_compact_runs_t view{IM2P_COMPACT_RUNS_VERSION, sizeof(view),
-                                 work.original_k, work.runs.size(),
-                                 work.runs.data()};
-  if (!schedule::set_compact_runs(config, &view) ||
-      !std::all_of(work.carriers.begin(), work.carriers.end(),
-                   ggml::gemmini::quants::hp1::valid_carrier))
-    return IM2P_INVALID_LAYOUT;
-  const auto slot = work.host_slot;
-  state.active_slot = slot;
-  state.rows[slot] = m;
-  state.columns[slot] = n;
-  state.c_stride[slot] = padded(n) * 4;
-  state.c[slot].assign(padded(m) * state.c_stride[slot], 0xA5);
-  state.written[slot].assign(state.c[slot].size(), 0);
-  state.output_ids.assign(padded(m) / dim * (padded(n) / dim), false);
-  const auto old_done = state.logical_done;
-  const auto old_loops = state.loops;
-  schedule::LoopCursor cursor{};
-  std::uint32_t generation = 1;
-  std::size_t expected_loops = 0;
-  while (cursor.i < m) {
-    const auto loop = schedule::plan_loop(config, m, cursor);
-    const auto it = std::find_if(config.runs.begin(), config.runs.end(),
-                                 [&](const auto &run) {
-                                   return run.original_block_id ==
-                                          loop.original_block_id;
-                                 });
-    check(it != config.runs.end(), "loop lost original block owner");
-    const auto run = static_cast<std::size_t>(it - config.runs.begin());
-    run_loop(state, work, loop, run, generation, stale_generation);
-    if (stale_generation)
-      return IM2P_ERROR;
-    std::cout << "FIXTURE_ONLY loop=" << expected_loops
-              << " original_block=" << loop.original_block_id
-              << " compact_k=" << loop.k << "+" << loop.ks
-              << " fragment_base=" << loop.fragment_base
-              << " generation=" << generation
-              << " carrier=" << work.carriers.at(run * n + loop.j) << '\n';
-    schedule::advance_loop(config, loop, cursor);
-    generation = generation % 255 + 1;
-    ++expected_loops;
-  }
-  check(state.loops - old_loops == expected_loops &&
-            state.logical_done - old_done == 1 &&
-            state.logical_done_ids.back() == (work.work_id & 255U),
-        "run work did not complete exactly once");
-  check(std::all_of(state.output_ids.begin(), state.output_ids.end(),
-                    [](bool done) { return done; }),
-        "run work did not publish every output tile");
-  output.clear();
-  for (std::size_t i = 0; i < m; ++i)
-    for (std::size_t j = 0; j < n; ++j) {
-      std::uint32_t raw = 0;
-      for (std::size_t byte = 0; byte < 4; ++byte)
-        raw |= std::uint32_t{state.c[slot][i * state.c_stride[slot] + j * 4 +
-                                             byte]}
-               << (byte * 8);
-      std::int32_t value;
-      std::memcpy(&value, &raw, sizeof(value));
-      output.push_back(value);
-    }
-  cycles = state.dut.io_elapsedCycles;
-  check(state.dut.io_measurementValid && cycles > 0 &&
-            state.dut.io_doneCycle - state.dut.io_startCycle == cycles,
-        "run work has invalid RTL cycle endpoints");
-  return IM2P_OK;
-}
-
-int execute_runs(void *opaque, const RmdRunWork &work,
-                 std::vector<std::int32_t> &output, std::uint64_t &cycles) {
-  return execute_runs_impl(opaque, work, output, cycles, false);
-}
-
 RmdRunWork fixture(std::uint32_t second_block, std::uint32_t first_count,
                    std::uint32_t second_count) {
   RmdRunWork work{};
@@ -312,6 +135,142 @@ std::int32_t oracle(const RmdRunWork &work) {
   }
   return sum;
 }
+
+template <typename T>
+std::vector<T> read_numbers(std::istream &input, const char *label,
+                            std::size_t count) {
+  check(count <= 1'000'000, "production fixture count exceeds limit");
+  std::string line, token;
+  check(static_cast<bool>(std::getline(input, line)),
+        "production fixture line is missing");
+  std::istringstream fields(line);
+  if (*label) {
+    check(static_cast<bool>(fields >> token) && token == label,
+          "production fixture label mismatch");
+  }
+  std::vector<T> values;
+  values.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    check(static_cast<bool>(fields >> token),
+          "production fixture value is missing");
+    T value{};
+    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+    check(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size(),
+          "production fixture value is invalid");
+    values.push_back(value);
+  }
+  check(!(fields >> token), "production fixture has extra values");
+  return values;
+}
+
+std::size_t fixture_size(std::uint64_t left, std::uint64_t right) {
+  check(left && right && left <= 1'000'000 / right,
+        "production fixture shape exceeds limit");
+  return static_cast<std::size_t>(left * right);
+}
+
+struct ProductionCase {
+  RmdRunWork work;
+  std::vector<std::int32_t> expected;
+};
+
+ProductionCase load_production_case(const char *path) {
+  std::ifstream input(path);
+  check(input.is_open(), "production fixture could not be opened");
+  std::string version;
+  check(static_cast<bool>(std::getline(input, version)) &&
+            version == "RMD_RUN_WORK_V1",
+        "production fixture version mismatch");
+  const auto d = read_numbers<std::uint64_t>(input, "descriptor", 23);
+  const auto g = read_numbers<std::uint64_t>(input, "geometry", 16);
+  const auto v = read_numbers<std::uint64_t>(input, "runs", 4);
+  check(d[0] == IM2P_ABI_VERSION && d[1] == IM2P_ACTIVATION_BITS &&
+            d[2] == 1 && d[3] == IM2P_OPERAND_BITS && d[4] == 1 &&
+            d[5] == dim && d[6] && d[7] && d[8] &&
+            d[6] <= UINT32_MAX && d[7] <= UINT32_MAX && d[8] <= UINT32_MAX &&
+            d[9] >= d[8] && d[10] >= d[7] && d[11] >= d[7] &&
+            d[12] && d[13] && d[14] == 32 && d[15] <= UINT32_MAX &&
+            d[16] == d[7] && d[17] == 0 && d[18] == d[7] &&
+            d[20] == IM2P_VECTOR_LEFT_SHIFT &&
+            d[21] == IM2P_OUTPUT_SCU_FINAL &&
+            g[0] == IM2P_PRODUCTION_GEOMETRY_VERSION &&
+            g[1] == sizeof(im2p_production_geometry_v1_t) &&
+            g[2] == d[1] && g[3] == d[3] && g[4] == d[5] &&
+            g[5] == IM2P_GEOMETRY_FULL && g[6] == d[6] &&
+            g[7] == d[7] && g[8] == d[8] &&
+            g[9] && g[10] && g[11] && g[12] == d[6] &&
+            g[13] == 0 && g[14] == d[6] && g[15] == 0 &&
+            v[0] == IM2P_COMPACT_RUNS_VERSION &&
+            v[1] == sizeof(im2p_compact_runs_t) && v[2] == d[15] &&
+            v[3] && v[3] <= d[8],
+        "production fixture metadata mismatch");
+  const auto a_count = fixture_size(d[6], d[8]);
+  const auto b_count = fixture_size(d[8], d[7]);
+  const auto carrier_count = fixture_size(v[3], d[7]);
+  const auto output_count = fixture_size(d[6], d[7]);
+  check(d[19] == carrier_count, "production fixture carrier count mismatch");
+  ProductionCase result;
+  auto &work = result.work;
+  work.work_id = 0;
+  work.host_slot = 0;
+  work.plan = {d[6], d[7], d[8], g[9], g[10], g[11], d[6],
+               Mode::full, WorkKind::dense_hp1_final};
+  work.geometry = {static_cast<std::uint32_t>(g[0]),
+                   static_cast<std::uint32_t>(g[1]),
+                   static_cast<std::uint32_t>(g[2]),
+                   static_cast<std::uint32_t>(g[3]),
+                   static_cast<std::uint32_t>(g[4]),
+                   static_cast<std::uint32_t>(g[5]),
+                   g[6], g[7], g[8], g[9], g[10], g[11],
+                   g[12], g[13], g[14], g[15]};
+  work.original_k = static_cast<std::uint32_t>(v[2]);
+  for (std::size_t i = 0; i < v[3]; ++i) {
+    const auto r = read_numbers<std::uint64_t>(input, "run", 4);
+    check(std::all_of(r.begin(), r.end(),
+                      [](auto value) { return value <= UINT32_MAX; }),
+          "production fixture run value exceeds uint32");
+    work.runs.push_back({static_cast<std::uint32_t>(r[0]),
+                         static_cast<std::uint32_t>(r[1]),
+                         static_cast<std::uint32_t>(r[2]),
+                         static_cast<std::uint32_t>(r[3])});
+  }
+  check(read_numbers<std::uint64_t>(input, "ROW_MAP", 1).front() == d[6],
+        "production fixture row map length mismatch");
+  for (std::size_t i = 0; i < d[6]; ++i)
+    (void)read_numbers<std::uint64_t>(input, "", 2);
+  const auto read_signed = [&](const char *label, std::size_t count) {
+    check(read_numbers<std::uint64_t>(input, label, 1).front() == count,
+          "production fixture tensor length mismatch");
+    return read_numbers<std::int64_t>(input, "", count);
+  };
+  const auto a = read_signed("A", a_count);
+  const auto b = read_signed("B", b_count);
+  const auto min_code = -(std::int64_t{1} << (IM2P_ACTIVATION_BITS - 1));
+  for (const auto value : a) {
+    check(value >= min_code && value < -min_code,
+          "production fixture activation code out of range");
+    work.activations.push_back(static_cast<std::int8_t>(value));
+  }
+  for (const auto value : b) {
+    check(value >= min_code && value < -min_code,
+          "production fixture weight code out of range");
+    work.weights.push_back(static_cast<std::int8_t>(value));
+  }
+  check(read_numbers<std::uint64_t>(input, "CARRIERS", 1).front() == carrier_count,
+        "production fixture carrier length mismatch");
+  for (const auto value : read_numbers<std::uint64_t>(input, "", carrier_count)) {
+    check(value <= UINT32_MAX, "production fixture carrier exceeds uint32");
+    work.carriers.push_back(static_cast<std::uint32_t>(value));
+  }
+  for (const auto value : read_signed("OUTPUT", output_count)) {
+    check(value >= INT32_MIN && value <= INT32_MAX,
+          "production fixture output exceeds int32");
+    result.expected.push_back(static_cast<std::int32_t>(value));
+  }
+  std::string extra;
+  check(!std::getline(input, extra), "production fixture has trailing lines");
+  return result;
+}
 }
 
 int main(int argc, char **argv) {
@@ -359,10 +318,13 @@ int main(int argc, char **argv) {
             "invalid run mask published output");
       return 0;
     }
+    const bool production_case =
+        argc == 3 && std::string{argv[1]} == "--production-case";
     const std::string selected_case = argc == 3 && std::string{argv[1]} == "--case"
                                           ? argv[2]
                                           : "";
-    check(argc == 1 || !selected_case.empty(), "expected --case <name>");
+    check(argc == 1 || !selected_case.empty() || production_case,
+          "expected --case <name> or --production-case <file>");
     std::vector<std::int32_t> output;
     std::uint64_t cycles = 0;
     const RmdRunExecute callback = execute_runs;
@@ -373,7 +335,8 @@ int main(int argc, char **argv) {
     }
     unsigned executed = 0;
     const auto run_case = [&](unsigned case_index, const char *name,
-                              const RmdRunWork &case_work) {
+                              const RmdRunWork &case_work,
+                              const std::vector<std::int32_t> *captured = nullptr) {
       if (!selected_case.empty() && selected_case != name)
         return;
       ++executed;
@@ -388,7 +351,8 @@ int main(int argc, char **argv) {
                << state.write_latency << ',' << state.read_ready_period << ','
                << state.cycle - state.dut.io_coreCycle << '\n';
       }
-      const auto expected = oracle(case_work);
+      const std::vector<std::int32_t> expected =
+          captured ? *captured : std::vector<std::int32_t>{oracle(case_work)};
       const auto old_done = state.logical_done;
       const auto old_loops = state.loops;
       const auto old_loads = state.loads;
@@ -399,16 +363,24 @@ int main(int argc, char **argv) {
       const auto old_scale_responses = state.scale_responses;
       const auto old_completions = state.completions;
       const auto status = callback(&state, case_work, output, cycles);
-      if (status != IM2P_OK || output != std::vector<std::int32_t>{expected})
+      if (status != IM2P_OK || output != expected)
         throw std::runtime_error(std::string{name} + " RTL numerical mismatch: status=" +
                                  std::to_string(status) + " expected=" +
-                                 std::to_string(expected) + " actual=" +
+                                 (expected.empty() ? "empty" : std::to_string(expected.front())) + " actual=" +
                                  (output.empty() ? "empty" : std::to_string(output.front())));
-      std::cout << "FIXTURE_ONLY case=" << name
+      std::cout << (captured ? "PRODUCTION_RUN case=" : "FIXTURE_ONLY case=") << name
                 << " profile=a" << IM2P_ACTIVATION_BITS << "w"
                 << IM2P_OPERAND_BITS << "-d" << dim << "-hp1"
                 << " attempted=1 admitted=1 exact=1"
-                << " expected=" << expected << " actual=" << output.front()
+                << " m=" << case_work.plan.m << " n=" << case_work.plan.n
+                << " k=" << case_work.plan.k
+                << " original_k=" << case_work.original_k
+                << " runs=" << case_work.runs.size()
+                << " first_block=" << case_work.runs.front().original_block_id
+                << " last_block=" << case_work.runs.back().original_block_id
+                << " expected=" << expected.front() << " actual=" << output.front()
+                << " expected_values=" << expected.size()
+                << " actual_values=" << output.size()
                 << " logical_done=" << state.logical_done - old_done
                 << " start=" << state.dut.io_startCycle
                 << " done=" << state.dut.io_doneCycle
@@ -423,6 +395,21 @@ int main(int argc, char **argv) {
                 << " completions=" << state.completions - old_completions
                 << '\n';
     };
+    if (production_case) {
+      run_loop_label = "PRODUCTION_RUN_LOOP loop=";
+      const auto captured = load_production_case(argv[2]);
+      std::string name = std::filesystem::path(argv[2]).stem().string();
+      const std::string prefix = "rmd-run-work-";
+      if (name.starts_with(prefix))
+        name.erase(0, prefix.size());
+      std::replace(name.begin(), name.end(), '-', '_');
+      name.insert(0, "production_");
+      run_case(9, name.c_str(), captured.work, &captured.expected);
+      check(executed == 1, "production fixture did not execute exactly once");
+      dut.final();
+      return 0;
+    }
+    run_loop_label = "FIXTURE_ONLY loop=";
     work = fixture(1, 12, 10);
     run_case(1, "unequal_12_10", work);
     work = fixture(3, 12, 10);

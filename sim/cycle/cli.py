@@ -54,6 +54,16 @@ class Request(C.Structure):
         (name, U32) for name in REQUEST_U32]
 
 
+class CompactRun(C.Structure):
+    _fields_ = [(name, U32) for name in ('original_block_id', 'original_k_mask',
+                                         'compact_k_begin', 'compact_k_count')]
+
+
+class CompactRuns(C.Structure):
+    _fields_ = [('version', U32), ('struct_size', U32), ('original_k', U32),
+                ('run_count', C.c_size_t), ('runs', C.POINTER(CompactRun))]
+
+
 class Result(C.Structure):
     _fields_ = [('abi_version', U32), ('struct_size', U32)] + [(name, U64) for name in RESULT_FIELDS]
 
@@ -85,6 +95,8 @@ def load_library(path: Path) -> C.CDLL:
         'im2p_cycle_model_create': ([C.POINTER(Config)], C.c_void_p),
         'im2p_cycle_model_destroy': ([C.c_void_p], None),
         'im2p_cycle_estimate': ([C.c_void_p, C.POINTER(Request), C.POINTER(Result)], C.c_int),
+        'im2p_cycle_estimate_runs': ([C.c_void_p, C.POINTER(Request), C.POINTER(CompactRuns),
+                                      C.POINTER(Result)], C.c_int),
         'im2p_cycle_model_error': ([C.c_void_p], C.c_char_p),
         'im2p_cycle_model_event_count': ([C.c_void_p], U64),
         'im2p_cycle_model_event': ([C.c_void_p, U64, C.POINTER(Event)], C.c_int),
@@ -97,9 +109,41 @@ def load_library(path: Path) -> C.CDLL:
     return lib
 
 
+def compact_run_view(document: dict[str, Any], k: int) -> tuple[CompactRuns, Any] | None:
+    raw = document.get('runs')
+    if raw is None:
+        if 'original_k' in document:
+            raise ValueError('original_k requires runs')
+        return None
+    if not isinstance(raw, list) or not 0 < len(raw) <= k:
+        raise ValueError('runs must be a nonempty array bounded by compact K')
+    original_k = integer(document.get('original_k'), 32, 'original_k')
+    cursor, previous = 0, -1
+    spans = []
+    for item in raw:
+        fields = object_fields(item, {'original_block_id', 'original_k_mask',
+                                      'compact_k_begin', 'compact_k_count'}, 'run')
+        if len(fields) != 4:
+            raise ValueError('incomplete run')
+        block, mask, begin, count = (integer(fields[name], 32, name) for name in
+                                     ('original_block_id', 'original_k_mask',
+                                      'compact_k_begin', 'compact_k_count'))
+        if not (block > previous and count > 0 and count <= 32 and mask.bit_count() == count and
+                begin == cursor and block * 32 + mask.bit_length() <= original_k):
+            raise ValueError('invalid compact run ownership or coverage')
+        spans.append(CompactRun(block, mask, begin, count))
+        cursor += count
+        previous = block
+    if cursor != k:
+        raise ValueError('runs do not cover compact K')
+    owned = (CompactRun * len(spans))(*spans)
+    return CompactRuns(1, C.sizeof(CompactRuns), original_k, len(spans), owned), owned
+
+
 def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
              memory_contract: Path | None = None) -> dict[str, Any]:
-    doc = object_fields(document, {'profile', 'timing_profile', 'timing', 'request', 'limits'}, 'input')
+    doc = object_fields(document, {'profile', 'timing_profile', 'timing', 'request', 'limits',
+                                   'original_k', 'runs'}, 'input')
     name = doc.get('profile')
     match = re.fullmatch(r'a([48])w\1-d(16|32|64)-hp1', name) if isinstance(name, str) else None
     if match is None:
@@ -134,12 +178,15 @@ def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
                 raise ValueError('submission must be planner-blocks or regression-tiles')
             value = names[value]
         setattr(request, key, integer(value, 64 if key in REQUEST_U64 else 32, key))
+    run_view = compact_run_view(doc, request.k)
     handle = lib.im2p_cycle_model_create(C.byref(cfg))
     if not handle:
         raise ValueError('C API rejected the resolved timing/hardware configuration')
     try:
         result = Result()
-        status = lib.im2p_cycle_estimate(handle, C.byref(request), C.byref(result))
+        status = (lib.im2p_cycle_estimate(handle, C.byref(request), C.byref(result))
+                  if run_view is None else
+                  lib.im2p_cycle_estimate_runs(handle, C.byref(request), C.byref(run_view[0]), C.byref(result)))
         if status:
             message = lib.im2p_cycle_model_error(handle).decode('utf-8', errors='replace')
             raise ValueError(f'cycle model status {status}: {message}')

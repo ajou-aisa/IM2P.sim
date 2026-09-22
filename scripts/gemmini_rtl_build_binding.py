@@ -13,6 +13,7 @@ from scripts.real_lib_manifest import sha256
 SCHEMA: Final = 'im2p-rtl-build-binding'
 OBJECTS: Final = ('frontend_rtl_fixture.o', 'rmd_rtl_fixture.o', 'bound_rmd_rtl_fixture.o',
                  'rmd-reference.o', 'VIM2PGemminiWSHP1RtlTest__ALL.a', 'verilated.o', 'verilated_threads.o')
+RUN_AWARE_BINARY: Final = 'host-build/run-aware-rtl/VIM2PGemminiWSHP1RtlTest'
 
 
 class BuildBindingError(ValueError):
@@ -25,25 +26,30 @@ def mapping(value: JsonValue) -> dict[str, JsonValue]:
     return value
 
 
-def build_inputs(profile: str) -> dict[str, JsonValue]:
+def build_inputs(profile: str, llama_source: Mapping[str, JsonValue] | None = None) -> dict[str, JsonValue]:
     return {'hardware_contract': hardware_contract(profile),
             'fixture_source_sha256': {p.relative_to(ROOT).as_posix(): sha256(p)
-                                     for p in sorted((ROOT / 'fpga/gemmini_hp1/host').glob('*rtl*.cpp'))}}
+                                     for p in sorted((ROOT / 'fpga/gemmini_hp1/host').glob('*rtl*.cpp'))},
+            **({} if llama_source is None else {'llama_source': dict(llama_source)})}
 
 
 def seal_build(output: Path, before: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     contract = mapping(before['hardware_contract'])
     profile = contract['profile']
-    if not isinstance(profile, str) or before != build_inputs(profile):
+    source = before.get('llama_source')
+    if not isinstance(profile, str) or (source is not None and not isinstance(source, dict)) or before != build_inputs(profile, source):
         raise BuildBindingError('RTL build inputs changed while commands were running')
     resolved = mapping(json.loads((output / 'resolved-profile.json').read_text()))
+    if resolved.get('llama_source') != source:
+        raise BuildBindingError('RTL build llama source differs from resolved profile')
     facts = mapping(contract['facts'])
     for key in ('activation_bits', 'weight_bits', 'dim', 'memory', 'fixed_latencies'):
         if resolved.get(key) != facts[key]:
             raise BuildBindingError('RTL build resolved hardware differs from contract: ' + key)
     paths = [*(output / 'rtl').glob('*.sv'),
              *(output / 'rtl-test-obj' / name for name in OBJECTS),
-             *(output / 'host-build').glob('*.a'), output / 'resolved-profile.json',
+             *(output / 'host-build').glob('*.a'), output / RUN_AWARE_BINARY,
+             output / 'resolved-profile.json',
              output / 'resolved-hardware.properties']
     if not any(path.suffix == '.sv' for path in paths):
         raise BuildBindingError('RTL build binding has no emitted RTL')
@@ -78,6 +84,8 @@ def validate_binding(binding: Mapping[str, JsonValue], contract: Mapping[str, Js
         raise BuildBindingError('RTL build artifact closure missing')
     if not all('rtl-test-obj/' + name in artifacts for name in OBJECTS):
         raise BuildBindingError('RTL build object closure missing')
+    if RUN_AWARE_BINARY not in artifacts:
+        raise BuildBindingError('run-aware RTL executable binding missing')
     for name, digest in artifacts.items():
         if Path(name).is_absolute() or '..' in Path(name).parts or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
             raise BuildBindingError('RTL build artifact path/hash invalid')
@@ -91,6 +99,9 @@ def verify_build(output: Path, profile: str) -> dict[str, JsonValue]:
         raise BuildBindingError('RTL build-time binding missing; fresh official host-test build required')
     binding = mapping(json.loads(path.read_text()))
     validate_binding(binding, hardware_contract(profile))
+    resolved = mapping(json.loads((output / 'resolved-profile.json').read_text()))
+    if resolved.get('llama_source') != binding.get('llama_source'):
+        raise BuildBindingError('RTL build llama source differs from resolved profile')
     if binding.get('fixture_source_sha256') != build_inputs(profile)['fixture_source_sha256']:
         raise BuildBindingError('RTL build fixture source changed')
     for name, digest in mapping(binding['artifact_sha256']).items():

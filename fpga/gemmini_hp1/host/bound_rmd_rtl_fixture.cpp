@@ -23,13 +23,14 @@ struct BoundExecutor {
   void *context;
   FrontendRtlWorkExecute dense;
   RmdScuExecute scu;
+  RmdRunExecute runs;
   WorkPlanV1 plan;
   im2p_stripe_work_desc_t stream{};
   std::deque<im2p_stripe_completion_extended_t> completions;
-  size_t dense_calls = 0, scu_calls = 0, accepted = 0, returned = 0;
+  size_t dense_calls = 0, runs_calls = 0, accepted = 0, returned = 0;
   uint64_t first_start = 0, last_done = 0;
   uint32_t work_id = 0;
-  bool fail_scu = false;
+  bool fail_runs = false;
   bool started = false;
 
   static int prepare(void *opaque, const WorkPlanV1 &work) {
@@ -165,9 +166,15 @@ struct BoundExecutor {
   static int execute_scu(void *opaque, const RmdScuWork &work,
                          std::vector<int32_t> &values, uint64_t &cycles) {
     auto &self = *static_cast<BoundExecutor *>(opaque);
-    const int status = self.scu(self.context, work, values, cycles);
-    ++self.scu_calls;
-    return self.fail_scu ? IM2P_ERROR : status;
+    return self.scu(self.context, work, values, cycles);
+  }
+
+  static int execute_runs(void *opaque, const RmdRunWork &work,
+                          std::vector<int32_t> &values, uint64_t &cycles) {
+    auto &self = *static_cast<BoundExecutor *>(opaque);
+    const int status = self.runs(self.context, work, values, cycles);
+    ++self.runs_calls;
+    return self.fail_runs ? IM2P_ERROR : status;
   }
 };
 
@@ -178,13 +185,13 @@ struct Unbind {
 
 void run_bound_rmd_ws_rtl_fixture(const Capability &capability, void *context,
                                   FrontendRtlWorkExecute dense,
-                                  RmdScuExecute scu) {
+                                  RmdScuExecute scu, RmdRunExecute runs) {
   const auto selected = ggml_gemmini_hp1_capability();
   require(selected.rmd && selected.dim == capability.dim &&
               selected.activation_bits == capability.activation_bits &&
               selected.weight_bits == capability.weight_bits,
           "bound host profile differs from generated RTL");
-  BoundExecutor executor{context, dense, scu, {}, {}, {}};
+  BoundExecutor executor{context, dense, scu, runs, {}, {}, {}};
   const ggml_gemmini_hp1_executor binding{
       selected,
       &executor,
@@ -193,7 +200,8 @@ void run_bound_rmd_ws_rtl_fixture(const Capability &capability, void *context,
       {&executor, BoundExecutor::begin, BoundExecutor::publish,
        BoundExecutor::poll, BoundExecutor::finish},
       nullptr,
-      BoundExecutor::execute_scu};
+      BoundExecutor::execute_scu,
+      BoundExecutor::execute_runs};
   require(ggml_gemmini_hp1_bind_executor(binding),
           ggml_gemmini_fpga_last_error().c_str());
   Unbind unbind;
@@ -207,7 +215,7 @@ void run_bound_rmd_ws_rtl_fixture(const Capability &capability, void *context,
       args.repeating_bias = true;
       args.activation_rows_per_stripe = 3;
       ggml::gemmini::gemmini_set_tile_ws(&args);
-      executor.fail_scu = fail;
+      executor.fail_runs = fail;
       std::fill(fixture.output.begin(), fixture.output.end(), 91.0F);
       const auto quantize = [&] {
         args.A.zero_fill();
@@ -265,7 +273,7 @@ void run_bound_rmd_ws_rtl_fixture(const Capability &capability, void *context,
   ggml::gemmini::gemmini_set_tile_ws(&malformed.args);
   std::fill(malformed.output.begin(), malformed.output.end(), 91.0F);
   const auto dense_before = executor.dense_calls,
-             scu_before = executor.scu_calls;
+             runs_before = executor.runs_calls;
   const bool accepted = ggml_gemmini_fpga_execute(
       malformed.args, true,
       [&] {
@@ -281,17 +289,17 @@ void run_bound_rmd_ws_rtl_fixture(const Capability &capability, void *context,
       },
       "bound-rmd-bounds", true);
   require(!accepted && executor.dense_calls == dense_before &&
-              executor.scu_calls == scu_before &&
+              executor.runs_calls == runs_before &&
               std::all_of(malformed.output.begin(), malformed.output.end(),
                           [](float value) { return value == 91.0F; }) &&
               malformed.args.exsia_stripe_ready_sink == nullptr,
           "malformed publication reached execution or modified output");
-  std::printf("WS_RMD_PUBLICATION_BOUNDS rejected=1 dense_calls=0 scu_calls=0 "
+  std::printf("WS_RMD_PUBLICATION_BOUNDS rejected=1 dense_calls=0 runs_calls=0 "
               "output_unchanged=1\n");
-  std::printf("WS_RMD_BOUND bits=%u DIM=%u full_exact=%zu pipeline_exact=%zu "
-              "dense_calls=%zu scu_calls=%zu stripes=3 slots=0,1,0 "
+  std::printf("WS_RMD_BOUND_RUNS_DIAGNOSTIC bits=%u DIM=%u full_exact=%zu pipeline_exact=%zu "
+              "dense_calls=%zu runs_calls=%zu stripes=3 slots=0,1,0 "
               "rollback=%zu public_entry=1\n",
               GGML_GEMMINI_ACTIVATION_BITS, DIM, exact_full, exact_pipeline,
-              executor.dense_calls, executor.scu_calls, rollback);
+              executor.dense_calls, executor.runs_calls, rollback);
 }
 } // namespace im2p::gemmini_hp1

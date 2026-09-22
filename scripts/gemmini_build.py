@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -35,6 +36,7 @@ if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.gemmini_tools import build_environment, collect_tool_lock
+from scripts.gemmini_export import ExportError, verify_export
 from scripts.im2p_paths import resolve_gemmini_work_root
 from scripts.gemmini_hardware_contract import write_hardware_contract
 from scripts.gemmini_rtl_build_binding import BuildBindingError, build_inputs, seal_build
@@ -136,7 +138,7 @@ class BuildRequest:
     output: Path
     dry_run: bool
     llama_root: Path
-    llama_head: str | None
+    llama_source: Mapping[str, str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,19 +235,44 @@ def _parse_request(arguments: Sequence[str]) -> BuildRequest:
         llama_root = LLAMA_ROOT if namespace.llama_root is None else namespace.llama_root.resolve(strict=True)
     except OSError as error:
         raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source root: {error}") from error
-    llama_head = None if namespace.llama_root is None else _llama_identity(llama_root)
+    llama_source = None if namespace.llama_root is None else _llama_identity(llama_root)
     return BuildRequest(
         Stage(namespace.stage), _selection_arguments(namespace), namespace.profiles,
         namespace.memory_contract, namespace.memory_contract_dir, namespace.board,
         namespace.clock_mhz, Top(namespace.top), namespace.out, namespace.dry_run,
-        llama_root, llama_head,
+        llama_root, llama_source,
     )
 
 
-def _llama_identity(root: Path) -> str:
-    if not root.is_dir() or not (root / "CMakeLists.txt").is_file() or not (
+def _llama_identity(root: Path) -> Mapping[str, str]:
+    if not root.is_dir() or not (
         root / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"
     ).is_file():
+        raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source root: {root}")
+    if root.name == "llama_cpp_gemmini" and root.parent.name == "source" and root.parent.parent.name == "dependency":
+        package = root.parents[2]
+        try:
+            verify_export(package)
+            manifest_bytes = (package / "source-manifest.json").read_bytes()
+            lock_bytes = (package / "dependency-lock.json").read_bytes()
+            manifest = json.loads(manifest_bytes)
+            prefix = "dependency/source/llama_cpp_gemmini/"
+            listed = {name for name in manifest["files"] if name.startswith(prefix)}
+            selected = {prefix + path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+            if listed != selected:
+                raise BuildFailure(FailureReason.VALIDATION, "package llama source tree differs from source manifest")
+            lock = json.loads(lock_bytes)
+            head = lock["repositories"]["llama_cpp_gemmini"]["head"]
+            if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
+                raise BuildFailure(FailureReason.VALIDATION, "package llama base HEAD is invalid")
+            return {
+                "root": str(root), "base_head": head,
+                "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                "dependency_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+            }
+        except (ExportError, OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+            raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source package: {error}") from error
+    if not (root / "CMakeLists.txt").is_file():
         raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source root: {root}")
     try:
         toplevel = subprocess.run(
@@ -265,16 +292,17 @@ def _llama_identity(root: Path) -> str:
     if (toplevel.returncode or head.returncode or dirty.returncode
             or Path(toplevel.stdout.strip()).resolve() != root or dirty.stdout):
         raise BuildFailure(FailureReason.VALIDATION, f"llama source must be a clean git root: {root}")
-    return head.stdout.strip()
+    return {"root": str(root), "head": head.stdout.strip()}
 
 
 def _validate_request(request: BuildRequest) -> None:
-    if request.llama_head is not None:
+    if request.llama_source is not None:
         output = request.output.resolve()
-        if output.is_relative_to(request.llama_root) or request.llama_root.is_relative_to(output):
+        source_boundary = request.llama_root.parents[2] if "base_head" in request.llama_source else request.llama_root
+        if output.is_relative_to(source_boundary) or source_boundary.is_relative_to(output):
             raise BuildFailure(FailureReason.VALIDATION, "output and llama source root cannot overlap")
-        if _llama_identity(request.llama_root) != request.llama_head:
-            raise BuildFailure(FailureReason.VALIDATION, "llama source HEAD changed during planning")
+        if _llama_identity(request.llama_root) != request.llama_source:
+            raise BuildFailure(FailureReason.VALIDATION, "llama source changed during planning")
     if platform.system() == "Darwin" and request.stage.value in HARDWARE_STAGES:
         raise BuildFailure(
             FailureReason.DEFERRED_PLATFORM,
@@ -343,9 +371,7 @@ def _resolve_cases(request: BuildRequest) -> tuple[BuildCase, ...]:
         resolved = {
             **_resolve_document(selection, request.catalog_path, contract),
             **_top_metadata(request.top, selection),
-            **({} if request.llama_head is None else {"llama_source": {
-                "root": str(request.llama_root), "head": request.llama_head,
-            }}),
+            **({} if request.llama_source is None else {"llama_source": request.llama_source}),
         }
         cases.append(BuildCase(selection, resolved, case_output, case_output / "resolved-profile.json"))
     return tuple(cases)
@@ -474,6 +500,7 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
     source = "test_ws_rtl.cpp"
     executable = object_dir / prefix
     sources = (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"),
+               str(ROOT / "sim/common/gemmini_schedule.cpp"),
                str(request.llama_root / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"))
     link_flags = ("-LDFLAGS", " ".join((
         str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
@@ -666,9 +693,7 @@ def _case_document(
     )
     return {
         **_top_metadata(request.top, case.selection),
-        **({} if request.llama_head is None else {"llama_source": {
-            "root": str(request.llama_root), "head": request.llama_head,
-        }}),
+        **({} if request.llama_source is None else {"llama_source": request.llama_source}),
         "profile": case.selection.name,
         "status": status,
         "reason": next(
@@ -713,7 +738,7 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
     )
     profile_documents: list[Mapping[str, JsonValue]] = []
     for case, commands in zip(cases, command_sets):
-        binding_inputs = build_inputs(case.selection.name) if request.stage is Stage.HOST_TEST else None
+        binding_inputs = build_inputs(case.selection.name, request.llama_source) if request.stage is Stage.HOST_TEST else None
         if binding_inputs is not None:
             _write_json(case.output / 'rtl-build-inputs.json', binding_inputs)
         _write_json(case.manifest, case.resolved)
@@ -738,6 +763,8 @@ def run(request: BuildRequest) -> Mapping[str, JsonValue]:
                 break
         if binding_inputs is not None and results and all(result.returncode == 0 for result in results):
             try:
+                if request.llama_source is not None and _llama_identity(request.llama_root) != request.llama_source:
+                    raise BuildFailure(FailureReason.VALIDATION, "llama source changed during host build")
                 _write_json(case.output / 'rtl-build-binding.json', seal_build(case.output, binding_inputs))
             except (BuildBindingError, OSError) as error:
                 raise BuildFailure(FailureReason.VALIDATION, str(error)) from error

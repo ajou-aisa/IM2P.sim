@@ -9,6 +9,15 @@ _FIELDS: Final = frozenset((
     'op', 'kind', 'layer', 'start', 'end', 'delta', 'ns_start', 'ns_end', 'tid',
     'valid', 'reason', 'operation_success',
 ))
+_CURRENT_FIELDS: Final = _FIELDS | frozenset((
+    'cpu_work_cycles', 'cpu_work_cycles_valid', 'cpu_work_cycles_source',
+    'cpu_work_cycles_unit', 'cpu_work_cycles_reason', 'thread_cpu_ns',
+    'thread_cpu_valid', 'thread_cpu_reason', 'host_elapsed_ns',
+    'host_elapsed_valid', 'host_elapsed_reason', 'host_execution_id',
+    'host_start_ns', 'host_end_ns', 'host_start_tid', 'host_end_tid',
+    'host_thread_id', 'thread_id', 'interval_class', 'duration_role',
+    'exclusion_reason',
+))
 _T = TypeVar('_T')
 
 
@@ -31,6 +40,6 @@ def strip_device_host_call_records(output: str) -> str:
         except ValueError:
             return match.group()
         return '' if isinstance(record, dict) and record.get('op') == 'rmd.device_host_call' \
-            and set(record) == _FIELDS else match.group()
+            and set(record) in (_FIELDS, _CURRENT_FIELDS) else match.group()
 
     return _DEVICE_RECORD.sub(remove, output)

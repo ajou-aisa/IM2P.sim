@@ -12,7 +12,7 @@ from typing import Final
 from scripts.gemmini_replay_contract import contract_digest, validate_contract
 from scripts.gemmini_resolve_profile import JsonValue
 from scripts.gemmini_rtl_build_binding import BuildBindingError, validate_binding
-from sim.cycle.corpus_authority import LARGE_K, CorpusError, validate_corpus
+from sim.cycle.corpus_authority import LARGE_K, CorpusError, authority_reference, validate_corpus
 
 SCHEMA: Final = 'im2p-single-gemm-cycle-certificate'
 VERSION: Final = 2
@@ -157,6 +157,8 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
             document.get('timing_profile') == 'rtl-regression', 'unsupported timing scope/framing')
     require(document.get('execution_kind') in ('FRESH_RUN', 'REAGGREGATED_FROM_VERIFIED_EVIDENCE'),
             'evidence execution kind required')
+    require(document.get('corpus_authority') == authority_reference('v3'),
+            'current production requires v3 independent corpus authority')
     profiles = unique_strings(document.get('profiles'), 'profiles')
     framings = unique_strings(document.get('framings'), 'framings')
     require(set(profiles) == set(PROFILES) and set(framings) == set(FRAMINGS), 'profile/framing coverage incomplete')
@@ -189,8 +191,6 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
         require(count > 0, 'captured corpus cannot be empty')
         identities = unique_strings(expected[profile], 'expected case IDs')
         require(len(identities) == count + len(LARGE_K), 'expected corpus differs from captured corpus count')
-        required = tuple(f'captured-{i:03}' for i in range(1, count + 1)) + tuple(f'large-k-{k}' for k in LARGE_K)
-        require(identities == required, 'expected corpus identities differ from captured corpus and large-K coverage')
     expected_keys = {(p, f, c) for p in PROFILES for f in FRAMINGS
                      for c in unique_strings(expected[p], 'expected case IDs')}
     cases = array_value(document.get('cases'), 'cases')

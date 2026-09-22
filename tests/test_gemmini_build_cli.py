@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -24,8 +25,16 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+from unittest.mock import patch
 
-from scripts.gemmini_build import BuildFailure, FailureReason, _parse_request, _validate_request
+from scripts.gemmini_build import (
+    BuildFailure,
+    FailureReason,
+    _parse_request,
+    _validate_request,
+    run,
+)
+from scripts.gemmini_export import ExportError, VerifyResult
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 RESOLVER: Final = ROOT / "scripts" / "gemmini_resolve_profile.py"
@@ -267,6 +276,64 @@ def test_explicit_llama_root_records_exact_source_and_host_commands() -> None:
                    "libggml-gemmini-utils.a") in rtl_test[rtl_test.index("-LDFLAGS") + 1]
         assert any(str(source.resolve() / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp")
                    in command["arguments"] for command in commands)
+
+
+def test_source_package_records_manifest_identity_and_rejects_failed_verification() -> None:
+    # Given: a source-only llama tree in the export package layout.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-package-") as temporary:
+        base = Path(temporary)
+        package = base / "package"
+        source = package / "dependency/source/llama_cpp_gemmini"
+        reference = source / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"
+        reference.parent.mkdir(parents=True)
+        reference.write_text("// candidate\n", encoding="utf-8")
+        manifest = package / "source-manifest.json"
+        lock = package / "dependency-lock.json"
+        source_name = "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"
+        manifest.write_text(json.dumps({"schema_version": 1, "files": {source_name: {
+            "bytes": reference.stat().st_size,
+            "sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+        }}}), encoding="utf-8")
+        head = "1" * 40
+        lock.write_text(json.dumps({"repositories": {"llama_cpp_gemmini": {"head": head}}}), encoding="utf-8")
+        output = base / "plan"
+
+        # When: the official plan selects the verified package source tree.
+        with patch("scripts.gemmini_build.verify_export", return_value=VerifyResult("PASS", 2), create=True):
+            result = run(_parse_request([*base_single_arguments(output), "--llama-root", str(source)]))
+            host = run(_parse_request([
+                *base_single_arguments(base / "host"), "--stage", "host-test", "--dry-run",
+                "--llama-root", str(source),
+            ]))
+
+        # Then: the package identity is recorded without calling its base commit the source HEAD.
+        assert result["status"] == "PASS"
+        identity = json.loads((output / "resolved-profile.json").read_text())["llama_source"]
+        assert identity == {
+            "root": str(source.resolve()), "base_head": head,
+            "source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            "dependency_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+        }
+        assert json.loads((output / "result.json").read_text())["profiles"][0]["llama_source"] == identity
+        host_doc = json.loads(json.dumps(host))
+        assert host_doc["profiles"][0]["llama_source"] == identity
+        configure = next(command for command in host_doc["profiles"][0]["commands"]
+                         if command["arguments"][:2] == ["cmake", "-S"])
+        assert f"-DIM2P_LLAMA_ROOT={source.resolve()}" in configure["arguments"]
+        assert not (base / "host").exists()
+
+        # When: package verification detects a mismatch before a second build.
+        rejected = base / "rejected"
+        with patch("scripts.gemmini_build.verify_export", side_effect=ExportError("source mismatch"), create=True):
+            try:
+                run(_parse_request([*base_single_arguments(rejected), "--llama-root", str(source)]))
+            except BuildFailure as error:
+                assert error.reason is FailureReason.VALIDATION
+            else:
+                raise AssertionError("unverified package accepted")
+
+        # Then: no artifact is created for the unverified source.
+        assert not rejected.exists()
 
 
 def test_explicit_llama_root_rejects_wrong_and_dirty_sources_before_output() -> None:
@@ -630,11 +697,11 @@ def test_matrix_export_reuses_rtl_in_one_relocatable_handoff() -> None:
             "    binary = root / name\n"
             "    binary.write_text('#!/bin/sh\\necho \\\'integrated upstream WS HP1 RTL passed "
             "' + label + ' loops=1 load_execute_overlap=1\\\'\\n' + "
-            "f'echo \\\'WS_RMD_SCU {label} rtl_callbacks=1 scaled_exact=27 lanes={lanes} high_carry=1 "
-            "compose_exact=54 merge_exact=54 negative_tests=6 missing_reject=1 duplicate_reject=1 "
-            "high_exponent_scu=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\\\'\\n' + "
-            "f'echo \\\'WS_RMD_BOUND bits={bits} DIM={dim} full_exact=27 pipeline_exact=27 "
-            "dense_calls=4 scu_calls=1 stripes=3 slots=0,1,0 rollback=2 public_entry=1\\\'\\n' + "
+            "f'echo \\\'WS_RMD_RUNS_DIAGNOSTIC {label} run_callbacks=1 compact_exact=27 lanes={lanes} high_carry=1 "
+            "compose_exact=54 merge_exact=54 negative_tests=7 missing_reject=1 duplicate_reject=1 "
+            "missing_runs_reject=1 high_exponent_run=1 sparse_k=1 odd_k=1 stripes=3 slots=0,1,0\\\'\\n' + "
+            "f'echo \\\'WS_RMD_BOUND_RUNS_DIAGNOSTIC bits={bits} DIM={dim} full_exact=27 pipeline_exact=27 "
+            "dense_calls=4 runs_calls=1 stripes=3 slots=0,1,0 rollback=2 public_entry=1\\\'\\n' + "
             "'echo FLOW_UNIT_TEST_ONLY\\n')\n"
             "    binary.chmod(0o755)\n",
             encoding="utf-8",
