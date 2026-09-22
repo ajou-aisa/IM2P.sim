@@ -337,10 +337,13 @@ struct ProviderCase {
     if (!activations.allocate(m, k, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS))
       std::abort();
     for (size_t i = 0; i < m; ++i)
-      for (size_t x = 0; x < k; ++x)
-        if (!activations.set(i, x,
-                             static_cast<int32_t>((i * 7 + x * 3) % 11) - 5))
+      for (size_t x = 0; x < k; ++x) {
+        const int32_t value = hp1 && i < 2
+                                  ? (i == 0 ? 127 : -128)
+                                  : static_cast<int32_t>((i * 7 + x * 3) % 11) - 5;
+        if (!activations.set(i, x, value))
           std::abort();
+      }
     for (size_t j = 0; j < n; ++j) {
       for (size_t block = 0; block < blocks; ++block) {
         const auto code = [=](size_t lane) {
@@ -350,9 +353,9 @@ struct ProviderCase {
         if (hp1) {
           auto &weight = hp1_weights[j * blocks + block];
           weight.channel_scale = 0.25f;
-          weight.m = 1;
+          weight.m = j == 1 ? 31 : 1;
           for (size_t lane = 0; lane < QK8_0; ++lane)
-            weight.qs[lane] = code(lane);
+            weight.qs[lane] = j == 1 ? int8_t{127} : code(lane);
         } else {
           auto &weight = h1_weights[j * blocks + block];
           weight.s_rf = block % 2 == 0 ? 0.25f : 0.5f;
@@ -365,21 +368,31 @@ struct ProviderCase {
     }
     for (size_t i = 0; i < m; ++i) {
       for (size_t j = 0; j < n; ++j) {
-        double sum = 0.0;
-        for (size_t x = 0; x < k; ++x) {
-          const size_t index = j * blocks + x / QK8_0;
-          const int8_t code = hp1 ? hp1_weights[index].qs[x % QK8_0]
-                                  : h1_weights[index].qs[x % QK8_0];
-          const double factor = hp1
-              ? std::ldexp(static_cast<double>(hp1_weights[index].channel_scale),
-                           hp1_weights[index].m)
-              : static_cast<double>(h1_weights[index].s_rf) *
-                    static_cast<double>(h1_weights[index].c_b +
-                                        h1_weights[index].R);
-          sum += static_cast<double>(activations.get(i, x)) *
-                 static_cast<double>(code) * factor * 0.5;
+        if (hp1) {
+          int32_t acc = 0;
+          for (size_t x = 0; x < k; x += DIM) {
+            int64_t raw = 0;
+            for (size_t lane = x; lane < std::min(k, x + DIM); ++lane)
+              raw += int64_t(activations.get(i, lane)) *
+                     hp1_weights[j * blocks + lane / QK8_0].qs[lane % QK8_0];
+            const int shift = hp1_weights[j * blocks + x / QK8_0].m;
+            const auto sat32 = [](int64_t value) {
+              return static_cast<int32_t>(std::clamp(
+                  value, int64_t{INT32_MIN}, int64_t{INT32_MAX}));
+            };
+            acc = sat32(int64_t(acc) + sat32(raw * (int64_t{1} << shift)));
+          }
+          expected[i * n + j] = float(double(acc) * 0.25 * 0.5);
+        } else {
+          double sum = 0.0;
+          for (size_t x = 0; x < k; ++x) {
+            const size_t index = j * blocks + x / QK8_0;
+            const auto &weight = h1_weights[index];
+            sum += double(activations.get(i, x)) * weight.qs[x % QK8_0] *
+                   weight.s_rf * (weight.c_b + weight.R) * 0.5;
+          }
+          expected[i * n + j] = static_cast<float>(sum);
         }
-        expected[i * n + j] = static_cast<float>(sum);
       }
     }
     args.I = m;
@@ -411,7 +424,8 @@ struct ProviderCase {
 [[maybe_unused]] bool run_provider(Mode mode, bool hp1 = false) {
   ProviderCase test(hp1);
   Options options{1000000};
-  options.numerical_contract = NumericalContract::main_external;
+  options.numerical_contract = hp1 ? NumericalContract::scu_final_integer
+                                   : NumericalContract::main_external;
   auto started = execute(&test.args, mode, options);
   if (!started.status.ok()) {
     std::fprintf(stderr, "provider execute failed bits=%d dim=%d mode=%d: %s\n",
@@ -963,7 +977,7 @@ bool run_dual_context_hp1(Case &test, const char *route) {
   DualContextGate gate;
   Options options{};
   options.max_stalled_cycles = 1000000;
-  options.numerical_contract = NumericalContract::main_external;
+  options.numerical_contract = NumericalContract::scu_final_integer;
   options.residual_stage_mode = ResidualStageMode::im2p_compact;
   options.residual_stage_context = &gate;
   options.residual_stage_fn = real_residual_callback;
@@ -1027,6 +1041,9 @@ bool run_dual_context_hp1(Case &test, const char *route) {
   const bool counters = done.residual_stripe_timings[0].rmd_dot_calls > 0 &&
                         done.residual_stripe_timings[1].rmd_dot_calls == 0 &&
                         done.rmd_dot_calls > 0 &&
+                        done.stats.base.scale_read_requests > 0 &&
+                        done.stats.base.output_write_requests > 0 &&
+                        done.stats.base.completed_fragments > 0 &&
                         done.stats.base.work_total_cycles > 0 &&
                         done.rmd_stats.base.work_total_cycles > 0 &&
                         gate.provider_weight_reads > 0 &&
@@ -1064,6 +1081,12 @@ bool run_dual_context_hp1(Case &test, const char *route) {
 bool run_selected_dual_hp1() {
 #if GGML_GEMMINI_WEIGHT_BITS == 8
   ProviderCase test(true);
+  if (test.hp1_weights[2].m != 31 ||
+      test.expected[1] != float(double(INT32_MAX) * 0.125) ||
+      test.expected[test.n + 1] != float(double(INT32_MIN) * 0.125)) {
+    std::fprintf(stderr, "HP1 carrier/fragment saturation oracle invalid\n");
+    return false;
+  }
 #else
   MatchedProviderCase test(MatchedFormat::hp1);
 #endif

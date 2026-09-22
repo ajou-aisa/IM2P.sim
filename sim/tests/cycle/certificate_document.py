@@ -20,7 +20,7 @@ def complete_document(document: JsonObject, expected: dict[str, list[str]], libr
                   profiles=list(PROFILES), framings=['regression-tiles', 'planner-blocks'],
                   scope='isolated-work-accounting', timing_profile='rtl-regression',
                   expected_cases={name: list(cases) for name, cases in expected.items()},
-                  corpus_authority=authority_reference(),
+                  corpus_authority=document.get('corpus_authority', authority_reference()),
                   reference_memory=reference_memory_contract(), execution_kind=execution_kind)
     if result['status'] == 'PASS':
         return finalize_certificate(result, library)

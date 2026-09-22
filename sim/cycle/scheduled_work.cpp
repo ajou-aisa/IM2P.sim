@@ -40,7 +40,8 @@ void validate_config(const im2p_cycle_model_config_t &c) {
     throw Error(IM2P_CYCLE_INVALID, "invalid software admission limit");
 }
 Schedule expand_work(const im2p_cycle_model_config_t &c,
-                     const im2p_cycle_request_t &r) {
+                     const im2p_cycle_request_t &r,
+                     const im2p_compact_runs_t *runs) {
   validate_config(c);
   if (r.abi_version != IM2P_CYCLE_MODEL_ABI_VERSION ||
       r.struct_size != sizeof(r))
@@ -63,7 +64,6 @@ Schedule expand_work(const im2p_cycle_model_config_t &c,
   checked_add(checked_mul(r.m - 1, as), r.k);
   checked_add(checked_mul(r.k - 1, bs), r.n);
   checked_add(checked_mul(r.m - 1, cs), checked_mul(r.n, 4));
-  checked_mul(checked_mul(checked_add(r.k, 31) / 32, ss), 4);
   if (std::max({r.m, r.n, r.k, r.tile_i, r.tile_j, r.tile_k}) > UINT32_MAX)
     throw Error(IM2P_CYCLE_OVERFLOW,
                 "shape exceeds planner/hardware field width");
@@ -77,6 +77,10 @@ Schedule expand_work(const im2p_cycle_model_config_t &c,
       true,
       true,
       false};
+  if (runs && !gemmini::set_compact_runs(s.planner, runs))
+    throw Error(IM2P_CYCLE_INVALID, "invalid compact run view");
+  checked_mul(
+      checked_mul(checked_add(runs ? runs->original_k : r.k, 31) / 32, ss), 4);
   if (!gemmini::valid_config(s.planner))
     throw Error(IM2P_CYCLE_INVALID, "planner rejected request");
   const auto tile_k = checked_mul(r.tile_k, dim);
@@ -90,6 +94,8 @@ Schedule expand_work(const im2p_cycle_model_config_t &c,
         !s.work.empty() && r.submission == IM2P_CYCLE_TILE_SUBMISSIONS &&
         dim != 64 && s.work.back().first_plan.i == loop.i &&
         s.work.back().first_plan.j == loop.j &&
+        (!runs || s.work.back().first_plan.original_block_id ==
+                      loop.original_block_id) &&
         s.work.back().first_plan.k / tile_k == loop.k / tile_k;
     if (!coalesce) {
       ScheduledWork w;
@@ -98,9 +104,11 @@ Schedule expand_work(const im2p_cycle_model_config_t &c,
       w.max_j = loop.jp / dim;
       w.rows = loop.is;
       w.columns = loop.js;
-      w.fragment_base = r.submission == IM2P_CYCLE_TILE_SUBMISSIONS
-                            ? (loop.k % tile_k) / std::min(dim, 32u)
-                            : loop.fragment_base;
+      w.fragment_base =
+          runs ? loop.fragment_base
+               : r.submission == IM2P_CYCLE_TILE_SUBMISSIONS
+                     ? (loop.k % tile_k) / std::min(dim, 32u)
+                     : loop.fragment_base;
       s.work.push_back(std::move(w));
     }
     auto &w = s.work.back();

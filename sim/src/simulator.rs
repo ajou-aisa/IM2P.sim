@@ -288,6 +288,21 @@ impl Im2pSimulator {
         self.require_ready(operation, accepted)
     }
 
+    #[cfg(im2p_gemmini_integrated)]
+    pub(crate) fn start_matmul_geometry_runs(
+        &mut self,
+        descriptor: &ffi::MatmulDescriptor,
+        geometry: &crate::production_geometry::ProductionGeometry,
+        runs: &ffi::CompactRuns,
+    ) -> Result<(), Error> {
+        // SAFETY: Category 8 (FFI boundary): both scalar records and the
+        // run array remain live for this synchronous, copying admission call.
+        let accepted = unsafe {
+            ffi::im2p_start_matmul_geometry_runs(self.handle.as_ptr(), descriptor, geometry, runs)
+        };
+        self.require_ready("start_matmul_runs", accepted)
+    }
+
     pub fn dim(&self) -> usize {
         self.dim
     }

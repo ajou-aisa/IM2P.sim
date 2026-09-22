@@ -1,9 +1,15 @@
 #include "im2p_sim.h"
+#include "im2p_compact_runs.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 _Static_assert(IM2P_ABI_VERSION == 5, "ABI identity changed");
+_Static_assert(IM2P_COMPACT_RUNS_VERSION == 1, "run view version");
+_Static_assert(sizeof(im2p_compact_run_t) == 16, "run layout");
+_Static_assert(offsetof(im2p_compact_run_t, compact_k_count) == 12, "run count offset");
+_Static_assert(offsetof(im2p_compact_runs_t, runs) >
+                   offsetof(im2p_compact_runs_t, run_count), "run pointer order");
 _Static_assert(IM2P_PRODUCTION_GEOMETRY_VERSION == 1, "geometry version");
 _Static_assert(sizeof(im2p_production_geometry_v1_t) == 104, "geometry layout");
 _Static_assert(offsetof(im2p_production_geometry_v1_t, m) == 24, "geometry shape offset");

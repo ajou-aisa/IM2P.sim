@@ -431,7 +431,206 @@ static int test_abi5_scu_metadata_and_domain(im2p_sim_t *sim) {
   return 0;
 }
 
-int main(void) {
+typedef struct {
+  uint32_t carriers[2];
+  int32_t output;
+  int32_t second_output;
+  size_t scale_reads[2];
+  int fail_scale;
+  int fail_write;
+  int writes;
+  int weight_mode;
+} run_fixture_t;
+
+static int run_weight_i8(void *context, size_t row, size_t column,
+                         size_t count, int8_t *out) {
+  const run_fixture_t *fixture = context;
+  if (row >= 32 || column != 0 || count != 1) return -1;
+  const int8_t weights[7] = {-3, 0, 3, -1, 2, -2, 1};
+  out[0] = fixture->weight_mode ? weights[row % 7] : 1;
+  return 0;
+}
+
+static int run_scale(void *context, size_t block, size_t column,
+                     size_t count, uint32_t *out) {
+  run_fixture_t *fixture = context;
+  if (block >= 2 || column != 0 || count != 1 ||
+      (fixture->fail_scale && block == 1)) return -1;
+  ++fixture->scale_reads[block];
+  out[0] = fixture->carriers[block];
+  return 0;
+}
+
+static int run_output(void *context, size_t block, size_t row,
+                      size_t column, size_t count, const int64_t *values,
+                      uint32_t domain) {
+  run_fixture_t *fixture = context;
+  if (block || row || column || (count != 1 && count != 2) ||
+      domain != IM2P_OUTPUT_SCU_FINAL) return -1;
+  if (fixture->fail_write) return -1;
+  fixture->output = (int32_t)values[0];
+  if (count == 2) fixture->second_output = (int32_t)values[1];
+  ++fixture->writes;
+  return 0;
+}
+
+static int32_t oracle_sat32(int64_t value) {
+  return value > INT32_MAX ? INT32_MAX : value < INT32_MIN ? INT32_MIN
+                                                          : (int32_t)value;
+}
+
+static int32_t run_oracle(const activation_t *a,
+                          const im2p_compact_runs_t *runs,
+                          const uint32_t carriers[2], int weight_mode) {
+  int32_t acc = 0;
+  for (size_t index = 0; index < runs->run_count; ++index) {
+    const im2p_compact_run_t *run = &runs->runs[index];
+    for (size_t local = 0; local < run->compact_k_count;
+         local += IM2P_TEST_DIM) {
+      int64_t raw = 0;
+      const size_t end = local + IM2P_TEST_DIM < run->compact_k_count
+                             ? local + IM2P_TEST_DIM
+                             : run->compact_k_count;
+      for (size_t position = local; position < end; ++position)
+        raw += (int64_t)a[run->compact_k_begin + position] *
+               (weight_mode ? (int)((run->compact_k_begin + position) * 3 % 7) - 3
+                            : 1);
+      const uint32_t carrier = carriers[index];
+      const int64_t scaled = carrier == 0x80000000U ? 0
+                             : carrier >= 32 ? (raw < 0 ? INT32_MIN : INT32_MAX)
+                                             : raw * (INT64_C(1) << carrier);
+      acc = oracle_sat32((int64_t)acc + oracle_sat32(scaled));
+    }
+  }
+  return acc;
+}
+
+static int test_planned_runs(im2p_sim_t *sim) {
+  if (strcmp(im2p_sim_implementation(), "gemmini-hp1-integrated-v1") != 0)
+    return 0;
+  activation_t a[32];
+  for (size_t k = 0; k < 32; ++k) a[k] = 1;
+  run_fixture_t fixture = {{0, 1}, -99, -99, {0, 0}, 0, 0, 0, 0};
+  im2p_matmul_desc_t d = descriptor();
+  d.activations = a;
+  d.weights = NULL;
+  d.scales = NULL;
+  d.m = d.n = 1;
+  d.k = 22;
+  d.activation_row_stride_bytes = 32 * A_STORAGE;
+  d.block_size = 32;
+  d.vector_op = IM2P_VECTOR_LEFT_SHIFT;
+  d.output_domain = IM2P_OUTPUT_SCU_FINAL;
+  d.provider.context = &fixture;
+  d.provider.read_weight_i8 = run_weight_i8;
+  d.provider.read_scale = run_scale;
+  d.provider.write_output = run_output;
+  im2p_production_geometry_v1_t g = {
+      1, sizeof(g), IM2P_TEST_ACTIVATION_BITS, IM2P_TEST_WEIGHT_BITS,
+      IM2P_TEST_DIM, IM2P_GEOMETRY_FULL, 1, 1, 22, 1, 1, 2,
+      1, 0, 1, 0};
+  const im2p_compact_run_t entries[2] = {
+      {0, 0x00000fffU, 0, 12}, {1, 0x000003ffU, 12, 10}};
+  im2p_compact_runs_t runs = {
+      IM2P_COMPACT_RUNS_VERSION, sizeof(runs), 64, 2, entries};
+  im2p_matmul_desc_t raw_scales = d;
+  const uint32_t carrier = 0;
+  raw_scales.scales = &carrier;
+  raw_scales.scale_row_stride = (SIZE_MAX / 4) + 1;
+  raw_scales.scale_values_len = raw_scales.scale_row_stride + 1;
+  raw_scales.scale_valid_columns = 1;
+  raw_scales.provider.read_scale = NULL;
+  if (im2p_execute_matmul_planned_runs(sim, &raw_scales, &g, &runs, NULL) !=
+          IM2P_INVALID_LAYOUT || fixture.output != -99 || fixture.writes != 0)
+    return 44;
+  puts("C_API_RAW_SCALE_BYTE_EXTENT_PASS");
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != 32 ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 0) ||
+      fixture.writes != 1 ||
+      !fixture.scale_reads[0] || !fixture.scale_reads[1]) return 34;
+  printf("C_API_ORACLE case=k12_plus_10 expected=%d actual=%d\n",
+         run_oracle(a, &runs, fixture.carriers, 0), fixture.output);
+  activation_t a2[64];
+  for (size_t k = 0; k < 64; ++k) a2[k] = 1;
+  d.activations = a2;
+  d.m = g.m = g.row_count = 2;
+  fixture.output = fixture.second_output = -99;
+  fixture.writes = 0;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != 32 || fixture.second_output != 32 ||
+      fixture.writes != 1) return 42;
+  d.activations = a;
+  d.m = g.m = g.row_count = 1;
+  for (size_t k = 0; k < 22; ++k) a[k] = k % 3 == 0 ? 2 : -1;
+  fixture.weight_mode = 1;
+  fixture.output = -99;
+  fixture.writes = 0;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != -11 ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 1) ||
+      fixture.writes != 1) return 43;
+  printf("C_API_ORACLE case=asymmetric_compact_k expected=%d actual=%d\n",
+         run_oracle(a, &runs, fixture.carriers, 1), fixture.output);
+  fixture.weight_mode = 0;
+  for (size_t k = 0; k < 22; ++k) a[k] = 1;
+  fixture.output = -99;
+  fixture.writes = 0;
+  fixture.carriers[1] = 0x80000000U;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != 12 ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 0) ||
+      fixture.writes != 1) return 35;
+  const im2p_compact_run_t gap_entries[2] = {
+      {0, 0x7fffffffU, 0, 31}, {3, 1, 31, 1}};
+  runs.runs = gap_entries;
+  runs.original_k = 128;
+  d.k = g.k = 32;
+  fixture.carriers[1] = 1;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != 33 ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 0)) return 38;
+  printf("C_API_ORACLE case=k31_plus_1_gap expected=%d actual=%d\n",
+         run_oracle(a, &runs, fixture.carriers, 0), fixture.output);
+  fixture.carriers[0] = fixture.carriers[1] = 31;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != INT32_MAX ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 0)) return 39;
+  printf("C_API_ORACLE case=positive_sat expected=%d actual=%d\n",
+         run_oracle(a, &runs, fixture.carriers, 0), fixture.output);
+  for (size_t k = 0; k < 32; ++k) a[k] = -1;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_OK ||
+      fixture.output != INT32_MIN ||
+      fixture.output != run_oracle(a, &runs, fixture.carriers, 0)) return 40;
+  printf("C_API_ORACLE case=negative_sat expected=%d actual=%d\n",
+         run_oracle(a, &runs, fixture.carriers, 0), fixture.output);
+  for (size_t k = 0; k < 32; ++k) a[k] = 1;
+  runs.runs = entries;
+  runs.original_k = 64;
+  d.k = g.k = 22;
+  fixture.carriers[0] = 0;
+  fixture.carriers[1] = 1;
+  fixture.output = -99;
+  fixture.writes = 0;
+  fixture.fail_scale = 1;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_ERROR ||
+      fixture.output != -99 || fixture.writes != 0) return 36;
+  fixture.fail_scale = 0;
+  fixture.fail_write = 1;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) != IM2P_ERROR ||
+      fixture.output != -99 || fixture.writes != 0) return 41;
+  fixture.fail_write = 0;
+  im2p_compact_run_t bad[2] = {entries[0], entries[1]};
+  bad[1].compact_k_begin = 13;
+  runs.runs = bad;
+  if (im2p_execute_matmul_planned_runs(sim, &d, &g, &runs, NULL) !=
+          IM2P_INVALID_LAYOUT || fixture.output != -99 || fixture.writes != 0)
+    return 37;
+  puts("C_API_PLANNED_RUNS_PASS unequal=1 asymmetric_k=1 m2_single_write=1 zero=1 gap31=1 saturation=2 failed_scale=1 failed_write=1 malformed=1");
+  return 0;
+}
+
+int main(int argc, char **argv) {
   if (im2p_sim_abi_version() != IM2P_ABI_VERSION ||
       im2p_sim_activation_bits() != IM2P_TEST_ACTIVATION_BITS ||
       im2p_sim_weight_bits() != IM2P_TEST_WEIGHT_BITS ||
@@ -440,6 +639,11 @@ int main(void) {
       im2p_sim_dim() != IM2P_TEST_DIM) return 1;
   im2p_sim_t *sim = im2p_sim_create();
   if (!sim) return 2;
+  if (argc == 2 && strcmp(argv[1], "--planned-runs-only") == 0) {
+    const int status = test_planned_runs(sim);
+    im2p_sim_destroy(sim);
+    return status;
+  }
 
   int32_t output = 0;
   im2p_matmul_desc_t direct = descriptor();
@@ -568,6 +772,8 @@ int main(void) {
 
   const int scu_status = test_abi5_scu_metadata_and_domain(sim);
   if (scu_status != 0) return scu_status;
+  const int runs_status = test_planned_runs(sim);
+  if (runs_status != 0) return runs_status;
   im2p_sim_destroy(sim);
   return 0;
 }

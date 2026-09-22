@@ -1,5 +1,6 @@
 #include "im2p_cpu_functional_internal.hpp"
 #include "im2p_cpu_functional.hpp"
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <new>
@@ -91,6 +92,39 @@ int im2p_execute_matmul_planned(im2p_sim_t *sim, const im2p_matmul_desc_t *d,
 #if defined(IM2P_CPU_FUNCTIONAL_TEST_HOOKS)
     if (status == IM2P_OK) cf::observe(*d, *g);
 #endif
+    return status;
+  } catch (...) {
+    return IM2P_ERROR;
+  }
+}
+
+int im2p_execute_matmul_planned_runs(im2p_sim_t *sim,
+                                     const im2p_matmul_desc_t *d,
+                                     const im2p_production_geometry_v1_t *g,
+                                     const im2p_compact_runs_t *view,
+                                     im2p_work_stats_extended_t *stats) {
+  if (!sim || !d || !g || !view ||
+      reinterpret_cast<std::uintptr_t>(view) %
+          alignof(im2p_compact_runs_t) ||
+      !view->runs ||
+      reinterpret_cast<std::uintptr_t>(view->runs) %
+          alignof(im2p_compact_run_t) ||
+      view->run_count > d->k ||
+      view->run_count > SIZE_MAX / sizeof(im2p_compact_run_t))
+    return IM2P_INVALID_LAYOUT;
+  if (*sim->busy) return IM2P_UNFINISHED_STREAM;
+  if (!cf::geometry(*g, *d, IM2P_GEOMETRY_FULL) ||
+      view->version != IM2P_COMPACT_RUNS_VERSION ||
+      view->struct_size != sizeof(*view) || !view->original_k ||
+      !view->run_count)
+    return IM2P_INVALID_LAYOUT;
+  try {
+    const std::vector<im2p_compact_run_t> runs(view->runs,
+                                               view->runs + view->run_count);
+    cf::Operands operands;
+    int status = cf::prepare_runs(operands, *d, runs, view->original_k);
+    if (status == IM2P_OK) status = cf::execute_runs(operands, runs);
+    if (status == IM2P_OK && stats) *stats = {};
     return status;
   } catch (...) {
     return IM2P_ERROR;

@@ -12,6 +12,7 @@ mod contract;
 #[cfg(all(test, im2p_gemmini_integrated))]
 mod geometry_tests;
 mod helpers;
+mod runs;
 mod stream;
 mod types;
 
@@ -22,6 +23,7 @@ use helpers::{
     execute_full, execute_full_provider, status_for_error, validate_provider_rtl_fields,
     write_extended_stats, write_stats,
 };
+use runs::OwnedRuns;
 use types::{MatmulDesc, MatmulDescC, WorkStatsC, WorkStatsExtendedC};
 
 const ABI_VERSION: u32 = 5;
@@ -91,7 +93,7 @@ pub unsafe extern "C" fn im2p_execute_matmul(
     descriptor: *const MatmulDescC,
     stats: *mut WorkStatsC,
 ) -> i32 {
-    match execute_matmul_value(sim, descriptor, None) {
+    match execute_matmul_value(sim, descriptor, None, None) {
         Ok(value) => {
             write_stats(stats, value);
             0
@@ -106,7 +108,7 @@ pub unsafe extern "C" fn im2p_execute_matmul_extended(
     descriptor: *const MatmulDescC,
     stats: *mut WorkStatsExtendedC,
 ) -> i32 {
-    match execute_matmul_value(sim, descriptor, None) {
+    match execute_matmul_value(sim, descriptor, None, None) {
         Ok(value) => {
             write_extended_stats(stats, value);
             0
@@ -125,7 +127,27 @@ pub unsafe extern "C" fn im2p_execute_matmul_planned(
     let Some(geometry) = geometry.as_ref() else {
         return -4;
     };
-    match execute_matmul_value(sim, descriptor, Some(geometry)) {
+    match execute_matmul_value(sim, descriptor, Some(geometry), None) {
+        Ok(value) => {
+            write_extended_stats(stats, value);
+            0
+        }
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_execute_matmul_planned_runs(
+    sim: *mut SimBox,
+    descriptor: *const MatmulDescC,
+    geometry: *const crate::production_geometry::ProductionGeometry,
+    runs: *const crate::ffi::CompactRuns,
+    stats: *mut WorkStatsExtendedC,
+) -> i32 {
+    let Some(geometry) = (unsafe { geometry.as_ref() }) else {
+        return -4;
+    };
+    match unsafe { execute_matmul_value(sim, descriptor, Some(geometry), Some(runs)) } {
         Ok(value) => {
             write_extended_stats(stats, value);
             0
@@ -138,11 +160,15 @@ unsafe fn execute_matmul_value(
     sim: *mut SimBox,
     descriptor: *const MatmulDescC,
     geometry: Option<&crate::production_geometry::ProductionGeometry>,
+    runs: Option<*const crate::ffi::CompactRuns>,
 ) -> Result<WorkStats, i32> {
     let Some(desc) = descriptor.as_ref() else {
         return Err(-4);
     };
     require_identity(Identity::from_matmul(desc))?;
+    if runs.is_some() && !cfg!(im2p_gemmini_integrated) {
+        return Err(CONFIGURATION_MISMATCH);
+    }
     if let Some(geometry) = geometry {
         if !cfg!(im2p_gemmini_integrated) {
             return Err(CONFIGURATION_MISMATCH);
@@ -154,10 +180,17 @@ unsafe fn execute_matmul_value(
             crate::production_geometry::GEOMETRY_FULL,
         )?;
     }
+    let runs = match runs {
+        Some(view) => Some(unsafe { OwnedRuns::copy(view, desc.k) }?),
+        None => None,
+    };
+    if runs.is_some() && desc.provider.read_weight_i16.is_some() {
+        return Err(-4);
+    }
     require_output_domain(
         desc.vector_op,
         desc.output_domain,
-        provider_requested(desc.provider),
+        provider_requested(desc.provider) || runs.is_some(),
     )?;
     if (!desc.scales.is_null() && !(desc.scales as usize).is_multiple_of(align_of::<u32>()))
         || desc.activations.is_null()
@@ -194,15 +227,16 @@ unsafe fn execute_matmul_value(
         work_context: desc.work_context,
     };
     let any_provider = provider_requested(desc.provider);
-    if any_provider
+    if runs.is_none()
+        && any_provider
         && (!selected_weight_callback(desc.provider) || desc.provider.write_output.is_none())
     {
         return Err(-4);
     }
-    if !any_provider && (parsed.weights.is_null() || parsed.output.is_null()) {
+    if runs.is_none() && !any_provider && (parsed.weights.is_null() || parsed.output.is_null()) {
         return Err(-1);
     }
-    if any_provider {
+    if any_provider || runs.is_some() {
         validate_provider_rtl_fields(&parsed)?;
     }
     let Some(owner) = sim.as_mut() else {
@@ -212,7 +246,15 @@ unsafe fn execute_matmul_value(
     let Some(simulator) = state.as_mut() else {
         return Err(-3);
     };
-    let result = if any_provider {
+    let result = if let Some(runs) = runs.as_ref() {
+        let Some(geometry) = geometry else {
+            return Err(-4);
+        };
+        return runs::execute(simulator, &parsed, desc.provider.selected(), geometry, runs)
+            .inspect_err(|_| {
+                simulator.reset();
+            });
+    } else if any_provider {
         execute_full_provider(simulator, &parsed, desc.provider.selected(), geometry)
     } else {
         execute_full(simulator, &parsed, geometry)

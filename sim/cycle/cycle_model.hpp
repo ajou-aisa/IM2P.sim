@@ -8,5 +8,6 @@ struct ModelResult {
   Trace trace;
 };
 ModelResult estimate(const im2p_cycle_model_config_t &,
-                     const im2p_cycle_request_t &);
+                     const im2p_cycle_request_t &,
+                     const im2p_compact_runs_t *runs = nullptr);
 } // namespace im2p::cycle

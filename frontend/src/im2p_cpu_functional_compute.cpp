@@ -197,6 +197,143 @@ int execute(const Operands &operands, const void *activations, size_t stride,
   return IM2P_OK;
 }
 
+int prepare_runs(Operands &out, const im2p_matmul_desc_t &d,
+                 const std::vector<im2p_compact_run_t> &runs,
+                 uint32_t original_k) {
+  TimingScope materialize("functional.materialize");
+  if (!identity(d.abi_version, d.activation_bits, d.activation_storage_bytes,
+                d.weight_bits, d.weight_storage_bytes, d.dim))
+    return IM2P_CONFIGURATION_MISMATCH;
+  if (d.vector_op != IM2P_VECTOR_LEFT_SHIFT ||
+      d.output_domain != IM2P_OUTPUT_SCU_FINAL || d.block_size != 32 ||
+      d.m > UINT32_MAX || d.n > UINT32_MAX || d.k > UINT32_MAX ||
+      !extent(d.m, d.k, d.activation_row_stride_bytes) ||
+      !extent(d.k, d.n, d.weight_row_stride_bytes) ||
+      !extent(d.m, d.n, d.output_row_stride, sizeof(int32_t)) ||
+      !extent(d.k, d.n, d.n) || !extent(runs.size(), d.n, d.n) ||
+      !d.activations || (!d.weights && !d.provider.read_weight_i8) ||
+      (!d.scales && !d.provider.read_scale) ||
+      (!d.output && !d.provider.write_output) ||
+      d.provider.read_weight_i16)
+    return IM2P_INVALID_LAYOUT;
+  if (!d.provider.read_scale &&
+      (d.scale_valid_columns < d.n ||
+       d.scale_column_offset > d.scale_row_stride ||
+       d.n > d.scale_row_stride - d.scale_column_offset ||
+       !extent(runs.size(), d.scale_column_offset + d.n,
+               d.scale_row_stride, sizeof(uint32_t)) ||
+       (runs.size() - 1) * d.scale_row_stride + d.scale_column_offset + d.n >
+           d.scale_values_len))
+    return IM2P_INVALID_LAYOUT;
+  uint64_t end = 0;
+  uint32_t previous = 0;
+  for (size_t index = 0; index < runs.size(); ++index) {
+    const auto &run = runs[index];
+    if (!run.compact_k_count || run.compact_k_count > 32 ||
+        run.compact_k_begin != end ||
+        (index && run.original_block_id <= previous) ||
+        run.original_block_id > UINT16_MAX / std::max(1u, 32u / IM2P_DIM) ||
+        static_cast<uint32_t>(__builtin_popcount(run.original_k_mask)) !=
+            run.compact_k_count)
+      return IM2P_INVALID_LAYOUT;
+    for (uint32_t bit = 0; bit < 32; ++bit)
+      if ((run.original_k_mask & (1u << bit)) &&
+          uint64_t(run.original_block_id) * 32 + bit >=
+              uint64_t(original_k))
+        return IM2P_INVALID_LAYOUT;
+    end += run.compact_k_count;
+    if (end > d.k) return IM2P_INVALID_LAYOUT;
+    previous = run.original_block_id;
+  }
+  if (end != d.k) return IM2P_INVALID_LAYOUT;
+  out.descriptor = d;
+  out.weights.resize(d.k * d.n);
+  out.scales.resize(runs.size() * d.n);
+  for (size_t k = 0; k < d.k; ++k) {
+    auto *row = out.weights.data() + k * d.n;
+    if (d.provider.read_weight_i8) {
+      for (size_t column = 0; column < d.n; column += IM2P_DIM)
+        if (d.provider.read_weight_i8(
+                d.provider.context, k, column,
+                std::min<size_t>(IM2P_DIM, d.n - column), row + column) !=
+            IM2P_OK)
+          return IM2P_ERROR;
+    } else {
+      std::copy_n(static_cast<const int8_t *>(d.weights) +
+                      k * d.weight_row_stride_bytes,
+                  d.n, row);
+    }
+    if (!values_valid(row, d.n, d.weight_bits)) return IM2P_INVALID_LAYOUT;
+  }
+  for (size_t index = 0; index < runs.size(); ++index) {
+    auto *row = out.scales.data() + index * d.n;
+    if (d.provider.read_scale) {
+      for (size_t column = 0; column < d.n; column += IM2P_DIM)
+        if (d.provider.read_scale(
+                d.provider.context, index, column,
+                std::min<size_t>(IM2P_DIM, d.n - column), row + column) !=
+            IM2P_OK)
+          return IM2P_ERROR;
+    } else {
+      std::copy_n(d.scales + index * d.scale_row_stride + d.scale_column_offset,
+                  d.n, row);
+    }
+    if (!std::all_of(row, row + d.n, hp1::valid_carrier))
+      return IM2P_INVALID_LAYOUT;
+  }
+  return IM2P_OK;
+}
+
+int execute_runs(const Operands &operands,
+                 const std::vector<im2p_compact_run_t> &runs) {
+  const auto &d = operands.descriptor;
+  const auto *a = static_cast<const int8_t *>(d.activations);
+  for (size_t row = 0; row < d.m; ++row)
+    if (!values_valid(a + row * d.activation_row_stride_bytes, d.k,
+                      d.activation_bits))
+      return IM2P_INVALID_LAYOUT;
+  std::vector<int32_t> output(d.m * d.n, 0), partial(d.n);
+  {
+    TimingScope matmul("functional.matmul");
+    for (size_t row = 0; row < d.m; ++row) {
+      auto *acc = output.data() + row * d.n;
+      for (size_t index = 0; index < runs.size(); ++index) {
+        const auto &run = runs[index];
+        for (size_t local = 0; local < run.compact_k_count;
+             local += IM2P_DIM) {
+          std::fill(partial.begin(), partial.end(), 0);
+          const size_t end = std::min<size_t>(run.compact_k_count,
+                                              local + IM2P_DIM);
+          for (size_t pos = local; pos < end; ++pos) {
+            const size_t k = run.compact_k_begin + pos;
+            const int32_t activation = a[row * d.activation_row_stride_bytes + k];
+            const auto *weight = operands.weights.data() + k * d.n;
+            for (size_t column = 0; column < d.n; ++column)
+              partial[column] += activation * weight[column];
+          }
+          const auto *scale = operands.scales.data() + index * d.n;
+          for (size_t column = 0; column < d.n; ++column)
+            acc[column] = hp1::accumulate(
+                acc[column], hp1::apply_validated(partial[column], scale[column]));
+        }
+      }
+    }
+  }
+  TimingScope reconstruction("functional.output");
+  if (d.provider.write_output) {
+    std::vector<int64_t> values(output.begin(), output.end());
+    return d.provider.write_output(d.provider.context, 0, 0, 0,
+                                   values.size(), values.data(),
+                                   d.output_domain) == IM2P_OK
+               ? IM2P_OK
+               : IM2P_ERROR;
+  }
+  for (size_t row = 0; row < d.m; ++row)
+    std::copy_n(output.data() + row * d.n, d.n,
+                d.output + row * d.output_row_stride);
+  return IM2P_OK;
+}
+
 im2p_matmul_desc_t descriptor(const im2p_stripe_work_desc_t &d) noexcept {
   im2p_matmul_desc_t result{};
 #define COPY(field) result.field = d.field

@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "im2p_geometry.h"
+#include "im2p_compact_runs.h"
 
 #define IM2P_SCU_NUMERICAL_REVISION "signed-scu-sat-v2"
 
@@ -274,6 +275,19 @@ int im2p_execute_matmul_planned(
     im2p_sim_t *sim,
     const im2p_matmul_desc_t *descriptor,
     const im2p_production_geometry_v1_t *geometry,
+    im2p_work_stats_extended_t *stats
+);
+/* Runs cover compact K exactly. Weight callbacks receive compact K rows;
+ * read_scale receives the run ordinal. On success write_output is called once
+ * with block=row=column=0 and count=m*n contiguous row-major final lanes;
+ * absent that callback, output is committed after all reads succeed. Caller
+ * callback side effects are outside the library's rollback guarantee.
+ */
+int im2p_execute_matmul_planned_runs(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_t *descriptor,
+    const im2p_production_geometry_v1_t *geometry,
+    const im2p_compact_runs_t *runs,
     im2p_work_stats_extended_t *stats
 );
 int im2p_begin_striped_matmul_planned(

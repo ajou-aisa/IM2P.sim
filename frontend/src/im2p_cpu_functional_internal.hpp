@@ -16,5 +16,10 @@ bool geometry(const im2p_production_geometry_v1_t &g,
 int prepare(Operands &out, const im2p_matmul_desc_t &descriptor);
 int execute(const Operands &operands, const void *activations, size_t stride,
             size_t first_row, size_t rows);
+int prepare_runs(Operands &out, const im2p_matmul_desc_t &descriptor,
+                 const std::vector<im2p_compact_run_t> &runs,
+                 uint32_t original_k);
+int execute_runs(const Operands &operands,
+                 const std::vector<im2p_compact_run_t> &runs);
 im2p_matmul_desc_t descriptor(const im2p_stripe_work_desc_t &d) noexcept;
 } // namespace im2p::cpu_functional

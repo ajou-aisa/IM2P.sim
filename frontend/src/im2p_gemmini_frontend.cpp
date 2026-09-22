@@ -1,5 +1,10 @@
 #include "im2p_gemmini_frontend.hpp"
+#ifndef IM2P_PRODUCTION_TRACE_ENABLED
+#define IM2P_PRODUCTION_TRACE_ENABLED 1
+#endif
+#if IM2P_PRODUCTION_TRACE_ENABLED
 #include "im2p_production_trace.hpp"
+#endif
 #if CYCLE_SIM
 #include "im2p_cycle_sim.hpp"
 #endif
@@ -624,8 +629,10 @@ struct Run::Impl {
       : scalars(snapshot_scalars(*source)),
         pointers(snapshot_pointers(*source)), mode(requested_mode),
         options(requested_options),
+#if IM2P_PRODUCTION_TRACE_ENABLED
         trace_context(source->optrace_context),
         trace_layer(trace_context ? source->matmul_layer : std::string{}),
+#endif
 #if CYCLE_SIM
         cycle_sim_context(source->cycle_sim_context),
         cycle_sim_layer(source->matmul_layer),
@@ -646,8 +653,10 @@ struct Run::Impl {
   PointerSnapshot pointers;
   Mode mode;
   Options options;
+#if IM2P_PRODUCTION_TRACE_ENABLED
   std::shared_ptr<const ggml::gemmini::optrace::Context> trace_context;
   std::string trace_layer;
+#endif
 #if CYCLE_SIM
   cycle_sim::log::Context cycle_sim_context;
   std::string cycle_sim_layer;
@@ -1572,9 +1581,11 @@ struct Run::Impl {
 #if CYCLE_SIM
         if (result == IM2P_OK) dispatch_events.complete();
 #endif
+#if IM2P_PRODUCTION_TRACE_ENABLED
         if (trace_context && result == IM2P_OK)
           trace_context->session->accepted(
               *trace_context, production_trace::full(d, g, trace_layer));
+#endif
 #if CYCLE_SIM
         if (cycle_sim_context && result == IM2P_OK)
           cycle_sim_context.session->ensure_healthy();
@@ -1591,10 +1602,12 @@ struct Run::Impl {
     else if (result != IM2P_OK)
       set_error(
           from_c_status(result, route, "IM2P full execution failed", native));
+#if IM2P_PRODUCTION_TRACE_ENABLED
     else if (trace_context)
       // Count successful production calls independently of serialization.
       trace_context->session->independent_count(
           *trace_context, trace_layer, "dense_main", 1);
+#endif
   }
 
   int publish(im2p_stream_t *stream, const DenseEvent &e) {
@@ -1646,10 +1659,12 @@ struct Run::Impl {
       }
       // Only runtime-accepted publications are work. A retry/backpressure
       // return must never allocate a trace sequence or increment trace count.
+#if IM2P_PRODUCTION_TRACE_ENABLED
       if (trace_context)
         trace_context->session->accepted(*trace_context,
             production_trace::stripe(stripe_descriptor(), s, e.geometry,
                                      trace_layer, e.slot));
+#endif
 #if CYCLE_SIM
       if (cycle_sim_context)
         cycle_sim_context.session->ensure_healthy();
@@ -2074,11 +2089,13 @@ struct Run::Impl {
       else if (result != IM2P_OK)
         set_error(
             from_c_status(result, route, "IM2P stream fence failed", native));
+#if IM2P_PRODUCTION_TRACE_ENABLED
       else if (trace_context)
         // The runtime owns this acceptance counter; it is not computed from
         // publication callbacks or from the op-trace writer's count.
         trace_context->session->independent_count(
             *trace_context, trace_layer, "dense_main", stats.base.stripes_published);
+#endif
     } else if (provider_failed) {
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -2223,7 +2240,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   auto &x = *run->impl_;
 #if CYCLE_SIM
   cycle_sim::log::ScopedContext cycle_context(x.cycle_sim_context);
-  if (x.trace_context || (x.cycle_sim_context &&
+  if (
+#if IM2P_PRODUCTION_TRACE_ENABLED
+      x.trace_context ||
+#endif
+      (x.cycle_sim_context &&
       (!x.cycle_sim_context.operation_id || !options.production_geometry ||
        options.full_executor || options.stream_executor))) {
     x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
@@ -2263,6 +2284,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
+#if IM2P_PRODUCTION_TRACE_ENABLED
   if (x.trace_context && (!*x.trace_context || !options.production_geometry ||
                           options.full_executor || options.stream_executor)) {
     x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
@@ -2270,6 +2292,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
+#endif
   if (options.production_geometry) {
 #if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1) && !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
     const auto scope = mode == Mode::full ? IM2P_GEOMETRY_FULL : IM2P_GEOMETRY_STREAM;
@@ -2417,6 +2440,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
+#if IM2P_PRODUCTION_TRACE_ENABLED
   if (x.trace_context) {
     try {
       const auto scope = mode == Mode::full ? IM2P_GEOMETRY_FULL : IM2P_GEOMETRY_STREAM;
@@ -2435,6 +2459,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       return {x.final_status, std::move(run)};
     }
   }
+#endif
 #if CYCLE_SIM
   if (x.cycle_sim_context) {
     try {
@@ -2669,6 +2694,7 @@ FenceResult fence(Run &run) noexcept {
       x.final_status = make_status(StatusCode::execution_failure, x.route,
                                    x.native,
                                    "incomplete residual stage coverage");
+#if IM2P_PRODUCTION_TRACE_ENABLED
     if (x.final_status.ok() && x.trace_context) {
       try {
         x.trace_context->session->parent_end(*x.trace_context);
@@ -2677,6 +2703,7 @@ FenceResult fence(Run &run) noexcept {
                                      "optrace parent completion failed");
       }
     }
+#endif
 #if CYCLE_SIM
     if (x.final_status.ok() && fence_context) {
       try {

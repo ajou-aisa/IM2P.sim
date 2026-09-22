@@ -3,6 +3,7 @@
 #include "residual/rmd/rmd-im2p-executor.hpp"
 #include "uart.hpp"
 #include <im2p_sim.h>
+#include <im2p_compact_runs.h>
 
 #include <cstdint>
 #include <vector>
@@ -31,6 +32,16 @@ struct RmdScuWork : RmdRawWork {
   std::vector<std::uint32_t> carriers;
 };
 using RmdScuExecute = int (*)(void *, const RmdScuWork &,
+                              std::vector<std::int32_t> &, std::uint64_t &);
+
+// Fixture-only compact K work. Carriers are indexed by run ordinal, then N.
+struct RmdRunWork : RmdRawWork {
+  im2p_production_geometry_v1_t geometry{};
+  std::uint32_t original_k = 0;
+  std::vector<im2p_compact_run_t> runs;
+  std::vector<std::uint32_t> carriers;
+};
+using RmdRunExecute = int (*)(void *, const RmdRunWork &,
                               std::vector<std::int32_t> &, std::uint64_t &);
 
 struct RmdExecutorContext {

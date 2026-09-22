@@ -11,9 +11,39 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim.tests.cycle.current_rtl_certificate import exact_result, observed_source, ownership
 from sim.tests.cycle import current_rtl_certificate as certificate
+from sim.tests.cycle import rtl_hardening as rtl
+
+EVENT_STEP = '    dut.eval();\n    if (dut.io_error) {'
+EVENT_HOOK = '    if (event_observer)\n      event_observer(*this);\n'
+EVENT_SOURCE = ('#include <cstring>\n\nnamespace {\n' + EVENT_STEP + '\n'
+                '  const auto old_contexts = state.contexts, old_raw = state.raw_rows, '
+                'old_commits = state.commits;')
 
 
 class CurrentCertificateTest(unittest.TestCase):
+    def test_event_instrumentation_preserves_legacy_step(self) -> None:
+        result = rtl._instrument_events(EVENT_SOURCE)
+        self.assertEqual(result.count('auto hardening_event'), 1)
+        self.assertIn('    dut.eval();\n    auto hardening_event', result)
+
+    def test_event_instrumentation_accepts_passive_hook_after_eval(self) -> None:
+        source = EVENT_SOURCE.replace('    if (dut.io_error) {', EVENT_HOOK + '    if (dut.io_error) {')
+        result = rtl._instrument_events(source)
+        self.assertEqual(result.count('auto hardening_event'), 1)
+        self.assertLess(result.index('auto hardening_event'), result.index('event_observer(*this)'))
+        self.assertLess(result.index('event_observer(*this)'), result.index('if (dut.io_error)'))
+
+    def test_event_instrumentation_rejects_missing_duplicate_and_ambiguous_steps(self) -> None:
+        hooked = EVENT_STEP.replace('    if (dut.io_error) {', EVENT_HOOK + '    if (dut.io_error) {')
+        for step in ('', EVENT_STEP + EVENT_STEP, EVENT_STEP + hooked,
+                     hooked + hooked, '    dut.eval();\n    if (event_observer)\n    if (dut.io_error) {'):
+            with self.subTest(step=step), self.assertRaisesRegex(ValueError, 'event injection'):
+                rtl._instrument_events(EVENT_SOURCE.replace(EVENT_STEP, step))
+
+    def test_event_instrumentation_accepts_current_fixture_without_preshaping(self) -> None:
+        result = rtl._instrument_events(certificate.SOURCE.read_text())
+        self.assertEqual(result.count('auto hardening_event'), 1)
+
     def test_document_serialization_does_not_depend_on_mapping_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first, second = Path(directory) / 'first.json', Path(directory) / 'second.json'

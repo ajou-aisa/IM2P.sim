@@ -135,6 +135,8 @@ class BuildRequest:
     top: Top
     output: Path
     dry_run: bool
+    llama_root: Path
+    llama_head: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,15 +227,54 @@ def _parse_request(arguments: Sequence[str]) -> BuildRequest:
     parser.add_argument("--stage", choices=tuple(Stage), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--llama-root", type=Path)
     namespace = parser.parse_args(arguments)
+    try:
+        llama_root = LLAMA_ROOT if namespace.llama_root is None else namespace.llama_root.resolve(strict=True)
+    except OSError as error:
+        raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source root: {error}") from error
+    llama_head = None if namespace.llama_root is None else _llama_identity(llama_root)
     return BuildRequest(
         Stage(namespace.stage), _selection_arguments(namespace), namespace.profiles,
         namespace.memory_contract, namespace.memory_contract_dir, namespace.board,
         namespace.clock_mhz, Top(namespace.top), namespace.out, namespace.dry_run,
+        llama_root, llama_head,
     )
 
 
+def _llama_identity(root: Path) -> str:
+    if not root.is_dir() or not (root / "CMakeLists.txt").is_file() or not (
+        root / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"
+    ).is_file():
+        raise BuildFailure(FailureReason.VALIDATION, f"invalid llama source root: {root}")
+    try:
+        toplevel = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, check=False,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            text=True, capture_output=True, check=False,
+        )
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+            text=True, capture_output=True, check=False,
+        )
+    except OSError as error:
+        raise BuildFailure(FailureReason.DEPENDENCY, f"git unavailable for llama source: {error}") from error
+    if (toplevel.returncode or head.returncode or dirty.returncode
+            or Path(toplevel.stdout.strip()).resolve() != root or dirty.stdout):
+        raise BuildFailure(FailureReason.VALIDATION, f"llama source must be a clean git root: {root}")
+    return head.stdout.strip()
+
+
 def _validate_request(request: BuildRequest) -> None:
+    if request.llama_head is not None:
+        output = request.output.resolve()
+        if output.is_relative_to(request.llama_root) or request.llama_root.is_relative_to(output):
+            raise BuildFailure(FailureReason.VALIDATION, "output and llama source root cannot overlap")
+        if _llama_identity(request.llama_root) != request.llama_head:
+            raise BuildFailure(FailureReason.VALIDATION, "llama source HEAD changed during planning")
     if platform.system() == "Darwin" and request.stage.value in HARDWARE_STAGES:
         raise BuildFailure(
             FailureReason.DEFERRED_PLATFORM,
@@ -302,6 +343,9 @@ def _resolve_cases(request: BuildRequest) -> tuple[BuildCase, ...]:
         resolved = {
             **_resolve_document(selection, request.catalog_path, contract),
             **_top_metadata(request.top, selection),
+            **({} if request.llama_head is None else {"llama_source": {
+                "root": str(request.llama_root), "head": request.llama_head,
+            }}),
         }
         cases.append(BuildCase(selection, resolved, case_output, case_output / "resolved-profile.json"))
     return tuple(cases)
@@ -419,21 +463,22 @@ def _rtl_test_commands(request: BuildRequest, case: BuildCase) -> tuple[Command,
         f"-I{ROOT / 'frontend' / 'include'}",
         f"-I{ROOT / 'sim' / 'include'}",
         f"-I{ROOT / 'sim' / 'ffi'}",
-        f"-I{LLAMA_ROOT / 'ggml' / 'src' / 'ggml-gemmini'}",
-        f"-I{LLAMA_ROOT / 'ggml' / 'src' / 'ggml-gemmini-utils' / 'include'}",
-        f"-I{LLAMA_ROOT / 'ggml' / 'include'}",
-        f"-I{LLAMA_ROOT / 'ggml' / 'src'}",
-        f"-I{LLAMA_ROOT / 'common'}",
+        f"-I{request.llama_root / 'ggml' / 'src' / 'ggml-gemmini'}",
+        f"-I{request.llama_root / 'ggml' / 'src' / 'ggml-gemmini-utils' / 'include'}",
+        f"-I{request.llama_root / 'ggml' / 'include'}",
+        f"-I{request.llama_root / 'ggml' / 'src'}",
+        f"-I{request.llama_root / 'common'}",
         f"-I{GEMMINI_INCLUDE_ROOT}",
     ))
     prefix = "VIM2PGemminiWSHP1RtlTest"
     source = "test_ws_rtl.cpp"
     executable = object_dir / prefix
     sources = (str(host / "rmd_rtl_fixture.cpp"), str(host / "bound_rmd_rtl_fixture.cpp"),
-               str(LLAMA_ROOT / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"))
+               str(request.llama_root / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"))
     link_flags = ("-LDFLAGS", " ".join((
         str(case.output / "host-build" / "libgemmini_hp1_host_common.a"),
         str(case.output / "host-build" / "libgemmini_hp1_ggml_numeric.a"),
+        str(case.output / "host-build" / "gemmini-utils" / "libggml-gemmini-utils.a"),
         "-Wl,-dead_strip" if platform.system() == "Darwin" else "-Wl,--gc-sections -pthread",
     )))
     return (
@@ -459,11 +504,13 @@ def _host_validation_commands(
         Command(ROOT, (
             "cmake", "-S", str(source), "-B", str(build),
             f"-DIM2P_GEMMINI_RESOLVED_PROFILE={case.manifest}",
-            f"-DIM2P_LLAMA_ROOT={LLAMA_ROOT}",
+            f"-DIM2P_LLAMA_ROOT={request.llama_root}",
             f"-DIM2P_GEMMINI_INCLUDE_ROOT={GEMMINI_INCLUDE_ROOT}",
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         )),
         Command(ROOT, ("cmake", "--build", str(build))),
+        Command(ROOT, ("cmake", "--build", str(build),
+                       "--target", "gemmini_hp1_run_aware_rtl")),
         Command(ROOT, ("ctest", "--test-dir", str(build), "--output-on-failure")),
         Command(ROOT, (
             sys.executable, str(ROOT / "scripts" / "gemmini_audit_host.py"),
@@ -619,6 +666,9 @@ def _case_document(
     )
     return {
         **_top_metadata(request.top, case.selection),
+        **({} if request.llama_head is None else {"llama_source": {
+            "root": str(request.llama_root), "head": request.llama_head,
+        }}),
         "profile": case.selection.name,
         "status": status,
         "reason": next(

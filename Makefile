@@ -302,6 +302,9 @@ c-api-layout-test: | $(BUILD_DIR)/bin
 	$(C_API_BUILD_DIR)/im2p_c_api_layout
 	$(C_API_BUILD_DIR)/im2p_cpp_api_layout
 
+ifeq ($(IM2P_SIM_IMPLEMENTATION),LEGACY_BSV)
+c-api-test: verilator-a$(IM2P_ACTIVATION_BITS)-w$(IM2P_WEIGHT_BITS)-d$(IM2P_DIM)
+endif
 c-api-test: c-api-layout-test | $(BUILD_DIR)/bin
 	@mkdir -p $(C_API_BUILD_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror \
@@ -330,12 +333,24 @@ GEMMINI_FRONTEND_INCLUDES := \
 	-I$(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/include \
 	-I$(GEMMINI_ROOT)/ggml/include -I$(GEMMINI_ROOT)/ggml/src \
 	-I$(GEMMINI_PARAMS_ROOT)
+GEMMINI_OPTRACE_HEADER := $(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp
+GEMMINI_OPTRACE_SOURCE := $(GEMMINI_ROOT)/ggml/src/ggml-gemmini-utils/src/optrace.cpp
+IM2P_PRODUCTION_TRACE_ENABLED ?= $(if $(and $(wildcard $(GEMMINI_OPTRACE_HEADER)),$(wildcard $(GEMMINI_OPTRACE_SOURCE))),1,0)
+ifeq ($(IM2P_PRODUCTION_TRACE_ENABLED),1)
+ifeq ($(and $(wildcard $(GEMMINI_OPTRACE_HEADER)),$(wildcard $(GEMMINI_OPTRACE_SOURCE))),)
+$(error Production trace requires the real optrace.hpp and optrace.cpp in GEMMINI_ROOT)
+endif
+endif
 GEMMINI_FRONTEND_FLAGS = -std=c++20 -O2 -fPIC -Wall -Wextra -Wpedantic -Werror -pthread \
+	-DIM2P_PRODUCTION_TRACE_ENABLED=$(IM2P_PRODUCTION_TRACE_ENABLED) \
 	-DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=$(GEMMINI_FRONTEND_DIM) \
 	-DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 	-DGGML_GEMMINI_ACTIVATION_BITS=$(GEMMINI_FRONTEND_ACTIVATION_BITS) \
 	-DGGML_GEMMINI_WEIGHT_BITS=$(GEMMINI_FRONTEND_WEIGHT_BITS) \
 	-DGGML_GEMMINI_BLOCK_SIZE=$(GEMMINI_FRONTEND_BLOCK_SIZE)
+ifneq ($(findstring clang,$(shell $(CXX) --version 2>/dev/null | head -n 1)),)
+GEMMINI_FRONTEND_FLAGS += -Wno-error=unused-private-field
+endif
 ifeq ($(IM2P_SIM_IMPLEMENTATION),GEMMINI_HP1)
 GEMMINI_FRONTEND_FLAGS += -DIM2P_FPGA_ARCH_GEMMINI_HP1=1
 GEMMINI_FRONTEND_FLAGS += -DIM2P_SIM_IMPLEMENTATION_GEMMINI_HP1=1
@@ -345,6 +360,7 @@ GEMMINI_FRONTEND_ARCHIVE = $(BUILD_DIR)/lib/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI
 GEMMINI_FRONTEND_TEST_OBJECT = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_testing.o
 GEMMINI_FRONTEND_DEPENDENCY_FILES = $(GEMMINI_FRONTEND_OBJECT:.o=.d) $(GEMMINI_FRONTEND_TEST_OBJECT:.o=.d)
 GEMMINI_FRONTEND_BOOTSTRAP_HEADER = $(GEMMINI_ROOT)/ggml/src/ggml-gemmini/ggml-gemmini-args.h
+GEMMINI_FRONTEND_CONFIG_STAMP = $(BUILD_DIR)/fingerprints/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/frontend-config.txt
 GEMMINI_FRONTEND_TEST_ARCHIVE = $(BUILD_DIR)/lib/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/libim2p_gemmini_frontend_testing.a
 GEMMINI_FRONTEND_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_test
 GEMMINI_FRONTEND_ASAN_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_asan_test
@@ -356,6 +372,14 @@ GEMMINI_REAL_LIB_SIM_ARCHIVE = $(GEMMINI_REAL_LIB_SELECTED_DIR)/libim2p_sim.a
 GEMMINI_REAL_LIB_VERILATOR_HEADER = $(BUILD_DIR)/verilator/$(GEMMINI_ARTIFACT_ID)/obj_dir/VmkSynthA$(GEMMINI_FRONTEND_ACTIVATION_BITS)W$(GEMMINI_FRONTEND_WEIGHT_BITS)D$(GEMMINI_FRONTEND_DIM).h
 GEMMINI_FRONTEND_ASAN_FLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 GEMMINI_FRONTEND_TSAN_FLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer
+
+GEMMINI_FRONTEND_CONFIG_ID := trace=$(IM2P_PRODUCTION_TRACE_ENABLED) root=$(abspath $(GEMMINI_ROOT)) block_size=$(GEMMINI_FRONTEND_BLOCK_SIZE)
+ifneq ($(shell cat $(GEMMINI_FRONTEND_CONFIG_STAMP) 2>/dev/null),$(GEMMINI_FRONTEND_CONFIG_ID))
+.PHONY: _gemmini-frontend-config-force
+$(GEMMINI_FRONTEND_CONFIG_STAMP): _gemmini-frontend-config-force
+	@mkdir -p $(dir $@)
+	@printf '%s\n' '$(GEMMINI_FRONTEND_CONFIG_ID)' > $@
+endif
 
 $(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h Makefile
 	@mkdir -p $(GEMMINI_DIM_CONFIG_DIR)
@@ -373,7 +397,7 @@ $(GEMMINI_DIM_CONFIG): $(GEMMINI_PARAMS_ROOT)/../gemmini_params.h Makefile
 	  sed 's/^#define DIM .*/#define DIM $(GEMMINI_FRONTEND_DIM)/' $< > $@; \
 	fi
 
-$(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) | $(BUILD_DIR)/bin
+$(GEMMINI_FRONTEND_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) $(GEMMINI_FRONTEND_CONFIG_STAMP) | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $@)
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) $(GEMMINI_FRONTEND_INCLUDES) \
 		-MMD -MP -c $< -o $@
@@ -383,7 +407,7 @@ $(GEMMINI_FRONTEND_ARCHIVE): $(GEMMINI_FRONTEND_OBJECT) | $(BUILD_DIR)/lib
 	rm -f $@
 	$(AR) rcs $@ $<
 
-$(GEMMINI_FRONTEND_TEST_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp frontend/tests/im2p_gemmini_frontend_testing.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) | $(BUILD_DIR)/bin
+$(GEMMINI_FRONTEND_TEST_OBJECT): frontend/src/im2p_gemmini_frontend.cpp frontend/include/im2p_gemmini_frontend.hpp frontend/tests/im2p_gemmini_frontend_testing.hpp $(GEMMINI_DIM_CONFIG) $(GEMMINI_FRONTEND_BOOTSTRAP_HEADER) $(GEMMINI_FRONTEND_CONFIG_STAMP) | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $@)
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) -MMD -MP -c $< -o $@
@@ -439,6 +463,12 @@ gemmini-frontend-real-lib-all:
 	  --verilator '$(VERILATOR)' \
 	  --rustc '$(RUSTC)' --cargo '$(CARGO)'
 
+# The fake C ABI suite exercises the legacy frontend; HP1 uses the distinct
+# real-archive executable below for its planned numerical contract.
+ifeq ($(IM2P_SIM_IMPLEMENTATION),GEMMINI_HP1)
+gemmini-frontend-test:
+	$(MAKE) --no-print-directory IM2P_SIM_IMPLEMENTATION=LEGACY_BSV gemmini-frontend-test
+else
 # The public declaration surface compiles without any llama include directory.
 gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 	@mkdir -p $(dir $(GEMMINI_FRONTEND_TEST))
@@ -455,6 +485,7 @@ gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 	  $(GEMMINI_FRONTEND_TEST); \
 	  $(if $(filter 8,$(GEMMINI_FRONTEND_WEIGHT_BITS)),$(GEMMINI_FRONTEND_TEST) q8_hp1_extent_contract,:); \
 	fi
+endif
 
 # Sanitizer binaries compile the production frontend and its fake-ABI tests
 # together so instrumentation covers ownership, workers, and teardown end to end.
@@ -494,11 +525,13 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 	TSAN_OPTIONS=halt_on_error=1 $(GEMMINI_FRONTEND_TSAN_TEST) \
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
 
-gemmini-frontend-real-test: gemmini-frontend-real-lib $(GEMMINI_FRONTEND_TEST_ARCHIVE) | $(BUILD_DIR)/bin
+gemmini-frontend-real-build: gemmini-frontend-real-lib $(GEMMINI_FRONTEND_TEST_ARCHIVE) | $(BUILD_DIR)/bin
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend_real.cpp \
 		$(GEMMINI_FRONTEND_TEST_ARCHIVE) $(GEMMINI_REAL_LIB_SIM_ARCHIVE) \
 		-o $(GEMMINI_FRONTEND_REAL_TEST)
+
+gemmini-frontend-real-test: gemmini-frontend-real-build
 	@mkdir -p $(GEMMINI_RESULTS_DIR)
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test.log
@@ -514,11 +547,12 @@ gemmini-frontend-real-test-q4-hp1:
 		GEMMINI_FRONTEND_DIM=$(GEMMINI_FRONTEND_DIM) gemmini-frontend-real-test
 	@mkdir -p $(BUILD_DIR)/results/a4-w4-d$(GEMMINI_FRONTEND_DIM)
 	@set -o pipefail; \
-		$(BUILD_DIR)/bin/a4-w4-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
+		$(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/a4-w4-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
 		--route q4_hp1 2>&1 | \
 		tee $(BUILD_DIR)/results/a4-w4-d$(GEMMINI_FRONTEND_DIM)/frontend-real-test-q4-hp1.log
 
-gemmini-frontend-real-test-q8-hp1: gemmini-frontend-real-test
+gemmini-frontend-real-test-q8-hp1: gemmini-frontend-real-build
+	@mkdir -p $(GEMMINI_RESULTS_DIR)
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_hp1 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-hp1.log
 
@@ -529,7 +563,7 @@ gemmini-frontend-real-test-q16-hp1:
 		GEMMINI_FRONTEND_DIM=$(GEMMINI_FRONTEND_DIM) gemmini-frontend-real-test
 	@mkdir -p $(BUILD_DIR)/results/a16-w16-d$(GEMMINI_FRONTEND_DIM)
 	@set -o pipefail; \
-		$(BUILD_DIR)/bin/a16-w16-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
+		$(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/a16-w16-d$(GEMMINI_FRONTEND_DIM)/im2p_gemmini_frontend_real_test \
 		--route q16_hp1 2>&1 | \
 		tee $(BUILD_DIR)/results/a16-w16-d$(GEMMINI_FRONTEND_DIM)/frontend-real-test-q16-hp1.log
 

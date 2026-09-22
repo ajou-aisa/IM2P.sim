@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "im2p_compact_runs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -136,6 +137,13 @@ void im2p_cycle_model_destroy(im2p_cycle_model_t *model);
 int im2p_cycle_estimate(im2p_cycle_model_t *model,
                         const im2p_cycle_request_t *request,
                         im2p_cycle_result_t *result);
+/* One logical GEMM over caller-supplied compact K runs. Tile factors and all
+   other request fields retain ABI v1 meaning. The run view is scalar only and
+   is copied during admission; no numerical or measured RTL data is accepted. */
+int im2p_cycle_estimate_runs(im2p_cycle_model_t *model,
+                              const im2p_cycle_request_t *request,
+                              const im2p_compact_runs_t *runs,
+                              im2p_cycle_result_t *result);
 const char *im2p_cycle_model_error(const im2p_cycle_model_t *model);
 uint64_t im2p_cycle_model_event_count(const im2p_cycle_model_t *model);
 int im2p_cycle_model_event(const im2p_cycle_model_t *model, uint64_t index,

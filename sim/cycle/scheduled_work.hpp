@@ -22,5 +22,6 @@ struct Schedule {
   uint64_t planner_loops = 0, fragments = 0;
 };
 Schedule expand_work(const im2p_cycle_model_config_t &,
-                     const im2p_cycle_request_t &);
+                     const im2p_cycle_request_t &,
+                     const im2p_compact_runs_t *runs = nullptr);
 } // namespace im2p::cycle

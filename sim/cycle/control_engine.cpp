@@ -52,8 +52,8 @@ std::pair<Range, Range> operands(const Command &c) {
 } // namespace
 
 Engine::Engine(const im2p_cycle_model_config_t &c,
-               const im2p_cycle_request_t &r)
-    : config(c), request(r), schedule(expand_work(c, r)),
+               const im2p_cycle_request_t &r, const im2p_compact_runs_t *runs)
+    : config(c), request(r), schedule(expand_work(c, r, runs)),
       profile{c.hardware, c.timing} {
   state.cycle = r.accepted_cycle;
   result.trace.enabled = r.record_events;
@@ -715,7 +715,8 @@ ModelResult Engine::run() {
 
 namespace im2p::cycle {
 ModelResult estimate(const im2p_cycle_model_config_t &config,
-                     const im2p_cycle_request_t &request) {
-  return detail::Engine(config, request).run();
+                     const im2p_cycle_request_t &request,
+                     const im2p_compact_runs_t *runs) {
+  return detail::Engine(config, request, runs).run();
 }
 } // namespace im2p::cycle

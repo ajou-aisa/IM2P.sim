@@ -76,6 +76,11 @@ static unsigned hardening_case = 0;
     text = _replace_once(text, namespace_anchor, globals_text + namespace_anchor,
                          'observer globals')
     step_anchor = '    dut.eval();\n    if (dut.io_error) {'
+    hook = '    if (event_observer)\n      event_observer(*this);\n'
+    hooked_anchor = step_anchor.replace('    if (dut.io_error) {', hook + '    if (dut.io_error) {')
+    anchors = text.count(step_anchor) + text.count(hooked_anchor)
+    if anchors != 1:
+        raise ValueError(f'event injection: expected one source anchor, found {anchors}')
     events = r'''    dut.eval();
     auto hardening_event = [&](const char *kind, std::uint64_t a = 0,
                                std::uint64_t b = 0, std::uint64_t c = 0) {
@@ -124,9 +129,18 @@ static unsigned hardening_case = 0;
     if (dut.io_loopDone_valid && dut.io_loopDone_ready) hardening_event("loop_done");
     if (dut.io_logicalDone_valid) hardening_event("logical_done");
     if (dut.io_error) {'''
+    if text.count(hooked_anchor):
+        step_anchor = hooked_anchor
+        events = events.replace('    if (dut.io_error) {', hook + '    if (dut.io_error) {')
     text = _replace_once(text, step_anchor, events, 'event injection')
     request_anchor = ('  const auto old_contexts = state.contexts, old_raw = state.raw_rows, '
                       'old_commits = state.commits;')
+    wrapped_request_anchor = request_anchor.replace(', old_commits', ',\n             old_commits')
+    request_anchors = text.count(request_anchor) + text.count(wrapped_request_anchor)
+    if request_anchors != 1:
+        raise ValueError(f'case injection: expected one source anchor, found {request_anchors}')
+    if text.count(wrapped_request_anchor):
+        request_anchor = wrapped_request_anchor
     request = r'''  ++hardening_case;
   hardening_observer << "CASE," << hardening_case << ',' << work.rows << ','
                      << work.columns << ',' << work.k << ',' << work.row_begin << ','

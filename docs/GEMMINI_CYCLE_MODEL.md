@@ -31,8 +31,9 @@ has been certified.
 | a8w8-d32-hp1 | 41/41 |
 | a8w8-d64-hp1 | 41/41 |
 
-These are estimates by default and may be called **RTL-exact for this validated
-case/timing profile** only with the corresponding comparison evidence. The CLI
+These historical results are estimates by default and may be called **RTL-exact
+for that validated case/timing profile** only with the corresponding comparison
+evidence. The current-source v2 certificate is described below. The CLI
 therefore returns `classification: cycle model result`, not a universal exactness
 flag. The numerical Verilator backend remains the independent numerical and
 logical-cycle golden.
@@ -93,6 +94,30 @@ the caller's result only on success. Failure clears stale public event data.
 Null destruction is safe. Calls on different handles are independent; callers
 must serialize calls on one handle. Configuration and request version/size are
 validated. C11 and C++ tests check layout and calls through the actual thin C ABI.
+
+### Explicit compact-run fixture entry
+
+`im2p_cycle_estimate_runs` is an additive entry. It keeps the version 1 cycle
+request layout and accepts a separate `im2p_compact_runs_t` version 1 view from
+`sim/include/im2p_compact_runs.h`. Each nonempty run has an original 32-K block
+ID, a mask of surviving original K positions, a compact K begin, and a compact
+K count. Masks must popcount to their counts, begin at zero, cover the requested
+compact K without gaps or overlaps, and have strictly increasing block IDs;
+skipped original blocks are allowed. Every original K bit must be below
+`original_k`. Invalid pointers, size/version, counts, ranges, or fragment-base
+overflow fail admission. The caller supplies final M/N/K and positive I/J/K
+tile counts; neither adapter changes those tiles or reconstructs compact rows.
+The numerical companion `im2p_execute_matmul_planned_runs` reads weights at
+compact K coordinates and scale carriers by run ordinal. The cycle entry takes
+only scalar geometry and timing, never those weights, carriers, numerical
+answers, measured RTL durations, or CPU timing.
+
+For this explicit fixture, the lowerer ends fragments at run and DIM boundaries
+under one logical work ID. A run owns its original block's scale source and
+fragment-base group. Normal HP1 SCU applies that run's carrier to each raw dot;
+the numerical path clamps each resulting fragment to signed 32-bit before
+signed 32-bit saturating accumulation across fragments and runs. The cycle
+library models control timing only and does not calculate SCU values.
 
 The request supplies M/N/K, positive tile counts, an accepted-cycle epoch,
 optional host row strides, diagnostic identity, submission framing, and initial
@@ -191,6 +216,72 @@ first mismatch, selected event scope and source/object hashes. A previous
 certificate or a passing CTest alone cannot justify
 `IM2P_SINGLE_GEMM_CYCLE_MODEL_CURRENT`. These are isolated work certificates, not
 whole-model, aggregate PIPELINE or CPU/NPU system timing.
+
+### Current run-aware fixture evidence and host boundary
+
+The separate `im2p-run-aware-fixture` version 1 corpus has eight cases in each
+of A4W4/A8W8 with DIM16/32/64. The current official trace-OFF host matrix
+admitted and numerically matched an independent integer oracle 48/48. A fresh
+current-source capture from those official host binaries then admitted 48/48
+cycle requests and matched RTL endpoints, counters, and selected event
+multisets 48/48 with maximum cycle delta zero. The official comparison was
+repeated with byte-identical certificate and RTL/model answer JSON. Its label
+is `FIXTURE_ONLY`; exact source, binary, library and raw-event hashes are in
+`.omo/evidence/rmd-cross-block-compact-scu/task-09-current-fixture.json`.
+The earlier `task-09-fixture.json` certificate remains historical for its
+source bytes. The 48 fixture cases are separate from the v2 production-geometry
+corpus below and prove no production cross-block dispatch.
+
+For the official six-profile host build, use the clean read-only llama `develop`
+checkout at `71a8c0328cd436226b8ec5fad03adafac93940ed`. Check
+`git -C "$LLAMA_ROOT" rev-parse HEAD` and
+`git -C "$LLAMA_ROOT" status --porcelain=v1` before passing `--llama-root`
+to `scripts/gemmini_build.py`; the latter must print nothing. The source SHA is
+recorded in the build manifest, and an explicit dirty source is rejected.
+From `IM2P.sim`, the official host CLI shape is:
+
+```sh
+python3 -B scripts/gemmini_build.py --llama-root "$LLAMA_ROOT" \
+  --matrix a4w4,a8w8 --dims 16,32,64 --scu hp1-left-shift \
+  --memory-contract-dir "$PWD/config/gemmini_host_memory_contracts" \
+  --stage host-test --out "$OUT/rtl"
+```
+
+The fixture cycle comparison consumes a separate six-profile fresh-reset
+`isolated/<case>/run.log` and `events.csv` tree, with matching source/binary
+hashes in its task-08 manifest. The host-test output alone does not create
+that isolated event tree. The current-source verified raw tree and manifest
+can be checked again with a new output directory:
+
+```sh
+python3 -B sim/tests/cycle/certify_run_aware.py \
+  --rtl-root ../evidence/task-09-current-fixture-20260921T111346Z/rtl \
+  --library "$CYCLE_LIBRARY" --task07 ../.omo/evidence/rmd-cross-block-compact-scu/task-07.json \
+  --task08 ../evidence/task-09-current-fixture-20260921T111346Z/task08-current.json \
+  --out "$OUT/run-aware-certificate"
+```
+
+Here `$CYCLE_LIBRARY` is the matching current cycle library. Rechecking the
+older task-08 raw tree with its archived manifest instead correctly rejects a
+host `CMakeLists.txt` SHA mismatch after the trace-OFF closure. That negative
+result is retained in the completion evidence; it was not promoted to the
+current certificate.
+
+`$OUT` must be a new external evidence directory and `$CYCLE_LIBRARY` the
+matching current shared library (`.dylib` on the tested macOS host). The
+six-profile pinned, trace-OFF official host matrix passed 60/60 command steps,
+54/54 CTests, and 48/48 numerical run fixtures. IM2P's trace-OFF host closure
+works with the pinned source's absent production optrace API; a coherent
+trace-ON source still uses its real optrace implementation. No fake symbols or
+dirty active-checkout source were used. A relocated trace-OFF package's
+minimum official host target passed configure, build, link, and 4/4 CTests on
+macOS. A relocated Linux build was not run.
+
+The current llama producer still emits block-local work. A production single
+cross-block logical GEMM is `NOT_READY`; a new GPT-2 one-work trace/parity is
+`NOT_RUN`. A separate producer/adapter/trace change must supply one explicit
+run view before such a claim is possible. There is no CPU/NPU timeline,
+frequency conversion, scheduler, synthesis, or physical FPGA result here.
 
 Commands are expanded from those planned fragments into A/B row loads, preload,
 compute and final-store tokens. Deduplicating the fragments' required A/B tiles
@@ -364,7 +455,7 @@ test copy, preserving the original numerical assertions and production RTL.
 It compares relative event cycles/counters and repeats the identical scalar-only
 model request. This phase-alignment test does not replace the 268-case golden.
 
-## Production RMD-SCU cycle certificate
+## Legacy block-local RMD-SCU certificate
 
 Production residual work uses the normal HP1 scaled datapath:
 `DENSE_HP1_FINAL`, `rmdRaw=false`, HP1 carriers, fragment-local SCU Sat32 and the
@@ -372,14 +463,12 @@ same signed32 accumulator semantics as dense GEMM. The host performs balanced-ra
 recomposition and final floating reconstruction only; it does not apply an HP1
 integer block multiplier after NPU output.
 
-`rmd_scu_certificate.py` captures accepted production residual work across all six
-A4W4/A8W8 DIM16/32/64 profiles and pairs it with the same normal HP1 hardware
-path. The paired descriptor, scale traffic, SCU/event stream, integer result and
-cycle behavior are exact for 72/72 pairs. `rmd_scu_timing.py` then feeds the
-accepted scalar geometry/timing facts—not tensor values or RTL duration answers—
-into the existing value-free dense HP1 cycle model. The resulting production
-residual certificate is **72/72 exact**, maximum cycle delta **0**, with exact
-endpoint/counters and selected per-cycle event-type multisets.
+The fresh pinned-develop, trace-OFF six-profile legacy single-block RMD-SCU
+certificate admitted and numerically matched **66/66** cases. The same-hardware
+normal HP1 pairs matched **72/72**. These are legacy block-local residual
+results and do not certify a production cross-block logical work. Historical
+residual cycle-timing results require their own source-bound evidence; these
+fresh numerical and pair counts are not a new 72-case cycle-model certificate.
 
 A DIM16 compact K31 case remains one logical production residual GEMM while the
 hardware performs physical reductions 16 and 15. This certificate therefore
@@ -457,9 +546,19 @@ generation verifies those files against the build-time binding before using
 them. A missing binding or old artifact with a different current contract fails;
 exporting existing RTL does not manufacture a fresh build binding.
 
-`sim/cycle/corpus-authority-v1.json` is the reviewed corpus input authority,
-bound to fixture source hashes. It fixes every captured ID, shape, tile, timing
-and provenance; the five explicit large-K cases are added by its shared reader.
+`sim/cycle/corpus-authority-v2.json` is the current reviewed corpus input
+authority for the pinned `develop` producer's row-pruned cases. It binds exact
+producer, selector, and fixture bytes, and fixes every captured ID, shape,
+tile, timing and provenance; the five explicit large-K cases per profile are
+added by its shared reader. `corpus-authority-v1.json` remains historical and
+is not the current source-bound denominator. The fresh v2 certificate has
+42 captured and five synthetic cases per profile, under both submission
+framings: regression-tiles **282/282** and planner-blocks **282/282** exact,
+maximum cycle delta **0**, with endpoints, counters, scale ownership and
+selected per-cycle event multisets exact. Its 19 selected event kinds comprise
+2,705,014 selected events on each side; shift, delete and duplicate mutations
+are rejected. This is 564 isolated case/framing comparisons, not 564 real-model
+production dispatches or a CPU/NPU system timing result.
 Certificate results, expected IDs, summaries and captured/reuse counts cannot
 jointly redefine this denominator. A fixture change requires a separately
 reviewed corpus revision, not reducing the certificate to its surviving cases.

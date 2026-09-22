@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from scripts.gemmini_build import BuildFailure, FailureReason, _parse_request, _validate_request
+
 ROOT: Final = Path(__file__).resolve().parents[1]
 RESOLVER: Final = ROOT / "scripts" / "gemmini_resolve_profile.py"
 BUILD: Final = ROOT / "scripts" / "gemmini_build.py"
@@ -61,6 +63,18 @@ def base_single_arguments(out: Path) -> list[str]:
         "--memory-contract", str(CONTRACTS / "a8w8-d16-hp1.json"),
         "--stage", "plan", "--out", str(out),
     ]
+
+
+def clean_llama_source(source: Path) -> None:
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / "CMakeLists.txt").write_text("project(llama)\n")
+    reference = source / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("// fixture\n")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.invalid", "commit", "-qm", "fixture"], check=True)
 
 
 def test_resolver_emits_six_exact_profiles() -> None:
@@ -211,6 +225,112 @@ def test_plan_writes_resolved_profile() -> None:
         assert resolved["work_kinds"] == ["DENSE_HP1_FINAL"]
         assert resolved["diagnostic_work_kinds"] == ["RMD_RAW"]
         assert json.loads((output / "result.json").read_text())["status"] == "PASS"
+        assert "llama_source" not in resolved
+
+
+def test_explicit_llama_root_records_exact_source_and_host_commands() -> None:
+    # Given: a clean source worktree.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-source-") as temporary:
+        source = Path(temporary) / "llama"
+        clean_llama_source(source)
+        output = Path(temporary) / "plan"
+        head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+
+        # When: the official plan uses that source explicitly.
+        result = run_script(BUILD, [*base_single_arguments(output), "--llama-root", str(source)])
+
+        # Then: the resolved manifest records the real source root and actual commit.
+        assert result.returncode == 0, result.stderr
+        resolved = json.loads((output / "resolved-profile.json").read_text())
+        assert resolved["llama_source"] == {"root": str(source.resolve()), "head": head}
+        result_doc = json.loads((output / "result.json").read_text())
+        assert result_doc["profiles"][0]["llama_source"] == resolved["llama_source"]
+
+        host = run_script(BUILD, [
+            *base_single_arguments(Path(temporary) / "host"), "--stage", "host-test",
+            "--llama-root", str(source), "--dry-run",
+        ])
+        assert host.returncode == 0, host.stderr
+        commands = json.loads(host.stdout)["profiles"][0]["commands"]
+        configure = next(command for command in commands if command["arguments"][:2] == ["cmake", "-S"])
+        assert f"-DIM2P_LLAMA_ROOT={source.resolve()}" in configure["arguments"]
+        build_steps = [command["arguments"] for command in commands
+                       if command["arguments"][:2] == ["cmake", "--build"]]
+        assert build_steps == [
+            ["cmake", "--build", str(Path(temporary) / "host" / "host-build")],
+            ["cmake", "--build", str(Path(temporary) / "host" / "host-build"),
+             "--target", "gemmini_hp1_run_aware_rtl"],
+        ]
+        rtl_test = next(command["arguments"] for command in commands
+                        if command["arguments"][:2] == ["verilator", "--cc"])
+        assert str(Path(temporary) / "host" / "host-build" / "gemmini-utils" /
+                   "libggml-gemmini-utils.a") in rtl_test[rtl_test.index("-LDFLAGS") + 1]
+        assert any(str(source.resolve() / "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp")
+                   in command["arguments"] for command in commands)
+
+
+def test_explicit_llama_root_rejects_wrong_and_dirty_sources_before_output() -> None:
+    # Given: another repository and a newly dirty temporary source worktree.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-invalid-source-") as temporary:
+        base = Path(temporary)
+        source = base / "llama"
+        clean_llama_source(source)
+        (source / "untracked.txt").write_text("dirty\n")
+        for label, root in (("wrong", ROOT), ("dirty", source)):
+            output = base / label
+
+            # When: an explicit untrusted source is selected.
+            result = run_script(BUILD, [*base_single_arguments(output), "--llama-root", str(root)])
+
+            # Then: validation fails before creating an artifact.
+            assert result.returncode != 0
+            assert json.loads(result.stderr)["reason"] == "VALIDATION"
+            assert not output.exists()
+
+
+def test_explicit_llama_root_rejects_ancestor_output_before_write() -> None:
+    # Given: export output is an existing parent of a clean explicit source.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-source-overlap-") as temporary:
+        output = Path(temporary)
+        source = output / "llama"
+        clean_llama_source(source)
+        request = _parse_request([
+            *base_single_arguments(output), "--stage", "export", "--llama-root", str(source),
+        ])
+
+        # When: the request is validated before any export artifact is written.
+        try:
+            _validate_request(request)
+        except BuildFailure as error:
+            assert error.reason is FailureReason.VALIDATION
+        else:
+            raise AssertionError("ancestor output accepted")
+
+        # Then: the source and parent output retain only the original fixture files.
+        assert not (output / "resolved-profile.json").exists()
+        assert not (output / "export").exists()
+        assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
+
+
+def test_explicit_llama_root_rejects_nested_output_before_write() -> None:
+    # Given: a plan output path nested inside a clean explicit source.
+    with tempfile.TemporaryDirectory(prefix="im2p-gemmini-source-nested-") as temporary:
+        source = Path(temporary) / "llama"
+        clean_llama_source(source)
+        output = source / "plan"
+        request = _parse_request([*base_single_arguments(output), "--llama-root", str(source)])
+
+        # When: the request is validated before planning.
+        try:
+            _validate_request(request)
+        except BuildFailure as error:
+            assert error.reason is FailureReason.VALIDATION
+        else:
+            raise AssertionError("nested output accepted")
+
+        # Then: no artifact appears inside the source.
+        assert not output.exists()
+        assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
 
 
 def test_existing_output_is_rejected() -> None:
@@ -572,6 +692,10 @@ def main() -> int:
         test_matrix_dry_run_is_sequential_and_side_effect_free,
         test_matrix_rejects_non_integer_dim,
         test_plan_writes_resolved_profile,
+        test_explicit_llama_root_records_exact_source_and_host_commands,
+        test_explicit_llama_root_rejects_wrong_and_dirty_sources_before_output,
+        test_explicit_llama_root_rejects_ancestor_output_before_write,
+        test_explicit_llama_root_rejects_nested_output_before_write,
         test_existing_output_is_rejected,
         test_board_free_stages_validate_in_dry_run,
         test_removed_standalone_top_is_rejected,

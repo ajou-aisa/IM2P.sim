@@ -3277,7 +3277,7 @@ bool test_residual_stage_invalid_options() {
       Options{65536, ResidualStageMode::none, &probe, callback},
       Options{65536, static_cast<ResidualStageMode>(0xff), nullptr, callback},
   };
-  for (const auto options : invalid_options) {
+  for (const auto &options : invalid_options) {
     fake::reset();
     std::vector<int8_t> activation = {1, 2, 3};
     std::vector<int8_t> weights = {1, 0, 0, 1, 1, 1};

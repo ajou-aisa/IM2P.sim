@@ -63,6 +63,7 @@ struct Write {
 struct Adapter {
   Dut &dut;
   VerilatedContext &context;
+  void (*event_observer)(Adapter &) = nullptr;
   std::uint64_t cycle = 0, read_sequence = 0, latest_read_sequence = 0;
   std::uint64_t reordered_reads = 0, loops = 0, logical_done = 0;
   std::uint64_t contexts = 0, raw_rows = 0, commits = 0, completions = 0;
@@ -192,6 +193,8 @@ struct Adapter {
       dut.io_writeCompletion_bits_error = 0;
     }
     dut.eval();
+    if (event_observer)
+      event_observer(*this);
     if (dut.io_error) {
       std::cerr << "WS protocol error phase=" << phase << " cycle=" << cycle
                 << " loads=" << loads << " executes=" << executes

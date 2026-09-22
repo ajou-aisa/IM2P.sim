@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+
+#include "../include/im2p_compact_runs.h"
 
 // Value-free decomposition of the integrated simulator's existing work order.
 // No model, C ABI, host slots, numerical buffers, or timing policy belongs here.
@@ -38,6 +41,8 @@ struct ScheduleConfig {
   bool split_at_block = true;
   bool backing_scales = true;
   bool accumulate_first = false;
+  std::uint32_t original_k = 0;
+  std::vector<im2p_compact_run_t> runs{};
 };
 
 struct LoopCursor {
@@ -52,6 +57,7 @@ struct LoopPlan {
   std::size_t ip = 0, jp = 0, kp = 0;
   std::uint64_t order = 0;
   std::size_t fragment_index = 0;
+  std::uint32_t original_block_id = 0;
   // Preserve the current 16-bit hardware encoding, including its narrowing.
   // Descriptor admission/representability is not redesigned by this planner.
   std::uint16_t fragment_base = 0;
@@ -80,6 +86,7 @@ struct ReadExtent {
 };
 
 bool valid_config(const ScheduleConfig &config);
+bool set_compact_runs(ScheduleConfig &config, const im2p_compact_runs_t *view);
 std::size_t padded(std::size_t value, std::size_t dim);
 GemmShape padded_shape(const ScheduleConfig &config);
 LoopPlan plan_loop(const ScheduleConfig &config, std::size_t stripe_end,

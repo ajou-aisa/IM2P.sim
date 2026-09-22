@@ -141,6 +141,8 @@ void reset_state(Runtime &runtime);
 void raw_clock(Runtime &runtime);
 void tick(Runtime &runtime);
 bool valid_descriptor(const im2p_matmul_descriptor_t &descriptor);
+bool valid_extent(std::uint64_t base, std::uint64_t stride,
+                  std::uint64_t rows, std::uint64_t bytes);
 bool enqueue_stripe(Runtime &runtime, const Stripe &stripe);
 void map_read(Runtime &runtime);
 void map_write(Runtime &runtime);
@@ -150,7 +152,8 @@ bool valid_geometry(const im2p_production_geometry_v1_t &geometry,
 bool geometry_fits(const im2p_production_geometry_v1_t &geometry,
                    std::size_t rows, std::uint8_t slot);
 int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &descriptor,
-                 const im2p_production_geometry_v1_t *geometry);
+                 const im2p_production_geometry_v1_t *geometry,
+                 const im2p_compact_runs_t *runs = nullptr);
 int publish_stripe(Runtime &runtime, std::uint32_t row_begin,
                    std::uint32_t row_count, std::uint64_t row_stride,
                    const im2p_production_geometry_v1_t *geometry);

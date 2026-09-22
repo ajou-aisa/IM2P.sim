@@ -79,6 +79,25 @@ pub struct MatmulDescriptor {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompactRun {
+    pub original_block_id: u32,
+    pub original_k_mask: u32,
+    pub compact_k_begin: u32,
+    pub compact_k_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompactRuns {
+    pub version: u32,
+    pub struct_size: u32,
+    pub original_k: u32,
+    pub run_count: usize,
+    pub runs: *const CompactRun,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct MatrixCounters {
     pub fragments_completed: u64,
@@ -195,6 +214,13 @@ unsafe extern "C" {
         handle: *mut c_void,
         descriptor: *const MatmulDescriptor,
         geometry: *const crate::production_geometry::ProductionGeometry,
+    ) -> i32;
+    #[cfg(im2p_gemmini_integrated)]
+    pub fn im2p_start_matmul_geometry_runs(
+        handle: *mut c_void,
+        descriptor: *const MatmulDescriptor,
+        geometry: *const crate::production_geometry::ProductionGeometry,
+        runs: *const CompactRuns,
     ) -> i32;
     #[cfg(im2p_gemmini_integrated)]
     pub fn im2p_publish_activation_stripe_geometry(

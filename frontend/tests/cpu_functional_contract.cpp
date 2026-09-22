@@ -18,6 +18,42 @@ struct Timing {
   }
 };
 
+struct RunFixture {
+  std::array<uint32_t, 2> carriers{0, 1};
+  std::array<int64_t, 2> output{-99, -99};
+  std::array<unsigned, 2> reads{};
+  unsigned writes = 0;
+  bool fail_scale = false;
+  bool weight_mode = false;
+};
+
+static int run_weight(void *context, size_t row, size_t column, size_t count,
+                      int8_t *out) {
+  if (row >= 22 || column || count != 1) return -1;
+  const int8_t weights[7] = {-3, 0, 3, -1, 2, -2, 1};
+  *out = static_cast<RunFixture *>(context)->weight_mode ? weights[row % 7]
+                                                         : 1;
+  return 0;
+}
+static int run_scale(void *context, size_t run, size_t column, size_t count,
+                     uint32_t *out) {
+  auto &fixture = *static_cast<RunFixture *>(context);
+  if (run >= 2 || column || count != 1 ||
+      (fixture.fail_scale && run == 1)) return -1;
+  ++fixture.reads[run];
+  *out = fixture.carriers[run];
+  return 0;
+}
+static int run_output(void *context, size_t block, size_t row, size_t column,
+                      size_t count, const int64_t *values, uint32_t domain) {
+  auto &fixture = *static_cast<RunFixture *>(context);
+  if (block || row || column || count != 2 || domain != IM2P_OUTPUT_SCU_FINAL)
+    return -1;
+  std::copy_n(values, count, fixture.output.begin());
+  ++fixture.writes;
+  return 0;
+}
+
 int main() {
   constexpr size_t m = 3, n = 2, k = 31;
   std::vector<int8_t> a(m * k, 1), weights(k * n, 1);
@@ -176,5 +212,116 @@ int main() {
   assert(im2p_publish_stripe_planned(stream.get(), &stripe, &stripe_g) ==
          IM2P_LATE_STRIPE);
   assert(output[4] == 31 && output[5] == INT32_MAX);
+
+  std::array<int8_t, 64> compact_a{};
+  compact_a.fill(1);
+  RunFixture run_fixture;
+  auto run_d = d;
+  run_d.m = 2;
+  run_d.n = 1;
+  run_d.k = 22;
+  run_d.activations = compact_a.data();
+  run_d.weights = nullptr;
+  run_d.scales = nullptr;
+  run_d.output = nullptr;
+  run_d.activation_row_stride_bytes = 22;
+  run_d.weight_row_stride_bytes = 1;
+  run_d.output_row_stride = 1;
+  run_d.provider = {&run_fixture, run_weight, nullptr, run_scale, run_output};
+  auto run_g = g;
+  run_g.scope = IM2P_GEOMETRY_FULL;
+  run_g.m = run_g.row_count = 2;
+  run_g.n = 1;
+  run_g.k = 22;
+  const im2p_compact_run_t run_entries[] = {{0, 0xfff, 0, 12},
+                                            {3, 0x3ff, 12, 10}};
+  im2p_compact_runs_t run_view{1, sizeof(run_view), 128, 2, run_entries};
+  auto run_sim = std::unique_ptr<im2p_sim_t, decltype(&im2p_sim_destroy)>(
+      im2p_sim_create(), im2p_sim_destroy);
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((run_fixture.output == std::array<int64_t, 2>{32, 32}));
+  assert(run_fixture.writes == 1 && run_fixture.reads[0] &&
+         run_fixture.reads[1]);
+  int32_t oracle_raw[2] = {0, 0};
+  for (size_t position = 0; position < 22; ++position) {
+    const int8_t value = position % 3 == 0 ? 2 : -1;
+    compact_a[position] = value;
+    compact_a[22 + position] = -value;
+    oracle_raw[position < 12 ? 0 : 1] +=
+        value * (static_cast<int32_t>(position * 3 % 7) - 3);
+  }
+  run_fixture.weight_mode = true;
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  const int32_t asymmetric_expected = oracle_raw[0] + 2 * oracle_raw[1];
+  assert(asymmetric_expected == -11);
+  assert((run_fixture.output ==
+          std::array<int64_t, 2>{asymmetric_expected, -asymmetric_expected}));
+  std::cout << "CPU_FUNCTIONAL_ORACLE asymmetric expected="
+            << asymmetric_expected << "," << -asymmetric_expected
+            << " actual=" << run_fixture.output[0] << ","
+            << run_fixture.output[1] << "\n";
+  compact_a.fill(1);
+  run_fixture.weight_mode = false;
+  run_fixture.carriers[1] = 0x80000000U;
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((run_fixture.output == std::array<int64_t, 2>{12, 12}));
+  run_fixture.carriers = {31, 31};
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((run_fixture.output ==
+          std::array<int64_t, 2>{INT32_MAX, INT32_MAX}));
+  compact_a.fill(-1);
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((run_fixture.output ==
+          std::array<int64_t, 2>{INT32_MIN, INT32_MIN}));
+  compact_a.fill(1);
+  run_fixture.carriers = {0, 1};
+  std::array<int8_t, 32> compact_weights{};
+  compact_weights.fill(1);
+  run_d.k = run_g.k = 32;
+  run_d.activation_row_stride_bytes = 32;
+  run_d.weights = compact_weights.data();
+  run_d.provider.read_weight_i8 = nullptr;
+  const im2p_compact_run_t gap_entries[] = {{0, 0x7fffffff, 0, 31},
+                                            {3, 1, 31, 1}};
+  run_view.runs = gap_entries;
+  run_view.original_k = 128;
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((run_fixture.output == std::array<int64_t, 2>{33, 33}));
+  run_view.runs = run_entries;
+  run_d.k = run_g.k = 22;
+  run_d.weights = nullptr;
+  run_d.provider.read_weight_i8 = run_weight;
+  run_d.activation_row_stride_bytes = 22;
+  run_fixture.output = {-99, -99};
+  run_fixture.writes = 0;
+  run_fixture.fail_scale = true;
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_ERROR);
+  assert((run_fixture.output == std::array<int64_t, 2>{-99, -99}));
+  assert(run_fixture.writes == 0);
+  std::array<int32_t, 2> direct_run_output{-99, -99};
+  run_d.provider.write_output = nullptr;
+  run_d.output = direct_run_output.data();
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_ERROR);
+  assert((direct_run_output == std::array<int32_t, 2>{-99, -99}));
+  run_fixture.fail_scale = false;
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) == IM2P_OK);
+  assert((direct_run_output == std::array<int32_t, 2>{32, 32}));
+  const im2p_compact_run_t malformed_runs[] = {{0, 0xfff, 0, 12},
+                                               {3, 0x3ff, 13, 10}};
+  run_view.runs = malformed_runs;
+  direct_run_output = {-99, -99};
+  assert(im2p_execute_matmul_planned_runs(run_sim.get(), &run_d, &run_g,
+                                          &run_view, nullptr) ==
+         IM2P_INVALID_LAYOUT);
+  assert((direct_run_output == std::array<int32_t, 2>{-99, -99}));
   std::cout << "CPU_FUNCTIONAL_CONTRACT_PASS\n";
 }

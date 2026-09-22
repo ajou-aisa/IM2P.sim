@@ -165,7 +165,8 @@ struct Signals {
 };
 class Engine {
 public:
-  Engine(const im2p_cycle_model_config_t &, const im2p_cycle_request_t &);
+  Engine(const im2p_cycle_model_config_t &, const im2p_cycle_request_t &,
+         const im2p_compact_runs_t *runs = nullptr);
   ModelResult run();
 
 private:

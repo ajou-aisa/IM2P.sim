@@ -1,4 +1,5 @@
 #include "im2p_sim.h"
+#include "im2p_compact_runs.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,10 @@ using PollCompletedExtended = int (*)(im2p_stream_t *,
                                       im2p_stripe_completion_extended_t *);
 
 static_assert(IM2P_ABI_VERSION == 5);
+static_assert(IM2P_COMPACT_RUNS_VERSION == 1);
+static_assert(sizeof(im2p_compact_run_t) == 16);
+static_assert(std::is_standard_layout_v<im2p_compact_run_t>);
+static_assert(std::is_trivially_copyable_v<im2p_compact_runs_t>);
 static_assert(IM2P_PRODUCTION_GEOMETRY_VERSION == 1);
 static_assert(sizeof(im2p_production_geometry_v1_t) == 104);
 static_assert(std::is_standard_layout_v<im2p_production_geometry_v1_t>);

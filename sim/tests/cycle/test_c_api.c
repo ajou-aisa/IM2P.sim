@@ -48,11 +48,42 @@ int main(void) {
   if (im2p_cycle_estimate(model, &r, NULL) != IM2P_CYCLE_INVALID ||
       im2p_cycle_model_event_count(model) != 0)
     return 1;
+  im2p_compact_run_t runs[] = {{0, 0xfff, 0, 12}, {1, 0x3ff, 12, 10}};
+  im2p_compact_runs_t view = {IM2P_COMPACT_RUNS_VERSION, sizeof(view), 42, 2,
+                              runs};
+  r.k = 22;
+  r.accepted_cycle = 1;
+  r.record_events = 0;
+  r.submission = IM2P_CYCLE_TILE_SUBMISSIONS;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_OK ||
+      out.start_cycle != 1 || out.logical_work_count != 1 ||
+      out.loop_count != 2 || out.planner_loop_count != 2 ||
+      out.fragment_count != 2 || out.scale_request_count != 2)
+    return 1;
+  before = out;
+  runs[1].compact_k_begin = 11;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0 ||
+      !*im2p_cycle_model_error(model))
+    return 1;
+  runs[1].compact_k_begin = 12;
+  r.tile_k = 0;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0)
+    return 1;
+  r.tile_k = 1;
+  if (im2p_cycle_estimate_runs(model, &r, NULL, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0)
+    return 1;
   im2p_cycle_model_destroy(model);
   im2p_cycle_model_destroy(NULL);
   if (im2p_cycle_model_create(NULL) != NULL ||
       im2p_cycle_estimate(NULL, &r, &out) != IM2P_CYCLE_INVALID)
     return 1;
-  puts("CYCLE_C_ABI_PASS version=1 layout=exact transactional_failure=1");
+  printf("CYCLE_C_ABI_PASS version=1 layout=exact admitted=0 loops=%llu "
+         "fragments=%llu scales=%llu invalid=1 transactional_failure=1\n",
+         (unsigned long long)before.loop_count,
+         (unsigned long long)before.fragment_count,
+         (unsigned long long)before.scale_request_count);
   return 0;
 }

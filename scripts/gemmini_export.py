@@ -119,7 +119,11 @@ RMD_HOST_SOURCES: Final = (
     "bound_rmd_rtl_fixture.cpp", "bound_rmd_rtl_fixture.hpp",
 )
 REQUIRED_SOURCE_FILES: Final = (
+    "fpga/gemmini_hp1/host/CMakeLists.txt", "fpga/gemmini_hp1/host/rmd.hpp",
+    "fpga/gemmini_hp1/host/rmd.cpp", "fpga/gemmini_hp1/host/test_run_aware_rtl.cpp",
+    "fpga/gemmini_hp1/host/test_run_aware_bridge.cpp",
     "sim/include/im2p_sim.h", "sim/include/im2p_geometry.h", "sim/include/im2p_cycle_model.h",
+    "sim/include/im2p_compact_runs.h", "sim/ffi/im2p_geometry_ffi.h",
     "frontend/include/im2p_gemmini_frontend.hpp",
     "frontend/include/im2p_production_trace.hpp",
     "frontend/src/im2p_gemmini_frontend.cpp",
@@ -127,7 +131,8 @@ REQUIRED_SOURCE_FILES: Final = (
     "scripts/real_matrix_fingerprint.py", "scripts/real_lib_manifest.py",
     "scripts/gemmini_replay_contract.py",
     "sim/common/gemmini_schedule.hpp", "sim/common/gemmini_schedule.cpp",
-    "sim/backends/gemmini_hp1/geometry.cpp",
+    "sim/backends/gemmini_hp1/geometry.cpp", "sim/backends/gemmini_hp1/runtime.hpp",
+    "sim/backends/gemmini_hp1/runtime.cpp", "sim/backends/gemmini_hp1/backing_memory.cpp",
     "sim/cycle/CMakeLists.txt", "sim/cycle/c_api.cpp", "sim/cycle/timing_profile.hpp",
     "sim/cycle/control_engine.cpp", "sim/cycle/control_engine.hpp",
     "sim/cycle/cycle_model.hpp", "sim/cycle/execute_engine.cpp",
@@ -135,23 +140,34 @@ REQUIRED_SOURCE_FILES: Final = (
     "sim/cycle/timing_events.hpp", "sim/cycle/cli.py", "sim/cycle/optrace.py",
     "sim/cycle/optrace_schema.py", "sim/cycle/optrace_parents.py",
     "sim/cycle/certificate_contract.py", "sim/cycle/corpus_authority.py",
-    "sim/cycle/corpus-authority-v1.json", "scripts/gemmini_rtl_build_binding.py",
+    "sim/cycle/corpus-authority-v1.json", "sim/cycle/corpus-authority-v2.json",
+    "scripts/gemmini_rtl_build_binding.py",
     "sim/tests/cycle/probe.cpp", "sim/tests/cycle/test_cycle_model.cpp",
     "sim/tests/cycle/test_c_api.c", "sim/tests/cycle/current_rtl_certificate.py",
-    "sim/tests/cycle/rtl_hardening.py", "sim/tests/cycle/production_block_certificate.py",
+    "sim/tests/cycle/test_run_aware_cycle.cpp", "sim/tests/cycle/run_aware_corpus.json",
+    "sim/tests/cycle/run_aware_fixture.py", "sim/tests/cycle/run_aware_events.py",
+    "sim/tests/cycle/certify_run_aware.py",
+    "tests/test_production_trace_build.py",
+    "sim/tests/cycle/rtl_hardening.py", "sim/tests/cycle/passive_log.py",
+    "sim/tests/cycle/production_block_certificate.py",
     "sim/tests/cycle/certificate_document.py", "sim/tests/cycle/reaggregate_certificate.py",
     "config/im2p_profiles.json", "sim/ffi/im2p_config.h", "src/common/Config.bsv",
     "docs/GEMMINI_CYCLE_MODEL.md", "docs/VERIFICATION.md",
 ) + HARDWARE_PATHS
-HOST_LLAMA_SOURCES: Final = RMD_LLAMA_SOURCES + (
+HOST_LLAMA_TRACE_OFF_SOURCES: Final = RMD_LLAMA_SOURCES + (
+    "common/json.hpp",
     "ggml/src/ggml-gemmini-utils/CMakeLists.txt",
-    "ggml/src/ggml-gemmini-utils/src/optrace.cpp",
     "ggml/src/ggml-gemmini-utils/src/debug.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle.cpp",
+    "ggml/src/ggml-gemmini-utils/src/performance.cpp",
+    "ggml/src/ggml-gemmini-utils/src/trace-context.cpp",
     "ggml/src/ggml-gemmini-utils/src/log-capi.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle_reader-capi.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle_reader_aarch64.cpp",
     "ggml/src/ggml-gemmini-utils/src/cycle_reader_internal.h",
+)
+HOST_LLAMA_SOURCES: Final = HOST_LLAMA_TRACE_OFF_SOURCES + (
+    "ggml/src/ggml-gemmini-utils/src/optrace.cpp",
     "ggml/src/ggml-gemmini-utils/src/semantic.cpp",
     "ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp",
     "ggml/src/ggml-gemmini-utils/include/gemmini/cpu_log_context.hpp",
@@ -175,6 +191,8 @@ class ExportRequest:
     build_root: Path | None
     output: Path
     board: Path | None
+    llama_root: Path | None = None
+    production_trace_enabled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,9 +254,9 @@ def source_files(root: Path) -> list[tuple[Path, Path]]:
     return result
 
 
-def rmd_dependency_sources(workspace: Path) -> list[tuple[Path, Path]]:
-    llama = workspace / "llama.cpp-gemmini"
-    sources = {regular_file(llama / name) for name in HOST_LLAMA_SOURCES}
+def rmd_dependency_sources(llama: Path, trace_enabled: bool) -> list[tuple[Path, Path]]:
+    required = HOST_LLAMA_SOURCES if trace_enabled else HOST_LLAMA_TRACE_OFF_SOURCES
+    sources = {regular_file(llama / name) for name in required}
     sources.update(
         path for path in (llama / "ggml").rglob("*")
         if path.is_file() and not path.is_symlink()
@@ -317,7 +335,7 @@ def approved_head(repository: Path, name: str, baseline: str, descendants_allowe
     raise ExportError(f"dependency HEAD mismatch: {name}: {head}")
 
 
-def dependency_snapshot(source_root: Path, output: Path) -> dict[str, JsonValue]:
+def dependency_snapshot(source_root: Path, output: Path, llama: Path, trace_enabled: bool) -> dict[str, JsonValue]:
     try:
         upstream = json.loads((source_root / "src/gemmini/UPSTREAM.lock.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -328,7 +346,6 @@ def dependency_snapshot(source_root: Path, output: Path) -> dict[str, JsonValue]
     workspace = Path(os.environ.get("IM2P_WORKSPACE_ROOT", source_root.parent)).resolve()
     work_root = resolve_gemmini_work_root(source_root)
     chipyard = work_root / "deps/chipyard-1.13.0"
-    llama = workspace / "llama.cpp-gemmini"
     include = workspace / "RISC-V-DynDNN-gemmini-include"
     repositories = {
         "chipyard": (chipyard, "69eba860a352343e4ac6b6df0f3638a79a86ec78", False),
@@ -347,7 +364,7 @@ def dependency_snapshot(source_root: Path, output: Path) -> dict[str, JsonValue]
         if name != "llama_cpp_gemmini":
             status = require_clean_tracked_state(repository, name)
         allowed = tuple(path.relative_to(repository).as_posix()
-                        for path, _ in rmd_dependency_sources(workspace)) \
+                        for path, _ in rmd_dependency_sources(llama, trace_enabled)) \
             if name == "llama_cpp_gemmini" else ()
         diff = git(repository, "diff", "HEAD", "--binary", "--", *allowed)
         patch = patch_root / f"{name}.patch"
@@ -406,7 +423,7 @@ def dependency_snapshot(source_root: Path, output: Path) -> dict[str, JsonValue]
     }
 
 
-def linux_instructions(dependencies: dict[str, JsonValue]) -> str:
+def linux_instructions(dependencies: dict[str, JsonValue], trace_enabled: bool) -> str:
     repositories = dependencies.get("repositories")
     if repositories is None:
         return "# Linux/Vivado handoff\n\nDependency lock unavailable for this fixture.\n"
@@ -432,7 +449,7 @@ def linux_instructions(dependencies: dict[str, JsonValue]) -> str:
         "",
         "## Minimum host rebuild (no simulator or hardware operation)",
         "",
-        "Use a new workspace outside the original checkout. Set `package` to this extracted package's absolute path and `work` to the new workspace. Restore only llama and Gemmini headers at the locked commits for this minimum build; Chipyard is needed for the separate RTL flow, not this host build.",
+        "Use a new workspace outside the original checkout. Set `package` to this extracted package's absolute path and `work` to the new workspace. Restore Gemmini headers at the locked commit into `$work/RISC-V-DynDNN-gemmini-include`; the packaged pinned llama source snapshot supplies this minimum host build. Chipyard is needed for the separate RTL flow.",
         "",
         "```sh",
         'export IM2P_WORKSPACE_ROOT="$work"',
@@ -440,16 +457,17 @@ def linux_instructions(dependencies: dict[str, JsonValue]) -> str:
         'export PYTHONDONTWRITEBYTECODE=1',
         "unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH PYTHONPATH",
         'python3 "$package/source/scripts/gemmini_export.py" verify "$package"',
+        'mkdir -p "$work/llama.cpp-gemmini"',
         'cp -R "$package/dependency/source/llama_cpp_gemmini/." "$work/llama.cpp-gemmini/"',
         'python3 "$package/source/scripts/gemmini_build.py" --stage plan --a-bits 8 --w-bits 8 --dim 16 --scu hp1-left-shift --memory-contract "$package/source/config/gemmini_host_memory_contracts/a8w8-d16-hp1.json" --out "$work/plan"',
-        'cmake -S "$package/source/fpga/gemmini_hp1/host" -B "$work/host-build" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DIM2P_GEMMINI_RESOLVED_PROFILE="$work/plan/resolved-profile.json" -DIM2P_LLAMA_ROOT="$work/llama.cpp-gemmini" -DIM2P_GEMMINI_INCLUDE_ROOT="$work/RISC-V-DynDNN-gemmini-include"',
+        'cmake -S "$package/source/fpga/gemmini_hp1/host" -B "$work/host-build" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DIM2P_GEMMINI_RESOLVED_PROFILE="$work/plan/resolved-profile.json" -DIM2P_LLAMA_ROOT="$work/llama.cpp-gemmini" -DIM2P_GEMMINI_INCLUDE_ROOT="$work/RISC-V-DynDNN-gemmini-include" -DIM2P_PRODUCTION_TRACE_ENABLED=' + ("ON" if trace_enabled else "OFF"),
         'cmake --build "$work/host-build" --parallel 2',
         'ctest --test-dir "$work/host-build" --output-on-failure',
         "```",
         "",
-        "Restore dependencies from their recorded remote and exact HEAD (a verified immutable Git-object archive is also acceptable), then apply nonempty tracked patches and allowed overlays before the source copy above. `allowed_overlay_paths` limits the llama patch to the host compilation closure; unrelated local scripts/editor/model files are excluded. `source-manifest.json` records the copied source snapshot.",
-        "This minimum target is external-executor-only. Trace OFF works without Git metadata; explicit production tracing is unsupported and fails closed. The ordinary IM2P_SIM trace ON producer build is a separate runtime-dependent flow, not certified by this host rebuild.",
-        "The exported host contract uses CYCLE_SIM=0. Semantic metadata helpers are included because existing CPU-log sources depend on them; this does not export or certify the PoTal collector. CYCLE_SIM=1 requires a complete llama root build and its CPU-functional source closure, and is rejected by this standalone host build.",
+        "For the minimum host build, restore Gemmini headers from their recorded remote and exact HEAD (a verified immutable Git-object archive is also acceptable). The llama source snapshot in this package is bound by `source-manifest.json` and the dependency lock; it needs no Git metadata. Restore the full dependencies and apply nonempty tracked patches and allowed overlays for the separate RTL flow. `allowed_overlay_paths` limits the llama patch to the host compilation closure; unrelated local scripts/editor/model files are excluded.",
+        "This minimum target is external-executor-only. The packaged host selects production trace " + ("ON with the real producer API." if trace_enabled else "OFF because this source has no real producer API."),
+        "The exported host contract uses CYCLE_SIM=0. CYCLE_SIM=1 requires a complete llama root build and its CPU-functional source closure, and is rejected by this standalone host build.",
         "Checksum verification proves content identity, not dependency closure. The export verifier separately requires public/frontend headers, Python helpers and all utility implementation files. Preserve compile dependency files and Python module origins when checking relocation. macOS execution does not certify a Linux binary.",
         "",
         "## Value-free replay tools",
@@ -462,8 +480,10 @@ def linux_instructions(dependencies: dict[str, JsonValue]) -> str:
         'ctest --test-dir "$work/cycle-build" --output-on-failure --no-tests=error',
         'python3 "$package/source/sim/cycle/optrace.py" --help',
         'python3 "$package/source/sim/tests/cycle/current_rtl_certificate.py" --help',
+        'python3 "$package/source/sim/tests/cycle/certify_run_aware.py" --help',
         "```",
         "",
+        "The run-aware certificate accepts only its fixed fixture corpus and independently recorded fresh-reset RTL observations. The package supplies its scalar parser, corpus, event comparator and C++ cycle test, but not the large RTL evidence or a production run trace. The numerical Rust crate is outside this host/cycle export contract.",
         "A newly built library needs its own admitted certificate and independent producer manifest. Building or hashing it does not certify it. Fresh RTL certificate generation additionally needs the separately restored RTL dependencies/build artifacts. Verified reaggregation needs the original raw evidence plus matching source/artifact proofs; those large external inputs are not bundled. Historical traces are not promoted to the current schema by export.",
         "See `source/docs/GEMMINI_CYCLE_MODEL.md` for the certificate/replay commands and current JSON contracts, and `source/docs/VERIFICATION.md` for verification scope.",
     ))
@@ -917,13 +937,20 @@ def verify_export(root: Path) -> VerifyResult:
         expected[relative.as_posix()] = (sha256, (root / relative).stat().st_size)
     if expected != inventory(root):
         raise ExportError("package SHA256 inventory mismatch")
+    result = read_object(root / "result.json")
+    source_manifest = read_object(root / "source-manifest.json")
+    dependency_lock = read_object(root / "dependency-lock.json")
+    trace_enabled = result.get("production_trace_enabled")
+    if type(trace_enabled) is not bool or source_manifest.get("production_trace_enabled") != trace_enabled or \
+       dependency_lock.get("production_trace_enabled") != trace_enabled:
+        raise ExportError("production trace source closure mode mismatch")
+    llama_sources = HOST_LLAMA_SOURCES if trace_enabled else HOST_LLAMA_TRACE_OFF_SOURCES
     required = tuple(f"source/{name}" for name in REQUIRED_SOURCE_FILES) + tuple(
-        f"dependency/source/llama_cpp_gemmini/{name}" for name in HOST_LLAMA_SOURCES
+        f"dependency/source/llama_cpp_gemmini/{name}" for name in llama_sources
     )
     for name in required:
         if not (root / name).is_file():
             raise ExportError(f"required source closure missing: {name}")
-    source_manifest = read_object(root / "source-manifest.json")
     source_rows = source_manifest.get("files")
     if source_manifest.get("schema_version") != 1 or not isinstance(source_rows, dict):
         raise ExportError("source closure manifest is invalid")
@@ -937,8 +964,7 @@ def verify_export(root: Path) -> VerifyResult:
         if not isinstance(row, dict) or not source.is_file() or \
            row.get("sha256") != digest(source) or row.get("bytes") != source.stat().st_size:
             raise ExportError(f"source closure manifest mismatch: {name}")
-    result = json.loads(regular_file(root / "result.json").read_text(encoding="utf-8"))
-    if not isinstance(result, dict) or result.get("export") != "PASS":
+    if result.get("export") != "PASS":
         raise ExportError("export result does not report PASS")
     if result.get("route") != "NOT_RUN" or result.get("bitstream") != "NOT_RUN":
         raise ExportError("export must not claim route or bitstream completion")
@@ -1009,7 +1035,19 @@ def create_export(request: ExportRequest) -> ExportResult:
     profiles = resolved_profiles(build_root)
     kind = export_kind(profiles)
     workspace = Path(os.environ.get("IM2P_WORKSPACE_ROOT", source_root.parent)).resolve()
-    selected.extend(rmd_dependency_sources(workspace))
+    llama = request.llama_root.resolve() if request.llama_root is not None else workspace / "llama.cpp-gemmini"
+    if not llama.is_dir():
+        raise ExportError(f"llama root is not a directory: {llama}")
+    optrace = (
+        llama / "ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp",
+        llama / "ggml/src/ggml-gemmini-utils/src/optrace.cpp",
+    )
+    trace_enabled = request.production_trace_enabled
+    if trace_enabled is None:
+        trace_enabled = all(path.is_file() for path in optrace)
+    if trace_enabled and not all(path.is_file() for path in optrace):
+        raise ExportError("production trace ON requires real optrace.hpp and optrace.cpp")
+    selected.extend(rmd_dependency_sources(llama, trace_enabled))
     if kind == "INTEGRATED":
         if build_root is None:
             raise ExportError("integrated export requires a build root")
@@ -1022,10 +1060,11 @@ def create_export(request: ExportRequest) -> ExportResult:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         rows[relative.as_posix()] = {"sha256": digest(destination), "bytes": destination.stat().st_size}
-    dependencies = dependency_snapshot(source_root, output)
+    dependencies = dependency_snapshot(source_root, output, llama, trace_enabled)
+    dependencies["production_trace_enabled"] = trace_enabled
     write_json(output / "dependency-lock.json", dependencies)
     (output / "LINUX_BUILD.md").write_text(
-        linux_instructions(dependencies), encoding="utf-8",
+        linux_instructions(dependencies, trace_enabled), encoding="utf-8",
     )
     if board is not None:
         copied_xdc: list[JsonValue] = []
@@ -1043,7 +1082,7 @@ def create_export(request: ExportRequest) -> ExportResult:
     rtl = sorted(relative.as_posix() for _, relative in selected if relative.suffix.lower() in RTL_SUFFIXES)
     if kind != "INTEGRATED":
         (output / "filelist.f").write_text("".join(f"{name}\n" for name in rtl), encoding="utf-8")
-    (output / "source-manifest.json").write_text(json.dumps({"schema_version": 1, "files": rows}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output / "source-manifest.json").write_text(json.dumps({"schema_version": 1, "production_trace_enabled": trace_enabled, "files": rows}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_json(output / "profile-manifest.json", {
         "schema_version": 1, "export_kind": kind, "profiles": json_profiles(profiles),
     })
@@ -1051,7 +1090,8 @@ def create_export(request: ExportRequest) -> ExportResult:
     write_json(output / "result.json", {"schema_version": 1, "export": "PASS", "route": "NOT_RUN",
         "bitstream": "NOT_RUN", "physical": "NOT_RUN", "reason": reason,
         "generated_rtl": len(rtl), "board_included": board is not None,
-        "export_kind": kind, "profiles": json_profiles(profiles)})
+        "export_kind": kind, "profiles": json_profiles(profiles),
+        "production_trace_enabled": trace_enabled})
     sums = inventory(output)
     (output / "SHA256SUMS").write_text("".join(f"{sha}  {name}\n" for name, (sha, _) in sums.items()), encoding="utf-8")
     verified = verify_export(output)
@@ -1070,6 +1110,8 @@ def main() -> int:
     create.add_argument("--build-root", type=Path)
     create.add_argument("--out", type=Path, required=True)
     create.add_argument("--board", type=Path)
+    create.add_argument("--llama-root", type=Path)
+    create.add_argument("--production-trace", choices=("on", "off", "auto"), default="auto")
     verify = subparsers.add_parser("verify")
     verify.add_argument("package", type=Path)
     extract = subparsers.add_parser("extract")
@@ -1079,7 +1121,9 @@ def main() -> int:
     try:
         match arguments.command:
             case "create":
-                result = create_export(ExportRequest(arguments.source_root, arguments.build_root, arguments.out, arguments.board))
+                trace_enabled = {"on": True, "off": False, "auto": None}[arguments.production_trace]
+                result = create_export(ExportRequest(arguments.source_root, arguments.build_root, arguments.out,
+                                                     arguments.board, arguments.llama_root, trace_enabled))
                 print(json.dumps({**asdict(result), "archive": str(result.archive)}, indent=2))
             case "verify":
                 print(json.dumps(asdict(verify_export(arguments.package)), indent=2))

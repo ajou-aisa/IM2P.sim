@@ -1,0 +1,49 @@
+{
+  "schema": "im2p-cycle-corpus-authority",
+  "version": 2,
+  "revision": "ws-production-pinned-develop-row-pruned-v2",
+  "base_manifest_sha256": "fa9424bf6831c8813bdebbb5e0dd6d8c3d086dfa35fe5660cae33d83bd51989d",
+  "producer_head": "71a8c0328cd436226b8ec5fad03adafac93940ed",
+  "producer_source_sha256": {
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-builder.cpp": "1cae2932ad74fae024c0e9ce6cd3b892931f46c9454f1b76f51b441e5e904a63",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.cpp": "b2f663abfabc016dc6bf20744402fc110ded38f4ddb030c71d3f2f2edd88d842",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-im2p-executor.cpp": "25c56026b628729eeb0549aa6a7e41c4d6fc690873f86de9059fa6baaca78728"
+  },
+  "selector_source_sha256": {
+    "RISC-V-DynDNN-gemmini-include/gemmini.h": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70"
+  },
+  "fixture_source_sha256": {
+    "fpga/gemmini_hp1/host/test_ws_rtl.cpp": "459fdfd4912dd4e1be805a7c7fd21476a3e476bc3cbda9b02acf95543121c9e9",
+    "fpga/gemmini_hp1/host/frontend_rtl_fixture.cpp": "6b0eb7d16181227be85f18f5def96526efde33c8219c9d0c7469de0c510dce0f",
+    "fpga/gemmini_hp1/host/frontend_rtl_fixture.hpp": "b53f0dc35a215e160b097353cded3ebc83d196a0d153335a0f1dab78999621e2",
+    "fpga/gemmini_hp1/host/rmd_rtl_fixture.cpp": "195162d517fb2ee529393e92dc690c3d34d34fec69fc64ab825cab385f30770e",
+    "fpga/gemmini_hp1/host/rmd_rtl_fixture.hpp": "da34cef7264cad531698bdc028354187c3b78d29d7468e936d83af99256a5408",
+    "fpga/gemmini_hp1/host/bound_rmd_rtl_fixture.cpp": "c59bc8134e6bda0e81cc02225c78e7257edba0de7b2ec4e3b23174ef2c67e87c",
+    "fpga/gemmini_hp1/host/bound_rmd_rtl_fixture.hpp": "86fce2383116e3a6e7d28156ebb194ef6e2074819f266d672cef9c12d1f35042",
+    "fpga/gemmini_hp1/host/rmd.cpp": "1244bdbf1bc716944c3010017ca3e86797d36dcb49ad222681f0d66700a675e3",
+    "fpga/gemmini_hp1/host/rmd.hpp": "a25ca182c0a66fde69ddc872fac986be9da7f67397ed179b6319be62d186f546"
+  },
+  "captured_case_ids": [
+    "captured-001", "captured-002", "captured-003", "captured-004", "captured-005", "captured-006", "captured-007",
+    "captured-008", "captured-009", "captured-010", "captured-011", "captured-012", "captured-013", "captured-014",
+    "captured-015", "captured-016", "captured-017", "captured-018", "captured-019", "captured-020", "captured-021",
+    "captured-022", "captured-023", "captured-024", "captured-025", "captured-026", "captured-027", "captured-028",
+    "captured-029", "captured-030", "captured-031", "captured-032", "captured-033", "captured-034", "captured-035",
+    "captured-036", "captured-037", "captured-038", "captured-039", "captured-040", "captured-041", "captured-042"
+  ],
+  "large_k": [32, 64, 96, 3072, 8256],
+  "identity_groups": {
+    "full_block0": ["captured-008", "captured-016", "captured-017", "captured-018", "captured-019"],
+    "full_block1": ["captured-009", "captured-020"],
+    "stripe_block0": ["captured-010", "captured-012", "captured-014", "captured-024", "captured-026", "captured-028", "captured-031", "captured-034", "captured-037", "captured-040", "captured-042"],
+    "stripe_block1": ["captured-011", "captured-013", "captured-015", "captured-025", "captured-027", "captured-029", "captured-032", "captured-035", "captured-038"]
+  },
+  "profiles": [
+    {"name":"a4w4-d16-hp1","full_block0":[[60,3,32],[4,1,2]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[20,3,32],[2,1,2]],"stripe_block1":[[5,3,5],[1,1,1]]},
+    {"name":"a4w4-d32-hp1","full_block0":[[60,3,32],[2,1,1]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[20,3,32],[1,1,1]],"stripe_block1":[[5,3,5],[1,1,1]]},
+    {"name":"a4w4-d64-hp1","full_block0":[[60,3,32],[1,1,1]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[20,3,32],[1,1,1]],"stripe_block1":[[5,3,5],[1,1,1]]},
+    {"name":"a8w8-d16-hp1","full_block0":[[33,3,32],[3,1,2]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[11,3,32],[1,1,2]],"stripe_block1":[[5,3,5],[1,1,1]]},
+    {"name":"a8w8-d32-hp1","full_block0":[[33,3,32],[2,1,1]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[11,3,32],[1,1,1]],"stripe_block1":[[5,3,5],[1,1,1]]},
+    {"name":"a8w8-d64-hp1","full_block0":[[33,3,32],[1,1,1]],"full_block1":[[15,3,5],[1,1,1]],"stripe_block0":[[11,3,32],[1,1,1]],"stripe_block1":[[5,3,5],[1,1,1]]}
+  ]
+}

@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.gemmini_export import (
     HOST_LLAMA_SOURCES,
+    HOST_LLAMA_TRACE_OFF_SOURCES,
     REQUIRED_SOURCE_FILES,
     RMD_HOST_SOURCES,
     RMD_LLAMA_SOURCES,
@@ -66,7 +67,7 @@ def refresh_sums(root: Path) -> None:
     (root / "SHA256SUMS").write_text("".join(rows), encoding="utf-8")
 
 
-def source_fixture(root: Path) -> None:
+def source_fixture(root: Path, llama_root: Path | None = None, trace_enabled: bool = True) -> None:
     write(root / "src/gemmini/src/main/scala/im2p/gemmini/SCU.scala", "class SCU\n")
     write(root / "src/gemmini/UPSTREAM.lock.json", "{}\n")
     write(root / "src/gemmini/upstream/LICENSE", "upstream license\n")
@@ -79,9 +80,10 @@ def source_fixture(root: Path) -> None:
     write(root / "scripts/gemmini_build.py", "# build\n")
     for name in REQUIRED_SOURCE_FILES:
         write(root / name, "// source closure fixture\n")
-    for name in HOST_LLAMA_SOURCES:
-        write(root.parent / "llama.cpp-gemmini" / name, "// llama source fixture\n")
-    write(root.parent / "llama.cpp-gemmini/ggml/include/ggml.h", "// header fixture\n")
+    llama = llama_root if llama_root is not None else root.parent / "llama.cpp-gemmini"
+    for name in HOST_LLAMA_SOURCES if trace_enabled else HOST_LLAMA_TRACE_OFF_SOURCES:
+        write(llama / name, "// llama source fixture\n")
+    write(llama / "ggml/include/ggml.h", "// header fixture\n")
     write(root / "models/forbidden.gguf", b"model")
     write(root / "src/gemmini/target/forbidden.class", b"class")
     write(root / "src/gemmini/test_run_dir/forbidden.sv", "module generated_test; endmodule\n")

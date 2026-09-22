@@ -43,8 +43,9 @@ im2p_cycle_model_create(const im2p_cycle_model_config_t *c) {
   }
 }
 void im2p_cycle_model_destroy(im2p_cycle_model_t *m) { delete m; }
-int im2p_cycle_estimate(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
-                        im2p_cycle_result_t *out) {
+static int estimate_impl(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
+                         const im2p_compact_runs_t *runs,
+                         im2p_cycle_result_t *out) {
   if (!m)
     return IM2P_CYCLE_INVALID;
   m->error.fill(0);
@@ -55,7 +56,7 @@ int im2p_cycle_estimate(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
     return IM2P_CYCLE_INVALID;
   }
   try {
-    auto result = im2p::cycle::estimate(m->config, *r);
+    auto result = im2p::cycle::estimate(m->config, *r, runs);
     m->trace = std::move(result.trace);
     *out = result.counters;
     return IM2P_CYCLE_OK;
@@ -73,6 +74,25 @@ int im2p_cycle_estimate(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
                   "unexpected cycle-model failure");
     return IM2P_CYCLE_INTERNAL;
   }
+}
+int im2p_cycle_estimate(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
+                        im2p_cycle_result_t *out) {
+  return estimate_impl(m, r, nullptr, out);
+}
+int im2p_cycle_estimate_runs(im2p_cycle_model_t *m,
+                             const im2p_cycle_request_t *r,
+                             const im2p_compact_runs_t *runs,
+                             im2p_cycle_result_t *out) {
+  if (!runs) {
+    if (m) {
+      m->error.fill(0);
+      m->trace = {};
+      std::snprintf(m->error.data(), m->error.size(), "%s",
+                    "null compact run view");
+    }
+    return IM2P_CYCLE_INVALID;
+  }
+  return estimate_impl(m, r, runs, out);
 }
 const char *im2p_cycle_model_error(const im2p_cycle_model_t *m) {
   return m ? m->error.data() : "null cycle model";

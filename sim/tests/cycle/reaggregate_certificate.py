@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from scripts.gemmini_replay_contract import contract_digest, hardware_contract, reference_memory_contract
-from sim.cycle.corpus_authority import authority
+from sim.cycle.corpus_authority import authority, authority_reference
 from sim.tests.cycle.certificate_document import JsonObject, JsonValue, complete_document
 from sim.tests.cycle import current_rtl_certificate as current
 from sim.tests.cycle import rtl_hardening as rtl
@@ -49,13 +49,13 @@ def checked_file(path: Path, evidence: Path, hashes: dict[str, str]) -> str:
     return path.read_text()
 
 
-def source_proof(evidence: Path, hashes: dict[str, str]) -> JsonObject:
+def source_proof(evidence: Path, hashes: dict[str, str], revision: str = 'v1') -> JsonObject:
     inventory = mapping(json.loads(checked_file(evidence / 'final-source-sha256.json', evidence, hashes)))
     wanted: JsonObject = {}
     for profile in rtl.PROFILES:
         wanted.update(mapping(hardware_contract(profile)['source_sha256']))
     wanted.update(mapping(reference_memory_contract()['source_sha256']))
-    wanted.update(mapping(authority()['fixture_source_sha256']))
+    wanted.update(mapping(authority(revision)['fixture_source_sha256']))
     for pattern in ('sim/cycle/*.cpp', 'sim/cycle/*.hpp', 'sim/common/*.cpp', 'sim/common/*.hpp'):
         wanted.update({p.relative_to(current.ROOT).as_posix(): rtl.sha256(p)
                        for p in current.ROOT.glob(pattern)})
@@ -118,11 +118,14 @@ def reaggregate_case(case: JsonObject, profile: str, framing: str, evidence: Pat
             or list(map(int, raw[9:14])) != timing or bool(int(raw[15])) != case['raw']):
         raise EvidenceError(f'raw RTL work differs from declared corpus: {directory}')
     request = mapping(json.loads(checked_file(directory / 'model-request.json', evidence, hashes)))
+    reference = reference_memory_contract()
+    accepted_cycle = integer(reference['accepted_cycle'])
+    backing_cycle_offset = integer(mapping(reference['timing'])['backing_cycle_offset'])
     expected_request: JsonObject = {
         'profile': profile, 'timing_profile': 'rtl-regression',
         'request': dict(zip(('m', 'n', 'k', 'tile_i', 'tile_j', 'tile_k'), [*shape, *tile])) | {
-            'accepted_cycle': int(accepted[0][1]), 'submission': framing, 'record_events': 1},
-        'timing': dict(zip(TIMING_KEYS, [*timing, int(raw[14])])),
+            'accepted_cycle': accepted_cycle, 'submission': framing, 'record_events': 1},
+        'timing': dict(zip(TIMING_KEYS, [*timing, backing_cycle_offset])),
     }
     if request != expected_request:
         raise EvidenceError(f'model request includes different work or unsupported inputs: {directory}')
@@ -135,6 +138,10 @@ def reaggregate_case(case: JsonObject, profile: str, framing: str, evidence: Pat
         raise EvidenceError(f'raw endpoint/counter evidence missing: {directory}')
     differences: JsonObject = {name: {'rtl': observed[name], 'model': summary[field]}
                                for name, field in pairs.items() if observed[name] != summary[field]}
+    for name, actual, expected in (('accepted_cycle', int(accepted[0][1]), accepted_cycle),
+                                   ('backing_cycle_offset', int(raw[14]), backing_cycle_offset)):
+        if actual != expected:
+            differences[name] = {'rtl': actual, 'model': expected}
     model_events = rtl.normalized_model_events([mapping(event) for event in sequence(model['events'])])
     selected = sorted((int(row[1]), row[2]) for row in rows
                       if row and row[0].isdigit() and row[2] in rtl.SELECTED_EVENTS)
@@ -167,7 +174,20 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
     previous = mapping(json.loads(checked_file(evidence / 'cycle-release-certificate/current-certificate.json', evidence, hashes)))
     if previous['model_library_sha256'] != rtl.sha256(library):
         raise EvidenceError('reaggregation requires the identical previously certified model library')
-    proof = source_proof(evidence, hashes)
+    reference = previous.get('corpus_authority')
+    if reference == authority_reference('v2'):
+        revision = 'v2'
+        source = mapping(previous.get('llama_source'))
+        source_root = source.get('root')
+        if source.get('head') != '71a8c0328cd436226b8ec5fad03adafac93940ed' or not isinstance(source_root, str):
+            raise EvidenceError('retained pinned develop source identity missing')
+        authority('v2', fixture_root=current.ROOT, llama_root=Path(source_root))
+    elif reference == authority_reference('v1') and previous.get('llama_source') is None:
+        revision = 'v1'
+        source = None
+    else:
+        raise EvidenceError('retained corpus authority/source identity differs; historical v1 cannot upgrade')
+    proof = source_proof(evidence, hashes, revision)
     corpora: dict[str, list[JsonObject]] = {}
     bindings: JsonObject = {}
     artifact_count = 0
@@ -192,7 +212,7 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
         artifacts.update({'rtl/' + name: digest for name, digest in mapping(provenance['rtl_sha256']).items()})
         binding: JsonObject = {'schema': 'im2p-rtl-build-binding', 'version': 1, 'execution_kind': 'VERIFIED_REUSE',
             'hardware_contract': hardware_contract(profile), 'artifact_sha256': artifacts,
-            'fixture_source_sha256': authority()['fixture_source_sha256'],
+            'fixture_source_sha256': authority(revision)['fixture_source_sha256'],
             'verified_source_inventory_sha256': proof['inventory_sha256'],
             'verified_probe_provenance_sha256': rtl.sha256(provenance_path),
             'verified_build_manifest_sha256': rtl.sha256(build_manifest),
@@ -219,6 +239,8 @@ def reaggregate(evidence: Path, library: Path, out: Path) -> JsonObject:
         'selected_events': [event for event in sorted(rtl.SELECTED_EVENTS)], 'event_mutation': mutation,
         'model_library_sha256': rtl.sha256(library), 'build_manifest_sha256': previous['build_manifest_sha256'],
         'rtl_build_bindings': bindings,
+        'corpus_authority': authority_reference(revision),
+        **({} if source is None else {'llama_source': source}),
         'hardware_contracts': {name: mapping(binding)['hardware_contract'] for name, binding in bindings.items()},
         'captured_corpus_counts': {name: len(cases) - 5 for name, cases in corpora.items()},
         'historical_goldens_used': False, 'historical_exclusions_used': False,

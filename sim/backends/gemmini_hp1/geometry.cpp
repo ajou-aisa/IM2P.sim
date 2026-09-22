@@ -1,4 +1,6 @@
 #include "runtime.hpp"
+#include <new>
+#include <utility>
 
 namespace im2p::gemmini_hp1 {
 
@@ -44,7 +46,8 @@ bool geometry_fits(const im2p_production_geometry_v1_t &g, std::size_t rows,
 }
 
 int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &d,
-                 const im2p_production_geometry_v1_t *g) {
+                 const im2p_production_geometry_v1_t *g,
+                 const im2p_compact_runs_t *runs) {
   if (runtime.active)
     return 0;
   if (!valid_descriptor(d))
@@ -54,11 +57,8 @@ int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &d,
            *g, d, d.mode == 1 ? IM2P_GEOMETRY_STREAM : IM2P_GEOMETRY_FULL) ||
        (d.mode == 0 && !geometry_fits(*g, d.row_count, 0))))
     return IM2P_REQUEST_INVALID_ARGUMENT;
-  runtime.descriptor = d;
-  runtime.explicit_geometry = g != nullptr;
-  runtime.geometry = g ? *g : im2p_production_geometry_v1_t{};
   const auto &p = runtime.plan;
-  runtime.schedule = {{d.row_count, d.column_count, d.reduction_count},
+  gemmini::ScheduleConfig schedule{{d.row_count, d.column_count, d.reduction_count},
                       {kDim, kOperandBits},
                       {static_cast<std::size_t>(g ? g->tile_i_count : p.tile_i),
                        static_cast<std::size_t>(g ? g->tile_j_count : p.tile_j),
@@ -70,6 +70,25 @@ int start_matmul(Runtime &runtime, const im2p_matmul_descriptor_t &d,
                       d.vector_op != 0,
                       d.vector_op != 0,
                       d.accumulate_first_fragment != 0};
+  if (runs) {
+    if (!g || d.vector_op != 5 || d.k_origin != 0 ||
+        d.scale_total_k != runs->original_k)
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    try {
+      if (!gemmini::set_compact_runs(schedule, runs))
+        return IM2P_REQUEST_INVALID_ARGUMENT;
+    } catch (const std::bad_alloc &) {
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+    }
+    if (!valid_extent(d.scale_base, d.scale_row_stride,
+                      std::uint64_t{schedule.runs.back().original_block_id} + 1,
+                      std::uint64_t{d.column_count} * sizeof(std::uint32_t)))
+      return IM2P_REQUEST_INVALID_ARGUMENT;
+  }
+  runtime.descriptor = d;
+  runtime.explicit_geometry = g != nullptr;
+  runtime.geometry = g ? *g : im2p_production_geometry_v1_t{};
+  runtime.schedule = std::move(schedule);
   runtime.active = true;
   runtime.async = d.mode == 1;
   runtime.matrix_done = false;
@@ -149,6 +168,16 @@ im2p_start_matmul_geometry(im2p_handle_t handle,
   if (!runtime || !descriptor || !geometry)
     return IM2P_REQUEST_INVALID_ARGUMENT;
   return im2p::gemmini_hp1::start_matmul(*runtime, *descriptor, geometry);
+}
+
+extern "C" int im2p_start_matmul_geometry_runs(
+    im2p_handle_t handle, const im2p_matmul_descriptor_t *descriptor,
+    const im2p_production_geometry_v1_t *geometry,
+    const im2p_compact_runs_t *runs) {
+  auto *runtime = im2p::gemmini_hp1::as_runtime(handle);
+  if (!runtime || !descriptor || !geometry || !runs)
+    return IM2P_REQUEST_INVALID_ARGUMENT;
+  return im2p::gemmini_hp1::start_matmul(*runtime, *descriptor, geometry, runs);
 }
 
 extern "C" int im2p_publish_activation_stripe_geometry(

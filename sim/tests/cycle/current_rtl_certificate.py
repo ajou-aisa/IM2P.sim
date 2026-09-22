@@ -27,8 +27,11 @@ from collections.abc import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from scripts.gemmini_replay_contract import reference_memory_contract
 from sim.cycle import cli
+from sim.cycle.certificate_contract import number, object_value
 from sim.tests.cycle import rtl_hardening as rtl
+from sim.tests.cycle.passive_log import strip_device_host_call_records
 from sim.tests.cycle.production_block_certificate import RESULT_MAP, TIMING_KEYS, first_event_difference
 
 FRAMINGS = ('regression-tiles', 'planner-blocks')
@@ -190,9 +193,9 @@ def capture(profile: dict[str, Any], out: Path) -> list[dict[str, Any]]:
     log = executable.parent / 'run.log'
     env = dict(os.environ, IM2P_CYCLE_OBSERVER=str(events))
     code = rtl.run_logged(out, [str(executable)], log, env)
-    original = Path(profile['command_results'][-1]['log']).read_text()
-    # Strip only the extra passive summary columns; all original bytes must match.
-    stripped = log.read_text()
+    original = strip_device_host_call_records(
+        Path(profile['command_results'][-1]['log']).read_bytes().decode('utf-8'))
+    stripped = strip_device_host_call_records(log.read_bytes().decode('utf-8'))
     stripped = re.sub(r'( cycles=\d+) start=\d+ done=\d+ work_count=1 loop_count=\d+'
                       r' load_req=\d+ load_resp=\d+ store_req=\d+ store_resp=\d+'
                       r' scale_req=\d+ scale_resp=\d+', r'\1', stripped)
@@ -266,11 +269,14 @@ def compare_case(executable: Path, profile: str, framing: str, case: dict[str, A
     if len(observed['cases']) != 1 or not observed['work_events']:
         raise ValueError('probe is missing exactly one accepted work record')
     data = observed['cases'][0]
-    accepted = int(observed['work_events'][0][1])
+    reference = reference_memory_contract()
+    accepted = number(reference['accepted_cycle'], 'reference accepted cycle')
+    offset = number(object_value(reference['timing'], 'reference timing')['backing_cycle_offset'],
+                    'reference backing offset')
     request = {'profile': profile, 'timing_profile': 'rtl-regression',
                'request': {'m': m, 'n': n, 'k': k, 'tile_i': ti, 'tile_j': tj, 'tile_k': tk,
                            'accepted_cycle': accepted, 'submission': framing, 'record_events': 1},
-               'timing': dict(zip(TIMING_KEYS, (*case['timing'], int(data[14]))))}
+               'timing': dict(zip(TIMING_KEYS, (*case['timing'], offset)))}
     directory = Path(observed['log']).parent
     write_json(directory / 'model-request.json', request)
     result['model_attempted'] = True
@@ -287,6 +293,10 @@ def compare_case(executable: Path, profile: str, framing: str, case: dict[str, A
     differences = {name: {'rtl': observed['summary'][name], 'model': model['result'][field]}
                    for name, field in pairs.items()
                    if observed['summary'][name] != model['result'][field]}
+    for name, actual, expected in (('accepted_cycle', int(observed['work_events'][0][1]), accepted),
+                                   ('backing_cycle_offset', int(data[14]), offset)):
+        if actual != expected:
+            differences[name] = {'rtl': actual, 'model': expected}
     model_events = rtl.normalized_model_events(model['events'])
     event_difference = first_event_difference(model_events, observed['selected_events'])
     _, dim = rtl.profile_bits_dim(profile)
@@ -333,6 +343,14 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
         raise ValueError('a fresh passing host-test build is required')
     profiles = manifest['profiles']
     require_profiles(profiles)
+    from sim.cycle.corpus_authority import authority, authority_reference
+    sources = [profile.get('llama_source') for profile in profiles]
+    if not all(source == sources[0] for source in sources) or not isinstance(sources[0], dict):
+        raise ValueError('official pinned develop source identity missing or inconsistent')
+    llama_source = sources[0]
+    if llama_source.get('head') != '71a8c0328cd436226b8ec5fad03adafac93940ed':
+        raise ValueError('official pinned develop source identity differs')
+    authority('v2', fixture_root=ROOT, llama_root=Path(llama_source['root']))
     from scripts.gemmini_rtl_build_binding import verify_build
     bindings = {p['profile']: verify_build(Path(p['resolved_profile']).parent, p['profile']) for p in profiles}
     results: list[dict[str, Any]] = []
@@ -387,6 +405,7 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
               'rtl_build_bindings': bindings,
+              'llama_source': llama_source, 'corpus_authority': authority_reference('v2'),
               'hardware_contracts': {name: binding['hardware_contract'] for name, binding in bindings.items()},
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}

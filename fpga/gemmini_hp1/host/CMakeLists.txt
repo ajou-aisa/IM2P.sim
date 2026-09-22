@@ -10,7 +10,8 @@ endif()
 file(READ "${IM2P_GEMMINI_RESOLVED_PROFILE}" IM2P_PROFILE_JSON)
 file(SHA256 "${IM2P_GEMMINI_RESOLVED_PROFILE}" IM2P_MANIFEST_SHA256)
 foreach(field IN ITEMS profile implementation activation_bits weight_bits dim
-                       accumulator_bits block_size scu packing numerical_revision)
+                       accumulator_bits block_size scu packing numerical_revision
+                       selected_top)
   string(JSON IM2P_${field} ERROR_VARIABLE error GET "${IM2P_PROFILE_JSON}" ${field})
   if(error)
     message(FATAL_ERROR "resolved profile field ${field}: ${error}")
@@ -59,6 +60,17 @@ set(IM2P_GEMMINI_HOST_PARAMS_DIR "${IM2P_PROFILE_DIR}/host-params" CACHE PATH
     "Generated selected-profile Gemmini parameter directory")
 set(IM2P_LLAMA_GEMMINI "${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini")
 set(IM2P_FRONTEND_SOURCE "${IM2P_ROOT}/frontend/src/im2p_gemmini_frontend.cpp")
+set(IM2P_OPTRACE_HEADER "${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils/include/gemmini/optrace.hpp")
+set(IM2P_OPTRACE_SOURCE "${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils/src/optrace.cpp")
+set(IM2P_PRODUCTION_TRACE_DEFAULT OFF)
+if(EXISTS "${IM2P_OPTRACE_HEADER}" AND EXISTS "${IM2P_OPTRACE_SOURCE}")
+  set(IM2P_PRODUCTION_TRACE_DEFAULT ON)
+endif()
+option(IM2P_PRODUCTION_TRACE_ENABLED "Build with the real production optrace API"
+       ${IM2P_PRODUCTION_TRACE_DEFAULT})
+if(IM2P_PRODUCTION_TRACE_ENABLED AND NOT IM2P_PRODUCTION_TRACE_DEFAULT)
+  message(FATAL_ERROR "Production trace requires the real optrace.hpp and optrace.cpp in IM2P_LLAMA_ROOT")
+endif()
 foreach(required IN ITEMS
     "${IM2P_GEMMINI_HOST_PARAMS_DIR}/gemmini_params.h"
     "${IM2P_LLAMA_GEMMINI}/ggml-gemmini-args.h"
@@ -123,6 +135,8 @@ add_library(gemmini_hp1_host_common STATIC
   "${IM2P_LLAMA_GEMMINI}/quants/act/dispatch.cpp"
   "${IM2P_FRONTEND_SOURCE}")
 target_compile_definitions(gemmini_hp1_host_common PUBLIC GGML_GEMMINI_ENABLE_RMD=1)
+target_compile_definitions(gemmini_hp1_host_common PRIVATE
+  IM2P_PRODUCTION_TRACE_ENABLED=$<BOOL:${IM2P_PRODUCTION_TRACE_ENABLED}>)
 target_compile_options(gemmini_hp1_host_common PRIVATE -O2 -fno-fast-math)
 target_link_libraries(gemmini_hp1_host_common PUBLIC
   gemmini_hp1_host_profile gemmini_hp1_ggml_numeric ggml-gemmini-utils Threads::Threads)
@@ -149,6 +163,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endforeach()
 endif()
+if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  foreach(target IN ITEMS gemmini_hp1_host_common
+                          gemmini_hp1_host_orchestration
+                          gemmini_hp1_host_rmd_reject_test)
+    target_compile_options(${target} PRIVATE -Wno-error=unused-private-field)
+  endforeach()
+  set_source_files_properties(
+    "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-compose.cpp"
+    "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-executor.cpp"
+    "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-im2p-executor.cpp"
+    PROPERTIES COMPILE_OPTIONS -Wno-error=misleading-indentation)
+endif()
 if(APPLE)
   target_link_options(gemmini_hp1_host_common INTERFACE -Wl,-dead_strip)
   target_link_options(gemmini_hp1_host_orchestration PRIVATE
@@ -173,3 +199,74 @@ add_test(NAME gemmini_hp1_host_common_orchestration
           "${IM2P_profile}" "${IM2P_MANIFEST_SHA256}")
 add_test(NAME gemmini_hp1_rmd_invalid_dispatch_reject
   COMMAND gemmini_hp1_host_rmd_reject_test)
+if(NOT IM2P_PRODUCTION_TRACE_ENABLED AND CMAKE_EXPORT_COMPILE_COMMANDS)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME gemmini_hp1_production_trace_build_boundary
+    COMMAND "${Python3_EXECUTABLE}" -B
+            "${IM2P_ROOT}/tests/test_production_trace_build.py"
+            "${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json")
+endif()
+
+# This fixture uses the same generated RTL test top as gemmini_build.py.
+set(IM2P_GEMMINI_RTL_FILELIST "${IM2P_PROFILE_DIR}/filelist.f" CACHE FILEPATH
+    "Generated Gemmini HP1 RTL filelist")
+if(EXISTS "${IM2P_GEMMINI_RTL_FILELIST}")
+  find_program(IM2P_VERILATOR verilator REQUIRED)
+  set(IM2P_RUN_RTL_DIR "${CMAKE_CURRENT_BINARY_DIR}/run-aware-rtl")
+  set(IM2P_RUN_RTL_EXE "${IM2P_RUN_RTL_DIR}/VIM2PGemminiWSHP1RtlTest")
+  set(IM2P_RUN_BRIDGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/run-aware-bridge")
+  set(IM2P_RUN_BRIDGE_EXE "${IM2P_RUN_BRIDGE_DIR}/VIM2PGemminiWSHP1Sim")
+  set(IM2P_RUN_RTL_FLAGS
+      "-std=c++20 -Wall -Wextra -Wpedantic -fno-fast-math -DIM2P_RTL_TEST_BUILD=1 -DIM2P_RTL_SELECTED_TOP=${IM2P_selected_top} -DIM2P_DIM=${IM2P_dim} -DIM2P_OPERAND_BITS=${IM2P_activation_bits} -DIM2P_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_BANK_ROWS=${IM2P_bank_rows} -DIM2P_ACC_ROWS=${IM2P_accumulator_rows} -DIM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1 -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=${IM2P_dim} -DGGML_GEMMINI_CONFIGURED_DIM=${IM2P_dim} -DGGML_GEMMINI_ACTIVATION_BITS=${IM2P_activation_bits} -DGGML_GEMMINI_WEIGHT_BITS=${IM2P_weight_bits} -DGGML_GEMMINI_ENABLE_RMD=1 -DGGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1 -DIM2P_FPGA_ARCH_GEMMINI_HP1=1 -I${IM2P_GEMMINI_HOST_PARAMS_DIR} -I${CMAKE_CURRENT_SOURCE_DIR} -I${IM2P_ROOT}/frontend/include -I${IM2P_ROOT}/sim/include -I${IM2P_ROOT}/sim/ffi -I${IM2P_ROOT}/sim/common -I${IM2P_LLAMA_GEMMINI} -I${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils/include -I${IM2P_LLAMA_ROOT}/ggml/include -I${IM2P_LLAMA_ROOT}/ggml/src -I${IM2P_LLAMA_ROOT}/common -I${IM2P_GEMMINI_INCLUDE_ROOT}")
+  string(APPEND IM2P_RUN_RTL_FLAGS " -ffunction-sections -fdata-sections")
+  if(APPLE)
+    set(IM2P_RUN_LINK_FLAGS "-Wl,-dead_strip")
+  else()
+    set(IM2P_RUN_LINK_FLAGS "-Wl,--gc-sections -pthread")
+  endif()
+  add_custom_command(OUTPUT "${IM2P_RUN_RTL_EXE}"
+    COMMAND "${IM2P_VERILATOR}" --cc --exe --build --assert --timing
+            -Wall -Wno-fatal -j 2 --top-module "${IM2P_selected_top}"
+            --prefix VIM2PGemminiWSHP1RtlTest --Mdir "${IM2P_RUN_RTL_DIR}"
+            -CFLAGS "${IM2P_RUN_RTL_FLAGS}"
+            -F "${IM2P_GEMMINI_RTL_FILELIST}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_run_aware_rtl.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_schedule.cpp"
+            -LDFLAGS "${IM2P_RUN_LINK_FLAGS}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_run_aware_rtl.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_schedule.cpp"
+            "${IM2P_GEMMINI_RTL_FILELIST}"
+    WORKING_DIRECTORY "${IM2P_ROOT}"
+    VERBATIM)
+  set(IM2P_RUN_BRIDGE_FLAGS
+      "-std=c++20 -fno-fast-math -DIM2P_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_WEIGHT_BITS=${IM2P_weight_bits} -DIM2P_DIM=${IM2P_dim} -I${IM2P_PROFILE_DIR} -I${IM2P_ROOT}/sim/include -I${IM2P_ROOT}/sim/ffi")
+  add_custom_command(OUTPUT "${IM2P_RUN_BRIDGE_EXE}"
+    COMMAND "${IM2P_VERILATOR}" --cc --exe --build --assert --timing
+            -Wno-fatal -Wno-PINCONNECTEMPTY -Wno-UNUSEDSIGNAL -j 2
+            --top-module "${IM2P_selected_top}"
+            --prefix VIM2PGemminiWSHP1Sim --Mdir "${IM2P_RUN_BRIDGE_DIR}"
+            -CFLAGS "${IM2P_RUN_BRIDGE_FLAGS}"
+            -F "${IM2P_GEMMINI_RTL_FILELIST}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_run_aware_bridge.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/runtime.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/geometry.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/backing_memory.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_schedule.cpp"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_run_aware_bridge.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/runtime.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/geometry.cpp"
+            "${IM2P_ROOT}/sim/backends/gemmini_hp1/backing_memory.cpp"
+            "${IM2P_GEMMINI_RTL_FILELIST}"
+    WORKING_DIRECTORY "${IM2P_ROOT}"
+    VERBATIM)
+  add_custom_target(gemmini_hp1_run_aware_rtl
+                    DEPENDS "${IM2P_RUN_RTL_EXE}" "${IM2P_RUN_BRIDGE_EXE}")
+  add_test(NAME gemmini_hp1_run_aware_rtl COMMAND "${IM2P_RUN_RTL_EXE}")
+  add_test(NAME gemmini_hp1_run_aware_bridge COMMAND "${IM2P_RUN_BRIDGE_EXE}")
+  add_test(NAME gemmini_hp1_run_aware_invalid_owner
+           COMMAND "${IM2P_RUN_RTL_EXE}" --invalid-run-owner)
+  add_test(NAME gemmini_hp1_run_aware_invalid_mask
+           COMMAND "${IM2P_RUN_RTL_EXE}" --invalid-run-mask)
+  add_test(NAME gemmini_hp1_run_aware_stale_generation
+           COMMAND "${IM2P_RUN_RTL_EXE}" --stale-generation)
+endif()
