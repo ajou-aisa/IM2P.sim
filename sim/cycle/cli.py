@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.gemmini_resolve_profile import (
     BuildFailure, DEFAULT_CATALOG, ProfileSelection, Scu, resolve_profile,
 )
+from sim.cycle.npu_trace_schema import Record
 
 U32, U64 = C.c_uint32, C.c_uint64
 HARDWARE_FIELDS = ('activation_bits', 'weight_bits', 'dim', 'block_k', 'accumulator_bits',
@@ -66,6 +67,12 @@ class CompactRuns(C.Structure):
 
 class Result(C.Structure):
     _fields_ = [('abi_version', U32), ('struct_size', U32)] + [(name, U64) for name in RESULT_FIELDS]
+
+
+class ServiceResult(C.Structure):
+    _fields_ = [('abi_version', U32), ('struct_size', U32), ('result_ready_cycle', U64),
+                ('final_scale_release_cycle', U64), ('resource_ready_cycle', U64),
+                ('next_scratchpad_half', U32), ('next_accumulator_half', U32)]
 
 
 class Event(C.Structure):
@@ -141,7 +148,7 @@ def compact_run_view(document: dict[str, Any], k: int) -> tuple[CompactRuns, Any
 
 
 def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
-             memory_contract: Path | None = None) -> dict[str, Any]:
+             memory_contract: Path | None = None, *, _service: ServiceResult | None = None) -> dict[str, Any]:
     doc = object_fields(document, {'profile', 'timing_profile', 'timing', 'request', 'limits',
                                    'original_k', 'runs'}, 'input')
     name = doc.get('profile')
@@ -184,9 +191,17 @@ def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
         raise ValueError('C API rejected the resolved timing/hardware configuration')
     try:
         result = Result()
-        status = (lib.im2p_cycle_estimate(handle, C.byref(request), C.byref(result))
-                  if run_view is None else
-                  lib.im2p_cycle_estimate_runs(handle, C.byref(request), C.byref(run_view[0]), C.byref(result)))
+        if _service is not None:
+            function = lib.im2p_cycle_estimate_service
+            function.argtypes = [C.c_void_p, C.POINTER(Request), C.POINTER(CompactRuns),
+                                 C.POINTER(Result), C.POINTER(ServiceResult)]
+            function.restype = C.c_int
+            status = function(handle, C.byref(request), None if run_view is None else C.byref(run_view[0]),
+                              C.byref(result), C.byref(_service))
+        else:
+            status = (lib.im2p_cycle_estimate(handle, C.byref(request), C.byref(result))
+                      if run_view is None else
+                      lib.im2p_cycle_estimate_runs(handle, C.byref(request), C.byref(run_view[0]), C.byref(result)))
         if status:
             message = lib.im2p_cycle_model_error(handle).decode('utf-8', errors='replace')
             raise ValueError(f'cycle model status {status}: {message}')
@@ -210,6 +225,16 @@ def estimate(library: Path, document: Any, catalog: Path = DEFAULT_CATALOG,
                 'result': {key: getattr(result, key) for key in RESULT_FIELDS}, 'events': trace}
     finally:
         lib.im2p_cycle_model_destroy(handle)
+
+
+def estimate_service(library: Path, document: Record) -> Record:
+    service = ServiceResult()
+    result: Record = estimate(library, document, _service=service)
+    if service.abi_version != 1 or service.struct_size != C.sizeof(ServiceResult):
+        raise ValueError('C library and service binding ABI differ')
+    result['service'] = {field[0]: getattr(service, field[0]) for field in ServiceResult._fields_}
+    result['service_scope'] = 'drained-single-work-reference-memory'
+    return result
 
 
 def main() -> int:

@@ -18,6 +18,7 @@ class CertificateAuthorityTests(unittest.TestCase):
         self.library = Path(os.environ['IM2P_CYCLE_LIBRARY'])
 
     def test_coordinated_corpus_shrink_is_rejected(self) -> None:
+        validate_certificate(self.document, self.library)
         shortened = copy.deepcopy(self.document)
         for profile, identities in shortened['expected_cases'].items():
             count = shortened['captured_corpus_counts'][profile]
@@ -29,7 +30,8 @@ class CertificateAuthorityTests(unittest.TestCase):
             count = sum(row['framing'] == framing for row in shortened['cases'])
             for key in ('cases_attempted', 'cases_rtl_admitted', 'cases_model_admitted', 'cases_exact'):
                 summary[key] = count
-        shortened['reuse_proof']['raw_cases_reaggregated'] = len(shortened['cases'])
+        if shortened['execution_kind'] == 'REAGGREGATED_FROM_VERIFIED_EVIDENCE':
+            shortened['reuse_proof']['raw_cases_reaggregated'] = len(shortened['cases'])
         with self.assertRaisesRegex(ValueError, 'independent corpus'):
             validate_certificate(shortened, self.library)
 

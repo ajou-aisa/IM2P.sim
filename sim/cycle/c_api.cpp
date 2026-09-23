@@ -1,4 +1,5 @@
 #include "cycle_model.hpp"
+#include "../include/im2p_cycle_service.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -45,7 +46,8 @@ im2p_cycle_model_create(const im2p_cycle_model_config_t *c) {
 void im2p_cycle_model_destroy(im2p_cycle_model_t *m) { delete m; }
 static int estimate_impl(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
                          const im2p_compact_runs_t *runs,
-                         im2p_cycle_result_t *out) {
+                         im2p_cycle_result_t *out,
+                         im2p_cycle_service_result_t *service = nullptr) {
   if (!m)
     return IM2P_CYCLE_INVALID;
   m->error.fill(0);
@@ -56,9 +58,11 @@ static int estimate_impl(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
     return IM2P_CYCLE_INVALID;
   }
   try {
-    auto result = im2p::cycle::estimate(m->config, *r, runs);
+    auto result = im2p::cycle::estimate(m->config, *r, runs, service != nullptr);
     m->trace = std::move(result.trace);
     *out = result.counters;
+    if (service)
+      *service = result.service;
     return IM2P_CYCLE_OK;
   } catch (const im2p::cycle::Error &error) {
     std::snprintf(m->error.data(), m->error.size(), "%s", error.what());
@@ -78,6 +82,18 @@ static int estimate_impl(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
 int im2p_cycle_estimate(im2p_cycle_model_t *m, const im2p_cycle_request_t *r,
                         im2p_cycle_result_t *out) {
   return estimate_impl(m, r, nullptr, out);
+}
+int im2p_cycle_estimate_service(im2p_cycle_model_t *model, const im2p_cycle_request_t *request,
+    const im2p_compact_runs_t *runs, im2p_cycle_result_t *result,
+    im2p_cycle_service_result_t *service) {
+  if (!service) {
+    if (model) {
+      model->trace = {};
+      std::snprintf(model->error.data(), model->error.size(), "%s", "null service result");
+    }
+    return IM2P_CYCLE_INVALID;
+  }
+  return estimate_impl(model, request, runs, result, service);
 }
 int im2p_cycle_estimate_runs(im2p_cycle_model_t *m,
                              const im2p_cycle_request_t *r,

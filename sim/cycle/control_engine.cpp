@@ -637,8 +637,9 @@ void Engine::control(State &n, const State &s, Signals &) {
     if (s.frame + 1 == schedule.work.size()) {
       result.counters.done_cycle = s.cycle;
       result.counters.total_cycles = s.cycle - request.accepted_cycle;
+      result.service.result_ready_cycle = s.cycle;
       record(s, EventType::LogicalDone, Resource::HostWork);
-      n.host = 3;
+      n.host = drain_final_release ? 2 : 3;
     }
   }
   if (s.host == 0 && s.scale_state == 0) {
@@ -674,10 +675,19 @@ void Engine::control(State &n, const State &s, Signals &) {
     if (s.release < w.scale_rows * profile.hardware.dim) {
       record(s, EventType::ScaleRelease, Resource::ScalePath, {}, s.release);
       ++n.release;
+      if (s.frame + 1 == schedule.work.size())
+        result.service.final_scale_release_cycle = s.cycle;
     } else {
-      ++n.frame;
-      n.host = 0;
-      n.loop = {};
+      if (s.frame + 1 == schedule.work.size()) {
+        n.host = 3;
+        // UpstreamWsHp1Top clears activeSlots on the registered zero count;
+        // work.ready observes that ownership update on the following cycle.
+        result.service.resource_ready_cycle = checked_add(s.cycle, 1);
+      } else {
+        ++n.frame;
+        n.host = 0;
+        n.loop = {};
+      }
     }
   }
 }
@@ -693,14 +703,23 @@ void Engine::step() {
   next.cycle = checked_add(state.cycle, 1);
   state = std::move(next);
 }
-ModelResult Engine::run() {
+ModelResult Engine::run(bool drain_release) {
+  drain_final_release = drain_release;
   while (state.host != 3) {
     if (state.cycle - request.accepted_cycle >= config.max_cycles)
       throw Error(IM2P_CYCLE_LIMIT,
-                  "cycle budget exhausted before logical completion");
+                  drain_final_release ? "cycle budget exhausted before resource release"
+                                      : "cycle budget exhausted before logical completion");
     step();
   }
   result.counters.event_count = result.trace.events.size();
+  result.service.abi_version = IM2P_CYCLE_SERVICE_ABI_VERSION;
+  result.service.struct_size = sizeof(result.service);
+  result.service.next_scratchpad_half =
+      request.initial_scratchpad_half ^ (schedule.work.size() % 2);
+  result.service.next_accumulator_half = request.initial_accumulator_half ^
+      (std::count_if(schedule.work.begin(), schedule.work.end(),
+                     [](const auto &work) { return work.final_store; }) % 2);
   if (result.counters.load_request_count !=
           result.counters.load_response_count ||
       result.counters.store_request_count !=
@@ -716,7 +735,7 @@ ModelResult Engine::run() {
 namespace im2p::cycle {
 ModelResult estimate(const im2p_cycle_model_config_t &config,
                      const im2p_cycle_request_t &request,
-                     const im2p_compact_runs_t *runs) {
-  return detail::Engine(config, request, runs).run();
+                     const im2p_compact_runs_t *runs, bool drain_final_release) {
+  return detail::Engine(config, request, runs).run(drain_final_release);
 }
 } // namespace im2p::cycle

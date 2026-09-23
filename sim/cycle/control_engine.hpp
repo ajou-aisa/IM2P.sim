@@ -167,7 +167,7 @@ class Engine {
 public:
   Engine(const im2p_cycle_model_config_t &, const im2p_cycle_request_t &,
          const im2p_compact_runs_t *runs = nullptr);
-  ModelResult run();
+  ModelResult run(bool drain_final_release = false);
 
 private:
   const im2p_cycle_model_config_t &config;
@@ -177,6 +177,7 @@ private:
   std::vector<Programs> programs;
   State state;
   ModelResult result;
+  bool drain_final_release = false;
   U record(const State &, EventType, Resource, const Command & = {},
            U detail = 0, U parent = 0);
   void expand_commands();
