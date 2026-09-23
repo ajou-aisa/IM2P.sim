@@ -4,13 +4,16 @@ import ctypes
 import errno
 import hashlib
 import os
-from pathlib import Path
 import shutil
 import stat
 import sys
+import tempfile
+from pathlib import Path
 from typing import BinaryIO, Final
 
 COPY_RESERVE_BYTES: Final = 256 * 1024 * 1024
+# ponytail: 8x input budgets SQLite rows, indexes, journal, and temp files; staged writes still fail closed if growth exceeds it.
+SQLITE_WORKING_SET_FACTOR: Final = 8
 UNSUPPORTED_CLONE: Final = frozenset((errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV))
 
 
@@ -43,27 +46,35 @@ def _clone_fd(descriptor: int, destination: Path) -> bool:
         os.close(directory)
 
 
+def require_storage_budget(destination: Path, required: int, purpose: str = 'storage budget') -> None:
+    if shutil.disk_usage(destination.parent).free < required:
+        raise OSError(errno.ENOSPC, f'{purpose} requires {required} free bytes', str(destination))
+
+
 def snapshot_file(descriptor: int, destination: Path) -> str:
     source = os.fstat(descriptor)
     if not stat.S_ISREG(source.st_mode):
         raise OSError(errno.EINVAL, 'snapshot source must be a regular file')
-    if _clone_fd(descriptor, destination):
-        method = 'DARWIN_FCLONEFILEAT'
-    else:
-        required = source.st_size + COPY_RESERVE_BYTES
-        if shutil.disk_usage(destination.parent).free < required:
-            raise OSError(errno.ENOSPC, f'snapshot copy budget requires {required} free bytes', str(destination))
-        with os.fdopen(descriptor, 'rb', closefd=False) as reader, destination.open('xb') as writer:
+    if os.path.lexists(destination):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(destination))
+    require_storage_budget(destination, source.st_size + COPY_RESERVE_BYTES, 'snapshot copy budget')
+    with tempfile.TemporaryDirectory(prefix='input-snapshot-', dir=destination.parent) as temporary:
+        staged = Path(temporary) / 'snapshot'
+        if _clone_fd(descriptor, staged):
+            method = 'DARWIN_FCLONEFILEAT'
+        else:
+            with os.fdopen(descriptor, 'rb', closefd=False) as reader, staged.open('xb') as writer:
+                reader.seek(0)
+                shutil.copyfileobj(reader, writer, 1024 * 1024)
+            method = 'EXCLUSIVE_COPY'
+        copied = staged.stat()
+        if (source.st_dev, source.st_ino) == (copied.st_dev, copied.st_ino):
+            raise OSError(errno.EINVAL, 'snapshot must not be a hard link')
+        with os.fdopen(descriptor, 'rb', closefd=False) as reader, staged.open('rb') as captured:
             reader.seek(0)
-            shutil.copyfileobj(reader, writer, 1024 * 1024)
-        method = 'EXCLUSIVE_COPY'
-    copied = destination.stat()
-    if (source.st_dev, source.st_ino) == (copied.st_dev, copied.st_ino):
-        raise OSError(errno.EINVAL, 'snapshot must not be a hard link')
-    with os.fdopen(descriptor, 'rb', closefd=False) as reader, destination.open('rb') as captured:
-        reader.seek(0)
-        original_hash = _digest(reader)
-        snapshot_hash = _digest(captured)
-    if original_hash != snapshot_hash or source.st_size != copied.st_size:
-        raise OSError(errno.EIO, 'snapshot byte identity mismatch')
+            original_hash = _digest(reader)
+            snapshot_hash = _digest(captured)
+        if original_hash != snapshot_hash or source.st_size != copied.st_size:
+            raise OSError(errno.EIO, 'snapshot byte identity mismatch')
+        os.link(staged, destination)
     return method

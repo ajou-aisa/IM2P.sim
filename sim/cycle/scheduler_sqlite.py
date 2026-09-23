@@ -1,22 +1,33 @@
 from __future__ import annotations
 
-from contextlib import closing
-from dataclasses import dataclass
-from fractions import Fraction
 import heapq
 import json
 import os
-from pathlib import Path
-import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path
 
 from sim.cycle.execution_ir import Kind, Milestone, Node, ensure, parse_ir
 from sim.cycle.execution_services import NpuProvider, Services, parse_services
+from sim.cycle.input_snapshot import (
+    COPY_RESERVE_BYTES,
+    SQLITE_WORKING_SET_FACTOR,
+    require_storage_budget,
+)
 from sim.cycle.npu_trace import snapshot_inputs, verify_input_snapshots
 from sim.cycle.npu_trace_schema import Record, object_value, unique_pairs
 from sim.cycle.reconstruct_graph import sha256
-from sim.cycle.scheduler import Scenario, ServiceExecutor, rational, scheduled_record, service_binding, validate_environment
+from sim.cycle.scheduler import (
+    Scenario,
+    ServiceExecutor,
+    rational,
+    scheduled_record,
+    service_binding,
+    validate_environment,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +175,7 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
 
 def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) -> Record:
     ensure(source.resolve() != output.resolve() and not output.exists(), 'schedule output must be new and distinct')
-    ensure(shutil.disk_usage(output.parent).free > 256 * 1024 * 1024, 'scheduler output storage reserve exhausted')
+    require_storage_budget(output, COPY_RESERVE_BYTES + (SQLITE_WORKING_SET_FACTOR + 1) * source.stat().st_size)
     with tempfile.TemporaryDirectory(prefix='schedule-sqlite-', dir=output.parent) as temporary:
         root = Path(temporary)
         snapshots = snapshot_inputs((source,), root)
@@ -182,7 +193,10 @@ def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) ->
 
 def verify_schedule_sqlite(source: Path, schedule_path: Path, inputs: SqliteScheduleInputs) -> str:
     source_digest, schedule_digest = sha256(source), sha256(schedule_path)
-    with tempfile.TemporaryDirectory(prefix='verify-schedule-') as temporary:
+    temporary_root = Path(tempfile.gettempdir())
+    require_storage_budget(temporary_root / 'state.sqlite',
+                           COPY_RESERVE_BYTES + SQLITE_WORKING_SET_FACTOR * source.stat().st_size)
+    with tempfile.TemporaryDirectory(prefix='verify-schedule-', dir=temporary_root) as temporary:
         staged = Path(temporary) / 'state.sqlite'
         with (closing(sqlite3.connect(staged)) as database,
               closing(sqlite3.connect(schedule_path.resolve(strict=True).as_uri() + '?mode=ro', uri=True)) as observed):

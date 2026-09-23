@@ -1,21 +1,41 @@
 from __future__ import annotations
 
-from collections import Counter
-from contextlib import closing
 import json
 import os
-from pathlib import Path
 import sqlite3
-import shutil
 import tempfile
+from collections import Counter
+from contextlib import closing
+from pathlib import Path
 
 from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.certificate_contract import read_document
 from sim.cycle.execution_adapter import AdapterFiles, validate_lifecycle_contract
 from sim.cycle.execution_application import ApplicationSource, project_application
-from sim.cycle.execution_ir import Dependency, Kind, Milestone, Node, NodeId, ResourceId, ServiceId, ensure, node_record
+from sim.cycle.execution_ir import (
+    Dependency,
+    Kind,
+    Milestone,
+    Node,
+    NodeId,
+    ResourceId,
+    ServiceId,
+    ensure,
+    node_record,
+)
 from sim.cycle.execution_pipeline import project_pipeline
-from sim.cycle.execution_services import NpuWork, Services, bind_cpu_resource, cpu_service, services_record
+from sim.cycle.execution_services import (
+    NpuWork,
+    Services,
+    bind_cpu_resource,
+    cpu_service,
+    services_record,
+)
+from sim.cycle.input_snapshot import (
+    COPY_RESERVE_BYTES,
+    SQLITE_WORKING_SET_FACTOR,
+    require_storage_budget,
+)
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, json_records, sha256
 
@@ -71,6 +91,11 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
     contract = read_document(files.lifecycle)
     validate_lifecycle_contract(contract)
     ensure(not output.exists(), 'execution store output must be new')
+    sources = (files.dataset, files.lifecycle, files.npu_results)
+    if files.application is not None:
+        sources += (files.application,)
+    require_storage_budget(output, COPY_RESERVE_BYTES +
+                           SQLITE_WORKING_SET_FACTOR * sum(path.stat().st_size for path in sources))
     for path, expected in ((files.dataset, contract['dataset_sha256']), (files.npu_results, contract['npu_results_sha256'])):
         ensure(sha256(path) == expected, 'lifecycle input binding mismatch')
     operations: dict[str, Record] = {}
@@ -182,7 +207,7 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
                 members[operation] += 1
                 counts[str(row['node_class']) if row['kind'] == 'SERVICE' else 'STRUCTURAL'] += 1
                 if store.count % 10_000 == 0:
-                    ensure(shutil.disk_usage(output.parent).free >= 256 * 1024 * 1024, 'execution IR storage reserve exhausted')
+                    require_storage_budget(output, COPY_RESERVE_BYTES)
             ensure(set(members) == set(operations), 'operation without final completion members')
             ensure(counts['TARGET_NPU'] == len(results), 'unused NPU service results')
             if pipeline is not None:
