@@ -1,0 +1,21 @@
+{
+  "schema": "im2p-evaluation-ooc-policy",
+  "version": 1,
+  "revision": "potal-v3-u250-reference-33-dense-int8-tops-v1",
+  "authority": "user-confirmed evaluation reference policy; no device deployment",
+  "part": "xcu250-figd2104-2L-e",
+  "part_fallback": false,
+  "clock_port": "CLK",
+  "clock_name": "core_clk",
+  "timing_stage": "POST_ROUTE",
+  "timing_scope": "CORE_CLOCK_INTERNAL_REGISTER_PATHS",
+  "target_peak_tops": 33,
+  "target_basis": "33 dense INT8 TOPS GPU reference; not CUDA model throughput",
+  "array_count": 1,
+  "independent_macs_per_pe_per_cycle": 1,
+  "a4_throughput_multiplier": 1,
+  "physical_programming": "FORBIDDEN",
+  "bitstream": "FORBIDDEN",
+  "pin_pcie_ddr_io_delay_constraints": "FORBIDDEN",
+  "reset_exclusion": "only source-proven asynchronous RST_N origin"
+}

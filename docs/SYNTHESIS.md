@@ -21,8 +21,18 @@ JTAG, flash or device communication workflow is provided by this cleanup.
 
 All actual generated RTL, tool logs, synthesis reports/checkpoints and export
 packages should be written under a fresh external build directory. Do not commit
-them. Resource/Fmax extraction and TOPS calculation are not implemented here.
-No new synthesis architecture or optimization was made.
+them. [Evaluation clock selection](EVALUATION_CLOCK.md) provides fail-closed
+preflight and finite, artifact-bound selection from normalized timing/resource
+observations. Actual tool-report extraction/validation remains required; neither
+that selector nor synthetic tests establish Fmax. No new synthesis architecture
+or optimization was made.
+
+The separately confirmed evaluation-only OOC flow is
+`scripts/evaluation_ooc.py` / `flow/evaluation_ooc.tcl`. It uses only reference
+part `xcu250-figd2104-2L-e`, no board pin/I/O-delay/PCIe/DDR constraints and no
+bitstream. It emits source-bound post-route observations for the fixed 33 dense
+INT8 TOPS policy; actual Vivado execution remains required before selecting a
+real clock. See the evaluation-clock document for the finite sweep and v2 artifact.
 
 LEGACY_BSV source and `make rtl-one`/simulation tests remain for reference. The
 retired fixed-Arty OOC wrapper and board-provider experiments are not its supported
