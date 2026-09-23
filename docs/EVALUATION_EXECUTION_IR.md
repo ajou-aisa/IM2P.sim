@@ -101,7 +101,11 @@ python3 -m sim.cycle.execution_cli adapt \
   --application application-cpu.jsonl --output execution-bundle.json
 ```
 
-For large joined datasets, add `--streaming --output execution.sqlite` instead.
+The official `scripts/eval/end_to_end.py reconstruct` route now selects SQLite
+IR and schedule by default. Its `--streaming-ir` flag is a compatibility alias;
+`--json-ir` is explicit small/debug mode and rejects workload inputs above
+64 MiB before replay. The lower-level `execution_cli adapt` still requires
+`--streaming --output execution.sqlite` to select SQLite.
 The SQLite adapter uses a 16 MiB page cache and retains every service, operation
 member and dependency. It verifies the entire DAG with a bounded batch of ready
 IDs. `nodes`, `services` and the authoritative `edges` table represent the same
@@ -114,6 +118,12 @@ disk. Use `--bundle execution.sqlite --output schedule.sqlite` with the same
 explicit provider/scenario options below. `scheduler_sqlite.read_schedule_node`
 reads an individual result, including application endpoints, without loading the
 whole schedule. This storage path does not relax clock or service-proof gates.
+The adapter and scheduler preflight their staging filesystems and publish only
+after staged validation; the storage multiplier is an estimate, not a guaranteed
+upper bound. Stage I/O and SQLite failures do not publish a normal output; the
+official wrapper records subprocess timeouts without publishing `result.json`.
+SQLite keeps the host-record DAG on disk, but operation and NPU
+result maps are still resident; it is not a constant-memory claim.
 
 Producer-derived FULL IR proves dispatch/graph completion and data dependencies.
 It does not establish that independent nodes may overlap while a host thread is
@@ -136,12 +146,15 @@ geometry/runs, reference-memory timing, scheduled epoch and initial halves to
 Its identity digest includes profile, exact request, epoch, timing and halves.
 No NPU equations, retiling, measured answers, or tensor computation are copied
 into Python. Without three validated certificates it remains
-`DIAGNOSTIC_SERVICE_API`. The current drained certificate validates fixed
-two-work RTL fixtures and exposes `DRAINED_FIXTURE_PARITY`, not production
-schedule admission. Actual producer-generated, same-RTL-instance sequence/phase
-comparisons across the required profiles are still missing. Reconstructed
-scheduling therefore rejects this certificate even though fixture estimates
-remain available. See
+`DIAGNOSTIC_SERVICE_API`. The v1 drained certificate covers fixed two-work RTL
+fixtures (`DRAINED_FIXTURE_PARITY`). The separate v2 production certificate
+admits only its exact four-work producer fixture, five same-phase vectors per
+profile, period 5, initial halves (0,0), and source-bound trace identity.
+It does not admit a different production trace merely because each individual
+work passes the C request validator. Current immediate-reuse and larger-work
+diagnostics remain separate from this exact admission; a generic compositional
+provider needs a closed reachable-state invariant, including the resident
+invalid mesh tag's physical queue occupancy. See
 `docs/HP1_SERVICE_CERTIFICATE.md` for its source/artifact binding and the
 one-NPU, one-outstanding, drained reference-memory domain. A string label alone
 cannot admit real scheduling.
