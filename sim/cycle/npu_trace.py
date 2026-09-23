@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 from typing import TextIO
@@ -20,6 +19,7 @@ if str(ROOT) not in sys.path:
 from scripts.gemmini_replay_contract import compatible, hardware_contract
 from scripts.gemmini_resolve_profile import BuildFailure
 from sim.cycle import cli
+from sim.cycle.input_snapshot import snapshot_file
 from sim.cycle.certificate_contract import read_document, validate_certificate
 from sim.cycle.npu_trace_integrity import read_records, start_trace
 from sim.cycle.npu_trace_schema import INPUT_KEYS, Record, SCHEMA, VERSION, Work, integer, object_value, require
@@ -97,8 +97,7 @@ def snapshot_inputs(paths: tuple[Path, ...], directory: Path) -> tuple[InputSnap
         try:
             before = _identity(source)
             snapshot = directory / f'{index:02d}-{source.name}'
-            with os.fdopen(descriptor, 'rb', closefd=False) as reader, snapshot.open('xb') as writer:
-                shutil.copyfileobj(reader, writer, 1024 * 1024)
+            snapshot_file(descriptor, snapshot)
             descriptor_state = os.fstat(descriptor)
             descriptor_identity = (descriptor_state.st_dev, descriptor_state.st_ino, descriptor_state.st_size,
                                    descriptor_state.st_mtime_ns, descriptor_state.st_ctime_ns)

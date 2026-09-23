@@ -35,6 +35,7 @@ from sim.cycle.npu_trace_schema import Record, integer, object_value, require
 from sim.cycle.reconstruct_cpu import CollectionFiles, CpuIndex, duration_sample, encoded_key, verify_provenance
 from sim.cycle.reconstruct_graph import compare_manifests, emit, read_manifest, service_identity, sha256
 from sim.cycle.reconstruct_npu import NpuFiles, NpuJoin
+from sim.cycle.reconstruct_pairing import validate_forced_phases, validate_source_pair
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +69,9 @@ def reconstruct(inputs: Inputs, outputs: ReplayOutputs) -> Record:
         proof_full = verify_provenance(effective.full_cpu, 'FULL_CPU')
         proof_potal = verify_provenance(effective.potal, 'POTAL_COLLECTION', effective.npu.trace)
         require(proof_full['model_sha256'] == proof_potal['model_sha256'], 'model contents differ across collections')
-        require(proof_full['command_arguments'] == proof_potal['command_arguments'], 'normalized collection arguments differ')
+        validate_source_pair(proof_full, proof_potal, sha256(effective.potal.provenance))
+        if proof_full.get('execution_kind') == 'FORCED_CPU_COST_ONLY':
+            validate_forced_phases(full, potal)
         require(canonical_json(object_value(proof_full['cpu_kernel_contract'])) ==
                 canonical_json(object_value(proof_potal['cpu_kernel_contract'])), 'ordinary CPU kernel/build contract mismatch')
         root = Path(directory)

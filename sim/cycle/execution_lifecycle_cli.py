@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import json
+from pathlib import Path
+import sys
+
+from sim.cycle.certificate_contract import read_document
+from sim.cycle.collection_native import validate_receipt
+from sim.cycle.execution_cli import publish
+from sim.cycle.execution_ir import ensure
+from sim.cycle.execution_lifecycle import project_lifecycle
+from sim.cycle.npu_trace_schema import Record, integer, object_value, text
+from sim.cycle.reconstruct_graph import json_records, read_manifest, sha256
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleFiles:
+    sidecar: Path
+    semantic_graph: Path
+    provenance: Path
+    application: Path
+    dataset: Path
+    npu_results: Path
+    join_summary: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CpuScenario:
+    worker_resources: Record
+    policy: str
+    sampler_resource: str
+
+
+def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
+    proof = read_document(files.provenance)
+    ensure(proof.get('schema') == 'im2p-collection-provenance' and proof.get('version') == 2 and
+           proof.get('source_role') == 'POTAL_COLLECTION' and proof.get('collection_success') is True and
+           proof.get('process_exit_code') == 0 and proof.get('build_inputs_unchanged') is True,
+           'successful native PoTal build-bound collection required')
+    receipt = object_value(proof['native_build'])
+    validate_receipt(receipt)
+    ensure(object_value(receipt['project_artifacts'])['llama-eval-workload'] == proof['executable_sha256'],
+           'native producer binary binding mismatch')
+    inputs = object_value(receipt['actual_compile_inputs'])
+    for suffix in ('tools/eval/evaluation-lifecycle.h', 'tools/eval/evaluation-trace.cpp',
+                   'ggml/src/ggml-gemmini-utils/src/semantic.cpp'):
+        ensure(any(path.endswith(suffix) for path in inputs), 'producer build lacks lifecycle implementation: ' + suffix)
+    artifacts = object_value(proof['artifacts'])
+    for key, path in (('execution_lifecycle', files.sidecar), ('semantic_graph', files.semantic_graph),
+                      ('application_cpu', files.application)):
+        ensure(object_value(artifacts.get(key))['sha256'] == sha256(path), 'producer artifact binding mismatch: ' + key)
+    summary = read_document(files.join_summary)
+    ensure(summary.get('status') == 'PASS' and summary.get('scope') == 'structural-three-source-reconstruction',
+           'complete official structural join required')
+    source = object_value(summary['source_artifacts'])
+    ensure(object_value(source['potal_semantic_graph'])['sha256'] == sha256(files.semantic_graph) and
+           object_value(source['npu_results'])['sha256'] == sha256(files.npu_results) and
+           summary['potal_provenance_sha256'] == sha256(files.provenance), 'join source binding mismatch')
+    fingerprints = object_value(summary['decode_token_fingerprint_matches'])
+    ensure(bool(fingerprints) and all(value is True for value in fingerprints.values()), 'decode input trajectory mismatch')
+    graph = read_manifest(files.semantic_graph)
+    projection = project_lifecycle(json_records(files.sidecar), graph)
+    app = tuple(json_records(files.application))
+    samples = [row for row in json_records(files.sidecar) if row['kind'] == 'SAMPLE']
+    ensure(len(app) == len(samples) == projection.expected_samples, 'application/lifecycle sample coverage mismatch')
+    for left, right in zip(app, samples, strict=True):
+        ensure(left['sample_index'] == right['sample_index'] and left['token_id'] == right['token_id'] and
+               left['phase'] == right['phase_kind'] and left['decode_index'] == right['decode_index'],
+               'application/lifecycle token or phase mismatch')
+    slots: Record = {}
+    submission: list[str] = []
+    for row in json_records(files.npu_results):
+        ensure(row.get('schema') == 'im2p-npu-cycle-result' and row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
+               'current official NPU results required')
+        ensure(row['scope'] in ('full', 'residual_compact') and row['host_slot'] is None,
+               'PIPELINE lifecycle requires separately verified slot/fence semantics')
+        call = str(integer(row, 'call_id'))
+        ensure(call not in slots, 'multiple NPU works claim one FULL invocation')
+        slots[call] = None
+        submission.append('npu:' + str(integer(row, 'work_id')))
+    return {'schema': 'im2p-execution-lifecycle', 'version': 1, 'source_kind': 'PRODUCER_DECLARED',
+            'dataset_sha256': sha256(files.dataset), 'npu_results_sha256': sha256(files.npu_results),
+            'producer_binding': {'sidecar_sha256': sha256(files.sidecar), 'semantic_graph_sha256': sha256(files.semantic_graph),
+                                 'provenance_sha256': sha256(files.provenance), 'executable_sha256': proof['executable_sha256'],
+                                 'native_build_sha256': receipt['sha256'], 'join_summary_sha256': sha256(files.join_summary)},
+            'operation_exit_policy': 'ALL_MEMBER_COMPLETIONS', 'publish_policy': 'NONBLOCKING_SUBMISSION',
+            'slot_release_policy': 'NPU_RESOURCE_READY', 'phase_graph_policy': 'EXPLICIT_EDGES',
+            'entry_dependencies': projection.entry_dependencies, 'barriers': [row for row in projection.barriers],
+            'call_slots': slots, 'submission_order': [value for value in submission],
+            'cpu_policy': scenario.policy, 'worker_resources': scenario.worker_resources,
+            'application': {'sha256': sha256(files.application), 'sampler_policy': 'SINGLE_CALLING_THREAD',
+                            'resource': scenario.sampler_resource, 'metric_policy': scenario.policy,
+                            'expected_samples': projection.expected_samples,
+                            'steps': [row for row in projection.application_steps]}}
+
+
+class Arguments(argparse.Namespace):
+    sidecar: Path = Path()
+    semantic_graph: Path = Path()
+    provenance: Path = Path()
+    application: Path = Path()
+    dataset: Path = Path()
+    npu_results: Path = Path()
+    join_summary: Path = Path()
+    worker_resources: Path = Path()
+    cpu_policy: str = ''
+    sampler_resource: str = ''
+    output: Path = Path()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Project actual blocking FULL producer lifecycle into bound execution semantics.')
+    for name in ('sidecar', 'semantic-graph', 'provenance', 'application', 'dataset', 'npu-results',
+                 'join-summary', 'worker-resources', 'output'):
+        _ = parser.add_argument('--' + name, type=Path, required=True)
+    _ = parser.add_argument('--cpu-policy', choices=('THREAD_CPU_NS_GANG', 'HOST_ELAPSED_NS_GANG'), required=True)
+    _ = parser.add_argument('--sampler-resource', required=True)
+    args = parser.parse_args(namespace=Arguments())
+    try:
+        files = LifecycleFiles(args.sidecar, args.semantic_graph, args.provenance, args.application,
+                                args.dataset, args.npu_results, args.join_summary)
+        result = build(files, CpuScenario(read_document(args.worker_resources), args.cpu_policy, args.sampler_resource))
+        publish(args.output, result)
+        print(json.dumps({'status': 'PASS', 'source_kind': result['source_kind'], 'output': str(args.output)}))
+    except (OSError, ValueError, KeyError) as error:
+        print(f'lifecycle failed: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -64,7 +64,7 @@ class TranslationUnit:
     object_file: str
 
 
-def translation_units(build: Path) -> list[TranslationUnit]:
+def translation_units(build: Path, sources: frozenset[Path] | None = None) -> list[TranslationUnit]:
     rows = json.loads((build / 'compile_commands.json').read_text(), object_pairs_hook=unique_pairs)
     require(isinstance(rows, list), 'compile database must be an array')
     result: list[TranslationUnit] = []
@@ -73,9 +73,13 @@ def translation_units(build: Path) -> list[TranslationUnit]:
         source = Path(text(row, 'file')).resolve(strict=True)
         args = shlex.split(text(row, 'command'))
         # Only kernels supplying ordinary ggml CPU costs, not replaced Gemmini CPU GEMMs.
-        if '/ggml-cpu/' not in source.as_posix() and source.name not in ('ggml.c', 'ggml-quants.c'):
+        if sources is not None and source not in sources:
+            continue
+        if sources is None and '/ggml-cpu/' not in source.as_posix() and source.name not in ('ggml.c', 'ggml-quants.c'):
             continue
         require('-o' in args and '-c' in args, 'unsupported compile command')
+        if sources is not None and (Path(text(row, 'directory')) / args[args.index('-o') + 1]).resolve() not in sources:
+            continue
         result.append(TranslationUnit(source, Path(text(row, 'directory')), tuple(args), args[args.index('-o') + 1]))
     require(bool(result), 'no ordinary CPU kernel translation units')
     require(len({unit.source for unit in result}) == len(result), 'duplicate CPU kernel variants require explicit support')
@@ -98,9 +102,9 @@ def normalized_flags(unit: TranslationUnit) -> list[str]:
     return flags
 
 
-def compile_input_snapshot(build: Path, *, prebuild: bool = False) -> Record:
+def compile_input_snapshot(build: Path, *, prebuild: bool = False, sources: frozenset[Path] | None = None) -> Record:
     result: Record = {}
-    for unit in translation_units(build):
+    for unit in translation_units(build, sources):
         if prebuild:
             args: list[str] = [unit.arguments[0]]
             values = iter(unit.arguments[1:])
@@ -173,21 +177,21 @@ def cpu_kernel_contract(build: Path) -> Record:
     return result
 
 
-def project_artifacts(build: Path) -> Record:
+def project_artifacts(build: Path, executable: str = 'llama-cli') -> Record:
     """Bind every project shared library beside the executable, including backend plugins."""
     result: Record = {}
     for path in sorted((build / 'bin').iterdir()):
-        if path.is_file() and (path.name == 'llama-cli' or '.dylib' in path.name or '.so' in path.name):
+        if path.is_file() and (path.name == executable or '.dylib' in path.name or '.so' in path.name):
             result[path.name] = sha256(path)
-    require('llama-cli' in result, 'llama-cli executable missing')
+    require(executable in result, 'selected collection executable missing')
     return result
 
 
-def runtime_dependencies(build: Path) -> Record:
+def runtime_dependencies(build: Path, executable: str = 'llama-cli') -> Record:
     result: Record = {}
     native_build = build.resolve(strict=True)
     executable_dir = native_build / 'bin'
-    pending = [executable_dir / name for name in project_artifacts(build)]
+    pending = [executable_dir / name for name in project_artifacts(build, executable)]
     visited: set[Path] = set()
     while pending:
         binary = pending.pop().resolve(strict=True)

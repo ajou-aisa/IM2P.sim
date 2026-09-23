@@ -24,7 +24,7 @@ class CollectionFiles:
 def verify_provenance(files: CollectionFiles, role: str, npu_trace: Path | None = None) -> Record:
     document = object_value(json.loads(files.provenance.read_text(), object_pairs_hook=unique_pairs))
     require(document.get('schema') == 'im2p-collection-provenance' and type(document.get('version')) is int and
-            document['version'] == 1 and document.get('source_role') == role, 'invalid collection provenance schema/role')
+            document['version'] in (1, 2) and document.get('source_role') == role, 'invalid collection provenance schema/role')
     require(type(document.get('process_exit_code')) is int and document['process_exit_code'] == 0 and
             document.get('collection_success') is True and document.get('build_inputs_unchanged') is True,
             'collection failed or build/model changed')
@@ -37,12 +37,23 @@ def verify_provenance(files: CollectionFiles, role: str, npu_trace: Path | None 
     require(isinstance(document.get('command_arguments'), list), 'missing actual command arguments')
     arguments = array(document['command_arguments'])
     require(all(isinstance(value, str) for value in arguments), 'normalized arguments must be strings')
-    fresh = object_value(document.get('fresh_build'))
-    require(fresh.get('kind') == 'FRESH_CONFIGURE_AND_COMPILE', 'collection did not use a fresh compiled build')
-    require(re.fullmatch('[0-9a-f]{64}', text(fresh, 'reference_cache_sha256')) is not None, 'fresh build reference cache missing')
-    text(fresh, 'build')
-    configure = array(fresh.get('configure_command'))
-    require(bool(configure) and all(isinstance(item, str) and bool(item) for item in configure), 'fresh configure command missing')
+    if document['version'] == 1:
+        fresh = object_value(document.get('fresh_build'))
+        require(fresh.get('kind') == 'FRESH_CONFIGURE_AND_COMPILE', 'collection did not use a fresh compiled build')
+        require(re.fullmatch('[0-9a-f]{64}', text(fresh, 'reference_cache_sha256')) is not None, 'fresh build reference cache missing')
+        text(fresh, 'build')
+        configure = array(fresh.get('configure_command'))
+        require(bool(configure) and all(isinstance(item, str) and bool(item) for item in configure), 'fresh configure command missing')
+    else:
+        from sim.cycle.collection_native import validate_receipt
+        fresh = object_value(document.get('native_build'))
+        validate_receipt(fresh)
+        require(fresh['source_role'] == role and
+                re.fullmatch('[0-9a-f]{64}', text(document, 'process_receipt_sha256')) is not None and
+                object_value(fresh['project_artifacts']).get('llama-eval-workload') == document['executable_sha256'] and
+                fresh['compile_commands_sha256'] == document['compile_commands_sha256'] and
+                fresh['cpu_kernel_contract_sha256'] == kernel['sha256'] and
+                fresh['runtime_dependencies'] == document.get('runtime_dependencies'), 'native build/provenance binding mismatch')
     compiled = object_value(fresh.get('actual_compile_inputs'))
     require(bool(compiled) and all(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
                                   for value in compiled.values()), 'actual compiler input binding missing')
