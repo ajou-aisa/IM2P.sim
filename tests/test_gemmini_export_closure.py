@@ -33,6 +33,33 @@ def test_required_source_closure_when_checksums_are_recomputed() -> None:
         package = base / "package"
         create_export(ExportRequest(source, None, package, None))
         required = (
+            "source/sim/include/im2p_cycle_service.h",
+            "source/sim/tests/cycle/test_service_model.cpp",
+            "source/sim/cycle/execution_adapter.py",
+            "source/sim/cycle/execution_application.py",
+            "source/sim/cycle/execution_cycle_provider.py",
+            "source/sim/cycle/execution_cli.py",
+            "source/sim/cycle/execution_ir.py",
+            "source/sim/cycle/execution_services.py",
+            "source/sim/cycle/scheduler.py",
+            "source/sim/cycle/scheduler_sqlite.py",
+            "source/scripts/evaluation_clock.py",
+            "source/scripts/evaluation_clock_contract.py",
+            "source/scripts/evaluation_ooc.py",
+            "source/scripts/evaluation_ooc_policy.py",
+            "source/scripts/evaluation_ooc_rtl.py",
+            "source/scripts/evaluation_ooc_report.py",
+            "source/config/evaluation_ooc_policy.json",
+            "source/fpga/gemmini_hp1/flow/evaluation_ooc.tcl",
+            "source/sim/cycle/execution_lifecycle.py",
+            "source/sim/cycle/execution_lifecycle_cli.py",
+            "source/sim/cycle/execution_stream.py",
+            "source/sim/cycle/reconstruct_pairing.py",
+            "source/sim/cycle/collection_build.py",
+            "source/sim/cycle/collection_native.py",
+            "source/sim/cycle/collect.py",
+            "source/sim/cycle/input_snapshot.py",
+            "source/scripts/gemmini_board.py",
             "source/sim/include/im2p_compact_runs.h",
             "source/sim/cycle/npu_trace_runs.py",
             "source/sim/cycle/run_aware_certificate.py",
@@ -68,6 +95,8 @@ def test_required_source_closure_when_checksums_are_recomputed() -> None:
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/optrace.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini/residual/rmd/rmd-run-aware.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/debug.cpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/evaluation_metrics.cpp",
+            "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/evaluation_metrics.hpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/src/semantic.cpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/semantic.hpp",
             "dependency/source/llama_cpp_gemmini/ggml/src/ggml-gemmini-utils/include/gemmini/semantic.h",
@@ -159,6 +188,7 @@ def test_relocated_run_headers_and_fixture_cli() -> None:
         real_files = (
             "sim/include/im2p_sim.h", "sim/include/im2p_geometry.h",
             "sim/include/im2p_cycle_model.h", "sim/include/im2p_compact_runs.h",
+            "sim/include/im2p_cycle_service.h",
             "scripts/gemmini_resolve_profile.py", "sim/tests/cycle/rtl_hardening.py",
             "sim/cycle/corpus-authority-v2.json", "sim/tests/cycle/passive_log.py",
             *(name for name in REQUIRED_SOURCE_FILES if name.endswith(".py")),
@@ -175,6 +205,7 @@ def test_relocated_run_headers_and_fixture_cli() -> None:
                      if key not in {"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "PYTHONPATH"}}
         program = (
             '#include "im2p_sim.h"\n#include "im2p_cycle_model.h"\n'
+            '#include "im2p_cycle_service.h"\n'
             'int main(void) { im2p_compact_run_t run = {0}; '
             'im2p_compact_runs_t view = {IM2P_COMPACT_RUNS_VERSION, '
             'sizeof(im2p_compact_runs_t), 32, 1, &run}; '
@@ -212,6 +243,27 @@ def test_relocated_run_headers_and_fixture_cli() -> None:
         )
         assert joined.returncode == 0, joined.stderr
         assert "--run-aware-certificate" in joined.stdout
+        execution = subprocess.run(
+            (sys.executable, "-B", "-m", "sim.cycle.execution_cli", "--help"),
+            cwd=relocated / "source", env=clean_env, text=True, capture_output=True, check=False,
+        )
+        assert execution.returncode == 0, execution.stderr
+        clock = subprocess.run(
+            (sys.executable, "-B", str(relocated / "source/scripts/evaluation_clock.py"), "--help"),
+            cwd=base, env=clean_env, text=True, capture_output=True, check=False,
+        )
+        assert clock.returncode == 0, clock.stderr
+        for module in ("sim.cycle.execution_lifecycle_cli", "scripts.evaluation_ooc"):
+            completed = subprocess.run(
+                (sys.executable, "-B", "-m", module, "--help"), cwd=relocated / "source",
+                env=clean_env, text=True, capture_output=True, check=False,
+            )
+            assert completed.returncode == 0, completed.stderr
+        sqlite = subprocess.run(
+            (sys.executable, "-B", "-c", "import sim.cycle.scheduler_sqlite"), cwd=relocated / "source",
+            env=clean_env, text=True, capture_output=True, check=False,
+        )
+        assert sqlite.returncode == 0, sqlite.stderr
 
 
 if __name__ == "__main__":
