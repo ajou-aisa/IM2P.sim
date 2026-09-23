@@ -11,8 +11,9 @@ from sim.cycle.collection_native import validate_receipt
 from sim.cycle.execution_cli import publish
 from sim.cycle.execution_ir import ensure
 from sim.cycle.execution_lifecycle import project_lifecycle
-from sim.cycle.npu_trace_schema import Record, integer, object_value, text
-from sim.cycle.reconstruct_graph import json_records, read_manifest, sha256
+from sim.cycle.npu_trace_schema import Record, integer, object_value
+from sim.cycle.reconstruct_graph import array, json_records, read_manifest, sha256
+from scripts.gemmini_resolve_profile import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,11 @@ class CpuScenario:
     worker_resources: Record
     policy: str
     sampler_resource: str
+
+
+def producer_payload(row: Record) -> Record:
+    return {key: value for key, value in row.items()
+            if key not in ('schema', 'version', 'kind', 'sequence')}
 
 
 def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
@@ -61,26 +67,83 @@ def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
     fingerprints = object_value(summary['decode_token_fingerprint_matches'])
     ensure(bool(fingerprints) and all(value is True for value in fingerprints.values()), 'decode input trajectory mismatch')
     graph = read_manifest(files.semantic_graph)
-    projection = project_lifecycle(json_records(files.sidecar), graph)
+    sidecar = tuple(json_records(files.sidecar))
+    projection = project_lifecycle(sidecar, graph)
+    pipeline = bool(sidecar) and integer(sidecar[0], 'version') == 3
+    ensure(not pipeline or bool(projection.pipeline_parents), 'PIPELINE collection has no declared target parents')
     app = tuple(json_records(files.application))
-    samples = [row for row in json_records(files.sidecar) if row['kind'] == 'SAMPLE']
-    ensure(len(app) == len(samples) == projection.expected_samples, 'application/lifecycle sample coverage mismatch')
-    for left, right in zip(app, samples, strict=True):
+    samples = [row for row in sidecar if row['kind'] == 'SAMPLE']
+    application_samples = [row for row in app if row.get('stage') == 'sample_accept'] if pipeline else list(app)
+    preparations = [row for row in app if row.get('stage') == 'prefill_batch_prepare'] if pipeline else []
+    ensure(len(application_samples) == len(samples) == projection.expected_samples,
+           'application/lifecycle sample coverage mismatch')
+    if pipeline:
+        ensure(len(app) == len(application_samples) + len(preparations) and
+               len(preparations) == len(projection.prefill_steps) and
+               all(integer(row, 'version') == 2 for row in app),
+               'pipeline application preparation coverage mismatch')
+        for left, right in zip(preparations, projection.prefill_steps, strict=True):
+            ensure(left['batch_index'] == right['batch_index'] and left['dispatch_id'] == right['dispatch_id'] and
+                   left['phase'] == 'prefill' and left['decode_index'] is None and
+                   left['source_role'] == 'potal_collection',
+                   'application preparation/producer dispatch mismatch')
+    for left, right in zip(application_samples, samples, strict=True):
         ensure(left['sample_index'] == right['sample_index'] and left['token_id'] == right['token_id'] and
                left['phase'] == right['phase_kind'] and left['decode_index'] == right['decode_index'],
                'application/lifecycle token or phase mismatch')
+    ensure(not pipeline or all(any(path.endswith(suffix) for path in inputs) for suffix in (
+        'frontend/src/im2p_gemmini_frontend.cpp',
+        'ggml/src/ggml-gemmini-utils/src/cycle_sim_log.cpp',
+        'ggml/src/ggml-gemmini/quants/act/exsia/exsia.cpp')),
+        'producer build lacks PIPELINE ownership implementation')
     slots: Record = {}
     submission: list[str] = []
+    work_rows: dict[int, Record] = {}
     for row in json_records(files.npu_results):
         ensure(row.get('schema') == 'im2p-npu-cycle-result' and row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
                'current official NPU results required')
-        ensure(row['scope'] in ('full', 'residual_compact') and row['host_slot'] is None,
-               'PIPELINE lifecycle requires separately verified slot/fence semantics')
+        ensure(row['scope'] in (('stripe', 'residual_compact') if pipeline else ('full', 'residual_compact')) and
+               (pipeline or row['host_slot'] is None), 'NPU result scope differs from producer lifecycle')
         call = str(integer(row, 'call_id'))
-        ensure(call not in slots, 'multiple NPU works claim one FULL invocation')
+        ensure(call not in slots, 'multiple NPU works claim one invocation')
         slots[call] = None
-        submission.append('npu:' + str(integer(row, 'work_id')))
-    return {'schema': 'im2p-execution-lifecycle', 'version': 1, 'source_kind': 'PRODUCER_DECLARED',
+        work_id = integer(row, 'work_id')
+        ensure(work_id not in work_rows, 'duplicate NPU result work ID')
+        work_rows[work_id] = row
+        submission.append('npu:' + str(work_id))
+    if pipeline:
+        declared: set[int] = set()
+        for parent in projection.pipeline_parents:
+            raw_ids = array(parent['required_work_ids'])
+            ensure(all(type(value) is int and value >= 0 for value in raw_ids),
+                   'PIPELINE parent has invalid work identity')
+            work_ids = {value for value in raw_ids if type(value) is int}
+            ensure(not (declared & work_ids), 'PIPELINE work claimed by two parents')
+            declared.update(work_ids)
+            dense = [work_rows[work_id] for work_id in work_ids
+                     if work_id in work_rows and work_rows[work_id]['scope'] == 'stripe']
+            ensure(bool(dense) and all(integer(row, 'parent_id') == integer(parent, 'parent_id') and
+                       integer(row, 'operation_id') == integer(parent, 'operation_id') and
+                       integer(row, 'phase_id') == integer(parent, 'phase_id') for row in dense),
+                   'PIPELINE dense stripe differs from declared parent')
+            ranges = sorted((integer(row, 'row_begin'), integer(row, 'row_begin') + integer(row, 'row_count'))
+                            for row in dense)
+            ensure(ranges[0][0] == 0 and ranges[-1][1] == integer(parent, 'parent_m') and
+                   all(left[1] == right[0] for left, right in zip(ranges, ranges[1:])),
+                   'PIPELINE parent has missing/overlapping dense rows')
+            bindings = [object_value(value) for value in array(parent['residual_bindings'])]
+            residual_ids = {work_id for work_id in work_ids if work_id in work_rows and
+                            work_rows[work_id]['scope'] == 'residual_compact'}
+            ensure({integer(row, 'work_id') for row in bindings} == residual_ids and
+                   all(integer(work_rows[integer(row, 'work_id')], 'parent_id') == integer(row, 'child_parent_id') and
+                       integer(work_rows[integer(row, 'work_id')], 'call_id') == integer(row, 'call_id') and
+                       integer(row, 'dense_parent_id') == integer(parent, 'parent_id') and
+                       integer(row, 'dense_work_id') in {integer(d, 'work_id') for d in dense}
+                       for row in bindings), 'PIPELINE residual child ownership mismatch')
+        ensure(declared == set(work_rows), 'PIPELINE parent/NPU result bijection mismatch')
+        ensure(bool(projection.pipeline_owners), 'PIPELINE producer has no ownership transitions')
+    result: Record = {'schema': 'im2p-execution-lifecycle', 'version': 2 if pipeline else 1,
+            'source_kind': 'PRODUCER_DECLARED',
             'dataset_sha256': sha256(files.dataset), 'npu_results_sha256': sha256(files.npu_results),
             'producer_binding': {'sidecar_sha256': sha256(files.sidecar), 'semantic_graph_sha256': sha256(files.semantic_graph),
                                  'provenance_sha256': sha256(files.provenance), 'executable_sha256': proof['executable_sha256'],
@@ -94,6 +157,12 @@ def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
                             'resource': scenario.sampler_resource, 'metric_policy': scenario.policy,
                             'expected_samples': projection.expected_samples,
                             'steps': [row for row in projection.application_steps]}}
+    if pipeline:
+        result['pipeline_parents'] = list[JsonValue](producer_payload(row) for row in projection.pipeline_parents)
+        result['pipeline_owners'] = list[JsonValue](producer_payload(row) for row in projection.pipeline_owners)
+        application = object_value(result['application'])
+        application['prefill_steps'] = list[JsonValue](projection.prefill_steps)
+    return result
 
 
 class Arguments(argparse.Namespace):
@@ -111,7 +180,7 @@ class Arguments(argparse.Namespace):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Project actual blocking FULL producer lifecycle into bound execution semantics.')
+    parser = argparse.ArgumentParser(description='Project actual FULL or PIPELINE producer lifecycle into bound execution semantics.')
     for name in ('sidecar', 'semantic-graph', 'provenance', 'application', 'dataset', 'npu-results',
                  'join-summary', 'worker-resources', 'output'):
         _ = parser.add_argument('--' + name, type=Path, required=True)

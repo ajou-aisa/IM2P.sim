@@ -157,8 +157,8 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
             document.get('timing_profile') == 'rtl-regression', 'unsupported timing scope/framing')
     require(document.get('execution_kind') in ('FRESH_RUN', 'REAGGREGATED_FROM_VERIFIED_EVIDENCE'),
             'evidence execution kind required')
-    require(document.get('corpus_authority') == authority_reference('v3'),
-            'current production requires v3 independent corpus authority')
+    require(document.get('corpus_authority') in (authority_reference('v3'), authority_reference('v4')),
+            'current production requires reviewed independent corpus authority')
     profiles = unique_strings(document.get('profiles'), 'profiles')
     framings = unique_strings(document.get('framings'), 'framings')
     require(set(profiles) == set(PROFILES) and set(framings) == set(FRAMINGS), 'profile/framing coverage incomplete')

@@ -663,6 +663,21 @@ struct Run::Impl {
   std::vector<uint64_t> cycle_sim_host_dependencies;
   std::vector<uint64_t> cycle_sim_reconstruction_stages;
   std::vector<uint64_t> cycle_sim_work_ids;
+
+  bool record_pipeline_owner(cycle_sim::log::ProducerEventKind kind,
+                             const DenseEvent &event, const char *source) noexcept {
+    if (!cycle_sim_context || mode != Mode::stripe_pipeline)
+      return true;
+    try {
+      return cycle_sim_context.session->producer_event(cycle_sim_context,
+          {kind, event.run_id, event.stripe_id, event.row_begin, event.row_end,
+           event.slot, bool(event.residual_event.rmd_packet),
+           bool(event.residual_event.direct_residual), source});
+    } catch (...) {
+      cycle_sim_context.session->record_failure("pipeline owner declaration failed");
+      return false;
+    }
+  }
 #endif
   uint64_t stall_cycle_limit;
   Route route;
@@ -1657,6 +1672,11 @@ struct Run::Impl {
         std::lock_guard lock(mutex);
         in_flight.emplace(s.stripe_id, e);
       }
+#if CYCLE_SIM
+      if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::StreamWorkAccepted,
+                                 e, "frontend/src/im2p_gemmini_frontend.cpp:publish"))
+        return IM2P_ERROR;
+#endif
       // Only runtime-accepted publications are work. A retry/backpressure
       // return must never allocate a trace sequence or increment trace count.
 #if IM2P_PRODUCTION_TRACE_ENABLED
@@ -1756,11 +1776,29 @@ struct Run::Impl {
              found->second.row_begin, found->second.row_end,
              extended.publish_cycle, extended.completion_cycle,
              extended.publish_to_completion_cycles});
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::StreamWorkCompleted,
+                                   found->second, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline completion owner declaration failed");
+          changed.notify_all();
+          return false;
+        }
+#endif
         if (residual_enabled()) {
           residual_pending.emplace(std::move(found->second));
           run_residual = true;
         } else {
           --outstanding;
+#if CYCLE_SIM
+          if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityRelease,
+                                     found->second, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+            final_status = make_status(StatusCode::execution_failure, route, native,
+                                       "pipeline capacity release declaration failed");
+            changed.notify_all();
+            return false;
+          }
+#endif
         }
         in_flight.erase(found);
         ++completion_count;
@@ -1825,7 +1863,27 @@ struct Run::Impl {
         rmd_stats = accumulated_stats;
         ++semantic_completion_count;
         ++semantic_generation;
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::ResidualCallbackCompleted,
+                                   event, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline residual owner declaration failed");
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+#endif
         --outstanding;
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityRelease,
+                                   event, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline capacity release declaration failed");
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+#endif
         residual_pending.reset();
         changed.notify_all();
       }
@@ -2015,8 +2073,16 @@ struct Run::Impl {
         if (!ready.empty() && raw_slot_available) {
           event = ready.front();
           ready.pop_front();
+#if CYCLE_SIM
+          if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendQueueDequeue,
+                                     event, "frontend/src/im2p_gemmini_frontend.cpp:run_pipeline")) {
+            final_status = make_status(StatusCode::execution_failure, route, native,
+                                       "pipeline queue dequeue declaration failed");
+            changed.notify_all();
+          }
+#endif
           changed.notify_all();
-          have = true;
+          have = final_status.ok();
         } else if (ready.empty() && lifecycle == Lifecycle::closing) {
           if (next_row != scalars.i)
             final_status =
@@ -2464,6 +2530,11 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   if (x.cycle_sim_context) {
     try {
       x.cycle_sim_context = x.cycle_sim_context.session->new_dispatch(x.cycle_sim_context);
+      if (mode == Mode::stripe_pipeline &&
+          !x.cycle_sim_context.session->producer_parent_geometry(
+              x.cycle_sim_context,
+              geometry_snapshot(x.scalars, IM2P_GEOMETRY_STREAM, 0, x.scalars.i, 0)))
+        throw std::runtime_error("pipeline parent geometry declaration failed");
     } catch (...) {
       x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
                                    "cycle-sim dispatch declaration failed");
@@ -2611,6 +2682,17 @@ Status submit_stripe_planned(Run &run, const exsia::StripeReadyEvent &e,
   ++x.outstanding;
   ++x.next_stripe;
   x.next_row = e.row_end;
+#if CYCLE_SIM
+  if (!x.record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityAcquire,
+                               dense, "frontend/src/im2p_gemmini_frontend.cpp:submit_stripe_planned") ||
+      !x.record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendQueueEnqueue,
+                               dense, "frontend/src/im2p_gemmini_frontend.cpp:submit_stripe_planned")) {
+    x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                 "pipeline submission owner declaration failed");
+    x.changed.notify_all();
+    return x.final_status;
+  }
+#endif
   x.changed.notify_all();
   return make_status(StatusCode::success, x.route, x.native, "success");
 }

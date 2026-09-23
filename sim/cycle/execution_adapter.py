@@ -10,6 +10,7 @@ from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.certificate_contract import read_document
 from sim.cycle.execution_application import ApplicationSource, add_application
 from sim.cycle.execution_ir import Dependency, ExecutionIR, Kind, Milestone, Node, NodeId, ResourceId, ServiceId, ensure
+from sim.cycle.execution_pipeline import project_pipeline
 from sim.cycle.execution_services import CpuService, NpuWork, Services, bind_cpu_resource, cpu_service
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, fields, json_records, sha256
@@ -38,12 +39,14 @@ def adapt(files: AdapterFiles) -> tuple[ExecutionIR, Services]:
 
 
 def validate_lifecycle_contract(contract: Record) -> None:
+    version = integer(contract, 'version')
     fields(contract, {'schema', 'version', 'source_kind', 'dataset_sha256', 'npu_results_sha256',
                       'operation_exit_policy', 'publish_policy', 'slot_release_policy', 'phase_graph_policy',
                       'entry_dependencies', 'barriers', 'call_slots', 'submission_order', 'cpu_policy', 'worker_resources'} |
            ({'application'} if 'application' in contract else set()) |
-           ({'producer_binding'} if 'producer_binding' in contract else set()))
-    ensure(contract['schema'] == 'im2p-execution-lifecycle' and integer(contract, 'version') == 1,
+           ({'producer_binding'} if 'producer_binding' in contract else set()) |
+           ({'pipeline_parents', 'pipeline_owners'} if version == 2 else set()))
+    ensure(contract['schema'] == 'im2p-execution-lifecycle' and version in (1, 2),
            'missing current execution lifecycle; legacy structural dataset is not executable')
     ensure((contract['operation_exit_policy'], contract['publish_policy'], contract['slot_release_policy'],
             contract['phase_graph_policy']) == ('ALL_MEMBER_COMPLETIONS', 'NONBLOCKING_SUBMISSION',
@@ -70,17 +73,22 @@ def adapt_records(rows: Iterable[Record], contract: Record, results: Iterable[Re
     entry = object_value(contract['entry_dependencies'])
     ensure(set(entry) == set(operations), 'explicit phase/graph entry coverage mismatch')
     slots, resources = object_value(contract['call_slots']), object_value(contract['worker_resources'])
+    if contract['version'] == 2:
+        ensure(all(value is None for value in slots.values()), 'ExSIA workspace is not a target NPU slot')
     submission = [text({'id': value}, 'id') for value in array(contract['submission_order'])]
     ensure(len(set(submission)) == len(submission), 'duplicate target submission order')
     result_map: dict[ServiceId, NpuWork] = {}
+    result_rows: dict[str, Record] = {}
     for result in results:
         identity = ServiceId('npu:' + str(integer(result, 'work_id')))
         ensure(identity not in result_map, 'duplicate NPU model result')
         ensure(result.get('schema') == 'im2p-npu-cycle-result' and result.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
                'NPU model result is not certified')
         result_map[identity] = NpuWork(ServiceId(identity), text(result, 'run_view_sha256'), text(result, 'profile'))
+        result_rows[str(identity)] = result
     npu_rows = {key for key, row in indexed.items() if row.get('node_class') == 'TARGET_NPU' and row['kind'] == 'SERVICE'}
     ensure(npu_rows == set(result_map) == set(submission), 'NPU service/submission/result bijection mismatch')
+    pipeline = project_pipeline(contract, indexed, result_rows) if contract['version'] == 2 else None
     members: dict[str, list[NodeId]] = {key: [] for key in operations}
     nodes: list[Node] = []
     cpu: dict[ServiceId, CpuService] = {}
@@ -160,9 +168,15 @@ def adapt_records(rows: Iterable[Record], contract: Record, results: Iterable[Re
                         ensure(False, 'unknown execution source/class')
             case _:
                 ensure(False, 'unsupported structural record kind')
+        actual_edges = tuple(dict.fromkeys(dependencies))
         nodes.append(Node(NodeId(identity), kind, operation, phase, order,
-                          tuple(dict.fromkeys(dependencies)), service, claims))
+                          pipeline.edges(identity, actual_edges) if pipeline is not None else actual_edges,
+                          service, claims))
         members[operation].append(NodeId(identity))
+    if pipeline is not None:
+        nodes.extend(pipeline.nodes)
+        for node in pipeline.nodes:
+            members[node.operation].append(node.identity)
     for operation, children in members.items():
         ensure(bool(children), 'operation has no completion-producing members')
         phase = json.dumps(operations[operation]['phase'], sort_keys=True, separators=(',', ':'))

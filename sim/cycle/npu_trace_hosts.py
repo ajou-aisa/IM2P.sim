@@ -35,7 +35,11 @@ class Hosts:
         require(bool(delimiter and function) and not PurePosixPath(path).is_absolute() and
                 '..' not in PurePosixPath(path).parts and '\\' not in path, 'host source location must be relative file:function')
         if record['parent_id'] is not None:
-            require(calls.parent_operations.get(integer(record, 'parent_id')) == operation, 'host parent ownership mismatch')
+            parent = integer(record, 'parent_id')
+            require(calls.parent_operations.get(parent, operation) == operation, 'host parent ownership mismatch')
+            if parent not in calls.parent_operations:
+                calls.host_declared_parents.add(parent)
+            calls.parent_operations[parent] = operation
         if record['call_id'] is not None:
             require(calls.call_operations.get(integer(record, 'call_id')) == operation, 'host call ownership mismatch')
         descriptor = {key: value for key, value in record.items() if key not in ('sequence', 'event', 'status')}

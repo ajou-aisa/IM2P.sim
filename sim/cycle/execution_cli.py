@@ -11,11 +11,11 @@ import sqlite3
 from sim.cycle.certificate_contract import read_document
 from sim.cycle.execution_adapter import AdapterFiles, adapt
 from sim.cycle.execution_cycle_provider import CycleServiceProvider, ReferenceMemoryScenario
-from sim.cycle.execution_ir import ensure, ir_record, parse_ir
+from sim.cycle.execution_ir import ExecutionError, ensure, ir_record, parse_ir
 from sim.cycle.execution_services import NpuProvider, NpuService, PhaseTable, parse_services, services_record
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, fields, sha256
-from sim.cycle.scheduler import Scenario, ScheduleInputs, schedule
+from sim.cycle.scheduler import Scenario, ScheduleInputs, schedule, service_binding
 
 
 class Arguments(argparse.Namespace):
@@ -38,6 +38,10 @@ class Arguments(argparse.Namespace):
     initial_scratchpad_half: int | None = None
     initial_accumulator_half: int | None = None
     streaming: bool = False
+    schedule: Path = Path()
+    service_certificate: Path | None = None
+    cycle_certificate: Path | None = None
+    run_aware_certificate: Path | None = None
 
 
 def phase_table(document: Record) -> PhaseTable:
@@ -73,13 +77,64 @@ def publish(path: Path, document: Record) -> None:
 def provider(arguments: Arguments) -> NpuProvider:
     if arguments.phase_table is not None:
         return phase_table(read_document(arguments.phase_table))
-    from sim.cycle.execution_ir import ExecutionError
     if (arguments.cycle_library is None or arguments.npu_trace is None or arguments.timing is None or
             arguments.initial_scratchpad_half is None or arguments.initial_accumulator_half is None):
         raise ExecutionError('cycle service requires library, exact trace, timing and explicit initial halves')
     scenario = ReferenceMemoryScenario(read_document(arguments.timing), arguments.initial_scratchpad_half,
                                        arguments.initial_accumulator_half)
-    return CycleServiceProvider(arguments.cycle_library, arguments.npu_trace, scenario)
+    return CycleServiceProvider(arguments.cycle_library, arguments.npu_trace, scenario,
+                                service_certificate=arguments.service_certificate,
+                                base_certificate=arguments.cycle_certificate,
+                                run_certificate=arguments.run_aware_certificate)
+
+
+def schedule_json(arguments: Arguments, bound: NpuProvider, scenario: Scenario) -> Record:
+    bundle = read_document(arguments.bundle)
+    ensure(bundle.get('schema') == 'im2p-execution-bundle' and integer(bundle, 'version') == 1,
+           'unsupported execution bundle')
+    ir = parse_ir(object_value(bundle['ir']))
+    if scenario.scope == 'RECONSTRUCTED':
+        ensure(ir.scope == 'BOUND_DATASET' and bundle.get('dataset_sha256') == ir.source_sha256,
+               'reconstruction requires bound dataset input')
+    result = schedule(ScheduleInputs(ir, parse_services(object_value(bundle['services'])), bound), scenario).record()
+    result['input_bundle_sha256'] = sha256(arguments.bundle)
+    result['phase_table_sha256'] = sha256(arguments.phase_table) if arguments.phase_table is not None else None
+    result['cycle_library_sha256'] = sha256(arguments.cycle_library) if arguments.cycle_library is not None else None
+    result['clock_selection_sha256'] = sha256(arguments.clock_selection) if arguments.clock_selection is not None else None
+    return result
+
+
+def verify_schedule(arguments: Arguments) -> Record:
+    from scripts.evaluation_clock import load_selection
+    from sim.cycle.scheduler_sqlite import SqliteScheduleInputs, verify_schedule_sqlite
+
+    clock = arguments.clock_selection
+    if clock is None or not arguments.profile or not arguments.schedule.is_file():
+        raise ExecutionError('schedule, profile and validated operating clock required')
+    selection = load_selection(clock, arguments.profile)
+    scenario = Scenario(selection.frequency_hz, 'RECONSTRUCTED', clock, arguments.profile)
+    bound = provider(arguments)
+    if not isinstance(bound, CycleServiceProvider) or bound.admission is None:
+        raise ExecutionError('validated current-source drained-sequence service certificate required')
+    with arguments.bundle.open('rb') as stream:
+        sqlite_input = stream.read(16) == b'SQLite format 3\x00'
+    with arguments.schedule.open('rb') as stream:
+        sqlite_output = stream.read(16) == b'SQLite format 3\x00'
+    ensure(sqlite_input == sqlite_output, 'bundle/schedule storage kind mismatch')
+    if sqlite_input:
+        schedule_digest = verify_schedule_sqlite(arguments.bundle, arguments.schedule,
+                                                 SqliteScheduleInputs(bound, scenario))
+    else:
+        schedule_digest = sha256(arguments.schedule)
+        expected = schedule_json(arguments, bound, scenario)
+        actual = read_document(arguments.schedule)
+        ensure(json.dumps(actual, sort_keys=True, separators=(',', ':'), allow_nan=False) ==
+               json.dumps(expected, sort_keys=True, separators=(',', ':'), allow_nan=False),
+               'JSON schedule node/endpoint or service/clock/source binding mismatch')
+        ensure(sha256(arguments.schedule) == schedule_digest, 'JSON schedule changed during verification')
+    return {'status': 'PASS', 'schema': 'im2p-execution-schedule-verification', 'version': 1,
+            'schedule_sha256': schedule_digest, 'service_binding': service_binding(bound, scenario),
+            'scheduled_npu_work_count': len(bound.requests)}
 
 
 def main() -> int:
@@ -104,8 +159,21 @@ def main() -> int:
     _ = runner.add_argument('--synthetic', action='store_true', help='Label all schedule output SYNTHETIC; never paper latency')
     _ = runner.add_argument('--clock-selection', type=Path)
     _ = runner.add_argument('--profile', default='')
+    verifier = actions.add_parser('verify-schedule', help='Revalidate a certified schedule and its exact NPU services')
+    for name in ('schedule', 'bundle', 'cycle-library', 'npu-trace', 'timing',
+                 'service-certificate', 'cycle-certificate', 'run-aware-certificate',
+                 'clock-selection'):
+        _ = verifier.add_argument('--' + name, type=Path, required=True)
+    _ = verifier.add_argument('--profile', required=True)
+    for name in ('initial-scratchpad-half', 'initial-accumulator-half'):
+        _ = verifier.add_argument('--' + name, type=int, choices=(0, 1), required=True)
+    for name in ('service-certificate', 'cycle-certificate', 'run-aware-certificate'):
+        _ = runner.add_argument('--' + name, type=Path)
     args = parser.parse_args(namespace=Arguments())
     try:
+        if args.action == 'verify-schedule':
+            print(json.dumps(verify_schedule(args), sort_keys=True))
+            return 0
         if args.action == 'adapt':
             summary, lifecycle = read_document(args.join_summary), read_document(args.lifecycle)
             ensure(summary.get('status') == 'PASS' and summary.get('scope') == 'structural-three-source-reconstruction',
@@ -136,14 +204,7 @@ def main() -> int:
                 result = schedule_sqlite(args.bundle, args.output, SqliteScheduleInputs(provider(args), scenario))
                 print(json.dumps(result, sort_keys=True))
                 return 0
-            bundle = read_document(args.bundle)
-            ensure(bundle.get('schema') == 'im2p-execution-bundle' and integer(bundle, 'version') == 1, 'unsupported execution bundle')
-            inputs = ScheduleInputs(parse_ir(object_value(bundle['ir'])), parse_services(object_value(bundle['services'])),
-                                    provider(args))
-            result = schedule(inputs, scenario).record()
-            result['input_bundle_sha256'] = sha256(args.bundle)
-            result['phase_table_sha256'] = sha256(args.phase_table) if args.phase_table is not None else None
-            result['cycle_library_sha256'] = sha256(args.cycle_library) if args.cycle_library is not None else None
+            result = schedule_json(args, provider(args), scenario)
         publish(args.output, result)
         print(json.dumps({'status': 'PASS', 'output': str(args.output), 'schema': result['schema']}))
     except (OSError, ValueError, KeyError, AttributeError, sqlite3.Error) as error:

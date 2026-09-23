@@ -85,7 +85,7 @@ void measure(Adapter &state, const Experiment &experiment) {
   const auto index = experiment.work;
   const bool runs = (experiment.sequence == 1 && index == 1) ||
                     experiment.sequence == 2 ||
-                    (experiment.sequence == 3 && index == 0);
+                    ((experiment.sequence == 3 || experiment.sequence == 5) && index == 0);
   const bool stripe = experiment.sequence == 4;
   const auto before_loops = state.loops;
   const auto before_done = state.logical_done;
@@ -209,6 +209,7 @@ void measure(Adapter &state, const Experiment &experiment) {
 }
 }
 
+#ifndef IM2P_SERVICE_PROBE_NO_MAIN
 int main(int argc, char **argv) {
   try {
     for (const unsigned period : {3U, 5U})
@@ -239,4 +240,5 @@ int main(int argc, char **argv) {
     return 1;
   }
 }
+#endif
 #endif

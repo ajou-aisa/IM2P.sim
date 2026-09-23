@@ -1,0 +1,62 @@
+{
+  "schema": "im2p-production-drained-sequence-corpus",
+  "version": 1,
+  "scope": "native-production-dispatch-fixture",
+  "period": 5,
+  "phase_vectors": [[0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3], [4, 4, 4, 4]],
+  "work_ids": [0, 1, 2, 3],
+  "initial_halves": [0, 0],
+  "case_count": 30,
+  "producer_commit": "0e1c8976d97887ac9494323b99643145e7b5abae",
+  "producer_dirty_diff_sha256": "c0fd3a1414abf93b0f74ace6bbe1623db2cd8d53b69ebb0db7173c03d53d9e82",
+  "profiles": {
+    "a4w4-d16-hp1": {
+      "trace_sha256": "bd369adb8e51d8537613877b7b01bd33030f85ae58ad16f908156223623c8872",
+      "lifecycle_sha256": "7a070c5bbdb427f983da5da30a216f535542d6c75cbaee42da0bd0cf7e4925a9",
+      "semantic_graph_sha256": "362c94540bb5f53e7893443881c13a623fc95c38da0d02a36432a7d6c935735e",
+      "source_manifest_sha256": "d8028ca4f41b83ba4c5fb75e1d8a5c402d9fa9b80f1c0d01dea17147c9510827",
+      "hardware_contract_sha256": "7c58d1763cfcb950110e06f0ae5d7c03fbac89311f0e492845eb87255513e9f0",
+      "receipt_sha256": "ba0c826413f48c4f0ea3828c834b0691ada85c0dda18439c268e025b0466e258"
+    },
+    "a4w4-d32-hp1": {
+      "trace_sha256": "54d25ec6ad61d509fefe86e308a953749a00c1e7735e6a713582683258a8f387",
+      "lifecycle_sha256": "b1e873287ed547c363766971aed5a25b4f910f142f724eedf05a54c100417ddd",
+      "semantic_graph_sha256": "6190d98b44e86bfb4a2c88ee8dc30bb3b1d23a6b6baf545acdec13ca38bdb52c",
+      "source_manifest_sha256": "3ce1ebffcd313771ec1930c36ffe025ff94ea8fea7652c5909837ce8f515f9de",
+      "hardware_contract_sha256": "8cd40da4a431975aad250314e4d32cae3c07329cb24a35eed08e42e32b168825",
+      "receipt_sha256": "29ea72833b2eba6b5444263c0162e5ad0fcd6851e5354d2fe269c4de4dd1c2f0"
+    },
+    "a4w4-d64-hp1": {
+      "trace_sha256": "f42d425a325dafaf95ff899081446f2e3d57eef6e5f5a438650b523c3e80de54",
+      "lifecycle_sha256": "effea989b011e3b683c84a9b2c62b9e298aa7127973c18f0b33059536d39c1ae",
+      "semantic_graph_sha256": "88bc086b0cf703cc3224db1db3b7ac98c2dc4e30a882a6d1e582877c48db27a1",
+      "source_manifest_sha256": "b8df9fb31f58cd8ee8fbbd9dc4c5f2293024f56c45c9bd48c9c3dc8ece2a641e",
+      "hardware_contract_sha256": "b865e70097c6a42523209444b517a84d0deeea9df55478cae54e17ed5fd6fe39",
+      "receipt_sha256": "6c98e1084edd4e2949a3d573e281a2e5d4e3db0a1e90bdae8cfbb413b7287efd"
+    },
+    "a8w8-d16-hp1": {
+      "trace_sha256": "da15d39c3f9668f3caef58ebc3eeb84aaf646093dccc726c0e00b18d2fdd7dd2",
+      "lifecycle_sha256": "77c43db9dbd3ae9c2c517a41222ace899b9d411329c99266e81a2e622bf26b70",
+      "semantic_graph_sha256": "e6720e41b6ee2279cae5d7fc99be9d14f0fb67e848687ffe5b8b087d9316b11e",
+      "source_manifest_sha256": "b9c04f60e47acfdc6cebe18478b416132c9c6fd44710ef4b2322a0cde2f8e037",
+      "hardware_contract_sha256": "8b3867a5d0d6be296337a3e8720d1678d4bd38e211f167cbf7e1a8453f4e07d7",
+      "receipt_sha256": "9ad94e9ee4d014b01512407e9200c1616dcd410ee00ce7c492b370ff254274d1"
+    },
+    "a8w8-d32-hp1": {
+      "trace_sha256": "30c0b9c6cdad959bd826bf46a6a04991391983092084a12d366fd57f4a644a35",
+      "lifecycle_sha256": "731cb630545b18edab9fcc3ebfee90b9091ff00d978439cb4ece8336ea827f94",
+      "semantic_graph_sha256": "9d4848f96c1f8ecab50823dcf4446b0d5f5b2a9cbdcdfd19c088598f392fcbe4",
+      "source_manifest_sha256": "5cf3b7fb535f468306400c17a3c4298a1a14a88f20c3bd00c0b44822520c3434",
+      "hardware_contract_sha256": "be6ee1167e2fb2f5a4144e20e9673d189d7bdeea2b2143f171164a924d4e9417",
+      "receipt_sha256": "a54d366db56a948b56bd0125e53aa1b0e2aff8dafdd7d34806a6a7082b78edb4"
+    },
+    "a8w8-d64-hp1": {
+      "trace_sha256": "1204931d2f0e40e13ca8b02c8be012ee0d7cd080446202683e516e2141873123",
+      "lifecycle_sha256": "b1ed6d9b899cb3367c8f9479edd61db282875d875a35f90a3baac4f8f201ccf4",
+      "semantic_graph_sha256": "1ca16f5b9072dbe3f64f21b06b4d92e421df5e8745f68812c6a5b3ec9282cb52",
+      "source_manifest_sha256": "030b37b65c95e4f2ee39697ff9a95b0e6a7a4eac8848ba90714bfbd94779da19",
+      "hardware_contract_sha256": "07b1cf8ef18049c174de76b4a0e4dd519b7c7652e9f97ee0e45f963c5e3da2f0",
+      "receipt_sha256": "3fbf47ecc708f23f46857b48cfff8792e084c10a0f36fe50cb46b65017d8f37f"
+    }
+  }
+}

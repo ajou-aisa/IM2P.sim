@@ -1,0 +1,38 @@
+{
+  "schema": "im2p-drained-service-corpus",
+  "version": 1,
+  "revision": "one-npu-drained-hp1-v1",
+  "profiles": [
+    "a4w4-d16-hp1",
+    "a4w4-d32-hp1",
+    "a4w4-d64-hp1",
+    "a8w8-d16-hp1",
+    "a8w8-d32-hp1",
+    "a8w8-d64-hp1"
+  ],
+  "read_ready_periods": [3, 5],
+  "sequence_names": [
+    "dense-dense",
+    "dense-multirun",
+    "multirun-multirun",
+    "multirun-dense",
+    "stripe0-stripe1",
+    "k32-primed-multirun-dense"
+  ],
+  "observations_per_profile": 176,
+  "isolated_and_continuous_pair_observations": 160,
+  "primed_pair_observations": 16,
+  "dense_example": {"shape": [2, 3, 64], "submission": "planner-blocks"},
+  "compact_example": {
+    "shape": [2, 3, 37],
+    "original_k": 116,
+    "runs": [[0, 131071, 0, 17], [3, 1048575, 17, 20]]
+  },
+  "timing": {
+    "backing_read_delay": 3,
+    "even_read_id_delay": 13,
+    "scale_read_extra_delay": 17,
+    "backing_write_delay": 11,
+    "backing_cycle_offset": 5
+  }
+}

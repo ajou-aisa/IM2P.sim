@@ -6,14 +6,16 @@ outputs, and the historical PUBLISH dependency includes synchronous collection
 ordering. No old dataset is rewritten or silently promoted.
 
 `sim.cycle.execution_cli` adds a separate version-1 execution IR, service table,
-and deterministic rational-time scheduler. Current CLI scheduling is diagnostic.
-Neither a user-supplied frequency nor a successful synthetic schedule establishes
-a paper latency result.
+and deterministic rational-time scheduler. Synthetic schedules remain diagnostic.
+Certified scheduling requires the drained-sequence certificate and a validated
+post-route operating clock; neither a user-supplied frequency nor a synthetic
+schedule establishes paper latency.
 
 ## Required lifecycle supplement
 
-`im2p-execution-lifecycle`, version 1, binds the immutable dataset and NPU-result
-SHA256s. It explicitly declares:
+`im2p-execution-lifecycle` binds immutable dataset and NPU-result SHA256s.
+Version 1 preserves the blocking FULL contract; version 2 adds actual
+STRIPE_PIPELINE source ownership. Both explicitly declare:
 
 - `source_kind`: `SYNTHETIC` or `PRODUCER_DECLARED`;
 - `operation_exit_policy=ALL_MEMBER_COMPLETIONS`;
@@ -36,8 +38,8 @@ but their causal dependencies remain.
 
 The supplement cannot be manufactured from tensor shapes or file order.
 `llama-eval-workload` now buffers a separate
-`potal-execution-lifecycle/v1` sidecar at actual phase changes, dispatch begin/end,
-and sample completion. A read-only semantic-session counter binds each blocking
+`potal-execution-lifecycle/v1` (FULL) or `/v3` (PIPELINE) sidecar at actual phase
+changes, dispatch begin/end, and sample completion. A read-only semantic-session counter binds each blocking
 `llama_decode`/`llama_synchronize` dispatch to its exact completed graph window.
 The sidecar is flushed only at finish, outside measured sampling and canonical
 host intervals. It records successful synchronized completion, not CPU-emulation
@@ -46,9 +48,15 @@ duration.
 `execution_lifecycle_cli` binds this sidecar, semantic graph, application tokens,
 native executable/build receipt and official join/result hashes. The projection
 uses the producer's verified complete-before-next-graph policy, never shapes.
-Every sample is matched against its next decode input fingerprint. Actual
-PIPELINE work is rejected: this initial production projection supports blocking
-FULL and run-aware residual calls only.
+Every sample is matched against its next decode input fingerprint. PIPELINE v3
+also declares `REQUEST_START`, each measured `PREFILL_BATCH_READY`, final parent
+geometry, exact fence work IDs, residual child bindings, and source-recorded
+workspace/queue/capacity/stream/callback transitions. It does not claim RTL
+acceptance during CPU-functional collection. The adapter validates parent row
+coverage, stripe IDs, residual child ownership, queue credit, workspace reuse,
+and fence membership. ExSIA workspace slot is not an NPU output slot; `call_slots`
+remain null in this scenario. Frontend credit release depends on result-ready,
+while the shared NPU resource remains reserved until resource-ready.
 
 ```bash
 python3 -m sim.cycle.execution_lifecycle_cli \
@@ -79,6 +87,12 @@ execution IDs and `next_decode_entries` operation IDs. The final sample has no
 next decode. Source rows must be PoTal `sample_accept` measurements with complete
 ordered sample/phase coverage and one actual sampler thread. Sampling is added
 once as `APPLICATION_CPU`; FullCPU sampling is never substituted.
+PIPELINE v3 additionally requires version-2 application rows: one measured
+`prefill_batch_prepare` per declared prefill dispatch, followed by sample rows.
+`application:request:begin` is scheduled t0. Each preparation is its own
+`APPLICATION_CPU` service before the matching dispatch; diagnostic JSON
+construction and the numerical functional emulation are excluded. Old sample-only
+sidecars cannot be promoted to this endpoint contract.
 
 ```bash
 python3 -m sim.cycle.execution_cli adapt \
@@ -121,8 +135,16 @@ geometry/runs, reference-memory timing, scheduled epoch and initial halves to
 `im2p_cycle_estimate_service`. Returned halves carry into the next drained work.
 Its identity digest includes profile, exact request, epoch, timing and halves.
 No NPU equations, retiling, measured answers, or tensor computation are copied
-into Python. This provider is `DIAGNOSTIC_SERVICE_API`, not a replacement for
-current source-bound production certification.
+into Python. Without three validated certificates it remains
+`DIAGNOSTIC_SERVICE_API`. The current drained certificate validates fixed
+two-work RTL fixtures and exposes `DRAINED_FIXTURE_PARITY`, not production
+schedule admission. Actual producer-generated, same-RTL-instance sequence/phase
+comparisons across the required profiles are still missing. Reconstructed
+scheduling therefore rejects this certificate even though fixture estimates
+remain available. See
+`docs/HP1_SERVICE_CERTIFICATE.md` for its source/artifact binding and the
+one-NPU, one-outstanding, drained reference-memory domain. A string label alone
+cannot admit real scheduling.
 
 ```bash
 python3 -m sim.cycle.execution_cli schedule \
@@ -149,6 +171,14 @@ sequence provider, or unbound lifecycle data. Finite RTL sequence comparisons
 do not independently certify arbitrary whole-model persistent scheduling.
 `paper_latency_ready` remains false: application endpoints, actual target-host
 measurements and the complete campaign are separate gates.
+
+For certified scheduling, omit `--synthetic` and provide `--service-certificate`,
+`--cycle-certificate`, `--run-aware-certificate`, `--clock-selection`, `--profile`,
+the exact trace/library/timing, and initial halves. `verify-schedule` accepts
+those same sources plus `--schedule` and `--bundle`; it recomputes every JSON or
+SQLite scheduled node, including CPU/application endpoints, before a PoTal run
+result may be published. SQLite verification streams observed rows against the
+same scheduler, rather than trusting a stamped validation string.
 
 ## Verification
 

@@ -106,6 +106,22 @@ class NpuTraceTests(unittest.TestCase):
         rows = records(); rows[3], rows[4] = rows[4], rows[3]
         with self.assertRaises(ValueError): self.consume(resequence(rows))
 
+    def test_host_preparation_may_declare_parent_before_first_npu_call(self):
+        rows = records()
+        stage: Record = dict(kind='HOST_STAGE', phase_id=0, operation_id=0, node_id=0,
+                             parent_id=0, call_id=None, host_stage_id=0,
+                             execution_class='POTAL_HOST', stage_name='prepare',
+                             source_owner='IM2P.sim', source_location='frontend/src/prepare.cpp:prepare',
+                             required_work_ids=[], required_host_stage_ids=[])
+        rows[2:2] = [dict(stage, event='BEGIN', status='declared'),
+                     dict(stage, event='END', status='success')]
+        rows[-1].update(host_stage_count=1, completed_host_stage_count=1, potal_host_count=1)
+        self.assertEqual(self.consume(resequence(rows))['npu_work_count'], 1)
+        for record in rows[2:4]:
+            record['parent_id'] = 99
+        with self.assertRaisesRegex(ValueError, 'host-declared parent has no NPU call'):
+            self.consume(resequence(rows))
+
     def test_independent_counts_and_stale_phase_rejected(self):
         for index, field, value in ((8, 'registered_operation_count', 2), (8, 'call_count', 2),
                                    (8, 'npu_work_count', 2), (7, 'npu_work_count', 0), (4, 'phase_id', 1),

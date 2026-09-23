@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from pathlib import Path
 import unittest
 
 from sim.cycle.execution_ir import Dependency, ExecutionError, ExecutionIR, Kind, Milestone, Node, NodeId, ResourceId, ServiceId
@@ -72,6 +73,21 @@ class SchedulerTests(unittest.TestCase):
                                 PhaseTable(1, {('a8w8-d16-hp1', 'a', 0): NpuService(5, 8, 'synthetic')}))
         with self.assertRaisesRegex(ExecutionError, 'validated clock'):
             schedule(inputs, Scenario(1_000_000_000, 'RECONSTRUCTED'))
+
+    def test_claimed_scope_string_does_not_admit_reconstruction(self) -> None:
+        from sim.cycle.scheduler import ScheduleInputs, Scenario, schedule
+
+        class ClaimedProvider:
+            validation_scope = 'CURRENT_CERTIFIED_SEQUENCE'
+
+            def estimate(self, work: NpuWork, accepted_cycle: int) -> NpuService:
+                return NpuService(5, 8, 'claim-only')
+
+        services = Services({}, {ServiceId('a'): NpuWork(ServiceId('a'), 'a', 'a8w8-d16-hp1')})
+        inputs = ScheduleInputs(ExecutionIR((node('a', Kind.NPU),), 'BOUND_DATASET', 'digest'),
+                                services, ClaimedProvider())
+        with self.assertRaisesRegex(ExecutionError, 'validated current-source drained-sequence'):
+            schedule(inputs, Scenario(1_000_000_000, 'RECONSTRUCTED', Path(__file__), 'a8w8-d16-hp1'))
 
     def test_cpu_units_when_selected_metric_invalid(self) -> None:
         with self.assertRaisesRegex(ExecutionError, 'substitution forbidden'):

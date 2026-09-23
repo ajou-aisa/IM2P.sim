@@ -16,7 +16,7 @@ from sim.cycle.execution_services import NpuProvider, Services, parse_services
 from sim.cycle.npu_trace import snapshot_inputs, verify_input_snapshots
 from sim.cycle.npu_trace_schema import Record, object_value, unique_pairs
 from sim.cycle.reconstruct_graph import sha256
-from sim.cycle.scheduler import Scenario, ServiceExecutor, rational, scheduled_record, validate_environment
+from sim.cycle.scheduler import Scenario, ServiceExecutor, rational, scheduled_record, service_binding, validate_environment
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,11 @@ class SqliteScheduleInputs:
 
 def _document(body: str) -> Record:
     return object_value(json.loads(body, object_pairs_hook=unique_pairs))
+
+
+def _same_record(actual: Record, expected: Record) -> bool:
+    return (json.dumps(actual, sort_keys=True, separators=(',', ':'), allow_nan=False) ==
+            json.dumps(expected, sort_keys=True, separators=(',', ':'), allow_nan=False))
 
 
 def _node(body: str) -> Node:
@@ -73,7 +78,8 @@ def _fire(database: sqlite3.Connection, identity: str, milestone: str) -> None:
                       '(SELECT node FROM ir.edges WHERE parent=? AND milestone=?)', (identity, milestone))
 
 
-def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs) -> Record:
+def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
+         observed: sqlite3.Connection | None = None) -> Record:
     manifest_row = database.execute("SELECT body FROM ir.metadata WHERE key='manifest'").fetchone()
     ensure(manifest_row is not None, 'missing SQLite execution manifest')
     manifest = _document(str(manifest_row[0]))
@@ -117,8 +123,14 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs) -> Record:
                'SQLite service identity mismatch')
         completed = engine.execute(node, services, now)
         database.execute('UPDATE state SET started=1 WHERE identity=?', (node.identity,))
-        database.execute('INSERT INTO results VALUES(?,?,?)',
-                          (node.identity, finished, json.dumps(scheduled_record(completed), separators=(',', ':'))))
+        record = scheduled_record(completed)
+        if observed is None:
+            database.execute('INSERT INTO results VALUES(?,?,?)',
+                             (node.identity, finished, json.dumps(record, separators=(',', ':'))))
+        else:
+            actual = observed.execute('SELECT identity,body FROM results WHERE ordinal=?', (finished,)).fetchone()
+            ensure(actual is not None and actual[0] == node.identity and _same_record(_document(str(actual[1])), record),
+                   'SQLite schedule node/endpoint mismatch')
         for milestone in Milestone:
             epoch = completed.milestone(milestone)
             if epoch <= now:
@@ -130,9 +142,21 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs) -> Record:
         finished += 1
         if finished % 10_000 == 0:
             ensure(len(events) <= 16384, 'scenario exceeds bounded concurrent event capacity')
+    if inputs.scenario.scope == 'RECONSTRUCTED':
+        from sim.cycle.execution_cycle_provider import CycleServiceProvider
+        ensure(isinstance(inputs.provider, CycleServiceProvider) and
+               inputs.provider.completed == set(inputs.provider.requests),
+               'scheduled NPU work does not equal bound trace work')
+    from sim.cycle.execution_cycle_provider import CycleServiceProvider
+    library_sha256 = sha256(inputs.provider.library) if isinstance(inputs.provider, CycleServiceProvider) else None
     return {'schema': 'im2p-execution-schedule-sqlite', 'version': 1, 'scope': inputs.scenario.scope,
             'node_count': count, 'completion_ns': rational(result_end), 'resource_completion_ns': rational(resource_end),
-            'service_validation_scope': inputs.provider.validation_scope, 'paper_latency_ready': False,
+            'service_validation_scope': inputs.provider.validation_scope,
+            'service_binding': service_binding(inputs.provider, inputs.scenario),
+            'cycle_library_sha256': library_sha256,
+            'clock_selection_sha256': sha256(inputs.scenario.clock_artifact)
+                                      if inputs.scenario.clock_artifact is not None else None,
+            'paper_latency_ready': False,
             'time_unit': 'nanosecond-rational', 'queue_policy': 'READY_ORDER_THEN_ID',
             'clock_alignment': 'CEIL_TO_NPU_EDGE', 'worker_policy': 'EXPLICIT_GANG_VECTOR',
             'validated_service_reconstruction': inputs.scenario.scope == 'RECONSTRUCTED'}
@@ -154,6 +178,26 @@ def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) ->
         verify_input_snapshots(snapshots, 'SQLite scheduling')
         os.link(staged, output)
     return summary
+
+
+def verify_schedule_sqlite(source: Path, schedule_path: Path, inputs: SqliteScheduleInputs) -> str:
+    source_digest, schedule_digest = sha256(source), sha256(schedule_path)
+    with tempfile.TemporaryDirectory(prefix='verify-schedule-') as temporary:
+        staged = Path(temporary) / 'state.sqlite'
+        with (closing(sqlite3.connect(staged)) as database,
+              closing(sqlite3.connect(schedule_path.resolve(strict=True).as_uri() + '?mode=ro', uri=True)) as observed):
+            database.execute('ATTACH DATABASE ? AS ir', (source.resolve(strict=True).as_uri() + '?mode=ro',))
+            observed.execute('BEGIN')
+            summary = _run(database, inputs, observed)
+            summary['input_sqlite_sha256'] = source_digest
+            row = observed.execute("SELECT body FROM metadata WHERE key='manifest'").fetchone()
+            ensure(row is not None and _same_record(_document(str(row[0])), summary),
+                   'SQLite schedule service/clock/source binding mismatch')
+            count = observed.execute('SELECT COUNT(*) FROM results').fetchone()[0]
+            ensure(count == summary['node_count'], 'SQLite schedule node coverage mismatch')
+    ensure(sha256(source) == source_digest and sha256(schedule_path) == schedule_digest,
+           'SQLite source or schedule changed during verification')
+    return schedule_digest
 
 
 def read_schedule_node(path: Path, identity: str) -> Record:

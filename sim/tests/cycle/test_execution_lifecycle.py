@@ -120,5 +120,79 @@ class ForcedLifecycleTests(unittest.TestCase):
                 validate_forced_lifecycle(json_records(root / 'forced.jsonl'), read_manifest(root / 'graph.jsonl'), tokens)
 
 
+class PipelineLifecycleTests(unittest.TestCase):
+    def test_pipeline_owners_are_preserved_with_source_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_rows(root / 'graph.jsonl', paired_graphs())
+            graph = read_manifest(root / 'graph.jsonl')
+            events: list[Record] = [
+                {'kind': 'RUN', 'source_role': 'potal_collection', 'source_commit': 'candidate',
+                 'expected_samples': 2, 'execution_policy': 'blocking-llama-decode-synchronize-v1',
+                 'graph_policy': 'semantic-session-completes-before-next-graph-v1',
+                 'operation_exit_policy': 'ALL_MEMBER_COMPLETIONS',
+                 'target_mode_scope': 'STRIPE_PIPELINE_ONLY',
+                 'actual_rtl_acceptance_in_collection': 'NOT_APPLICABLE',
+                 'producer_ownership_source': 'CPU_FUNCTIONAL',
+                 'workspace_slot_domain': 'EXSIA_SCRATCH',
+                 'target_npu_slot_domain': 'UNDECLARED',
+                 'requires_binary_manifest_binding': True},
+                {'kind': 'PHASE', 'phase_kind': 'prefill', 'decode_index': None,
+                 'graph_begin': 0, 'phase_ordinal': 0},
+                {'kind': 'REQUEST_START', 'request_id': 0, 'phase_kind': 'prefill',
+                 'decode_index': None, 'graph_begin': 0},
+                {'kind': 'PREFILL_BATCH_READY', 'batch_index': 0, 'dispatch_id': 0,
+                 'graph_begin': 0, 'phase_kind': 'prefill', 'decode_index': None},
+                {'kind': 'DISPATCH_BEGIN', 'dispatch_id': 0, 'graph_begin': 0,
+                 'phase_kind': 'prefill', 'decode_index': None},
+                {'kind': 'DISPATCH_END', 'dispatch_id': 0, 'graph_end': 1, 'status': 0,
+                 'synchronized': True, 'phase_kind': 'prefill', 'decode_index': None},
+                {'kind': 'SAMPLE', 'sample_index': 0, 'token_id': 41, 'graph_end': 1,
+                 'dispatch_id': 0, 'token_ready': True, 'phase_kind': 'prefill', 'decode_index': None},
+                {'kind': 'PHASE', 'phase_kind': 'decode', 'decode_index': 0,
+                 'graph_begin': 1, 'phase_ordinal': 1},
+                {'kind': 'DISPATCH_BEGIN', 'dispatch_id': 1, 'graph_begin': 1,
+                 'phase_kind': 'decode', 'decode_index': 0},
+                {'kind': 'DISPATCH_END', 'dispatch_id': 1, 'graph_end': 2, 'status': 0,
+                 'synchronized': True, 'phase_kind': 'decode', 'decode_index': 0},
+                {'kind': 'SAMPLE', 'sample_index': 1, 'token_id': 42, 'graph_end': 2,
+                 'dispatch_id': 1, 'token_ready': True, 'phase_kind': 'decode', 'decode_index': 0},
+                {'kind': 'PIPELINE_PARENT', 'phase_id': 0, 'operation_id': 5, 'parent_id': 3,
+                 'required_work_ids': [10], 'production_geometry_version': 1,
+                 'activation_bits': 8, 'weight_bits': 8, 'dim': 16,
+                 'parent_m': 3, 'n': 4, 'k': 32, 'tile_i_count': 1,
+                 'tile_j_count': 1, 'tile_k_count': 1, 'scope': 'STREAM',
+                 'fence_call_id': 11, 'fence_required_work_ids': [10],
+                 'residual_bindings': []},
+                {'kind': 'PIPELINE_OWNER', 'producer_sequence': 0, 'phase_id': 0,
+                 'operation_id': 5, 'parent_id': 3, 'work_id': 10,
+                 'producer_run_id': 42, 'stripe_id': 0, 'workspace_slot': 0,
+                 'target_npu_slot': None, 'row_begin': 0, 'row_end': 3,
+                 'resource': 'FRONTEND_QUEUE', 'transition': 'ENQUEUE',
+                 'required_work_ids': [], 'required_call_ids': [],
+                 'observed_call_id': None, 'source_owner': 'IM2P.sim',
+                 'rmd_packet': False, 'direct_residual': False,
+                 'source_location': 'test-producer'},
+                {'kind': 'RUN_END', 'success': True, 'samples': 2,
+                 'phases': 2, 'dispatches': 2, 'graphs': 2},
+            ]
+            for sequence, event in enumerate(events):
+                event.update(schema='potal-execution-lifecycle', version=3, sequence=sequence)
+            projection = project_lifecycle(events, graph)
+            self.assertEqual(projection.pipeline_parents[0]['parent_id'], 3)
+            self.assertEqual(projection.pipeline_owners[0]['producer_sequence'], 0)
+            from sim.cycle.execution_lifecycle_cli import producer_payload
+            from sim.cycle.execution_pipeline_contract import OWNER_FIELDS, PARENT_FIELDS
+            self.assertEqual(set(producer_payload(projection.pipeline_parents[0])), PARENT_FIELDS)
+            self.assertEqual(set(producer_payload(projection.pipeline_owners[0])), OWNER_FIELDS)
+            self.assertEqual(projection.prefill_steps, [{'batch_index': 0, 'dispatch_id': 0, 'graph_begin': 0}])
+            self.assertEqual(projection.expected_samples, 2)
+            missing_start = [dict(event) for event in events if event['kind'] != 'REQUEST_START']
+            for sequence, event in enumerate(missing_start):
+                event['sequence'] = sequence
+            with self.assertRaisesRegex(ValueError, 'preparation boundary'):
+                project_lifecycle(missing_start, graph)
+
+
 if __name__ == '__main__':
     unittest.main()

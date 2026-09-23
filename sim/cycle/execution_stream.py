@@ -14,6 +14,7 @@ from sim.cycle.certificate_contract import read_document
 from sim.cycle.execution_adapter import AdapterFiles, validate_lifecycle_contract
 from sim.cycle.execution_application import ApplicationSource, project_application
 from sim.cycle.execution_ir import Dependency, Kind, Milestone, Node, NodeId, ResourceId, ServiceId, ensure, node_record
+from sim.cycle.execution_pipeline import project_pipeline
 from sim.cycle.execution_services import NpuWork, Services, bind_cpu_resource, cpu_service, services_record
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, json_records, sha256
@@ -73,11 +74,18 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
     for path, expected in ((files.dataset, contract['dataset_sha256']), (files.npu_results, contract['npu_results_sha256'])):
         ensure(sha256(path) == expected, 'lifecycle input binding mismatch')
     operations: dict[str, Record] = {}
+    pipeline_rows: dict[str, Record] = {}
     for row in json_records(files.dataset):
         if row['kind'] == 'OPERATION_CONTAINER':
             identity = text(row, 'node_id')
             ensure(identity not in operations, 'duplicate operation container')
             operations[identity] = row
+        if contract['version'] == 2 and (row['kind'] == 'CALL_BOUNDARY' or row.get('node_class') == 'TARGET_NPU'):
+            identity = text(row, 'node_id')
+            ensure(identity not in pipeline_rows, 'duplicate pipeline structural node')
+            pipeline_rows[identity] = row
+    if contract['version'] == 2:
+        pipeline_rows.update(operations)
     entry = object_value(contract['entry_dependencies'])
     ensure(bool(operations) and set(entry) == set(operations), 'phase/graph entry coverage mismatch')
     resources = object_value(contract['worker_resources'])
@@ -85,17 +93,22 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
     ensure(len(set(submission)) == len(submission), 'duplicate submission order')
     order = {identity: index for index, identity in enumerate(submission)}
     slots = object_value(contract['call_slots'])
-    ensure(all(value is None for value in slots.values()), 'streaming production adapter currently supports FULL only')
+    ensure(all(value is None for value in slots.values()), 'ExSIA workspace is not a target NPU slot')
     results: dict[str, NpuWork] = {}
+    result_rows: dict[str, Record] = {}
     calls: set[str] = set()
     for row in json_records(files.npu_results):
-        ensure(row.get('scope') in ('full', 'residual_compact') and row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
+        ensure(row.get('scope') in (('full', 'residual_compact', 'stripe') if contract['version'] == 2
+                                    else ('full', 'residual_compact')) and
+               row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
                'certified FULL/run-aware NPU results required')
         identity, call = 'npu:' + str(integer(row, 'work_id')), str(integer(row, 'call_id'))
         ensure(identity not in results and call not in calls, 'duplicate work/call result')
         results[identity] = NpuWork(ServiceId(identity), text(row, 'run_view_sha256'), text(row, 'profile'))
+        result_rows[identity] = row
         calls.add(call)
     ensure(set(results) == set(submission) and calls == set(slots), 'NPU result/submission/call coverage mismatch')
+    pipeline = project_pipeline(contract, pipeline_rows, result_rows) if contract['version'] == 2 else None
 
     def edge(value: JsonValue) -> Dependency:
         identity = text({'id': value}, 'id')
@@ -127,9 +140,10 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
                 service, claims, priority, service_record = None, (), 0, None
                 match row['kind']:
                     case 'CALL_BOUNDARY':
-                        ensure(row.get('call_kind') != 'STRIPE' and row.get('stage') != 'PUBLISH',
+                        ensure(pipeline is not None or
+                               (row.get('call_kind') != 'STRIPE' and row.get('stage') != 'PUBLISH'),
                                'PIPELINE requires verified target slot/fence lifecycle')
-                        kind = Kind.BARRIER
+                        kind = Kind.PUBLISH if row.get('stage') == 'PUBLISH' else Kind.BARRIER
                     case 'SERVICE':
                         match row['node_class']:
                             case 'ORDINARY_CPU' | 'POTAL_HOST':
@@ -161,7 +175,9 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
                     case _:
                         ensure(False, 'unsupported structural record')
                         kind = Kind.EXCLUDED
-                store.add(Node(NodeId(identity), kind, operation, phase, priority, dependencies, service, claims), service_record)
+                store.add(Node(NodeId(identity), kind, operation, phase, priority,
+                               pipeline.edges(identity, dependencies) if pipeline is not None else dependencies,
+                               service, claims), service_record)
                 store.edges(NodeId(operation + ':exit'), (Dependency(NodeId(identity)),))
                 members[operation] += 1
                 counts[str(row['node_class']) if row['kind'] == 'SERVICE' else 'STRUCTURAL'] += 1
@@ -169,6 +185,11 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
                     ensure(shutil.disk_usage(output.parent).free >= 256 * 1024 * 1024, 'execution IR storage reserve exhausted')
             ensure(set(members) == set(operations), 'operation without final completion members')
             ensure(counts['TARGET_NPU'] == len(results), 'unused NPU service results')
+            if pipeline is not None:
+                for node in pipeline.nodes:
+                    store.add(node)
+                    store.edges(NodeId(node.operation + ':exit'), (Dependency(node.identity),))
+                    counts['STRUCTURAL'] += 1
             for value in array(contract['barriers']):
                 row = object_value(value)
                 identity = NodeId(text(row, 'node_id'))

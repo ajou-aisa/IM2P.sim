@@ -44,6 +44,7 @@ class Calls:
         self.operation_works: dict[int, set[int]] = {}
         self.call_operations: dict[int, int] = {}
         self.parent_operations: dict[int, int] = {}
+        self.host_declared_parents: set[int] = set()
 
     def stage(self, record: Record) -> None:
         identity, operation, node = (integer(record, key) for key in ('call_id', 'operation_id', 'node_id'))
@@ -65,6 +66,7 @@ class Calls:
         if parent is not None:
             require(self.parent_operations.get(parent, operation) == operation, 'parent has multiple operations')
             self.parent_operations[parent] = operation
+            self.host_declared_parents.discard(parent)
         require(stage not in call.stages and (not call.stages or ORDER.index(stage) > ORDER.index(call.stages[-1])),
                 'duplicate or reordered NPU call stage')
         require(stage in ('PREPARE', 'INVOKE') or 'INVOKE' in call.stages, 'call stage before INVOKE')
@@ -106,6 +108,8 @@ class Calls:
 
     def operation_complete(self, identity: int) -> None:
         require(not any(call.operation == identity for call in self.active.values()), 'operation has unfinished NPU call')
+        require(not any(self.parent_operations.get(parent) == identity for parent in self.host_declared_parents),
+                'host-declared parent has no NPU call')
         for work in self.operation_works.pop(identity, set()):
             del self.work_operations[work]
         self.call_operations = {key: owner for key, owner in self.call_operations.items() if owner != identity}

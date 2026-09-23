@@ -1,0 +1,16 @@
+{
+  "schema": "im2p-cycle-corpus-authority",
+  "version": 4,
+  "revision": "cycle-sim-0e1-metrics-guard-base-gemm-v4",
+  "v3_manifest_sha256": "7add3fd188167e11e047f36647e0a28ea567ef8a7dcc3f6c28971c58bac5bb18",
+  "producer_base_head": "0e1c8976d97887ac9494323b99643145e7b5abae",
+  "dependency_lock_sha256": "95b38da593920ff79243ee11de1d900506856ea638340d3965c937f3d27f3d93",
+  "source_manifest_sha256": "0d04ae5a08428d41d8aaa225f84a5627388822877faf087e52336caef2d09952",
+  "embedded_package_authority_sha256": "7add3fd188167e11e047f36647e0a28ea567ef8a7dcc3f6c28971c58bac5bb18",
+  "producer_source_delta": {
+    "path": "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.cpp",
+    "previous_sha256": "1b3f95ba2ba1f54dffd104422e384352bf04bbd4dc1dac41c99eb7d88e97b6d0",
+    "sha256": "c5c17d819a48129c617ace2fc4aa8c10cd824f1d88dfadb877a84840c784f0c1",
+    "excluded_when": "GGML_GEMMINI_RESIDUAL_METRICS=0"
+  }
+}

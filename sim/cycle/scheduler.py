@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from fractions import Fraction
 from math import ceil
 from pathlib import Path
@@ -49,6 +49,7 @@ class ScheduleResult:
     nodes: tuple[ScheduledNode, ...]
     scope: str
     service_validation_scope: str
+    service_binding: Record
 
     @property
     def by_id(self) -> dict[NodeId, ScheduledNode]:
@@ -57,6 +58,7 @@ class ScheduleResult:
     def record(self) -> Record:
         return {'schema': 'im2p-execution-schedule', 'version': 1, 'scope': self.scope,
                 'service_validation_scope': self.service_validation_scope,
+                'service_binding': self.service_binding,
                 'time_unit': 'nanosecond-rational', 'queue_policy': 'READY_ORDER_THEN_ID',
                 'clock_alignment': 'CEIL_TO_NPU_EDGE', 'worker_policy': 'EXPLICIT_GANG_VECTOR',
                 'paper_latency_ready': False,
@@ -83,12 +85,25 @@ def validate_environment(scope: str, provider: NpuProvider, scenario: Scenario) 
     if scenario.scope == 'RECONSTRUCTED':
         if scenario.clock_artifact is None:
             raise ExecutionError('validated clock artifact required')
-        ensure(provider.validation_scope == 'CURRENT_CERTIFIED_SEQUENCE',
-               'current-source phase/state-aware service boundary proof required')
+        from sim.cycle.execution_cycle_provider import CycleServiceProvider
+        if not isinstance(provider, CycleServiceProvider) or provider.admission is None:
+            raise ExecutionError('validated current-source drained-sequence service certificate required')
         ensure(scope == 'BOUND_DATASET', 'real reconstruction requires bound dataset')
+        ensure(provider.admission.profile == scenario.profile and
+               provider.admission.work_count == len(provider.requests),
+               'service certificate profile/work coverage differs from schedule')
         from scripts.evaluation_clock import load_selection
         selection = load_selection(scenario.clock_artifact, scenario.profile)
         ensure(selection.frequency_hz == scenario.npu_frequency_hz, 'clock frequency mismatch')
+
+
+def service_binding(provider: NpuProvider, scenario: Scenario) -> Record:
+    if scenario.scope == 'SYNTHETIC':
+        return {'scope': 'SYNTHETIC_ONLY'}
+    from sim.cycle.execution_cycle_provider import CycleServiceProvider
+    if not isinstance(provider, CycleServiceProvider) or provider.admission is None:
+        raise ExecutionError('certified service binding required')
+    return {'scope': 'CURRENT_CERTIFIED_SEQUENCE', **asdict(provider.admission)}
 
 
 def _gate(inputs: ScheduleInputs, scenario: Scenario) -> None:
@@ -176,4 +191,10 @@ def schedule(inputs: ScheduleInputs, scenario: Scenario) -> ScheduleResult:
         if not started:
             ensure(bool(future), 'execution stalled: unresolved causal/resource dependency')
             now = min(future)
-    return ScheduleResult(tuple(completed.values()), scenario.scope, inputs.npu_provider.validation_scope)
+    if scenario.scope == 'RECONSTRUCTED':
+        from sim.cycle.execution_cycle_provider import CycleServiceProvider
+        ensure(isinstance(inputs.npu_provider, CycleServiceProvider) and
+               inputs.npu_provider.completed == set(inputs.npu_provider.requests),
+               'scheduled NPU work does not equal bound trace work')
+    return ScheduleResult(tuple(completed.values()), scenario.scope,
+                          inputs.npu_provider.validation_scope, service_binding(inputs.npu_provider, scenario))

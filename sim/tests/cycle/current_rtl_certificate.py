@@ -353,7 +353,7 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
     source_root = llama_source['root']
     if not isinstance(source_root, str) or not source_root:
         raise ValueError('current candidate llama source root missing')
-    reviewed = authority('v3', fixture_root=ROOT, llama_root=Path(source_root))
+    reviewed = authority('v4', fixture_root=ROOT, llama_root=Path(source_root))
     source_manifest = Path(source_root).parents[2] / 'source-manifest.json'
     if (not source_manifest.is_file() or
             hashlib.sha256(source_manifest.read_bytes()).hexdigest() != llama_source['source_manifest_sha256']):
@@ -417,7 +417,7 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
               'rtl_build_bindings': bindings,
-              'llama_source': llama_source, 'corpus_authority': authority_reference('v3'),
+              'llama_source': llama_source, 'corpus_authority': authority_reference('v4'),
               'hardware_contracts': {name: binding['hardware_contract'] for name, binding in bindings.items()},
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}

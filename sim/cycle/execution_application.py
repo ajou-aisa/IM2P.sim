@@ -23,10 +23,15 @@ class ApplicationProjection:
 
 def project_application(available: dict[NodeId, Kind], source: ApplicationSource) -> ApplicationProjection:
     contract = source.contract
-    fields(contract, {'sha256', 'sampler_policy', 'resource', 'metric_policy', 'expected_samples', 'steps'})
+    prefill = 'prefill_steps' in contract
+    fields(contract, {'sha256', 'sampler_policy', 'resource', 'metric_policy', 'expected_samples', 'steps'} |
+           ({'prefill_steps'} if prefill else set()))
     ensure(contract['sampler_policy'] == 'SINGLE_CALLING_THREAD', 'unsupported sampler worker contract')
     count = integer(contract, 'expected_samples')
-    ensure(count > 0 and len(source.records) == count, 'application sample coverage mismatch')
+    samples = [record for record in source.records if record.get('stage') == 'sample_accept']
+    preps = [record for record in source.records if record.get('stage') == 'prefill_batch_prepare']
+    ensure(count > 0 and len(samples) == count and len(samples) + len(preps) == len(source.records),
+           'application sample coverage mismatch')
     steps = [object_value(raw) for raw in array(contract['steps'])]
     ensure(len(steps) == count, 'application dependency coverage mismatch')
     nodes: dict[NodeId, Node] = {}
@@ -34,8 +39,40 @@ def project_application(available: dict[NodeId, Kind], source: ApplicationSource
     entry_edges: dict[NodeId, tuple[Dependency, ...]] = {}
     worker = ResourceId(text(contract, 'resource'))
     threads: set[int] = set()
-    for index, (record, step) in enumerate(zip(source.records, steps, strict=True)):
-        ensure(record.get('schema') == 'potal-application-cpu' and integer(record, 'version') == 1 and
+    if prefill:
+        prefill_steps = [object_value(raw) for raw in array(contract['prefill_steps'])]
+        ensure(bool(prefill_steps) and len(prefill_steps) == len(preps) and
+               tuple(preps) == source.records[:len(preps)], 'application prefill coverage mismatch')
+        request = NodeId('application:request:begin')
+        ensure(available.get(request) == Kind.BARRIER, 'application request-start barrier missing')
+        previous: NodeId = request
+        for index, (record, step) in enumerate(zip(preps, prefill_steps, strict=True)):
+            fields(step, {'batch_index', 'dispatch_id', 'graph_begin'})
+            dispatch = integer(step, 'dispatch_id')
+            ensure(integer(step, 'batch_index') == index and
+                   integer(record, 'batch_index') == index and integer(record, 'dispatch_id') == dispatch and
+                   integer(step, 'graph_begin') >= 0 and
+                   record.get('schema') == 'potal-application-cpu' and integer(record, 'version') == 2 and
+                   integer(record, 'thread_id') >= 0 and
+                   record.get('source_role') == 'potal_collection' and
+                   record.get('sample_index') is None and record.get('token_id') is None and
+                   record.get('phase') == 'prefill' and record.get('decode_index') is None,
+                   'application prefill identity mismatch')
+            begin, end = NodeId(f'dispatch:{dispatch}:begin'), NodeId(f'dispatch:{dispatch}:end')
+            ensure(available.get(begin) == Kind.BARRIER and available.get(end) == Kind.BARRIER,
+                   'application prefill dispatch barriers missing')
+            prep = NodeId(f'application:prefill-prep:{dispatch}')
+            ensure(prep not in nodes and prep not in available, 'duplicate application prefill service')
+            cpu[ServiceId(prep)] = cpu_service({'source': 'APPLICATION_CPU', 'policy': contract['metric_policy'],
+                                               'workers': [{**record, 'worker_id': 0, 'resource': worker}]})
+            nodes[prep] = Node(prep, Kind.APPLICATION_CPU, prep, 'prefill:None', dispatch,
+                               (Dependency(previous),), ServiceId(prep), (worker,))
+            entry_edges[begin] = (Dependency(prep),)
+            previous = end
+    else:
+        ensure(not preps and len(source.records) == count, 'application sample coverage mismatch')
+    for index, (record, step) in enumerate(zip(samples, steps, strict=True)):
+        ensure(record.get('schema') == 'potal-application-cpu' and integer(record, 'version') == (2 if prefill else 1) and
                record.get('source_role') == 'potal_collection' and record.get('stage') == 'sample_accept',
                'PoTal sampling source required')
         ensure(integer(record, 'sample_index') == index, 'duplicate/gapped application sample identity')
