@@ -35,6 +35,19 @@ class Code(IntEnum):
     FAULTED = -6
 
 
+class StopReason(IntEnum):
+    NONE = 0
+    TARGET = 1
+    WORK_BUDGET = 2
+    SESSION_BUDGET = 3
+    FAULT = 4
+    REPORT_BUFFER = 5
+    EVENT_BUFFER_AVAILABLE = 6
+    EVENT_BURST = 7
+    REPORT_AVAILABLE = 8
+    SOFT_BUDGET = 9
+
+
 @dataclass(frozen=True, slots=True)
 class SequenceError(Exception):
     code: Code
@@ -194,6 +207,7 @@ def bind(lib: C.CDLL) -> None:
         "reset": ([C.c_void_p], C.c_int),
         "offer": ([C.c_void_p, C.POINTER(Descriptor), U64], C.c_int),
         "advance_until": ([C.c_void_p, U64], C.c_int),
+        "advance_to_boundary": ([C.c_void_p, U64, U64], C.c_int),
         "get_status": ([C.c_void_p, C.POINTER(Status)], C.c_int),
         "get_tag_state": ([C.c_void_p, C.POINTER(TagState)], C.c_int),
         "get_row_pressure": ([C.c_void_p, C.POINTER(RowPressure)], C.c_int),

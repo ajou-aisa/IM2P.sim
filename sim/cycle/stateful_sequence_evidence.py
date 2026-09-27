@@ -33,6 +33,7 @@ class EvidenceContext:
     run_aware_parent: Path
     service_parent: Path
     current_evidence_input: Path | None = None
+    domain_delta_input: Path | None = None
 
 
 class StatefulCertificateError(ValueError):

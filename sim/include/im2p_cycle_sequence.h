@@ -42,7 +42,9 @@ typedef enum im2p_cycle_sequence_stop_reason {
   IM2P_CYCLE_SEQUENCE_STOP_FAULT = 4,
   IM2P_CYCLE_SEQUENCE_STOP_REPORT_BUFFER = 5,
   IM2P_CYCLE_SEQUENCE_STOP_EVENT_BUFFER_AVAILABLE = 6,
-  IM2P_CYCLE_SEQUENCE_STOP_EVENT_BURST = 7
+  IM2P_CYCLE_SEQUENCE_STOP_EVENT_BURST = 7,
+  IM2P_CYCLE_SEQUENCE_STOP_REPORT_AVAILABLE = 8,
+  IM2P_CYCLE_SEQUENCE_STOP_SOFT_BUDGET = 9
 } im2p_cycle_sequence_stop_reason_t;
 
 typedef struct im2p_cycle_sequence_config {
@@ -247,6 +249,14 @@ int im2p_cycle_sequence_offer(
    consumed before the next pending work accepts on that edge. */
 int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
                                       uint64_t until_cycle);
+/* Uses the same half-open edge interval as advance_until, but returns as soon
+   as a completed report is available or max_steps committed edges have run.
+   max_steps must be positive. REPORT_AVAILABLE returns OK without processing
+   the report's resource-ready edge; SOFT_BUDGET returns INCOMPLETE and is
+   resumable. Existing hard limits and event backpressure retain their codes. */
+int im2p_cycle_sequence_advance_to_boundary(
+    im2p_cycle_sequence_t *sequence, uint64_t until_cycle,
+    uint64_t max_steps);
 int im2p_cycle_sequence_get_status(const im2p_cycle_sequence_t *sequence,
                                    im2p_cycle_sequence_status_t *status);
 int im2p_cycle_sequence_get_tag_state(

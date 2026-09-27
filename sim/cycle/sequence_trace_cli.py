@@ -15,11 +15,23 @@ from pathlib import Path
 from scripts.gemmini_replay_contract import compatible, hardware_contract
 from scripts.gemmini_resolve_profile import BuildFailure
 from sim.cycle import sequence_binding
+from sim.cycle.certificate_contract import read_document
 from sim.cycle.cli import RESULT_FIELDS
 from sim.cycle.npu_trace_integrity import read_records, start_trace
-from sim.cycle.npu_trace_schema import VERSION, NpuTraceError, Work, require
+from sim.cycle.npu_trace_schema import (
+    VERSION,
+    NpuTraceError,
+    Work,
+    object_value,
+    require,
+)
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.sequence_binding import Code, SequenceSession, Settings
+from sim.cycle.sequence_domain import LEGACY_REVISION, profile_domain
+from sim.cycle.stateful_sequence_certificate import (
+    validate as validate_stateful_certificate,
+)
+from sim.cycle.stateful_sequence_evidence import EvidenceContext
 
 MAX_WORK_CYCLES, MAX_SESSION_CYCLES = 10_000_000, 1_000_000_000
 RESULT_SCHEMA = "im2p-sequence-trace-result"
@@ -30,7 +42,12 @@ SOURCE_NAMES = ("sim/cycle/sequence_binding.py", "sim/cycle/sequence_binding_abi
                 "sim/cycle/npu_trace_integrity.py", "sim/cycle/npu_trace_schema.py",
                 "sim/cycle/npu_trace_calls.py", "sim/cycle/npu_trace_hosts.py",
                 "sim/cycle/npu_trace_runs.py", "scripts/gemmini_replay_contract.py",
-                "scripts/gemmini_resolve_profile.py", "sim/cycle/sequence_trace_cli.py")
+                "scripts/gemmini_resolve_profile.py", "sim/cycle/sequence_trace_cli.py",
+                "sim/cycle/sequence_domain.py", "sim/cycle/stateful_sequence_certificate.py",
+                "sim/cycle/stateful_sequence_evidence.py", "sim/cycle/stateful_sequence_evidence_v2.py",
+                "sim/cycle/stateful_sequence_evidence_tag5.py",
+                "sim/cycle/stateful_sequence_evidence_equivalence.py",
+                "sim/tests/cycle/compositional_sequence_bounded.py")
 
 
 def publish(path: Path, value: dict[str, object]) -> None:
@@ -45,6 +62,33 @@ def source_hashes(root: Path) -> dict[str, str]:
 
 def verify_source_hashes(root: Path, expected: dict[str, str]) -> None:
     require(source_hashes(root) == expected, "Python source changed")
+
+
+def validated_domain(args: argparse.Namespace) -> tuple[str, str | None]:
+    certificate = getattr(args, "stateful_sequence_certificate", None)
+    evidence_root = getattr(args, "stateful_evidence_root", None)
+    require((certificate is None) == (evidence_root is None),
+            "stateful certificate and evidence root must be supplied together")
+    if certificate is None:
+        return LEGACY_REVISION, None
+    if not isinstance(evidence_root, Path):
+        raise NpuTraceError("stateful evidence root must be a path")
+    document = read_document(certificate)
+    parents = object_value(document["parents"])
+    context = EvidenceContext(
+        evidence_root, Path(str(object_value(document["library"])["path"])),
+        Path(str(object_value(document["shared_library"])["path"])),
+        Path(str(object_value(parents["base"])["path"])),
+        Path(str(object_value(parents["run_aware"])["path"])),
+        Path(str(object_value(parents["service"])["path"])),
+        Path(str(object_value(document["evidence_input"])["path"])),
+        (Path(str(object_value(object_value(object_value(document["domain_delta"])["artifacts"])
+                              ["input"])["path"])) if document["version"] == 3 else None),
+    )
+    require(args.library.resolve(strict=True) == context.shared_library.resolve(strict=True),
+            "native library differs from stateful certificate")
+    scoped = validate_stateful_certificate(certificate, context)
+    return scoped.state_domain_revision, scoped.certificate_sha256
 
 
 def load_trace(path: Path) -> tuple[str, tuple[Work, ...], str]:
@@ -93,7 +137,11 @@ def completed_domain_failure(status: sequence_binding.Status,
                              domain: sequence_binding.DomainSnapshot,
                              rows: sequence_binding.RowPressure,
                              report: sequence_binding.Report,
-                             work_id: int, offered: int) -> dict[str, object] | None:
+                             work_id: int, offered: int, *,
+                             profile: str = "a8w8-d16-hp1",
+                             domain_revision: str = LEGACY_REVISION) -> dict[str, object] | None:
+    limits = profile_domain(profile, domain_revision)
+    tag_predicate = "tag_peak_le_four" if limits.max_tag_occupancy == 4 else "tag_peak_le_five"
     checks = {
         "generation": (status.generation, domain.generation, report.generation) == (1, 1, 1),
         "cursor": status.cursor == domain.cursor == report.resource_ready_cycle,
@@ -107,7 +155,7 @@ def completed_domain_failure(status: sequence_binding.Status,
         "active_zero": status.has_active == 0,
         "faulted_zero": status.faulted == 0,
         "ready_violation_zero": domain.ready_violation_mask == 0,
-        "tag_peak_le_four": domain.max_tag_occupancy <= 4,
+        tag_predicate: domain.max_tag_occupancy <= limits.max_tag_occupancy,
         "logical_work_count_one": report.counters.logical_work_count == 1,
         "row_generation": rows.generation == domain.generation,
         "row_cursor": rows.cursor == domain.cursor,
@@ -133,11 +181,14 @@ def completed_domain_failure(status: sequence_binding.Status,
         "logical_work_count": report.counters.logical_work_count,
     }
     return {"status": "FAILED", "scope": "DIAGNOSTIC_ACTUAL_TRACE", "production_admitted": False,
+            "native_counters": {name: getattr(report.counters, name) for name in RESULT_FIELDS},
+            "domain_snapshot_hex": bytes(domain).hex(), "row_pressure_hex": bytes(rows).hex(),
             "classification": "OUTSIDE_REVIEWED_STATE_DOMAIN" if
-            set(failed) <= {"tag_peak_le_four", "row_peak_lt_six"} else "NATIVE_COMPLETED_REPORT_MISMATCH",
+            set(failed) <= {tag_predicate, "row_peak_lt_six"} else "NATIVE_COMPLETED_REPORT_MISMATCH",
             "failed_predicates": failed, "predicates": checks, "observed": observed,
             "domain_scope": {"implemented": "native completed report observed; queue capacity six is not validation permission",
-                             "reviewed": "tag_peak<=4, sticky row_peak<6 and boundary consistency checks",
+                             "reviewed": f"tag_peak<={limits.max_tag_occupancy}, sticky row_peak<6 and boundary consistency checks",
+                             "state_domain_revision": domain_revision,
                              "rtl_exactness_for_this_trace": "NOT_ESTABLISHED"}}
 
 
@@ -151,6 +202,7 @@ def replay(args: argparse.Namespace) -> int:
     publish(args.output / "progress.json", progress)
     validation_start = time.monotonic()
     profile, works, trace_digest = load_trace(args.trace)
+    domain_revision, domain_certificate_sha256 = validated_domain(args)
     validation_seconds = time.monotonic() - validation_start
     chosen = selected_works(works, args.through_parent_index, args.pilot_work_count)
     require(args.expected_work_count in (None, len(chosen)), "expected-work-count differs")
@@ -158,6 +210,8 @@ def replay(args: argparse.Namespace) -> int:
     source_root = Path(__file__).resolve().parents[2]
     sources = source_hashes(source_root)
     progress.update(profile=profile, trace_sha256=trace_digest, library_sha256=identity.library_sha256,
+                    state_domain_revision=domain_revision,
+                    domain_certificate_sha256=domain_certificate_sha256,
                     hardware_contract_sha256=hardware_contract(profile)["sha256"],
                     source_sha256=dict(identity.source_sha256) | sources,
                     selected_work_count=len(chosen), trace_work_count=len(works), status="LOADING")
@@ -165,7 +219,8 @@ def replay(args: argparse.Namespace) -> int:
     load_start = time.monotonic()
     timings = {"validation_seconds": validation_seconds, "load_seconds": 0.0,
                "lowering_seconds": 0.0, "native_stepping_seconds": 0.0,
-               "event_seconds": 0.0, "serialization_seconds": 0.0}
+               "event_seconds": 0.0, "serialization_seconds": 0.0,
+               "native_advance_calls": 0}
     settings = Settings(max_work_cycles=MAX_WORK_CYCLES, max_session_cycles=MAX_SESSION_CYCLES)
     with SequenceSession(args.library, profile, settings=settings, expected_identity=identity) as session, \
          (args.output / "works.jsonl").open("x", encoding="utf-8") as stream:
@@ -185,16 +240,21 @@ def replay(args: argparse.Namespace) -> int:
             timings["lowering_seconds"] += time.monotonic() - lower_start
             require(code == Code.OK, "native offer rejected")
             step_start = time.monotonic()
-            cursor = offer_cycle
             while True:
-                cursor += 1
-                code = session.advance_until(cursor)
-                if cursor % 65536 == 0:
-                    progress.update(cursor=cursor, simulator_wall_seconds=time.monotonic() - started)
-                    publish(args.output / "progress.json", progress)
+                code = session.advance_to_boundary(MAX_SESSION_CYCLES, 65_536)
+                timings["native_advance_calls"] += 1
+                step_status = session.status()
+                progress.update(cursor=step_status.cursor,
+                                native_advance_calls=timings["native_advance_calls"],
+                                simulator_wall_seconds=time.monotonic() - started)
+                publish(args.output / "progress.json", progress)
                 if code == Code.OK:
+                    require(step_status.stop_reason == sequence_binding.StopReason.REPORT_AVAILABLE,
+                            "native report boundary missing")
                     break
-                require(code == Code.INCOMPLETE, f"native advance failed: {code.name}")
+                require(code == Code.INCOMPLETE and
+                        step_status.stop_reason == sequence_binding.StopReason.SOFT_BUDGET,
+                        f"native advance failed: {code.name}, stop={step_status.stop_reason}")
             timings["native_stepping_seconds"] += time.monotonic() - step_start
             status = session.status()
             domain = session.domain_snapshot()
@@ -202,8 +262,12 @@ def replay(args: argparse.Namespace) -> int:
             report = session.pop_report()
             if not isinstance(report, sequence_binding.Report):
                 raise NpuTraceError("completed work report missing")
-            failure = completed_domain_failure(status, domain, rows, report, work.identity, offer_cycle)
+            failure = completed_domain_failure(status, domain, rows, report, work.identity, offer_cycle,
+                                               profile=profile, domain_revision=domain_revision)
             if failure is not None:
+                failure.update(parent_id=work.parent_id, call_id=work.call_id,
+                               stripe_id=work.stripe_id, profile=profile,
+                               trace_sha256=trace_digest, library_sha256=identity.library_sha256)
                 failure.update(native_completed_report_work_id=report.logical_work_id,
                                validated_completed_work_ids=completed[:])
                 detail = (str(failure["classification"]) + ": failed=" +
@@ -233,13 +297,18 @@ def replay(args: argparse.Namespace) -> int:
             modeled_cycles += report.counters.total_cycles
             completed.append(work.identity)
             row = {"work_id": work.identity, "parent_id": work.parent_id, "generation": report.generation,
+                   "call_id": work.call_id, "stripe_id": work.stripe_id, "operation_id": work.operation_id,
                    "offered_cycle": report.offered_cycle, "accepted_cycle": report.accepted_cycle,
+                   "request_available_cycle": offer_cycle, "pending_admission_cycle": offer_cycle,
+                   "port_offer_cycle": offer_cycle,
                    "result_ready_cycle": report.result_ready_cycle,
                    "final_scale_release_cycle": report.final_scale_release_cycle,
                    "resource_ready_cycle": report.resource_ready_cycle,
                    "next_scratchpad_half": report.next_scratchpad_half,
                    "next_accumulator_half": report.next_accumulator_half,
                    "event_count": report.event_count,
+                   "domain_snapshot_hex": bytes(domain).hex(),
+                   "row_pressure_hex": bytes(rows).hex(),
                    "counters": {name: getattr(counters, name) for name in RESULT_FIELDS},
                    "modeled_cycles": counters.total_cycles}
             serialize_start = time.monotonic()
@@ -254,20 +323,28 @@ def replay(args: argparse.Namespace) -> int:
                               "work_id": work.identity, "cursor": status.cursor}), flush=True)
         session.verify_identity()
         final = session.status()
+        final_domain = bytes(session.domain_snapshot()).hex()
+        final_rows = bytes(session.row_pressure()).hex()
+        cumulative = {name: getattr(session.counters(), name) for name in RESULT_FIELDS}
         require(final.generation == 1 and final.has_pending == final.has_active == final.has_report ==
                 final.faulted == 0 and session.counters().logical_work_count == len(chosen),
                 "native final state incomplete")
     verify_source_hashes(source_root, sources)
+    require(validated_domain(args) == (domain_revision, domain_certificate_sha256),
+            "stateful domain changed before publication")
     require(sha256(args.trace) == trace_digest and
             hardware_contract(profile)["sha256"] == progress["hardware_contract_sha256"] and
             sequence_binding.source_identity(args.library, profile) == identity,
             "trace, source, or library changed before publication")
     status_name = ("PILOT_PARTIAL" if args.pilot_work_count is not None else
                    "SUBSET_DIAGNOSTIC" if args.through_parent_index is not None else "DIAGNOSTIC_PASS")
-    result = {**progress, **timings, "schema": RESULT_SCHEMA, "version": 1,
+    result = {**progress, **timings, "schema": RESULT_SCHEMA, "version": 2,
               "status": status_name, "generation": 1,
               "production_admitted": False, "validation_scope": "DIAGNOSTIC_ACTUAL_TRACE",
               "offer_policy": "back-to-back-npu-only", "host_arrival_measured": False,
+              "availability_source": "own previous resource-ready boundary, not measured host arrival",
+              "final_domain_snapshot_hex": final_domain, "final_row_pressure_hex": final_rows,
+              "cumulative_counters": cumulative,
               "cpu_process_nanoseconds": time.process_time_ns() - cpu_started,
               "simulator_wall_seconds": time.monotonic() - started}
     pending = getattr(args, "watchdog_pending", False)
@@ -294,6 +371,8 @@ def valid_replay_result(output: Path, options: argparse.Namespace,
                 options.trace is None or options.library is None):
             return False
         profile, trace_works, trace_digest = load_trace(options.trace)
+        domain_revision, domain_certificate_sha256 = validated_domain(options)
+        limits = profile_domain(profile, domain_revision)
         chosen = selected_works(trace_works, options.through_parent_index,
                                 options.pilot_work_count)
         if (result.get("profile") != profile or count != len(chosen) or
@@ -306,7 +385,7 @@ def valid_replay_result(output: Path, options: argparse.Namespace,
                        "DIAGNOSTIC_PASS")
         expected_count = options.expected_work_count or options.pilot_work_count
         if (result.get("schema") != RESULT_SCHEMA or type(result.get("version")) is not int or
-                result["version"] != 1 or result.get("status") != status_name or
+                result["version"] not in (1, 2) or result.get("status") != status_name or
                 type(result.get("generation")) is not int or result["generation"] != 1 or
                 result.get("validation_scope") != "DIAGNOSTIC_ACTUAL_TRACE" or
                 result.get("production_admitted") is not False or
@@ -319,10 +398,13 @@ def valid_replay_result(output: Path, options: argparse.Namespace,
                 result.get("library_sha256") != identity.library_sha256 or
                 result.get("hardware_contract_sha256") != hardware_contract(profile)["sha256"] or
                 result.get("source_sha256") != sources or
+                result.get("state_domain_revision", LEGACY_REVISION) != domain_revision or
+                result.get("domain_certificate_sha256") != domain_certificate_sha256 or
                 result.get("active_work_id") is not None or
                 result.get("last_work_id") != ids[-1]):
             return False
         cursor = cycles = 0
+        tag_peak = row_peak = 0
         for row, work in zip(rows, chosen, strict=True):
             counters = row["counters"]
             if (row["work_id"] != work.identity or row["parent_id"] != work.parent_id or
@@ -345,8 +427,44 @@ def valid_replay_result(output: Path, options: argparse.Namespace,
                     any(counters[kind + "_request_count"] != counters[kind + "_response_count"]
                         for kind in ("load", "store", "scale"))):
                 return False
+            if result["version"] == 2:
+                if (row["call_id"] != work.call_id or row["stripe_id"] != work.stripe_id or
+                        row["operation_id"] != work.operation_id or
+                        row["request_available_cycle"] != row["offered_cycle"] or
+                        row["pending_admission_cycle"] != row["offered_cycle"] or
+                        row["port_offer_cycle"] != row["offered_cycle"]):
+                    return False
+                domain = sequence_binding.DomainSnapshot.from_buffer_copy(
+                    bytes.fromhex(row["domain_snapshot_hex"]))
+                pressure = sequence_binding.RowPressure.from_buffer_copy(
+                    bytes.fromhex(row["row_pressure_hex"]))
+                if (domain.abi_version != 2 or domain.struct_size != len(bytes(domain)) or
+                        len(row["domain_snapshot_hex"]) != 2 * domain.struct_size or
+                        pressure.abi_version != 1 or pressure.struct_size != len(bytes(pressure)) or
+                        len(row["row_pressure_hex"]) != 2 * pressure.struct_size or
+                        domain.generation != 1 or domain.resource_ready != 1 or
+                        domain.cursor != row["resource_ready_cycle"] or
+                        domain.ready_violation_mask != limits.ready_violation_mask or
+                        not tag_peak <= domain.max_tag_occupancy <= limits.max_tag_occupancy or
+                        domain.tag_count > domain.max_tag_occupancy or
+                        any(tag.rob_valid for tag in domain.tags[:domain.tag_count]) or
+                        pressure.generation != 1 or pressure.cursor != domain.cursor or
+                        pressure.row_count != domain.row_count or
+                        not row_peak <= pressure.max_row_occupancy < limits.max_row_occupancy_exclusive or
+                        pressure.row_count > pressure.max_row_occupancy):
+                    return False
+                tag_peak, row_peak = domain.max_tag_occupancy, pressure.max_row_occupancy
             cursor = row["resource_ready_cycle"]
             cycles += row["modeled_cycles"]
+        if result["version"] == 2 and (
+                result.get("final_domain_snapshot_hex") != rows[-1]["domain_snapshot_hex"] or
+                result.get("final_row_pressure_hex") != rows[-1]["row_pressure_hex"] or
+                result.get("cumulative_counters") != {
+                    name: (rows[0]["accepted_cycle"] if name == "start_cycle" else
+                           rows[-1]["result_ready_cycle"] if name == "done_cycle" else
+                           sum(row["counters"][name] for row in rows))
+                    for name in RESULT_FIELDS}):
+            return False
         return (result.get("cursor") == cursor and result.get("modeled_cycles") == cycles and
                 progress.get("status") == (PENDING_STATUS if pending else status_name) and
                 all(progress.get(key) == result.get(key) for key in
@@ -419,6 +537,8 @@ def watchdog(args: argparse.Namespace) -> int:
         parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
         parser.add_argument("--trace", type=Path)
         parser.add_argument("--library", type=Path)
+        parser.add_argument("--stateful-sequence-certificate", type=Path)
+        parser.add_argument("--stateful-evidence-root", type=Path)
         parser.add_argument("--through-parent-index", type=int)
         parser.add_argument("--pilot-work-count", type=int)
         parser.add_argument("--expected-work-count", type=int)
@@ -472,7 +592,8 @@ def watchdog(args: argparse.Namespace) -> int:
         verify_command = [sys.executable, "-B", "-m", "sim.cycle.sequence_trace_cli",
                           "_verify-candidate", "--trace", str(replay_options.trace),
                           "--library", str(replay_options.library), "--output", str(output)]
-        for name in ("through_parent_index", "pilot_work_count", "expected_work_count"):
+        for name in ("through_parent_index", "pilot_work_count", "expected_work_count",
+                     "stateful_sequence_certificate", "stateful_evidence_root"):
             value = getattr(replay_options, name)
             if value is not None:
                 verify_command.extend(("--" + name.replace("_", "-"), str(value)))
@@ -598,6 +719,8 @@ def main() -> int:
     replay_parser = commands.add_parser("replay", help="one cold diagnostic native session")
     replay_parser.add_argument("--trace", type=Path, required=True)
     replay_parser.add_argument("--library", type=Path, required=True)
+    replay_parser.add_argument("--stateful-sequence-certificate", type=Path)
+    replay_parser.add_argument("--stateful-evidence-root", type=Path)
     replay_parser.add_argument("--through-parent-index", type=int)
     replay_parser.add_argument("--pilot-work-count", type=int)
     replay_parser.add_argument("--expected-work-count", type=int)
@@ -612,6 +735,8 @@ def main() -> int:
     verify_parser = commands.add_parser("_verify-candidate", help=argparse.SUPPRESS)
     verify_parser.add_argument("--trace", type=Path, required=True)
     verify_parser.add_argument("--library", type=Path, required=True)
+    verify_parser.add_argument("--stateful-sequence-certificate", type=Path)
+    verify_parser.add_argument("--stateful-evidence-root", type=Path)
     verify_parser.add_argument("--through-parent-index", type=int)
     verify_parser.add_argument("--pilot-work-count", type=int)
     verify_parser.add_argument("--expected-work-count", type=int)

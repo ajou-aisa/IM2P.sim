@@ -40,6 +40,7 @@ from sim.cycle.sequence_binding_abi import (
     Settings,
     SourceIdentity,
     Status,
+    StopReason,
     TagState,
     Work,
     _uint,
@@ -49,7 +50,7 @@ from sim.cycle.sequence_binding_abi import _checked as _checked_code
 
 __all__ = ("Code", "Config", "Descriptor", "Diagnostic", "DomainBank", "DomainRow",
            "DomainSnapshot", "DomainTag", "Report", "RowPressure", "Run", "SequenceError", "SequenceEvent",
-           "SequenceSession", "Settings", "SourceIdentity", "Status", "TagState", "Work",
+           "SequenceSession", "Settings", "SourceIdentity", "Status", "StopReason", "TagState", "Work",
            "source_identity")
 
 ROOT: Final = Path(__file__).resolve().parents[2]
@@ -171,6 +172,12 @@ class SequenceSession:
         return self._checked(lib.im2p_cycle_sequence_reset(handle), "reset")
 
     def offer(self, work: Work, offered_cycle: int) -> Code:
+        """Queue request availability; a pending work may await the previous resource boundary.
+
+        The native offered_cycle keeps its availability meaning. The one-outstanding
+        provider supplies an already selected electrical offer instead; it does not
+        reinterpret an earlier pending availability as an electrical handshake.
+        """
         lib, handle = self._native()
         descriptor = Descriptor()
         lib.im2p_cycle_sequence_descriptor_init(C.byref(descriptor))
@@ -202,6 +209,13 @@ class SequenceSession:
         lib, handle = self._native()
         return self._checked(lib.im2p_cycle_sequence_advance_until(
             handle, _uint(until_cycle, 64, "until_cycle")), "advance_until")
+
+    def advance_to_boundary(self, until_cycle: int, max_steps: int) -> Code:
+        """Run native edges until a report, target, soft budget or backpressure."""
+        lib, handle = self._native()
+        return self._checked(lib.im2p_cycle_sequence_advance_to_boundary(
+            handle, _uint(until_cycle, 64, "until_cycle"),
+            _uint(max_steps, 64, "max_steps")), "advance_to_boundary")
 
     def status(self) -> Status:
         lib, handle = self._native()

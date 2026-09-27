@@ -134,7 +134,9 @@ def provider(arguments: Arguments) -> TimingProvider:
         context = EvidenceContext(arguments.stateful_evidence_root, path_from(object_value(certificate['library'])),
             path_from(object_value(certificate['shared_library'])), path_from(object_value(parents['base'])),
             path_from(object_value(parents['run_aware'])), path_from(object_value(parents['service'])),
-            path_from(object_value(certificate['evidence_input'])) if 'evidence_input' in certificate else None)
+             path_from(object_value(certificate['evidence_input'])) if 'evidence_input' in certificate else None,
+             path_from(object_value(object_value(object_value(certificate['domain_delta'])['artifacts'])['input']))
+             if certificate['version'] == 3 else None)
         constructor = DiagnosticStatefulProvider if arguments.stateful_diagnostic else StatefulSequenceProvider
         return constructor(arguments.cycle_library, arguments.npu_trace, arguments.stateful_sequence_certificate, context)
     return CycleServiceProvider(arguments.cycle_library, arguments.npu_trace, scenario,

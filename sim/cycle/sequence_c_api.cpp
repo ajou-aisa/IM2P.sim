@@ -271,20 +271,34 @@ int im2p_cycle_sequence_offer(
     return IM2P_CYCLE_SEQUENCE_INTERNAL;
   }
 }
-int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
-                                      uint64_t until_cycle) {
+static int sequence_advance(im2p_cycle_sequence_t *sequence,
+                            uint64_t until_cycle, uint64_t max_steps,
+                            bool stop_at_boundary) {
   if (!sequence || !sequence->status.initialized ||
-      until_cycle < sequence->status.cursor)
+      until_cycle < sequence->status.cursor ||
+      (stop_at_boundary && !max_steps))
     return IM2P_CYCLE_SEQUENCE_INVALID;
   auto &status = sequence->status;
   if (status.faulted)
     return IM2P_CYCLE_SEQUENCE_FAULTED;
-  if (until_cycle == status.cursor)
+  if (stop_at_boundary && sequence->report) {
+    status.stop_reason = IM2P_CYCLE_SEQUENCE_STOP_REPORT_AVAILABLE;
+    return IM2P_CYCLE_SEQUENCE_OK;
+  }
+  if (until_cycle == status.cursor) {
+    if (stop_at_boundary)
+      status.stop_reason = IM2P_CYCLE_SEQUENCE_STOP_TARGET;
     return status.has_pending || status.has_active
                ? IM2P_CYCLE_SEQUENCE_INCOMPLETE
                : IM2P_CYCLE_SEQUENCE_OK;
+  }
+  uint64_t steps = 0;
   try {
     while (status.cursor < until_cycle) {
+      if (stop_at_boundary && steps == max_steps) {
+        status.stop_reason = IM2P_CYCLE_SEQUENCE_STOP_SOFT_BUDGET;
+        return IM2P_CYCLE_SEQUENCE_INCOMPLETE;
+      }
       if (status.cursor >= sequence->config.max_session_cycles) {
         return sequence_fault(sequence, IM2P_CYCLE_SEQUENCE_LIMIT,
                               IM2P_CYCLE_SEQUENCE_STOP_SESSION_BUDGET,
@@ -294,8 +308,12 @@ int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
           sequence->pending->offered_cycle <= status.cursor &&
           sequence->engine->resource_ready()) {
         if (sequence->report) {
-          status.stop_reason = IM2P_CYCLE_SEQUENCE_STOP_REPORT_BUFFER;
-          return IM2P_CYCLE_SEQUENCE_WOULD_BLOCK;
+          status.stop_reason =
+              stop_at_boundary
+                  ? IM2P_CYCLE_SEQUENCE_STOP_REPORT_AVAILABLE
+                  : IM2P_CYCLE_SEQUENCE_STOP_REPORT_BUFFER;
+          return stop_at_boundary ? IM2P_CYCLE_SEQUENCE_OK
+                                  : IM2P_CYCLE_SEQUENCE_WOULD_BLOCK;
         }
         const auto &candidate = sequence->pending->work;
         const unsigned half = status.next_scratchpad_half;
@@ -347,6 +365,7 @@ int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
             IM2P_CYCLE_SEQUENCE_STOP_EVENT_BUFFER_AVAILABLE;
         return IM2P_CYCLE_SEQUENCE_WOULD_BLOCK;
       }
+      ++steps;
       status.cursor = sequence->engine->cycle();
       status.session_cycles = status.cursor;
       if (status.has_active) {
@@ -372,6 +391,11 @@ int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
           sequence->engine->retire_work();
           status.has_report = 1;
           status.has_active = 0;
+          if (stop_at_boundary) {
+            status.stop_reason =
+                IM2P_CYCLE_SEQUENCE_STOP_REPORT_AVAILABLE;
+            return IM2P_CYCLE_SEQUENCE_OK;
+          }
         }
       }
     }
@@ -391,6 +415,15 @@ int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
                           IM2P_CYCLE_SEQUENCE_STOP_FAULT,
                           "simulation step failed");
   }
+}
+int im2p_cycle_sequence_advance_until(im2p_cycle_sequence_t *sequence,
+                                      uint64_t until_cycle) {
+  return sequence_advance(sequence, until_cycle, 0, false);
+}
+int im2p_cycle_sequence_advance_to_boundary(
+    im2p_cycle_sequence_t *sequence, uint64_t until_cycle,
+    uint64_t max_steps) {
+  return sequence_advance(sequence, until_cycle, max_steps, true);
 }
 int im2p_cycle_sequence_get_status(const im2p_cycle_sequence_t *sequence,
                                    im2p_cycle_sequence_status_t *status) {

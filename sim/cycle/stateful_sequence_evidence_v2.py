@@ -65,6 +65,7 @@ class CurrentEvidence:
     cases: tuple[Record, ...]
     completeness: Record
     state_refinement: Record
+    parent_equivalence: Record | None = None
 
 
 def _relative(root: Path, raw: str, boundary: str) -> Path:
@@ -268,6 +269,12 @@ def reviewed_current(context: EvidenceContext, expected_ids: tuple[str, ...]) ->
         raise StatefulCertificateError("evidence input", "missing path")
     input_digest = sha256(input_path)
     manifest = read_document(input_path)
+    if manifest.get("version") == 2:
+        from sim.cycle.stateful_sequence_evidence_equivalence import (
+            reviewed_equivalence,
+        )
+
+        return reviewed_equivalence(context, manifest, expected_ids)
     require(manifest.get("schema") == INPUT_SCHEMA and manifest.get("version") == 1 and
             set(manifest) - {"review_correction_addendum", "parent_reviews"} ==
                 {"schema", "version", "aggregate", "aggregate_review",

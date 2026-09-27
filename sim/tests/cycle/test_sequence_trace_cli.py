@@ -115,7 +115,10 @@ def test_replay_pilot_uses_one_cold_native_generation(tmp_path: Path, library: P
                row["event_count"] == row["counters"]["event_count"] > 0 and
                row["counters"]["load_request_count"] == row["counters"]["load_response_count"]
                for row in rows)
-    assert (summary["schema"], summary["version"]) == (sequence_trace_cli.RESULT_SCHEMA, 1)
+    assert (summary["schema"], summary["version"]) == (sequence_trace_cli.RESULT_SCHEMA, 2)
+    assert summary["final_domain_snapshot_hex"] == rows[-1]["domain_snapshot_hex"]
+    assert summary["final_row_pressure_hex"] == rows[-1]["row_pressure_hex"]
+    assert summary["cumulative_counters"]["logical_work_count"] == 2
     assert summary["status"] == "PILOT_PARTIAL"
     assert summary["production_admitted"] is False
     assert {"sim/cycle/sequence_binding_abi.py", "sim/cycle/cli.py",
@@ -127,14 +130,35 @@ def test_replay_pilot_uses_one_cold_native_generation(tmp_path: Path, library: P
         ("schema", "unknown"), ("version", True), ("selected_work_count", 1),
         ("completed_work_ids", [1, 0]), ("status", "DIAGNOSTIC_PASS"),
         ("trace_sha256", "0" * 64), ("library_sha256", "0" * 64),
+        ("state_domain_revision", "GUARDED_A8D16_TAG5_ROW_LT6_REVIEWED_V3"),
+        ("final_domain_snapshot_hex", rows[0]["domain_snapshot_hex"]),
+        ("cumulative_counters", {**summary["cumulative_counters"], "event_count": 0}),
         ("source_sha256", {**summary["source_sha256"], "sim/cycle/cli.py": "0" * 64}),
     ):
         (output / "result.json").write_text(json.dumps(summary | {field: bad}))
         assert not sequence_trace_cli.valid_replay_result(output, options, progress), field
     (output / "result.json").write_text(json.dumps(summary))
+    peak = sequence_binding.DomainSnapshot.from_buffer_copy(bytes.fromhex(rows[0]["domain_snapshot_hex"]))
+    peak.max_tag_occupancy = 6
+    overshoot = sequence_binding.DomainSnapshot.from_buffer_copy(bytes.fromhex(rows[0]["domain_snapshot_hex"]))
+    overshoot.cursor += 1
+    invalid_abi = sequence_binding.DomainSnapshot.from_buffer_copy(bytes.fromhex(rows[0]["domain_snapshot_hex"]))
+    invalid_abi.abi_version += 1
+    pressure = sequence_binding.RowPressure.from_buffer_copy(bytes.fromhex(rows[0]["row_pressure_hex"]))
+    pressure.max_row_occupancy = 6
     for field, bad in (
         ("final_scale_release_cycle", rows[0]["result_ready_cycle"] - 1),
         ("next_scratchpad_half", 2),
+        ("call_id", rows[0]["call_id"] + 1),
+        ("stripe_id", -1),
+        ("request_available_cycle", rows[0]["offered_cycle"] + 1),
+        ("port_offer_cycle", rows[0]["offered_cycle"] + 1),
+        ("request_available_cycle", rows[0]["offered_cycle"] + 1),
+        ("port_offer_cycle", rows[0]["offered_cycle"] + 1),
+        ("domain_snapshot_hex", bytes(peak).hex()),
+        ("domain_snapshot_hex", bytes(overshoot).hex()),
+        ("domain_snapshot_hex", bytes(invalid_abi).hex()),
+        ("row_pressure_hex", bytes(pressure).hex()),
         ("counters", {**rows[0]["counters"], "load_response_count":
                        rows[0]["counters"]["load_response_count"] + 1}),
     ):

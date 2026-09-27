@@ -16,7 +16,8 @@ from sim.cycle.execution_sequence_admission import (
     verify_sources,
 )
 from sim.cycle.execution_services import NpuWork
-from sim.cycle.sequence_binding import Code, SequenceSession, Settings
+from sim.cycle.sequence_binding import Code, SequenceSession, Settings, StopReason
+from sim.cycle.sequence_domain import profile_domain
 from sim.cycle.stateful_sequence_evidence import EvidenceContext
 
 MAX_WORK_CYCLES: Final = 10_000_000
@@ -43,6 +44,8 @@ class _StatefulProvider:
     def __init__(self, inputs: AdmissionInputs, settings: Settings, *, production: bool) -> None:
         self._inputs = inputs
         self._admission, bound = admit_trace(inputs, production=production)
+        self._domain = profile_domain(self._admission.profile,
+                                      self._admission.scoped.state_domain_revision)
         if (settings.read_ready_period != 5 or
                 (settings.max_work_cycles is not None and
                  not 0 < settings.max_work_cycles <= MAX_WORK_CYCLES) or
@@ -121,10 +124,12 @@ class _StatefulProvider:
             counts.load_request_count == counts.load_response_count and
             counts.store_request_count == counts.store_response_count and
             counts.scale_request_count == counts.scale_response_count and
-            domain.max_tag_occupancy <= 4 and domain.ready_violation_mask == 0 and
+            domain.max_tag_occupancy <= self._domain.max_tag_occupancy and
+            domain.ready_violation_mask == self._domain.ready_violation_mask and
             domain.tag_count <= 6 and all(tag.rob_valid == 0 for tag in domain.tags[:domain.tag_count]) and
             rows.generation == domain.generation and rows.cursor == domain.cursor and
-            rows.row_count == domain.row_count and rows.row_count <= rows.max_row_occupancy < 6 and
+            rows.row_count == domain.row_count and
+            rows.row_count <= rows.max_row_occupancy < self._domain.max_row_occupancy_exclusive and
             (report.next_scratchpad_half, report.next_accumulator_half) ==
             (status.next_scratchpad_half, status.next_accumulator_half) and
             report.next_scratchpad_half in (0, 1) and report.next_accumulator_half in (0, 1)
@@ -156,10 +161,10 @@ class _StatefulProvider:
         if not (
             status.generation == domain.generation == rows.generation == 1 and
             status.cursor == domain.cursor == rows.cursor == self.previous_resource_cycle and
-            domain.resource_ready == 1 and domain.ready_violation_mask == 0 and
-            domain.max_tag_occupancy <= 4 and domain.tag_count <= 6 and
+            domain.resource_ready == 1 and domain.ready_violation_mask == self._domain.ready_violation_mask and
+            domain.max_tag_occupancy <= self._domain.max_tag_occupancy and domain.tag_count <= 6 and
             all(tag.rob_valid == 0 for tag in domain.tags[:domain.tag_count]) and
-            domain.row_count == rows.row_count <= rows.max_row_occupancy < 6 and
+            domain.row_count == rows.row_count <= rows.max_row_occupancy < self._domain.max_row_occupancy_exclusive and
             (status.next_scratchpad_half, status.next_accumulator_half) ==
             (self.scratchpad_half, self.accumulator_half) and
             self._session.counters().logical_work_count == self.invocations
@@ -175,13 +180,14 @@ class _StatefulProvider:
             raise StatefulProviderError("native offer", "work was not accepted into pending state")
         committed = False
         try:
-            cursor = status.cursor
             while True:
-                cursor += 1
-                code = self._session.advance_until(cursor)
+                code = self._session.advance_to_boundary(MAX_SESSION_CYCLES, 65_536)
+                stop = self._session.status().stop_reason
                 if code == Code.OK:
+                    if stop != StopReason.REPORT_AVAILABLE:
+                        raise StatefulProviderError("native advance", "report boundary missing")
                     break
-                if code != Code.INCOMPLETE:
+                if code != Code.INCOMPLETE or stop != StopReason.SOFT_BUDGET:
                     raise StatefulProviderError("native advance", f"unexpected {code.name}")
             window = self._check_report(item, offered_cycle)
             self.completed = self.completed | {work.identity}

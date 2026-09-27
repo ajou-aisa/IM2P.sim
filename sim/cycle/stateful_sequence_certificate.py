@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, assert_never
@@ -21,6 +22,7 @@ from sim.cycle.certificate_contract import (
 )
 from sim.cycle.npu_trace_schema import Record
 from sim.cycle.reconstruct_graph import sha256
+from sim.cycle.sequence_domain import LEGACY_REVISION, TAG5_REVISION, profile_domain
 from sim.cycle.stateful_sequence_evidence import (
     EvidenceContext,
     StatefulCertificateError,
@@ -53,6 +55,8 @@ EXPECTED_IDS: Final = tuple(f'exsia-rmd-cross-parent-v2/{profile}/phase{phase}'
                             for profile, phase in zip(PROFILES, (0, 1, 2, 3, 4, 0), strict=True))
 RTL_OBJECT: Final = evidence_helpers.RTL_OBJECT
 raw_digests = evidence_helpers.raw_digests
+# One successful v3 proof only. Every reuse rechecks all external bytes.
+_current_cache: tuple[EvidenceContext, Record] | None = None
 
 
 class NotReadyError(StatefulCertificateError):
@@ -66,6 +70,7 @@ class ScopedEvidence:
     case_ids: tuple[str, ...]
     validation_scope: Literal['SCOPED_EVIDENCE'] = 'SCOPED_EVIDENCE'
     production_admitted: Literal[False] = False
+    state_domain_revision: str = LEGACY_REVISION
 
 
 def pinned(context: EvidenceContext) -> dict[str, Record]:
@@ -107,7 +112,8 @@ def pinned(context: EvidenceContext) -> dict[str, Record]:
     return result
 
 
-def parents(context: EvidenceContext, library_digest: str) -> Record:
+def parents(context: EvidenceContext, library_digest: str,
+            equivalence: Record | None = None) -> Record:
     result: Record = {}
     for name, path in (('base', context.base_parent),
                        ('run_aware', context.run_aware_parent),
@@ -125,6 +131,14 @@ def parents(context: EvidenceContext, library_digest: str) -> Record:
         result[name] = {**reference(path, sha256(path)), 'library_sha256': old,
                         'status': 'CURRENT' if old == library_digest else 'STALE',
                         **({'independent_review': review} if review is not None else {})}
+        if equivalence is not None:
+            current = object_value(equivalence.get(name), 'parent equivalence')
+            require(context.domain_delta_input is not None and
+                    current.get('historical_certificate') == reference(path, sha256(path)) and
+                    current.get('current_library_sha256') == library_digest,
+                    'parent equivalence', f'{name} caller or current library differs')
+            result[name] = {**object_value(result[name], name),
+                            'status': 'CURRENT_EQUIVALENT', 'current_equivalence': current}
     return result
 
 
@@ -201,9 +215,17 @@ def expected(context: EvidenceContext) -> Record:
     return result
 
 
-def expected_current(context: EvidenceContext) -> Record:
-    reviewed = current_evidence.reviewed_current(context, EXPECTED_IDS)
-    return {'schema': SCHEMA, 'version': 2, 'artifact_role': ROLE,
+def _expected_current(context: EvidenceContext) -> Record:
+    if context.domain_delta_input is not None and not context.domain_delta_input.is_file():
+        raise NotReadyError('NOT_READY', 'tag5 delta input/holdout bindings missing')
+    try:
+        reviewed = current_evidence.reviewed_current(context, EXPECTED_IDS)
+    except (StatefulCertificateError, OSError, ValueError, BuildFailure) as error:
+        if context.domain_delta_input is None:
+            raise
+        raise NotReadyError('NOT_READY', f'current stateful80 source/library equivalence unavailable: {error}; '
+                            'base240/run42/service-fixture1056/service30 remain required') from error
+    result: Record = {'schema': SCHEMA, 'version': 2, 'artifact_role': ROLE,
             'validation_scope': SCOPE, 'production_admitted': False,
             'scenario': 'HP1_W/S_ONE_OUTSTANDING_GUARDED_ABSOLUTE_OFFER_V2',
             'work_domain_revision': 'PRODUCER_TWO_PARENT_ABI2_V2',
@@ -214,14 +236,44 @@ def expected_current(context: EvidenceContext) -> Record:
             'library': reviewed.library, 'shared_library': reviewed.shared_library,
             'source_sha256': reviewed.source_sha256,
             'reviewed_evidence': reviewed.reviewed_evidence,
-            'parents': parents(context, str(reviewed.shared_library['sha256'])),
+            'parents': parents(context, str(reviewed.shared_library['sha256']),
+                               reviewed.parent_equivalence),
             'state_refinement': reviewed.state_refinement,
             'completeness': reviewed.completeness, 'cases': list(reviewed.cases)}
+    if context.domain_delta_input is not None:
+        from sim.cycle.stateful_sequence_evidence_tag5 import reviewed_delta
+
+        delta = reviewed_delta(context, result)
+        result.update(version=3, state_domain_revision=TAG5_REVISION, domain_delta=delta)
+        result['state_refinement'] = {**reviewed.state_refinement,
+            'max_tag_occupancy': 4, 'profile_max_tag_occupancy': {
+                profile: profile_domain(profile, TAG5_REVISION).max_tag_occupancy
+                for profile in PROFILES}}
+    return result
+
+
+def expected_current(context: EvidenceContext) -> Record:
+    global _current_cache
+    if context.domain_delta_input is not None and _current_cache is not None:
+        cached_context, cached = _current_cache
+        if cached_context == context:
+            try:
+                _recheck_current(cached)
+            except (OSError, ValueError, KeyError, TypeError):
+                _current_cache = None
+                raise
+            return deepcopy(cached)
+    result = _expected_current(context)
+    if context.domain_delta_input is not None:
+        _recheck_current(result)
+        _current_cache = (context, deepcopy(result))
+    return result
 
 
 def validate_current(path: Path, context: EvidenceContext, document: Record) -> ScopedEvidence:
     require(document.get('schema') == SCHEMA and type(document.get('version')) is int and
-            document['version'] == 2 and document.get('artifact_role') == ROLE and
+            document['version'] == (3 if context.domain_delta_input is not None else 2) and
+            document.get('artifact_role') == ROLE and
             document.get('validation_scope') == SCOPE and document.get('production_admitted') is False,
             'schema or artifact role', 'current MODEL_STATE_VALIDATION SCOPED_EVIDENCE required')
     rows = [object_value(row, 'case') for row in array_value(document.get('cases'), 'cases')]
@@ -242,14 +294,19 @@ def validate_current(path: Path, context: EvidenceContext, document: Record) -> 
                           ('scenario', 'scenario'), ('work_domain_revision', 'work domain'),
                           ('state_domain_revision', 'state domain')):
         require(document.get(key) == target[key], boundary, 'current certificate binding differs')
+    if context.domain_delta_input is not None:
+        require(document.get('domain_delta') == target['domain_delta'],
+                'domain delta', 'source-bound tag5 evidence differs')
     for row, wanted in zip(rows, array_value(target['cases'], 'expected cases'), strict=True):
         require(row == object_value(wanted, 'expected case'), 'work/run/offer',
                 f"{row['case_id']} reviewed case differs")
     return ScopedEvidence(sha256(path), str(object_value(target['library'], 'library')['sha256']),
-                          EXPECTED_IDS)
+                          EXPECTED_IDS, state_domain_revision=str(target['state_domain_revision']))
 
 
 def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
+    require(context.domain_delta_input is None or context.current_evidence_input is not None,
+            'NOT_READY', 'tag5 delta requires reviewed current v2 evidence; historical hashes cannot be rebased')
     try:
         document = read_document(path)
     except (OSError, ValueError, TypeError) as error:
@@ -296,7 +353,9 @@ def admit(path: Path, context: EvidenceContext) -> None:
         document = read_document(path)
         bound = object_value(document['parents'], 'parent certificates')
         stale = [name for name, item in bound.items()
-                 if object_value(item, name).get('status') != 'CURRENT']
+                 if object_value(item, name).get('status') not in
+                    (('CURRENT', 'CURRENT_EQUIVALENT') if context.domain_delta_input is not None
+                     else ('CURRENT',))]
         if stale:
             raise NotReadyError('NOT_READY', 'stale parent certificates: ' + ', '.join(stale))
         return
@@ -304,7 +363,36 @@ def admit(path: Path, context: EvidenceContext) -> None:
                         'base/run-aware/service parent certificates STALE')
 
 
+def _recheck_current(document: Record) -> None:
+    for name, digest in object_value(document['source_sha256'], 'source closure').items():
+        require(sha256(ROOT / name) == digest, 'source closure', f'changed: {name}')
+    for key in ('evidence_input', 'library', 'shared_library'):
+        item = object_value(document[key], key)
+        _ = reference(Path(str(item['path'])), str(item['sha256']))
+    for item in object_value(document['reviewed_evidence'], 'reviewed evidence').values():
+        if isinstance(item, dict) and set(item) == {'path', 'sha256'}:
+            _ = reference(Path(str(item['path'])), str(item['sha256']))
+        elif isinstance(item, dict):
+            for nested in item.values():
+                bound = object_value(nested, 'parent review')
+                _ = reference(Path(str(bound['path'])), str(bound['sha256']))
+    for item in object_value(document['parents'], 'parents').values():
+        bound = object_value(item, 'parent certificate')
+        _ = reference(Path(str(bound['path'])), str(bound['sha256']))
+    for case in array_value(document['cases'], 'cases'):
+        artifacts = object_value(object_value(case, 'case')['artifacts'], 'case artifacts')
+        for item in artifacts.values():
+            bound = object_value(item, 'case artifact')
+            _ = reference(Path(str(bound['path'])), str(bound['sha256']))
+    if 'domain_delta' in document:
+        from sim.cycle.stateful_sequence_evidence_tag5 import recheck_delta
+
+        recheck_delta(object_value(document['domain_delta'], 'domain delta'))
+
+
 def build(output: Path, context: EvidenceContext) -> Path:
+    require(context.domain_delta_input is None or context.current_evidence_input is not None,
+            'NOT_READY', 'tag5 delta requires reviewed current v2 evidence; historical hashes cannot be rebased')
     if context.current_evidence_input is not None:
         if os.path.lexists(output):
             raise FileExistsError(output)
@@ -315,26 +403,7 @@ def build(output: Path, context: EvidenceContext) -> Path:
                 json.dump(document, stream, indent=2, sort_keys=True)
                 _ = stream.write('\n')
             require(read_document(staged) == document, 'document', 'staged certificate differs')
-            for name, digest in object_value(document['source_sha256'], 'source closure').items():
-                require(sha256(ROOT / name) == digest, 'source closure', f'changed: {name}')
-            for key in ('evidence_input', 'library', 'shared_library'):
-                item = object_value(document[key], key)
-                _ = reference(Path(str(item['path'])), str(item['sha256']))
-            for item in object_value(document['reviewed_evidence'], 'reviewed evidence').values():
-                if isinstance(item, dict) and set(item) == {'path', 'sha256'}:
-                    _ = reference(Path(str(item['path'])), str(item['sha256']))
-                elif isinstance(item, dict):
-                    for nested in item.values():
-                        bound = object_value(nested, 'parent review')
-                        _ = reference(Path(str(bound['path'])), str(bound['sha256']))
-            for item in object_value(document['parents'], 'parents').values():
-                bound = object_value(item, 'parent certificate')
-                _ = reference(Path(str(bound['path'])), str(bound['sha256']))
-            for case in array_value(document['cases'], 'cases'):
-                artifacts = object_value(object_value(case, 'case')['artifacts'], 'case artifacts')
-                for item in artifacts.values():
-                    bound = object_value(item, 'case artifact')
-                    _ = reference(Path(str(bound['path'])), str(bound['sha256']))
+            _recheck_current(document)
             os.link(staged, output)
         return output
     document = expected(context)
@@ -350,6 +419,7 @@ def main() -> int:
                   'run_aware_parent', 'service_parent'):
         parser.add_argument(f'--{name.replace("_", "-")}', type=Path, required=True)
     parser.add_argument('--current-evidence-input', type=Path)
+    parser.add_argument('--domain-delta-input', type=Path)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('build').add_argument('output', type=Path)
     commands.add_parser('validate').add_argument('path', type=Path)
@@ -357,7 +427,7 @@ def main() -> int:
     args = parser.parse_args()
     context = EvidenceContext(args.evidence_root, args.library, args.shared_library,
                               args.base_parent, args.run_aware_parent, args.service_parent,
-                              args.current_evidence_input)
+                              args.current_evidence_input, args.domain_delta_input)
     try:
         match args.command:
             case 'build':

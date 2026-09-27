@@ -151,10 +151,10 @@ def test_interrupt_after_offer_faults_and_context_closes_native_handle(
     # Given: real native admission followed by an interrupt at the first transition.
     provider = StatefulSequenceProvider(LIBRARY, TRACE, CERTIFICATE, CONTEXT)
 
-    def interrupted(until: int) -> Code:
+    def interrupted(until: int, max_steps: int) -> Code:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(provider._session, "advance_until", interrupted)
+    monkeypatch.setattr(provider._session, "advance_to_boundary", interrupted)
     # When: an interrupt unwinds the provider's context manager.
     with pytest.raises(KeyboardInterrupt), provider:
         provider.execute(provider.requests[0], 0)

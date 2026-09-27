@@ -23,12 +23,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SEQUENCE_SOURCES = (
     "sim/include/im2p_cycle_sequence.h", "sim/cycle/sequence_c_api.cpp",
     "sim/cycle/sequence_binding.py", "sim/cycle/sequence_binding_abi.py",
+    "sim/cycle/sequence_domain.py", "sim/cycle/stateful_sequence_evidence_tag5.py",
+    "sim/cycle/stateful_sequence_evidence_equivalence.py",
     "sim/cycle/execution_sequence_provider.py", "sim/cycle/execution_sequence_admission.py",
     "sim/cycle/stateful_sequence_certificate.py", "sim/cycle/stateful_sequence_evidence.py",
     "sim/cycle/stateful_sequence_evidence_v2.py", "sim/cycle/sequence_trace_cli.py",
     "sim/tests/cycle/test_sequence_session.cpp", "sim/tests/cycle/test_sequence_c_api.c",
+    "sim/tests/cycle/test_sequence_milestone.cpp",
+    "sim/tests/cycle/test_sequence_binding.py", "sim/tests/cycle/test_sequence_milestone_binding.py",
     "sim/tests/cycle/test_sequence_c_api.cpp", "sim/tests/cycle/tag_pressure_observer.hpp",
     "sim/tests/cycle/compositional_sequence_probe.cpp",
+    "sim/tests/cycle/compositional_sequence_bounded.py",
+    "sim/tests/cycle/test_compositional_sequence_bounded.py",
     "sim/tests/cycle/compositional_sequence_work.py",
     "sim/tests/cycle/compositional_sequence_repeat.py",
     "sim/tests/cycle/compositional_sequence_v1_runtime.py",
@@ -129,10 +135,16 @@ with binding.SequenceSession(Path(sys.argv[1]), 'a8w8-d16-hp1') as session:
     for work_id in (41, 42):
         offered = session.status().cursor
         assert session.offer(binding.Work(work_id, 1, 1, 1), offered) == binding.Code.OK
-        assert session.advance_until(offered + 1000) == binding.Code.OK
+        if work_id == 41:
+            assert session.advance_until(offered + 1000) == binding.Code.OK
+        else:
+            assert session.advance_to_boundary(offered + 1000, 1000) == binding.Code.OK
+            assert session.status().stop_reason == binding.StopReason.REPORT_AVAILABLE
         report = session.pop_report()
         assert isinstance(report, binding.Report) and report.logical_work_id == work_id
         assert report.offered_cycle == offered and report.resource_ready_cycle > previous
+        if work_id == 42:
+            assert session.status().cursor == report.resource_ready_cycle
         previous = report.resource_ready_cycle
     assert session.counters().logical_work_count == 2
     session.verify_identity()

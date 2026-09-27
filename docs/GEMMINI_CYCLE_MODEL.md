@@ -136,6 +136,22 @@ invariant failure faults the handle; there is no fallback to isolated estimates.
 `destroy(NULL)` is a no-op, while a destroyed non-null pointer is outside the C
 caller contract.
 
+`advance_to_boundary(t, max_steps)` is additive and uses the same native
+`Engine::step()` loop. It returns at the first completed report, target edge,
+positive soft step budget, event/report backpressure, or hard fault. Its status
+distinguishes `REPORT_AVAILABLE`, `TARGET`, `SOFT_BUDGET`, and the existing hard
+limit/backpressure reasons. It does not change `advance_until` or any existing
+ABI structure layout.
+
+When a work becomes resource-ready at `q`, the boundary call returns with cursor
+`q`; edge `q` remains unprocessed. After consuming the report, a prepared next
+work may be offered and accepted at that edge without an added bubble. Idle
+time still executes native steps. Every committed step retains generation-wide
+tag/row peaks, counters and event identity; event-buffer rollback does not
+consume simulated time. Python provider and diagnostic replay use bounded
+65,536-step calls rather than one FFI call per cycle. This reduces simulator
+overhead, not modeled NPU cycles or application latency.
+
 The Python session binding resolves only the six
 `a4w4-d{16,32,64}-hp1` and `a8w8-d{16,32,64}-hp1` profiles. The typed stateful
 provider further fixes read-ready period 5, `planner-blocks`, source-bound
@@ -152,14 +168,27 @@ from:
 
 Production admission requires current base, run-aware, and exact-sequence
 parents plus reviewed stateful evidence; API availability alone is not a
-readiness marker. The current actual GPT-2 observation validated 3
-works of a 16-work subset. Work ID 3 reached native tag peak 5, above the
-reviewed limit 4, while row peak was 4 (the admitted row bound is strictly below
-6). That observation cannot widen admission. A separate cold 374-work attempt
-also stopped after 3 validated works at the same boundary, without publishing
-a result. The second full attempt is `NOT_RUN`. The latest exploratory RTL
-attempt reached the unchanged 128 MiB
-queue-edge limit and produced no parity verdict.
+readiness marker. The historical guard4 run stopped at actual GPT-2 work 3.
+The additive `GUARDED_A8D16_TAG5_ROW_LT6_REVIEWED_V3` revision now requires
+same-instance RTL/native evidence for the original prefix, three adjacent
+availability/next-parent cases, and current-library equivalence for the
+preserved 240/42/1056/30/80 scopes. It permits tag peak 5 only for
+`a8w8-d16-hp1`; other profiles retain tag4. Row peak remains strictly below 6,
+ready violations remain zero, and physical queue capacity remains 6.
+
+The actual prefix reaches tag5 at post-edge 6,352,466. Complete bounded
+comparison checks 20,141,152 selected-event pairs and 336,288 queue transitions;
+the nine-work next-parent case checks 34,598,389 and 587,135 respectively.
+The test probe supports independent availability-driven electrical offers and
+bounded compressed streaming; it does not feed RTL acceptance into the model.
+Legacy fixed-offer and 128 MiB logging defaults remain unchanged.
+
+The original cold 374-work native replay validates IDs 0 through 238. Work 239
+completes natively at cursor 312,771,524, then fails the reviewed tag5 bound:
+generation tag peak 6, row peak 5, ready mask 0. Classification remains
+`OUTSIDE_REVIEWED_STATE_DOMAIN`, not proven overflow or RTL/model mismatch.
+No whole-trace result is published. Full6 RTL validation and the conditional
+second full replay are `NOT_RUN`; the guard is not raised to finish the trace.
 
 ### Explicit compact-run fixture entry
 

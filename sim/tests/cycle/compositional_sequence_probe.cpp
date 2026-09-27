@@ -46,6 +46,9 @@ std::uint64_t numeric_work_id = UINT64_MAX;
 unsigned numeric_injections = 0;
 bool boundary_schema_v2 = false;
 bool queue_edge_schema_v2 = false;
+bool availability_driven = false;
+bool model_only = false;
+bool queue_edge_limit_set = false;
 static_assert(IM2P_CYCLE_SEQUENCE_DOMAIN_ABI_VERSION == 2u,
               "queue payload V2 requires native domain ABI V2");
 
@@ -190,9 +193,10 @@ AbsoluteManifest read_absolute_work(const char *path) {
     unsigned offered_ordinal = UINT32_MAX;
     input >> token >> offered_ordinal >> offer.available >> offer.port;
     check(bool(input) && token == "A" && offered_ordinal == ordinal &&
-              offer.available <= offer.port &&
-              (!ordinal || (offer.available >= manifest.offers.back().available &&
-                            offer.port > manifest.offers.back().port)),
+              (!ordinal || offer.available >= manifest.offers.back().available) &&
+              (availability_driven ||
+               (offer.available <= offer.port &&
+                (!ordinal || offer.port > manifest.offers.back().port))),
           "malformed or out-of-order absolute offer");
     manifest.works.push_back(std::move(w));
     manifest.offers.push_back(offer);
@@ -213,6 +217,7 @@ bool public_ready(Adapter &state) {
 const AbsoluteOffer *active_absolute_offer = nullptr;
 std::vector<TagEdge> rtl_tag_offer_window, rtl_tag_recent;
 std::uint64_t absolute_fire = 0;
+bool absolute_accepted = false;
 std::uint64_t absolute_fragments = 0;
 bool absolute_held = false;
 bool absolute_credit = false;
@@ -220,6 +225,9 @@ std::array<std::uint64_t, 24> held_descriptor{};
 std::vector<std::string> absolute_window;
 bool absolute_mode = false;
 const AbsoluteManifest *absolute_manifest = nullptr;
+constexpr std::uint64_t default_queue_edge_byte_limit = 128ULL * 1024 * 1024;
+constexpr std::uint64_t maximum_queue_edge_byte_limit = 4ULL * 1024 * 1024 * 1024;
+std::uint64_t queue_edge_byte_limit = default_queue_edge_byte_limit;
 
 struct QueueSnapshot {
   std::uint64_t generation = 1, cycle = 0, tag_enqueues = 0, tag_dequeues = 0;
@@ -237,7 +245,6 @@ struct QueueSnapshot {
 QueueSnapshot previous_rtl_queue;
 bool have_previous_rtl_queue = false;
 std::uint64_t queue_edge_bytes = 0;
-constexpr std::uint64_t queue_edge_byte_limit = 128ULL * 1024 * 1024;
 
 void append_queue_snapshot(std::ostream &out, const QueueSnapshot &s, bool rtl) {
   out << "{\"cycle\":" << s.cycle << ",\"row_count\":" << s.row_count
@@ -293,8 +300,9 @@ void emit_queue_edge(std::string_view prefix, const QueueSnapshot &old,
   out << "}\n";
   const auto line = out.str();
   check(line.size() <= 2048, "queue edge line exceeds 2048 bytes");
-  check(line.size() <= queue_edge_byte_limit - queue_edge_bytes,
-        "combined queue edge output exceeds 128 MiB");
+  check(queue_edge_bytes <= queue_edge_byte_limit &&
+            line.size() <= queue_edge_byte_limit - queue_edge_bytes,
+        "combined queue edge output exceeds configured byte limit");
   queue_edge_bytes += line.size();
   std::cout << line;
   check(bool(std::cout), "queue edge output failed");
@@ -562,7 +570,7 @@ void observe_absolute(Adapter &state) {
       if (absolute_window.size() > 5) absolute_window.erase(absolute_window.begin());
     }
   }
-  if (active_absolute_offer && !absolute_fire) {
+  if (active_absolute_offer && !absolute_accepted) {
     const auto cycle = static_cast<std::uint64_t>(d.io_coreCycle);
     const bool available = cycle >= active_absolute_offer->available;
     const bool port_valid = d.io_work_valid && d.io_work_bits_firstLoop;
@@ -593,6 +601,7 @@ void observe_absolute(Adapter &state) {
       if (boundary_schema_v2 && current_ordinal == 1)
         emit_rtl_boundary(state, "WORK1_FIRE", 1);
       absolute_fire = cycle;
+      absolute_accepted = true;
       absolute_credit = false;
     }
   }
@@ -787,6 +796,7 @@ void measure_absolute(Adapter &state, const WorkInput &w, const AbsoluteOffer &o
   observed_first_full_head_id = observed_first_full_read = observed_first_full_write = 0;
   prior_tag_observer_cycle = UINT64_MAX;
   absolute_fire = 0;
+  absolute_accepted = false;
   absolute_fragments = 0;
   absolute_held = false;
   absolute_credit = true;
@@ -827,7 +837,7 @@ void measure_absolute(Adapter &state, const WorkInput &w, const AbsoluteOffer &o
   capture_rtl_tag(state.dut);
   active_absolute_offer = nullptr;
   current_ordinal = UINT32_MAX;
-  check(absolute_fire && milestones.accepted == absolute_fire &&
+  check(absolute_accepted && milestones.accepted == absolute_fire &&
         offer.available <= offer.port && offer.port <= absolute_fire,
         "absolute offer acceptance differs from observed valid/ready edge");
   check(milestones.accepted < milestones.result && milestones.result < milestones.release &&
@@ -1030,16 +1040,29 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
   std::cout << "MODEL_RUN {\"instance_count\":1,\"reset_count\":1,\"period\":"
             << manifest.period << ",\"work_count\":" << manifest.works.size()
             << ",\"stimulus_sha256\":\"" << manifest.digest
-            << "\",\"generation\":1}\n";
+            << "\",\"generation\":1";
+  if (availability_driven)
+    std::cout << ",\"offer_mode\":\"availability-driven\","
+                 "\"scope\":\"actual-trace-prefix-diagnostic\","
+                 "\"parent_completion_claim\":false,"
+                 "\"queue_edge_byte_limit\":" << queue_edge_byte_limit;
+  if (model_only)
+    std::cout << ",\"execution_mode\":\"model-only\","
+                 "\"rtl_run_present\":false,"
+                 "\"backing_cycle_offset\":5";
+  std::cout << "}\n";
 
   std::vector<unsigned> releases(manifest.works.size());
   std::vector<std::uint64_t> selected_event_counts(manifest.works.size());
+  std::vector<std::uint64_t> actual_ports(manifest.works.size());
   std::vector<std::array<unsigned, 2>> initial_halves(manifest.works.size());
   std::vector<std::array<std::uint64_t, 2>> initial_tag_counts(manifest.works.size());
   std::vector<unsigned> model_tag_max(manifest.works.size());
   std::vector<TagEdge> model_tag_offer_window, model_tag_recent;
   std::array<im2p_cycle_sequence_event_t, 256> events{};
   std::size_t reported = 0;
+  std::uint64_t previous_native_ready = 0;
+  unsigned native_tag_peak = 0;
   const auto status = [&] {
     im2p_cycle_sequence_status_t value;
     im2p_cycle_sequence_status_init(&value);
@@ -1086,6 +1109,14 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
               tags.enqueues >= tags.dequeues &&
               tags.enqueues - tags.dequeues == tags.queue_len,
           "native tag snapshot differs from session cursor or queue accounting");
+    if (availability_driven && tags.queue_len > native_tag_peak) {
+      native_tag_peak = tags.queue_len;
+      const auto snapshot = native_queue_snapshot(sequence.get());
+      std::cout << "MODEL_TAG_PEAK {\"occupancy\":" << native_tag_peak
+                << ",\"first_cycle\":" << tags.cursor << ",\"snapshot\":";
+      append_queue_snapshot(std::cout, snapshot, false);
+      std::cout << "}\n";
+    }
     if (!model_tag_offer_window.empty() && model_tag_offer_window.size() < 5 &&
         tags.cursor == model_tag_offer_window.back().cycle + 1)
       model_tag_offer_window.push_back({tags.cursor, tags.enqueues, tags.dequeues,
@@ -1120,7 +1151,7 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
       std::cout << "MODEL_WORK {\"ordinal\":" << reported
                 << ",\"work_id\":" << work.id << ",\"work_binding\":\""
                 << work.binding << "\",\"request_available_cycle\":" << offer.available
-                << ",\"port_offer_cycle\":" << offer.port
+                << ",\"port_offer_cycle\":" << actual_ports[reported]
                 << ",\"offered\":" << report.offered_cycle
                 << ",\"accepted\":" << report.accepted_cycle
                 << ",\"result_ready\":" << report.result_ready_cycle
@@ -1150,6 +1181,7 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
                 << ",\"mesh_tag_max_occupancy\":" << model_tag_max[reported]
                 << ",\"mesh_tag_full_backpressure_mapped\":false"
                 << ",\"mesh_tag_full_backpressure_cycles\":null}\n";
+      previous_native_ready = report.resource_ready_cycle;
       emit_tag_window("MODEL_TAG_EDGE", reported, "OFFER", model_tag_offer_window);
       emit_tag_window("MODEL_TAG_EDGE", reported, "RESOURCE", model_tag_recent);
       ++reported;
@@ -1187,8 +1219,13 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
   for (std::size_t ordinal = 0; ordinal < manifest.works.size(); ++ordinal) {
     const auto &work = manifest.works[ordinal];
     const auto &offer = manifest.offers[ordinal];
-    check(offer.port < config.max_session_cycles, "native port exceeds session budget");
-    while (status().cursor < offer.port) advance_one();
+    if (availability_driven)
+      while (reported < ordinal) advance_one();
+    const auto port = availability_driven
+        ? std::max(offer.available, previous_native_ready) : offer.port;
+    actual_ports[ordinal] = port;
+    check(port < config.max_session_cycles, "native port exceeds session budget");
+    while (status().cursor < port) advance_one();
     const auto before = status();
     if (boundary_schema_v2 && ordinal == 1)
       emit_native_boundary(sequence.get(), "WORK1_OFFER", 1);
@@ -1216,11 +1253,11 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
     descriptor.compact_runs = work.kind == 'R' ? &runs : nullptr;
     descriptor.submission = IM2P_CYCLE_BLOCK_SUBMISSIONS;
     descriptor.record_events = 1;
-    const int offered = im2p_cycle_sequence_offer(sequence.get(), &descriptor, offer.port);
+    const int offered = im2p_cycle_sequence_offer(sequence.get(), &descriptor, port);
     if (offered != IM2P_CYCLE_SEQUENCE_OK)
       throw std::runtime_error("native sequence offer failed at work " +
                                std::to_string(ordinal) + " port " +
-                               std::to_string(offer.port) + " cursor " +
+                               std::to_string(port) + " cursor " +
                                std::to_string(before.cursor) + " active " +
                                std::to_string(before.has_active) + " pending " +
                                std::to_string(before.has_pending) + " code " +
@@ -1260,7 +1297,10 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
       std::cout << "usage: compositional-probe <v1-or-v2-numeric-stimulus> "
                    "[--values PATH --work-id ID] [--tag-observer-v2] "
-                   "[--boundary-schema=2] [--queue-edge-schema=2]\n";
+                   "[--boundary-schema=2] [--queue-edge-schema=2] "
+                   "[--availability-driven] "
+                   "[--model-only] "
+                   "[--queue-edge-byte-limit=BYTES]\n";
       return 0;
     }
     int argument_count = argc;
@@ -1275,6 +1315,23 @@ int main(int argc, char **argv) {
       } else if (option == "--queue-edge-schema=2") {
         check(!queue_edge_schema_v2, "duplicate queue edge schema option");
         queue_edge_schema_v2 = true;
+      } else if (option == "--availability-driven") {
+        check(!availability_driven, "duplicate availability-driven option");
+        availability_driven = true;
+      } else if (option == "--model-only") {
+        check(!model_only, "duplicate model-only option");
+        model_only = true;
+      } else if (option.starts_with("--queue-edge-byte-limit=")) {
+        check(!queue_edge_limit_set, "duplicate queue edge byte limit option");
+        const auto token = option.substr(std::string_view("--queue-edge-byte-limit=").size());
+        std::uint64_t parsed_limit = 0;
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(),
+                                            parsed_limit);
+        check(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() &&
+                  parsed_limit > 0 && parsed_limit <= maximum_queue_edge_byte_limit,
+              "queue edge byte limit must be in [1,4294967296]");
+        queue_edge_byte_limit = parsed_limit;
+        queue_edge_limit_set = true;
       } else break;
       --argument_count;
     }
@@ -1298,6 +1355,12 @@ int main(int argc, char **argv) {
           "boundary schema v2 requires pinned six-profile absolute RTL");
     check(!queue_edge_schema_v2 || (boundary_schema_v2 && absolute_mode),
           "queue edge schema v2 requires absolute boundary mode");
+    check(!queue_edge_limit_set || queue_edge_schema_v2,
+          "queue edge byte limit requires queue edge schema v2");
+    check(!availability_driven || absolute_mode,
+          "availability-driven mode requires absolute v2 stimulus");
+    check(!model_only || (absolute_mode && availability_driven),
+          "model-only requires availability-driven absolute v2 stimulus");
     const auto absolute = absolute_mode ? read_absolute_work(argv[1]) : AbsoluteManifest{};
     check(!boundary_schema_v2 || absolute.works.size() >= 2,
           "boundary schema v2 requires two absolute works");
@@ -1325,11 +1388,34 @@ int main(int argc, char **argv) {
       numeric_payload = selected_numeric.get();
       numeric_work_id = requested;
     }
+    if (model_only) {
+      check(!numeric_mode, "model-only does not execute RTL numeric fixtures");
+      measure_native_absolute(absolute, 5);
+      return 0;
+    }
     VerilatedContext context;
     context.commandArgs(argc, argv);
     Dut dut{&context};
     Adapter state{dut, context};
-    reset(state);
+    if (availability_driven) {
+      // Keep edge zero available for the actual trace's cold first offer.
+      // The legacy reset helper consumes that edge after deasserting reset.
+      dut.io_work_valid = 0;
+      dut.io_loopDone_ready = 1;
+      dut.io_scaleRelease_valid = 0;
+      dut.io_readRequest_ready = 1;
+      dut.io_readBeat_valid = 0;
+      dut.io_writeRequest_ready = 1;
+      dut.io_writeCompletion_valid = 0;
+      dut.reset = 1;
+      for (unsigned i = 0; i < 5; ++i)
+        state.clock();
+      dut.clock = 0;
+      dut.reset = 0;
+      dut.eval();
+    } else {
+      reset(state);
+    }
     const auto backing_offset = state.cycle - state.dut.io_coreCycle;
     state.read_ready_period = period;
     state.event_observer = absolute_mode ? observe_absolute : observe;
@@ -1337,15 +1423,27 @@ int main(int argc, char **argv) {
       std::cout << "COMPOSITION_RUN {\"instance_count\":1,\"reset_count\":1,\"period\":"
                 << period << ",\"work_count\":" << works.size()
                 << ",\"stimulus_sha256\":\"" << absolute.digest
-                << "\",\"edge_convention\":\"pre_rising_old_state\"}\n";
+                << "\",\"edge_convention\":\"pre_rising_old_state\"";
+    if (absolute_mode && availability_driven)
+      std::cout << ",\"offer_mode\":\"availability-driven\","
+                   "\"scope\":\"actual-trace-prefix-diagnostic\","
+                   "\"parent_completion_claim\":false,"
+                   "\"queue_edge_byte_limit\":" << queue_edge_byte_limit;
+    if (absolute_mode)
+      std::cout << "}\n";
     else
       std::cout << "COMPOSITION_RUN {\"instance_count\":1,\"reset_count\":1,\"period\":"
                 << period << ",\"work_count\":" << works.size() << "}\n";
     Prediction previous{};
     std::uint64_t previous_rtl_ready = 0;
     for (std::size_t i = 0; i < works.size(); ++i)
-      if (absolute_mode)
-        measure_absolute(state, works[i], absolute.offers[i]);
+      if (absolute_mode) {
+        auto offer = absolute.offers[i];
+        if (availability_driven)
+          offer.port = std::max(offer.available, previous_rtl_ready);
+        measure_absolute(state, works[i], offer);
+        previous_rtl_ready = milestones.reusable;
+      }
       else {
         previous = measure(state, works[i], period, previous, previous_rtl_ready);
         previous_rtl_ready = milestones.reusable;
