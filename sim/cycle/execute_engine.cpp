@@ -20,6 +20,8 @@ void Engine::execute(State &n, const State &s, Signals &g) {
     na.outputs.pop_front();
     if (!a.tags.empty() && a.tags.front().id == row.id) {
       const auto tag = a.tags.front();
+      if (tag.preload.rob != none && tag.preload.origin != row.origin)
+        throw Error(IM2P_CYCLE_INTERNAL, "array tag/output origin mismatch");
       if (tag.preload.rob != none) {
         if (a.output_counter < tag.preload.output_rows) {
           Write w;
@@ -32,9 +34,13 @@ void Engine::execute(State &n, const State &s, Signals &g) {
         na.output_counter = row.last ? 0 : a.output_counter + 1;
         if (row.last)
           g.raw_completed = tag.preload.rob;
+        if (row.last)
+          g.raw_completed_origin = tag.preload.origin;
       }
-      if (row.last)
+      if (row.last) {
         na.tags.pop_front();
+        ++n.tag_dequeues;
+      }
     }
     if (!a.row_counts.empty() && a.row_counts.front().id == row.id && row.last)
       na.row_counts.pop_front();
@@ -65,17 +71,21 @@ void Engine::execute(State &n, const State &s, Signals &g) {
     }
     if (mesh_request) {
       na.request = true;
+      na.origin = c.preload.origin;
       na.rows = c.rows;
       na.id = (a.id + 1) % P::mesh_ids;
       na.tags.push_back({(a.id + 2) % P::mesh_ids, c.rows, c.preload});
+      ++n.tag_enqueues;
       na.row_counts.push_back({(a.id + 1) % P::mesh_ids, c.rows, {}});
     }
   }
   if (row_input) {
     const U parent =
-        record(s, EventType::ArrayInput, Resource::Array, {}, a.counter);
+        record(s, EventType::ArrayInput, Resource::Array, {}, a.counter, 0,
+               &a.origin);
     na.outputs.push_back(
-        {TimingEvent::accepted(s.cycle, profile.array_latency(), 1,
+        {a.origin,
+         TimingEvent::accepted(s.cycle, profile.array_latency(), 1,
                                EventType::ArrayOutput, Resource::Array),
          a.id, last_input, parent});
     na.written.fill(false);
@@ -124,6 +134,7 @@ void Engine::execute(State &n, const State &s, Signals &g) {
       if (!tags_busy && ex.pending[0] == none && ex.pending[1] == none) {
         nx.queue.pop_front();
         g.raw_completed = first.rob;
+        g.raw_completed_origin = first.origin;
       }
     } else if (first.kind == Kind::Preload && ex.queue.size() >= 2)
       mode = 1;
@@ -146,6 +157,7 @@ void Engine::execute(State &n, const State &s, Signals &g) {
       preload.rob = none;
       preload.src = none;
       preload.dst = none;
+      preload.origin = compute.origin;
     }
     const bool a_enabled = mode != 1;
     const bool d_enabled = mode != 2;
@@ -216,8 +228,12 @@ void Engine::execute(State &n, const State &s, Signals &g) {
       nx.started.fill(false);
       if (mode == 2 || mode == 3)
         nx.pending[0] = compute.rob;
+      if (mode == 2 || mode == 3)
+        nx.pending_origin[0] = compute.origin;
       if ((mode == 1 || mode == 3) && preload.dst == none)
         nx.pending[mode == 3 ? 1 : 0] = preload.rob;
+      if ((mode == 1 || mode == 3) && preload.dst == none)
+        nx.pending_origin[mode == 3 ? 1 : 0] = preload.origin;
     }
   } else {
     nx.counter.fill(0);
@@ -229,18 +245,21 @@ void Engine::execute(State &n, const State &s, Signals &g) {
       mask |= U(1) << bank;
   }
   if (mask)
-    record(s, EventType::ScratchpadRead, Resource::Scratchpad, {}, mask);
+    record(s, EventType::ScratchpadRead, Resource::Scratchpad, {}, mask, 0,
+           ex.queue.empty() ? nullptr : &ex.queue.front().origin);
 
   if (!g.raw_completed) {
     for (unsigned i = 0; i < ex.pending.size(); ++i)
       if (ex.pending[i] != none) {
         g.raw_completed = ex.pending[i];
+        g.raw_completed_origin = ex.pending_origin[i];
         nx.pending[i] = none;
         break;
       }
   }
   if (g.raw_completed)
-    record(s, EventType::RawCompleted, Resource::Array, {}, *g.raw_completed);
+    record(s, EventType::RawCompleted, Resource::Array, {}, *g.raw_completed,
+           0, &g.raw_completed_origin);
   // The retained non-transpose path still traverses its two-entry unroller.
   if (!ex.transpose.empty() && ex.queue.size() < P::execute_queue) {
     nx.queue.push_back(ex.transpose.front());

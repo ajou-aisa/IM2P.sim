@@ -17,6 +17,8 @@ MANIFEST_V3: Final = Path(__file__).with_name('corpus-authority-v3.json')
 MANIFEST_V3_SHA256: Final = '7add3fd188167e11e047f36647e0a28ea567ef8a7dcc3f6c28971c58bac5bb18'
 MANIFEST_V4: Final = Path(__file__).with_name('corpus-authority-v4.json')
 MANIFEST_V4_SHA256: Final = '1d260ac7ff24ead5796fba52f9b47b7fe7f983dfed2650b706c67bb775b10dbf'
+MANIFEST_V5: Final = Path(__file__).with_name('corpus-authority-v5.json')
+MANIFEST_V5_SHA256: Final = '512de77742562bea32103caaca185b0c4a9c6c714965dd1def8d9cdf20107e14'
 LARGE_K: Final = (32, 64, 96, 3072, 8256)
 CASE_FIELDS: Final = ('case', 'shape', 'tile', 'timing', 'raw', 'provenance')
 PROFILES: Final = tuple(f'a{bits}w{bits}-d{dim}-hp1' for bits in (4, 8) for dim in (16, 32, 64))
@@ -215,7 +217,7 @@ def _validate_reviewed_cases(document: dict[str, JsonValue]) -> None:
 
 def authority(revision: str = 'v1', *, fixture_root: Path | None = None,
               llama_root: Path | None = None) -> dict[str, JsonValue]:
-    if revision not in ('v1', 'v2', 'v3', 'v4'):
+    if revision not in ('v1', 'v2', 'v3', 'v4', 'v5'):
         raise CorpusError('independent corpus revision unsupported')
     if revision == 'v2' and hashlib.sha256(MANIFEST_V2.read_bytes()).hexdigest() != MANIFEST_V2_SHA256:
         raise CorpusError('independent corpus v2 manifest bytes changed; review new revision')
@@ -223,8 +225,10 @@ def authority(revision: str = 'v1', *, fixture_root: Path | None = None,
         raise CorpusError('independent corpus v3 manifest bytes changed; review new revision')
     if revision == 'v4' and hashlib.sha256(MANIFEST_V4.read_bytes()).hexdigest() != MANIFEST_V4_SHA256:
         raise CorpusError('independent corpus v4 manifest bytes changed; review new revision')
+    if revision == 'v5' and hashlib.sha256(MANIFEST_V5.read_bytes()).hexdigest() != MANIFEST_V5_SHA256:
+        raise CorpusError('independent corpus v5 manifest bytes changed; review new revision')
     document = _read_manifest({'v1': MANIFEST, 'v2': MANIFEST_V2,
-                               'v3': MANIFEST_V3, 'v4': MANIFEST_V4}[revision])
+                               'v3': MANIFEST_V3, 'v4': MANIFEST_V4, 'v5': MANIFEST_V5}[revision])
     if revision == 'v2':
         _validate_v2(document)
     if revision == 'v3':
@@ -241,6 +245,10 @@ def authority(revision: str = 'v1', *, fixture_root: Path | None = None,
             raise CorpusError('independent corpus v4 producer source digest missing')
         document = {**prior, **document,
                     'producer_source_sha256': {**producer, changed_path: changed_sha}}
+    if revision == 'v5':
+        from sim.cycle.corpus_package import validate_v5
+        validate_v5(document)
+        document = {**authority('v4'), **document}
     if fixture_root is not None:
         _hash_sources(document.get('fixture_source_sha256'), fixture_root, 'fixture')
     if revision == 'v2' and llama_root is not None:
@@ -253,54 +261,16 @@ def authority(revision: str = 'v1', *, fixture_root: Path | None = None,
             raise CorpusError('independent corpus pinned producer HEAD/cleanliness differs')
         _hash_sources(document.get('producer_source_sha256'), llama_root, 'producer')
         _hash_sources(document.get('selector_source_sha256'), ROOT.parent, 'selector')
-    if revision in ('v3', 'v4') and llama_root is not None:
-        if (llama_root.name != 'llama_cpp_gemmini' or llama_root.parent.name != 'source' or
-                llama_root.parent.parent.name != 'dependency'):
-            raise CorpusError('independent corpus candidate llama package layout differs')
-        package = llama_root.parents[2]
-        _hash_sources({'sim/cycle/corpus-authority-v3.json': MANIFEST_V3_SHA256},
-                      package / 'source', 'candidate authority')
-        lock_path = package / 'dependency-lock.json'
-        if (not lock_path.is_file() or
-                hashlib.sha256(lock_path.read_bytes()).hexdigest() != document['dependency_lock_sha256']):
-            raise CorpusError('independent corpus candidate dependency lock differs')
-        lock = _read_manifest(lock_path)
-        repositories = lock.get('repositories')
-        candidate = repositories.get('llama_cpp_gemmini') if isinstance(repositories, dict) else None
-        if (not isinstance(repositories, dict) or
-                not isinstance(candidate, dict) or
-                candidate.get('head') != document['producer_base_head']):
-            raise CorpusError('independent corpus candidate base head differs')
-        _hash_sources(document.get('producer_source_sha256'), llama_root, 'producer')
-        _hash_sources(document.get('selector_source_sha256'), ROOT.parent, 'selector')
-        source_manifest = _read_manifest(package / 'source-manifest.json')
-        if (revision == 'v4' and
-                hashlib.sha256((package / 'source-manifest.json').read_bytes()).hexdigest()
-                != document['source_manifest_sha256']):
-            raise CorpusError('independent corpus candidate source manifest differs')
-        files = source_manifest.get('files')
-        if not isinstance(files, dict):
-            raise CorpusError('independent corpus candidate source manifest missing')
-        sources = {'source/sim/cycle/corpus-authority-v3.json': MANIFEST_V3_SHA256}
-        for field, prefix in (('producer_source_sha256', 'dependency/source/llama_cpp_gemmini/'),
-                              ('fixture_source_sha256', 'source/')):
-            hashes = document[field]
-            if not isinstance(hashes, dict):
-                raise CorpusError('independent corpus candidate source closure missing')
-            for name, digest in hashes.items():
-                if not isinstance(name, str) or not isinstance(digest, str):
-                    raise CorpusError('independent corpus candidate source hash invalid')
-                sources[prefix + name] = digest
-        if any(not isinstance(entry := files.get(name), dict) or entry.get('sha256') != digest
-               for name, digest in sources.items()):
-            raise CorpusError('independent corpus candidate source manifest closure differs')
+    if revision in ('v3', 'v4', 'v5') and llama_root is not None:
+        from sim.cycle.corpus_package import validate_package
+        validate_package(document, llama_root, ROOT.parent)
     return document
 
 
 def authority_reference(revision: str = 'v1') -> dict[str, JsonValue]:
     document = authority(revision)
     manifest = {'v1': MANIFEST, 'v2': MANIFEST_V2,
-                'v3': MANIFEST_V3, 'v4': MANIFEST_V4}[revision]
+                'v3': MANIFEST_V3, 'v4': MANIFEST_V4, 'v5': MANIFEST_V5}[revision]
     return {'revision': document['revision'], 'sha256': hashlib.sha256(manifest.read_bytes()).hexdigest()}
 
 
@@ -313,7 +283,7 @@ def corpus(revision: str = 'v1') -> dict[str, list[dict[str, JsonValue]]]:
         if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) for row in rows):
             raise CorpusError('independent corpus cases missing: ' + profile)
         result[profile] = [dict(row) for row in rows if isinstance(row, dict)]
-    if revision in ('v3', 'v4'):
+    if revision in ('v3', 'v4', 'v5'):
         document = authority(revision)
         retained = document['retained_historical_case_ids']
         if not isinstance(retained, list):
@@ -362,7 +332,9 @@ def corpus(revision: str = 'v1') -> dict[str, list[dict[str, JsonValue]]]:
 
 def validate_corpus(document: Mapping[str, JsonValue]) -> None:
     reference = document.get('corpus_authority')
-    if isinstance(reference, dict) and reference.get('revision') == 'cycle-sim-0e1-metrics-guard-base-gemm-v4':
+    if isinstance(reference, dict) and reference.get('revision') == 'cycle-sim-cbe-source-equivalent-base-gemm-v5':
+        revision = 'v5'
+    elif isinstance(reference, dict) and reference.get('revision') == 'cycle-sim-0e1-metrics-guard-base-gemm-v4':
         revision = 'v4'
     elif isinstance(reference, dict) and reference.get('revision') == 'cycle-sim-c617-run-aware-base-gemm-v3':
         revision = 'v3'
@@ -381,7 +353,7 @@ def validate_corpus(document: Mapping[str, JsonValue]) -> None:
         if source.get('head') != manifest['producer_head'] or not isinstance(source_root, str):
             raise CorpusError('independent corpus pinned producer identity missing')
         authority('v2', fixture_root=ROOT, llama_root=Path(source_root))
-    if revision in ('v3', 'v4'):
+    if revision in ('v3', 'v4', 'v5'):
         source = document.get('llama_source')
         manifest = authority(revision)
         if not isinstance(source, dict) or set(source) != {'root', 'base_head', 'source_manifest_sha256',
@@ -398,7 +370,7 @@ def validate_corpus(document: Mapping[str, JsonValue]) -> None:
                 not source_manifest.is_file() or
                 hashlib.sha256(source_manifest.read_bytes()).hexdigest() != source['source_manifest_sha256']):
             raise CorpusError('independent corpus candidate source manifest differs')
-    if revision in ('v2', 'v3', 'v4'):
+    if revision in ('v2', 'v3', 'v4', 'v5'):
         manifest = authority(revision)
         fixture_hashes = manifest['fixture_source_sha256']
         if not isinstance(fixture_hashes, dict):
@@ -419,7 +391,7 @@ def validate_corpus(document: Mapping[str, JsonValue]) -> None:
     counts = {profile: len(rows) - len(LARGE_K) for profile, rows in expected.items()}
     if document.get('expected_cases') != identities or document.get('captured_corpus_counts') != counts:
         raise CorpusError('independent corpus identities/counts differ')
-    if revision in ('v3', 'v4'):
+    if revision in ('v3', 'v4', 'v5'):
         manifest = authority(revision)
         if (document.get('observed_corpus_counts') != {profile: manifest['observed_total'] for profile in PROFILES}
                 or document.get('moved_historical_residual_case_ids') != manifest['moved_historical_residual_case_ids']):

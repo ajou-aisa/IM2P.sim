@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Final
 
 from scripts.gemmini_resolve_profile import JsonValue
-from sim.cycle.certificate_contract import PROFILES, array_value, object_value, read_document
+from sim.cycle.certificate_contract import (
+    PROFILES,
+    array_value,
+    object_value,
+    read_document,
+)
 from sim.cycle.npu_trace_schema import Record, integer, text
-from sim.cycle.production_sequence_evidence import CertifiedCase, CertifiedWork, reference, require, validate_case
+from sim.cycle.production_sequence_evidence import (
+    CertifiedCase,
+    CertifiedWork,  # noqa: F401 - public re-export
+    reference,
+    require,
+    validate_case,
+)
 from sim.cycle.reconstruct_graph import read_manifest, sha256
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 CORPUS: Final = ROOT / 'sim/cycle/production_sequence_corpus.json'
 CORPUS_SHA256: Final = '4eca9ab2fe91127cf5c3fedee6f20c1fb037de3b1d993314f9d6e37db5aa0ee0'
+CURRENT_CORPUS_SHA256: Final = '847630520b335bc7f2892376a38f77f05be1b2477b0b0294ba91126bec7545d4'
 SOURCE_PATHS: Final = (
     'sim/cycle/service_certificate.py', 'sim/cycle/production_sequence_certificate.py',
     'sim/cycle/production_sequence_evidence.py', 'sim/cycle/production_sequence_corpus.json',
@@ -24,9 +36,13 @@ SCHEMA: Final = 'im2p-drained-service-certificate'
 ROLE: Final = 'PRODUCTION_GENERATED_SEQUENCE'
 
 
-def load_corpus() -> Record:
+def load_corpus(path: Path | None = None) -> Record:
+    """Only independently pinned bytes are approved; a caller's digest is not authority."""
     require(sha256(CORPUS) == CORPUS_SHA256, 'independent corpus changed')
-    corpus = read_document(CORPUS)
+    if path is not None:
+        require(sha256(path) in (CORPUS_SHA256, CURRENT_CORPUS_SHA256),
+                'unapproved selected corpus')
+    corpus = read_document(CORPUS if path is None else path)
     vectors = [[phase] * 4 for phase in range(5)]
     require(corpus.get('schema') == 'im2p-production-drained-sequence-corpus' and
             corpus.get('version') == 1 and corpus.get('scope') == 'native-production-dispatch-fixture' and
@@ -53,7 +69,8 @@ def validate_source_manifest(path: Path, digest: str) -> None:
     require(len(seen) >= 27, 'producer source closure incomplete')
 
 
-def validate_producer_receipt(profile: str, trace: Path, pinned: Record) -> None:
+def validate_producer_receipt(profile: str, trace: Path, corpus: Record) -> None:
+    pinned = object_value(object_value(corpus['profiles'], 'pinned profiles')[profile], 'pinned profile')
     root = trace.parent.parent
     receipt_path = root / 'receipt.json'
     require(sha256(receipt_path) == pinned.get('receipt_sha256'), 'producer receipt changed')
@@ -62,14 +79,14 @@ def validate_producer_receipt(profile: str, trace: Path, pinned: Record) -> None
     require(receipt.get('schema') == 'im2p-native-producer-corpus-receipt' and
             receipt.get('version') == 1 and receipt.get('profile') == profile and
             receipt.get('scope') == 'native-production-dispatch-fixture' and
-            source.get('llama_commit') == load_corpus().get('producer_commit') and
-            source.get('producer_dirty_diff_sha256') == load_corpus().get('producer_dirty_diff_sha256') and
+            source.get('llama_commit') == corpus.get('producer_commit') and
+            source.get('producer_dirty_diff_sha256') == corpus.get('producer_dirty_diff_sha256') and
             source.get('source_manifest_sha256') == pinned.get('source_manifest_sha256') and
             receipt.get('hardware_contract_sha256') == pinned.get('hardware_contract_sha256'),
             'producer receipt identity differs')
     diff = (root / text(source, 'producer_dirty_diff')).resolve(strict=True)
     require(diff.is_relative_to(root.parent) and
-            sha256(diff) == load_corpus().get('producer_dirty_diff_sha256'),
+            sha256(diff) == corpus.get('producer_dirty_diff_sha256'),
             'producer source diff artifact changed')
     artifacts = object_value(receipt.get('artifacts_sha256'), 'producer artifacts')
     require(bool(artifacts) and all((root / name).is_file() and sha256(root / name) == digest
@@ -83,17 +100,19 @@ def validate_producer_receipt(profile: str, trace: Path, pinned: Record) -> None
     graph = read_manifest(root / 'run/semantic-graph.jsonl')
     producer = object_value(graph.run.get('producer'), 'semantic producer')
     require(producer.get('source_manifest_sha256') == pinned.get('source_manifest_sha256') and
-            producer.get('git_commit') == load_corpus().get('producer_commit') and
+            producer.get('git_commit') == corpus.get('producer_commit') and
             producer.get('hardware_contract_sha256') == pinned.get('hardware_contract_sha256'),
             'semantic producer source binding differs')
 
 
 def validate_production_sequence(document: Record, library: Path, trace: Path,
                                  timing: Record, initial_halves: tuple[int, int]) -> tuple[CertifiedCase, ...]:
-    corpus = load_corpus()
+    corpus_path = (reference(object_value(document['corpus_authority'], 'corpus authority'), 'corpus authority')
+                   if 'corpus_authority' in document else None)
+    corpus = load_corpus(corpus_path)
     require(document.get('schema') == SCHEMA and document.get('version') == 2 and
             document.get('artifact_role') == ROLE and document.get('status') == 'PASS' and
-            document.get('corpus_sha256') == CORPUS_SHA256 and
+            document.get('corpus_sha256') == sha256(CORPUS if corpus_path is None else corpus_path) and
             document.get('library_sha256') == sha256(library),
             'production schema, corpus or library differs')
     sources = object_value(document.get('source_sha256'), 'production sources')
@@ -117,7 +136,7 @@ def validate_production_sequence(document: Record, library: Path, trace: Path,
             report = read_document(report_path)
             producer = object_value(report.get('producer_artifacts'), 'producer artifacts')
             source_trace = reference(object_value(producer.get('trace'), 'trace'), 'trace')
-            validate_producer_receipt(profile, source_trace, pinned)
+            validate_producer_receipt(profile, source_trace, corpus)
             verified_profiles.add(profile)
         case = validate_case(report_path, library, profile, phases, pinned, timing)
         if profile == case.profile and sha256(trace) == pinned.get('trace_sha256'):
@@ -128,12 +147,14 @@ def validate_production_sequence(document: Record, library: Path, trace: Path,
     return tuple(admitted)
 
 
-def build(inputs: Path, library: Path, base: Path, run: Path, fixture: Path, output: Path) -> Path:
+def build(inputs: Path, library: Path, base: Path, run: Path, fixture: Path, output: Path,
+          *, corpus: Path | None = None) -> Path:
     from sim.cycle.certificate_contract import validate_certificate
     from sim.cycle.run_aware_certificate import validate_run_certificate
-    from sim.cycle.service_certificate import CORPUS as FIXTURE_CORPUS, validate_evidence
+    from sim.cycle.service_certificate import CORPUS as FIXTURE_CORPUS
+    from sim.cycle.service_certificate import validate_evidence
 
-    corpus = load_corpus()
+    selected = load_corpus(corpus)
     fixture_document = read_document(fixture)
     validate_evidence(fixture_document, library)
     require(fixture_document.get('base_certificate_sha256') == sha256(base) and
@@ -154,7 +175,7 @@ def build(inputs: Path, library: Path, base: Path, run: Path, fixture: Path, out
                 'duplicate or relative case report route')
         indexed[profile, phases] = path
     expected = {(profile, tuple([phase] * 4)) for profile in PROFILES for phase in range(5)}
-    require(len(indexed) == corpus['case_count'] and set(indexed) == expected,
+    require(len(indexed) == selected['case_count'] and set(indexed) == expected,
             'input routes do not cover pinned six-profile phases')
     cases: list[JsonValue] = []
     for (profile, phases), path in sorted(indexed.items()):
@@ -162,12 +183,14 @@ def build(inputs: Path, library: Path, base: Path, run: Path, fixture: Path, out
                       'report': {'path': str(path), 'sha256': sha256(path)}})
     certificate: Record = {
         'schema': SCHEMA, 'version': 2, 'artifact_role': ROLE, 'status': 'PASS',
-        'corpus_sha256': CORPUS_SHA256, 'library_sha256': sha256(library),
+        'corpus_sha256': sha256(CORPUS if corpus is None else corpus), 'library_sha256': sha256(library),
         'base_certificate_sha256': sha256(base), 'run_certificate_sha256': sha256(run),
         'fixture_certificate': {'path': str(fixture.resolve(strict=True)), 'sha256': sha256(fixture)},
         'source_sha256': {name: sha256(ROOT / name) for name in SOURCE_PATHS},
         'cases': cases,
     }
+    if corpus is not None:
+        certificate['corpus_authority'] = {'path': str(corpus.resolve(strict=True)), 'sha256': sha256(corpus)}
     first_report = read_document(indexed[PROFILES[0], (0, 0, 0, 0)])
     producer = object_value(first_report.get('producer_artifacts'), 'producer artifacts')
     trace = reference(object_value(producer.get('trace'), 'trace'), 'trace')
@@ -185,10 +208,12 @@ def main() -> int:
     for name in ('inputs', 'library', 'base-certificate', 'run-certificate',
                  'fixture-certificate', 'out'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--corpus', type=Path, help='explicit independently pinned corpus (historical default unchanged)')
     args = parser.parse_args()
     try:
         path = build(args.inputs.resolve(), args.library.resolve(), args.base_certificate.resolve(),
-                     args.run_certificate.resolve(), args.fixture_certificate.resolve(), args.out.resolve())
+                     args.run_certificate.resolve(), args.fixture_certificate.resolve(), args.out.resolve(),
+                     corpus=args.corpus.resolve() if args.corpus is not None else None)
     except (OSError, ValueError, KeyError, IndexError) as error:
         print(f'production service certificate failed: {error}', file=sys.stderr)
         return 1

@@ -157,7 +157,8 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
             document.get('timing_profile') == 'rtl-regression', 'unsupported timing scope/framing')
     require(document.get('execution_kind') in ('FRESH_RUN', 'REAGGREGATED_FROM_VERIFIED_EVIDENCE'),
             'evidence execution kind required')
-    require(document.get('corpus_authority') in (authority_reference('v3'), authority_reference('v4')),
+    require(document.get('corpus_authority') in (authority_reference('v3'), authority_reference('v4'),
+                                               authority_reference('v5')),
             'current production requires reviewed independent corpus authority')
     profiles = unique_strings(document.get('profiles'), 'profiles')
     framings = unique_strings(document.get('framings'), 'framings')
@@ -176,6 +177,9 @@ def validate_certificate(document: Mapping[str, JsonValue], library: Path,
             kind = 'FRESH_BUILD' if document['execution_kind'] == 'FRESH_RUN' else 'VERIFIED_REUSE'
             require(binding.get('execution_kind') == kind, 'RTL build binding execution kind mismatch')
             validate_binding(binding, object_value(contracts[profile], profile))
+            if document['corpus_authority'] == authority_reference('v5'):
+                require(binding.get('llama_source') == document.get('llama_source'),
+                        'RTL build package identity differs: ' + profile)
         validate_corpus(document)
     except (BuildBindingError, CorpusError) as error:
         raise CertificateError(str(error)) from error

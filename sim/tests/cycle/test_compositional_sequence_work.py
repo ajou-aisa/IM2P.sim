@@ -9,6 +9,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.npu_trace_schema import Record
@@ -44,6 +47,42 @@ def test_rejects_one_cycle_event_mutation() -> None:
         assert 'event stream differs' in str(error)
     else:
         raise AssertionError('event +1 mutation was accepted')
+
+
+def test_cli_v2_requires_case_before_manifest_read(tmp_path: Path) -> None:
+    # Given: a v2 invocation with no case and an absent manifest.
+    out = tmp_path / 'v2-out'
+
+    # When: the public runner parses its arguments.
+    result = subprocess.run(
+        [sys.executable, '-B', str(Path(__file__).with_name('compositional_sequence_work.py')),
+         '--stimulus', str(tmp_path / 'missing.json'), '--out', str(out)],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    # Then: the exact v2 argument error is reported without publishing output.
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr == 'compositional sequence: v2 requires --case and excludes v1 trace/delays arguments\n'
+    assert not out.exists()
+
+
+def test_cli_v1_requires_inputs_before_output(tmp_path: Path) -> None:
+    # Given: a v1 invocation with only its output path.
+    out = tmp_path / 'v1-out'
+
+    # When: the public runner parses its arguments.
+    result = subprocess.run(
+        [sys.executable, '-B', str(Path(__file__).with_name('compositional_sequence_work.py')),
+         '--out', str(out)],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+
+    # Then: the exact v1 argument error is reported without publishing output.
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr == 'compositional sequence: v1 requires trace, lifecycle, semantic graph, RTL build, library and delays\n'
+    assert not out.exists()
 
 
 if __name__ == '__main__':

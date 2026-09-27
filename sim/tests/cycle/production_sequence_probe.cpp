@@ -8,6 +8,7 @@ int im2p_production_sequence_requires_generated_model;
 #include <fstream>
 #include <sstream>
 #include <string_view>
+#include "tag_pressure_observer.hpp"
 
 #define IM2P_SEQUENCE_TAP_(top, suffix) top##__DOT__control__DOT__##suffix
 #define IM2P_SEQUENCE_TAP(top, suffix) IM2P_SEQUENCE_TAP_(top, suffix)
@@ -72,6 +73,18 @@ unsigned prior_tag_read = 0, prior_tag_write = 0;
 bool tag_initialized = false;
 unsigned max_tag_queue_len = 0;
 std::uint64_t tag_full_backpressure_cycles = 0;
+bool tag_observer_v2 = false;
+std::vector<std::uint64_t> rtl_selected_event_counts;
+std::uint64_t observed_full_queue_cycles = 0, observed_full_stall_cycles = 0;
+std::uint64_t observed_full_dequeue_cycles = 0;
+std::uint64_t observed_legacy_heuristic_cycles = 0;
+std::uint64_t observed_first_full_cycle = 0, observed_first_stall_cycle = 0;
+std::uint64_t observed_read_wraps = 0, observed_write_wraps = 0;
+std::uint64_t observed_matmul_id_wraps = 0;
+unsigned observed_first_full_head_id = 0, observed_first_full_read = 0;
+unsigned observed_first_full_write = 0, prior_matmul_id = 0;
+bool matmul_id_initialized = false;
+std::uint64_t prior_tag_observer_cycle = UINT64_MAX;
 std::uint64_t first_dequeue_cycle = 0, prior_response_cycle = 0;
 unsigned first_dequeue_out_id = 0, first_dequeue_resp_valid = 0;
 unsigned first_dequeue_resp_last = 0, first_dequeue_match_ready = 0;
@@ -82,6 +95,56 @@ void sample_tag(const Dut &dut) {
   const auto *root = dut.rootp;
   const auto len = unsigned(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
       execute__DOT__mesh__DOT__tagq__DOT__len));
+  if (tag_observer_v2 && current_ordinal != UINT32_MAX &&
+      prior_tag_observer_cycle != dut.io_coreCycle) {
+    prior_tag_observer_cycle = dut.io_coreCycle;
+    const auto &head = root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+        execute__DOT__mesh_cntl_signals_q__DOT___ram_ext_R0_data);
+    const TagPressureSignals signals{
+        len, {head[0], head[1], head[2]},
+        !root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+            execute__DOT__mesh_cntl_signals_q__DOT__empty),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___mesh_io_a_ready)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___mesh_io_b_ready)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___mesh_io_d_ready)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___GEN_1)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___GEN_0)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___GEN)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT__mesh__DOT__req_valid)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT__mesh__DOT__last_fire)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+            execute__DOT__mesh__DOT___total_rows_q_io_enq_ready)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___mesh_io_req_ready)),
+        bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT___GEN_40))};
+    if (len == 6) {
+      ++observed_full_queue_cycles;
+      if (!observed_first_full_cycle) {
+        observed_first_full_cycle = dut.io_coreCycle;
+        observed_first_full_read = root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+            execute__DOT__mesh__DOT__tagq__DOT__raddr);
+        observed_first_full_write = root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+            execute__DOT__mesh__DOT__tagq__DOT__waddr);
+        const std::array<unsigned, 6> ids = {root->IM2P_TAG_REG(0, id),
+            root->IM2P_TAG_REG(1, id), root->IM2P_TAG_REG(2, id),
+            root->IM2P_TAG_REG(3, id), root->IM2P_TAG_REG(4, id),
+            root->IM2P_TAG_REG(5, id)};
+        observed_first_full_head_id = ids.at(observed_first_full_read);
+      }
+      observed_full_dequeue_cycles +=
+          bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+              execute__DOT__mesh__DOT__io_resp_valid_RegShifted_0_0)) &&
+          bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+              execute__DOT__mesh__DOT__out_last_RegShifted_0_0)) &&
+          bool(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+              execute__DOT__mesh__DOT___tagq_io_deq_ready_T_1));
+    }
+    if (tag_full_stall(signals, control_first_bit(IM2P_ACTIVATION_BITS, IM2P_DIM))) {
+      ++observed_full_stall_cycles;
+      if (!observed_first_stall_cycle) observed_first_stall_cycle = dut.io_coreCycle;
+    }
+    observed_legacy_heuristic_cycles +=
+        len == 6 && signals.post_gate_req_valid && !signals.req_ready;
+  }
   if (current_ordinal != UINT32_MAX) {
     max_tag_queue_len = std::max(max_tag_queue_len, len);
     tag_full_backpressure_cycles += len == 6 &&
@@ -96,6 +159,10 @@ void sample_tag(const Dut &dut) {
     const auto dequeues = (read + 6 - prior_tag_read) % 6;
     const auto enqueues = (write + 6 - prior_tag_write) % 6;
     check(dequeues <= 1 && enqueues <= 1, "mesh tag pointer skipped a cycle");
+    if (tag_observer_v2 && current_ordinal != UINT32_MAX) {
+      observed_read_wraps += prior_tag_read == 5 && read == 0;
+      observed_write_wraps += prior_tag_write == 5 && write == 0;
+    }
     if (dequeues && current_ordinal != UINT32_MAX && !first_dequeue_seen) {
       first_dequeue_seen = true;
       first_dequeue_cycle = prior_response_cycle;
@@ -110,6 +177,14 @@ void sample_tag(const Dut &dut) {
   prior_tag_read = read;
   prior_tag_write = write;
   tag_initialized = true;
+  if (tag_observer_v2) {
+    const auto matmul_id = unsigned(root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
+        execute__DOT__mesh__DOT__matmul_id));
+    if (matmul_id_initialized && current_ordinal != UINT32_MAX)
+      observed_matmul_id_wraps += prior_matmul_id == 4 && matmul_id == 0;
+    prior_matmul_id = matmul_id;
+    matmul_id_initialized = true;
+  }
   prior_response_cycle = dut.io_coreCycle;
   prior_response_out_id = root->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
       execute__DOT__mesh__DOT__out_matmul_id_RegShifted_0_0);
@@ -176,6 +251,12 @@ void event(const char *kind, std::uint64_t cycle) {
               << cycle << ' ' << kind << '\n';
 }
 
+void counted_event(const char *kind, std::uint64_t cycle) {
+  if (tag_observer_v2 && current_ordinal < rtl_selected_event_counts.size())
+    ++rtl_selected_event_counts[current_ordinal];
+  event(kind, cycle);
+}
+
 void observe(Adapter &state) {
   observe_service(state);
   const auto &d = state.dut;
@@ -184,31 +265,31 @@ void observe(Adapter &state) {
   const auto cycle = static_cast<std::uint64_t>(d.io_coreCycle);
   if (d.io_work_valid && d.io_work_ready && d.io_work_bits_finalFragment)
     ++accepted_final_fragments;
-  if (d.io_work_valid && d.io_work_ready) event("work", cycle);
-  if (d.io_events_loadIssued) event("load_issue", cycle);
-  if (d.io_events_executeIssued) event("execute_issue", cycle);
-  if (d.io_events_storeIssued) event("store_issue", cycle);
-  if (d.io_events_outputContextIssued) event("context", cycle);
-  if (d.io_events_loadDmaAccepted) event("load_dma", cycle);
+  if (d.io_work_valid && d.io_work_ready) counted_event("work", cycle);
+  if (d.io_events_loadIssued) counted_event("load_issue", cycle);
+  if (d.io_events_executeIssued) counted_event("execute_issue", cycle);
+  if (d.io_events_storeIssued) counted_event("store_issue", cycle);
+  if (d.io_events_outputContextIssued) counted_event("context", cycle);
+  if (d.io_events_loadDmaAccepted) counted_event("load_dma", cycle);
   if (d.io_readRequest_valid && d.io_readRequest_ready &&
       (d.io_readRequest_bits_address < s_base || d.io_readRequest_bits_address >= c_base))
-    event("read_request", cycle);
+    counted_event("read_request", cycle);
   if (d.io_readBeat_valid && d.io_readBeat_ready) {
     const auto it = std::find_if(state.reads.begin(), state.reads.end(), [&](const Read &read) {
       return read.id == d.io_readBeat_bits_id;
     });
     check(it != state.reads.end(), "read response lacks backing ID");
-    if (!it->scale) event("read_response", cycle);
+    if (!it->scale) counted_event("read_response", cycle);
   }
-  if (d.io_events_scratchpadReadAcceptedBankMask) event("scratchpad_read", cycle);
+  if (d.io_events_scratchpadReadAcceptedBankMask) counted_event("scratchpad_read", cycle);
   if (d.rootp->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
-      execute__DOT__mesh__DOT__input_next_row_into_spatial_array)) event("array_input", cycle);
+      execute__DOT__mesh__DOT__input_next_row_into_spatial_array)) counted_event("array_input", cycle);
   if (d.rootp->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, _execute_io_completed_valid))
-    event("raw_completed", cycle);
-  if (d.io_events_rawRow) event("array_output", cycle);
-  if (d.io_events_scaledRow) event("accumulator_write", cycle);
-  if (d.io_events_accumulatorCommitted) event("accumulator_commit", cycle);
-  if (d.io_events_storeDmaAccepted) event("store_dma", cycle);
+    counted_event("raw_completed", cycle);
+  if (d.io_events_rawRow) counted_event("array_output", cycle);
+  if (d.io_events_scaledRow) counted_event("accumulator_write", cycle);
+  if (d.io_events_accumulatorCommitted) counted_event("accumulator_commit", cycle);
+  if (d.io_events_storeDmaAccepted) counted_event("store_dma", cycle);
   if (d.io_events_rawRow && !first_output_seen && current_ordinal != UINT32_MAX) {
     first_output_tag = tag_head(d);
     first_output_matmul_id = d.rootp->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP,
@@ -216,10 +297,10 @@ void observe(Adapter &state) {
     first_output_cycle = cycle;
     first_output_seen = true;
   }
-  if (d.io_writeRequest_valid && d.io_writeRequest_ready) event("write_request", cycle);
-  if (d.io_writeCompletion_valid && d.io_writeCompletion_ready) event("write_completion", cycle);
-  if (d.io_loopDone_valid && d.io_loopDone_ready) event("loop_done", cycle);
-  if (d.io_logicalDone_valid) event("logical_done", cycle);
+  if (d.io_writeRequest_valid && d.io_writeRequest_ready) counted_event("write_request", cycle);
+  if (d.io_writeCompletion_valid && d.io_writeCompletion_ready) counted_event("write_completion", cycle);
+  if (d.io_loopDone_valid && d.io_loopDone_ready) counted_event("loop_done", cycle);
+  if (d.io_logicalDone_valid) counted_event("logical_done", cycle);
 }
 
 std::vector<std::int32_t> result(Adapter &state, const WorkInput &w) {
@@ -306,6 +387,9 @@ void execute_residual(Adapter &state, const WorkInput &w, std::vector<std::int32
   work.activations.assign(w.m * w.k, 1);
   work.weights.assign(w.k * w.n, 1);
   work.carriers.assign(w.runs.size() * w.n, 0);
+#ifdef IM2P_COMPOSITIONAL_NUMERIC_HOOK
+  IM2P_COMPOSITIONAL_NUMERIC_HOOK(w, work);
+#endif
   const auto slot = w.slot;
   state.active_slot = slot;
   state.rows[slot] = w.m;

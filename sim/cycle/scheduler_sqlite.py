@@ -9,30 +9,39 @@ from contextlib import closing
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import assert_never
 
 from sim.cycle.execution_ir import Kind, Milestone, Node, ensure, parse_ir
-from sim.cycle.execution_services import NpuProvider, Services, parse_services
+from sim.cycle.execution_sequence_provider import (
+    DiagnosticStatefulProvider,
+    StatefulSequenceProvider,
+)
+from sim.cycle.execution_services import Services, parse_services
 from sim.cycle.input_snapshot import (
     COPY_RESERVE_BYTES,
     SQLITE_WORKING_SET_FACTOR,
     require_storage_budget,
 )
 from sim.cycle.npu_trace import snapshot_inputs, verify_input_snapshots
-from sim.cycle.npu_trace_schema import Record, object_value, unique_pairs
+from sim.cycle.npu_trace_schema import Record, integer, object_value, unique_pairs
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.scheduler import (
     Scenario,
     ServiceExecutor,
+    TimingProvider,
+    complete_provider,
     rational,
+    schedule_source_binding,
     scheduled_record,
     service_binding,
     validate_environment,
+    validation_scope,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class SqliteScheduleInputs:
-    provider: NpuProvider
+    provider: TimingProvider
     scenario: Scenario
 
 
@@ -89,8 +98,30 @@ def _fire(database: sqlite3.Connection, identity: str, milestone: str) -> None:
                       '(SELECT node FROM ir.edges WHERE parent=? AND milestone=?)', (identity, milestone))
 
 
+def _request_available(database: sqlite3.Connection, node: Node) -> Fraction:
+    ready = Fraction(0)
+    for milestone, body in database.execute(
+        'SELECT e.milestone,r.body FROM ir.edges e JOIN results r ON r.identity=e.parent WHERE e.node=?',
+        (node.identity,),
+    ):
+        match Milestone(str(milestone)):
+            case Milestone.ACCEPTED:
+                key = 'accepted_ns'
+            case Milestone.RESULT_READY:
+                key = 'result_ready_ns'
+            case Milestone.RESOURCE_READY:
+                key = 'resource_ready_ns'
+            case unreachable:
+                assert_never(unreachable)
+        epoch = object_value(_document(str(body))[key])
+        ready = max(ready, Fraction(integer(epoch, 'numerator'), integer(epoch, 'denominator')))
+    return ready
+
+
 def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
          observed: sqlite3.Connection | None = None) -> Record:
+    stateful = isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider))
+    source_binding = schedule_source_binding(Path(__file__)) if stateful else {}
     manifest_row = database.execute("SELECT body FROM ir.metadata WHERE key='manifest'").fetchone()
     ensure(manifest_row is not None, 'missing SQLite execution manifest')
     manifest = _document(str(manifest_row[0]))
@@ -132,16 +163,16 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
         services = Services({}, {}) if row is None else parse_services(_document(str(row[0])))
         ensure(set(services.cpu) | set(services.npu) == ({node.service} if node.service is not None else set()),
                'SQLite service identity mismatch')
-        completed = engine.execute(node, services, now)
+        request_available = _request_available(database, node) if isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider)) else None
+        completed = engine.execute(node, services, now, request_available)
         database.execute('UPDATE state SET started=1 WHERE identity=?', (node.identity,))
         record = scheduled_record(completed)
-        if observed is None:
-            database.execute('INSERT INTO results VALUES(?,?,?)',
-                             (node.identity, finished, json.dumps(record, separators=(',', ':'))))
-        else:
+        if observed is not None:
             actual = observed.execute('SELECT identity,body FROM results WHERE ordinal=?', (finished,)).fetchone()
             ensure(actual is not None and actual[0] == node.identity and _same_record(_document(str(actual[1])), record),
                    'SQLite schedule node/endpoint mismatch')
+        database.execute('INSERT INTO results VALUES(?,?,?)',
+                         (node.identity, finished, json.dumps(record, separators=(',', ':'))))
         for milestone in Milestone:
             epoch = completed.milestone(milestone)
             if epoch <= now:
@@ -153,16 +184,16 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
         finished += 1
         if finished % 10_000 == 0:
             ensure(len(events) <= 16384, 'scenario exceeds bounded concurrent event capacity')
-    if inputs.scenario.scope == 'RECONSTRUCTED':
-        from sim.cycle.execution_cycle_provider import CycleServiceProvider
-        ensure(isinstance(inputs.provider, CycleServiceProvider) and
-               inputs.provider.completed == set(inputs.provider.requests),
-               'scheduled NPU work does not equal bound trace work')
+    complete_provider(inputs.provider, inputs.scenario)
     from sim.cycle.execution_cycle_provider import CycleServiceProvider
-    library_sha256 = sha256(inputs.provider.library) if isinstance(inputs.provider, CycleServiceProvider) else None
-    return {'schema': 'im2p-execution-schedule-sqlite', 'version': 1, 'scope': inputs.scenario.scope,
+    if isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+        library_sha256 = inputs.provider.admission.source_identity.library_sha256
+    else:
+        library_sha256 = sha256(inputs.provider.library) if isinstance(inputs.provider, CycleServiceProvider) else None
+    summary: Record = {'schema': 'im2p-execution-schedule-sqlite', 'version': 2 if stateful else 1,
+            'scope': inputs.scenario.scope,
             'node_count': count, 'completion_ns': rational(result_end), 'resource_completion_ns': rational(resource_end),
-            'service_validation_scope': inputs.provider.validation_scope,
+            'service_validation_scope': validation_scope(inputs.provider),
             'service_binding': service_binding(inputs.provider, inputs.scenario),
             'cycle_library_sha256': library_sha256,
             'clock_selection_sha256': sha256(inputs.scenario.clock_artifact)
@@ -171,6 +202,10 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
             'time_unit': 'nanosecond-rational', 'queue_policy': 'READY_ORDER_THEN_ID',
             'clock_alignment': 'CEIL_TO_NPU_EDGE', 'worker_policy': 'EXPLICIT_GANG_VECTOR',
             'validated_service_reconstruction': inputs.scenario.scope == 'RECONSTRUCTED'}
+    if stateful:
+        ensure(source_binding == schedule_source_binding(Path(__file__)), 'SQLite schedule source binding changed during scheduling')
+        summary.update(source_binding)
+    return summary
 
 
 def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) -> Record:
@@ -187,6 +222,12 @@ def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) ->
             database.execute('INSERT INTO metadata VALUES(?,?)', ('manifest', json.dumps(summary, sort_keys=True)))
             database.commit()
         verify_input_snapshots(snapshots, 'SQLite scheduling')
+        if isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+            inputs.provider.verify_complete()
+        if summary['version'] == 2:
+            ensure(all(summary.get(key) == digest for key, digest in
+                       schedule_source_binding(Path(__file__)).items()),
+                   'SQLite schedule source binding changed before publication')
         os.link(staged, output)
     return summary
 

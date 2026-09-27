@@ -1,21 +1,43 @@
 from __future__ import annotations
 
+# allow: SIZE_OK — existing parser/command surface stays together to preserve legacy CLI and publication bindings.
 import argparse
 import json
 import os
-from pathlib import Path
+import sqlite3
 import sys
 import tempfile
-import sqlite3
+from contextlib import ExitStack
+from pathlib import Path
 
 from sim.cycle.certificate_contract import read_document
 from sim.cycle.execution_adapter import AdapterFiles, adapt
-from sim.cycle.execution_cycle_provider import CycleServiceProvider, ReferenceMemoryScenario
+from sim.cycle.execution_cycle_provider import (
+    CycleServiceProvider,
+    ReferenceMemoryScenario,
+)
 from sim.cycle.execution_ir import ExecutionError, ensure, ir_record, parse_ir
-from sim.cycle.execution_services import NpuProvider, NpuService, PhaseTable, parse_services, services_record
+from sim.cycle.execution_sequence_provider import (
+    DiagnosticStatefulProvider,
+    StatefulSequenceProvider,
+)
+from sim.cycle.execution_services import (
+    NpuService,
+    PhaseTable,
+    parse_services,
+    services_record,
+)
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, fields, sha256
-from sim.cycle.scheduler import Scenario, ScheduleInputs, schedule, service_binding
+from sim.cycle.scheduler import (
+    Scenario,
+    ScheduleInputs,
+    TimingProvider,
+    schedule,
+    schedule_source_binding,
+    service_binding,
+)
+from sim.cycle.stateful_sequence_evidence import EvidenceContext, reference
 
 
 class Arguments(argparse.Namespace):
@@ -42,6 +64,9 @@ class Arguments(argparse.Namespace):
     service_certificate: Path | None = None
     cycle_certificate: Path | None = None
     run_aware_certificate: Path | None = None
+    stateful_sequence_certificate: Path | None = None
+    stateful_evidence_root: Path | None = None
+    stateful_diagnostic: bool = False
 
 
 def phase_table(document: Record) -> PhaseTable:
@@ -64,63 +89,112 @@ def phase_table(document: Record) -> PhaseTable:
     return PhaseTable(period, samples)
 
 
-def publish(path: Path, document: Record) -> None:
+def publish(path: Path, document: Record, bound: TimingProvider | None = None) -> None:
     ensure(not path.exists(), 'output must be new')
     with tempfile.TemporaryDirectory(prefix='execution-', dir=path.parent) as directory:
         staged = Path(directory) / 'result.json'
         with staged.open('x', encoding='utf-8') as stream:
             json.dump(document, stream, sort_keys=True, indent=2, allow_nan=False)
             _ = stream.write('\n')
+        if isinstance(bound, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+            bound.verify_complete()
+            ensure(all(document.get(key) == digest for key, digest in schedule_source_binding().items()),
+                   'JSON schedule source binding changed before publication')
         os.link(staged, path)
 
 
-def provider(arguments: Arguments) -> NpuProvider:
+def provider(arguments: Arguments) -> TimingProvider:
+    ensure(not (arguments.service_certificate and arguments.stateful_sequence_certificate),
+           'service and stateful certificates are mutually exclusive')
+    ensure(not arguments.stateful_diagnostic or arguments.stateful_sequence_certificate is not None,
+           'stateful diagnostic requires stateful sequence certificate')
     if arguments.phase_table is not None:
+        ensure(arguments.stateful_sequence_certificate is None, 'stateful certificate requires native cycle library')
         return phase_table(read_document(arguments.phase_table))
     if (arguments.cycle_library is None or arguments.npu_trace is None or arguments.timing is None or
             arguments.initial_scratchpad_half is None or arguments.initial_accumulator_half is None):
         raise ExecutionError('cycle service requires library, exact trace, timing and explicit initial halves')
     scenario = ReferenceMemoryScenario(read_document(arguments.timing), arguments.initial_scratchpad_half,
                                        arguments.initial_accumulator_half)
+    if arguments.stateful_sequence_certificate is not None:
+        if arguments.stateful_evidence_root is None:
+            raise ExecutionError('stateful evidence root required')
+        certificate = read_document(arguments.stateful_sequence_certificate)
+
+        def path_from(row: Record) -> Path:
+            path = Path(text(row, 'path'))
+            reference(path, text(row, 'sha256'))
+            return path
+
+        parents = object_value(certificate['parents'])
+        memory = object_value(certificate['reference_memory'])
+        ensure(memory['timing'] == scenario.timing and memory['initial_scratchpad_half'] == arguments.initial_scratchpad_half and
+               memory['initial_accumulator_half'] == arguments.initial_accumulator_half,
+               'stateful certificate reference memory mismatch')
+        context = EvidenceContext(arguments.stateful_evidence_root, path_from(object_value(certificate['library'])),
+            path_from(object_value(certificate['shared_library'])), path_from(object_value(parents['base'])),
+            path_from(object_value(parents['run_aware'])), path_from(object_value(parents['service'])),
+            path_from(object_value(certificate['evidence_input'])) if 'evidence_input' in certificate else None)
+        constructor = DiagnosticStatefulProvider if arguments.stateful_diagnostic else StatefulSequenceProvider
+        return constructor(arguments.cycle_library, arguments.npu_trace, arguments.stateful_sequence_certificate, context)
     return CycleServiceProvider(arguments.cycle_library, arguments.npu_trace, scenario,
                                 service_certificate=arguments.service_certificate,
                                 base_certificate=arguments.cycle_certificate,
                                 run_certificate=arguments.run_aware_certificate)
 
 
-def schedule_json(arguments: Arguments, bound: NpuProvider, scenario: Scenario) -> Record:
+def schedule_json(arguments: Arguments, bound: TimingProvider, scenario: Scenario) -> Record:
+    bundle_digest = sha256(arguments.bundle)
     bundle = read_document(arguments.bundle)
     ensure(bundle.get('schema') == 'im2p-execution-bundle' and integer(bundle, 'version') == 1,
            'unsupported execution bundle')
     ir = parse_ir(object_value(bundle['ir']))
-    if scenario.scope == 'RECONSTRUCTED':
+    if scenario.scope != 'SYNTHETIC':
         ensure(ir.scope == 'BOUND_DATASET' and bundle.get('dataset_sha256') == ir.source_sha256,
                'reconstruction requires bound dataset input')
     result = schedule(ScheduleInputs(ir, parse_services(object_value(bundle['services'])), bound), scenario).record()
-    result['input_bundle_sha256'] = sha256(arguments.bundle)
+    ensure(sha256(arguments.bundle) == bundle_digest, 'JSON bundle changed during scheduling')
+    result['input_bundle_sha256'] = bundle_digest
     result['phase_table_sha256'] = sha256(arguments.phase_table) if arguments.phase_table is not None else None
     result['cycle_library_sha256'] = sha256(arguments.cycle_library) if arguments.cycle_library is not None else None
     result['clock_selection_sha256'] = sha256(arguments.clock_selection) if arguments.clock_selection is not None else None
     return result
 
 
-def verify_schedule(arguments: Arguments) -> Record:
+def execution_scenario(arguments: Arguments, *, verifying: bool = False) -> Scenario:
     from scripts.evaluation_clock import load_selection
-    from sim.cycle.scheduler_sqlite import SqliteScheduleInputs, verify_schedule_sqlite
+    if arguments.stateful_diagnostic:
+        ensure(not arguments.synthetic and arguments.clock_selection is None and bool(arguments.profile),
+               'stateful diagnostic requires explicit profile and configured test clock only')
+        return Scenario(arguments.frequency_hz, 'STATEFUL_DIAGNOSTIC', None, arguments.profile)
+    if arguments.synthetic:
+        ensure(not verifying, 'synthetic schedule is not certified verification')
+        return Scenario(arguments.frequency_hz, 'SYNTHETIC')
+    if arguments.clock_selection is None or not arguments.profile:
+        raise ExecutionError('profile and validated operating clock required')
+    frequency = load_selection(arguments.clock_selection, arguments.profile).frequency_hz if verifying else arguments.frequency_hz
+    return Scenario(frequency, 'RECONSTRUCTED', arguments.clock_selection, arguments.profile)
 
-    clock = arguments.clock_selection
-    if clock is None or not arguments.profile or not arguments.schedule.is_file():
-        raise ExecutionError('schedule, profile and validated operating clock required')
-    selection = load_selection(clock, arguments.profile)
-    scenario = Scenario(selection.frequency_hz, 'RECONSTRUCTED', clock, arguments.profile)
-    bound = provider(arguments)
-    if not isinstance(bound, CycleServiceProvider) or bound.admission is None:
-        raise ExecutionError('validated current-source drained-sequence service certificate required')
+
+def verify_schedule(arguments: Arguments) -> Record:
+    scenario = execution_scenario(arguments, verifying=True)
+    with ExitStack() as resources:
+        bound = provider(arguments)
+        if isinstance(bound, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+            resources.enter_context(bound)
+        return _verify_schedule(arguments, bound, scenario)
+
+
+def _verify_schedule(arguments: Arguments, bound: TimingProvider, scenario: Scenario) -> Record:
+    from sim.cycle.scheduler_sqlite import SqliteScheduleInputs, verify_schedule_sqlite
     with arguments.bundle.open('rb') as stream:
         sqlite_input = stream.read(16) == b'SQLite format 3\x00'
     with arguments.schedule.open('rb') as stream:
         sqlite_output = stream.read(16) == b'SQLite format 3\x00'
     ensure(sqlite_input == sqlite_output, 'bundle/schedule storage kind mismatch')
+    from sim.cycle import scheduler_sqlite
+    consumer = Path(scheduler_sqlite.__file__) if sqlite_input else None
+    sources = schedule_source_binding(consumer)
     if sqlite_input:
         schedule_digest = verify_schedule_sqlite(arguments.bundle, arguments.schedule,
                                                  SqliteScheduleInputs(bound, scenario))
@@ -132,7 +206,13 @@ def verify_schedule(arguments: Arguments) -> Record:
                json.dumps(expected, sort_keys=True, separators=(',', ':'), allow_nan=False),
                'JSON schedule node/endpoint or service/clock/source binding mismatch')
         ensure(sha256(arguments.schedule) == schedule_digest, 'JSON schedule changed during verification')
-    return {'status': 'PASS', 'schema': 'im2p-execution-schedule-verification', 'version': 1,
+    if not isinstance(bound, (CycleServiceProvider, DiagnosticStatefulProvider, StatefulSequenceProvider)):
+        raise ExecutionError('typed certified schedule provider required')
+    if isinstance(bound, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+        bound.verify_complete()
+        ensure(sources == schedule_source_binding(consumer), 'schedule source binding changed during verification')
+    return {'status': 'PASS', 'schema': 'im2p-execution-schedule-verification',
+            'version': 2 if isinstance(bound, (DiagnosticStatefulProvider, StatefulSequenceProvider)) else 1,
             'schedule_sha256': schedule_digest, 'service_binding': service_binding(bound, scenario),
             'scheduled_npu_work_count': len(bound.requests)}
 
@@ -156,19 +236,23 @@ def main() -> int:
     for name in ('initial-scratchpad-half', 'initial-accumulator-half'):
         _ = runner.add_argument('--' + name, type=int, choices=(0, 1))
     _ = runner.add_argument('--frequency-hz', type=int, required=True)
-    _ = runner.add_argument('--synthetic', action='store_true', help='Label all schedule output SYNTHETIC; never paper latency')
-    _ = runner.add_argument('--clock-selection', type=Path)
     _ = runner.add_argument('--profile', default='')
     verifier = actions.add_parser('verify-schedule', help='Revalidate a certified schedule and its exact NPU services')
-    for name in ('schedule', 'bundle', 'cycle-library', 'npu-trace', 'timing',
-                 'service-certificate', 'cycle-certificate', 'run-aware-certificate',
-                 'clock-selection'):
+    for name in ('schedule', 'bundle', 'cycle-library', 'npu-trace', 'timing'):
         _ = verifier.add_argument('--' + name, type=Path, required=True)
     _ = verifier.add_argument('--profile', required=True)
     for name in ('initial-scratchpad-half', 'initial-accumulator-half'):
         _ = verifier.add_argument('--' + name, type=int, choices=(0, 1), required=True)
-    for name in ('service-certificate', 'cycle-certificate', 'run-aware-certificate'):
-        _ = runner.add_argument('--' + name, type=Path)
+    _ = verifier.add_argument('--frequency-hz', type=int, default=0, help='Explicit configured test clock for diagnostic verification')
+    for command in (runner, verifier):
+        certificates = command.add_mutually_exclusive_group()
+        for name in ('service-certificate', 'stateful-sequence-certificate'):
+            _ = certificates.add_argument('--' + name, type=Path)
+        for name in ('cycle-certificate', 'run-aware-certificate', 'clock-selection', 'stateful-evidence-root'):
+            _ = command.add_argument('--' + name, type=Path)
+        mode = command.add_mutually_exclusive_group()
+        _ = mode.add_argument('--stateful-diagnostic', action='store_true', help='Native diagnostic test clock only; never reconstructed latency')
+        _ = mode.add_argument('--synthetic', action='store_true', help='Label output SYNTHETIC; never paper latency')
     args = parser.parse_args(namespace=Arguments())
     try:
         if args.action == 'verify-schedule':
@@ -194,17 +278,25 @@ def main() -> int:
                               'services': services_record(services), 'join_summary_sha256': sha256(args.join_summary),
                               'lifecycle_sha256': sha256(args.lifecycle), 'dataset_sha256': lifecycle['dataset_sha256']}
         else:
-            scenario = Scenario(args.frequency_hz, 'SYNTHETIC' if args.synthetic else 'RECONSTRUCTED',
-                                args.clock_selection, args.profile)
-            ensure(args.synthetic or args.clock_selection is not None, 'validated clock artifact required')
-            with args.bundle.open('rb') as stream:
-                sqlite_input = stream.read(16) == b'SQLite format 3\x00'
-            if sqlite_input:
-                from sim.cycle.scheduler_sqlite import SqliteScheduleInputs, schedule_sqlite
-                result = schedule_sqlite(args.bundle, args.output, SqliteScheduleInputs(provider(args), scenario))
-                print(json.dumps(result, sort_keys=True))
+            scenario = execution_scenario(args)
+            with ExitStack() as resources:
+                bound = provider(args)
+                if isinstance(bound, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
+                    resources.enter_context(bound)
+                with args.bundle.open('rb') as stream:
+                    sqlite_input = stream.read(16) == b'SQLite format 3\x00'
+                if sqlite_input:
+                    from sim.cycle.scheduler_sqlite import (
+                        SqliteScheduleInputs,
+                        schedule_sqlite,
+                    )
+                    result = schedule_sqlite(args.bundle, args.output, SqliteScheduleInputs(bound, scenario))
+                else:
+                    result = schedule_json(args, bound, scenario)
+                    publish(args.output, result, bound)
+                print(json.dumps(result if sqlite_input else
+                                 {'status': 'PASS', 'output': str(args.output), 'schema': result['schema']}, sort_keys=True))
                 return 0
-            result = schedule_json(args, provider(args), scenario)
         publish(args.output, result)
         print(json.dumps({'status': 'PASS', 'output': str(args.output), 'schema': result['schema']}))
     except (OSError, ValueError, KeyError, AttributeError, sqlite3.Error) as error:

@@ -23,11 +23,30 @@ int main(void) {
   r.accepted_cycle = 106449;
   im2p_cycle_model_t *model = im2p_cycle_model_create(&c);
   if (!model || im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_OK ||
+      out.start_cycle != 106449 || out.done_cycle != 106765 ||
       out.total_cycles != 316 || out.load_request_count != 33 ||
       out.load_response_count != 33 || out.store_request_count != 1 ||
       out.store_response_count != 1 || out.scale_request_count != 1 ||
       out.scale_response_count != 1)
     return 1;
+  const im2p_cycle_result_t isolated = out;
+  if (im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_OK ||
+      memcmp(&isolated, &out, sizeof(out)) != 0)
+    return 1;
+  r.accepted_cycle = 106450;
+  im2p_cycle_result_t phase_reused, phase_fresh;
+  im2p_cycle_model_t *fresh = im2p_cycle_model_create(&c);
+  if (!fresh ||
+      im2p_cycle_estimate(model, &r, &phase_reused) != IM2P_CYCLE_OK ||
+      im2p_cycle_estimate(fresh, &r, &phase_fresh) != IM2P_CYCLE_OK ||
+      memcmp(&phase_reused, &phase_fresh, sizeof(phase_reused)) != 0 ||
+      phase_reused.start_cycle != r.accepted_cycle ||
+      phase_reused.done_cycle != 106765 || phase_reused.total_cycles != 315 ||
+      phase_reused.done_cycle != r.accepted_cycle + phase_reused.total_cycles)
+    return 1;
+  im2p_cycle_model_destroy(fresh);
+  r.accepted_cycle = 106449;
+  out = isolated;
   r.k = 0;
   im2p_cycle_result_t before = out;
   if (im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_INVALID ||
@@ -81,9 +100,14 @@ int main(void) {
       im2p_cycle_estimate(NULL, &r, &out) != IM2P_CYCLE_INVALID)
     return 1;
   printf("CYCLE_C_ABI_PASS version=1 layout=exact admitted=0 loops=%llu "
-         "fragments=%llu scales=%llu invalid=1 transactional_failure=1\n",
+         "fragments=%llu scales=%llu invalid=1 transactional_failure=1 "
+         "isolated_replay=1 phase_fresh=1 isolated_total=%llu "
+         "phase_total=%llu phase_done=%llu\n",
          (unsigned long long)before.loop_count,
          (unsigned long long)before.fragment_count,
-         (unsigned long long)before.scale_request_count);
+         (unsigned long long)before.scale_request_count,
+         (unsigned long long)isolated.total_cycles,
+         (unsigned long long)phase_reused.total_cycles,
+         (unsigned long long)phase_reused.done_cycle);
   return 0;
 }

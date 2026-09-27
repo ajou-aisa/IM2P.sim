@@ -11,6 +11,8 @@ from sim.cycle.certificate_contract import (
     number,
     read_document,
 )
+from sim.cycle.current_run_capture import reference
+from sim.cycle.current_run_corpus import CURRENT_SOURCE_FILES, load_selected_manifest
 from sim.cycle.npu_trace_schema import Record, object_value, require, text
 from sim.cycle.run_aware_production_evidence import (
     compare_case,
@@ -25,7 +27,6 @@ from sim.tests.cycle.production_run_work import (
     PRODUCTION_SOURCE_FILES,
     CertificateCase,
     estimate_case,
-    load_manifest,
     read_work_fixture,
 )
 
@@ -48,10 +49,15 @@ def _validate_production(certificate: Record, library: Path) -> str:
             certificate.get('production_one_logical_cross_block_gemm') == 'READY' and
             certificate.get('first_mismatch') is None,
             'production run-aware certificate failed')
-    require(sha256(PRODUCTION_MANIFEST.read_bytes()).hexdigest() == PRODUCTION_MANIFEST_SHA256 and
-            certificate.get('manifest_sha256') == PRODUCTION_MANIFEST_SHA256,
+    corpus = (reference(object_value(certificate['corpus_authority']))
+              if 'corpus_authority' in certificate else None)
+    manifest_path = PRODUCTION_MANIFEST if corpus is None else corpus
+    manifest_digest = sha256(manifest_path.read_bytes()).hexdigest()
+    require((corpus is not None or manifest_digest == PRODUCTION_MANIFEST_SHA256) and
+            certificate.get('manifest_sha256') == manifest_digest,
             'production corpus authority mismatch')
-    manifest = read_document(PRODUCTION_MANIFEST)
+    typed_manifest = load_selected_manifest(corpus)
+    manifest = read_document(manifest_path)
     profiles = tuple(text({'profile': value}, 'profile') for value in
                      array_value(manifest.get('profiles'), 'profiles'))
     require(profiles == tuple(f'a{bits}w{bits}-d{dim}-hp1' for bits in (4, 8)
@@ -73,12 +79,13 @@ def _validate_production(certificate: Record, library: Path) -> str:
     require(certificate.get('library_sha256') == sha256(library.read_bytes()).hexdigest(),
             'production run-aware library mismatch')
     sources = object_value(certificate.get('source_sha256'))
-    require(set(sources) == set(PRODUCTION_SOURCE_FILES), 'production source closure incomplete')
+    require(set(sources) == set(PRODUCTION_SOURCE_FILES if corpus is None else CURRENT_SOURCE_FILES),
+            'production source closure incomplete')
     for name, digest in sources.items():
         require(isinstance(digest, str) and
                 sha256((ROOT.parent / name).read_bytes()).hexdigest() == digest,
                 'production source changed: ' + name)
-    typed_cases = {(case['profile'], case['case']): case for case in load_manifest()['cases']}
+    typed_cases = {(case['profile'], case['case']): case for case in typed_manifest['cases']}
     rows = array_value(certificate.get('cases'), 'production cases')
     require(len(rows) == count, 'production certificate corpus incomplete')
     observed: set[tuple[str, str]] = set()

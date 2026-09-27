@@ -334,7 +334,8 @@ def mutation_test(case: dict[str, Any]) -> dict[str, Any]:
             'selected_events': sorted(rtl.SELECTED_EVENTS)}
 
 
-def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
+def certify(build_root: Path, library: Path, out: Path, *,
+            corpus_revision: str = 'v4', preflight: bool = False) -> dict[str, Any]:
     if out.is_relative_to(ROOT):
         raise ValueError('certificate output must be external to IM2P.sim')
     out.mkdir(parents=True, exist_ok=False)
@@ -343,26 +344,18 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
         raise ValueError('a fresh passing host-test build is required')
     profiles = manifest['profiles']
     require_profiles(profiles)
-    from sim.cycle.corpus_authority import authority, authority_reference
-    sources = [profile.get('llama_source') for profile in profiles]
-    if not all(source == sources[0] for source in sources) or not isinstance(sources[0], dict):
-        raise ValueError('current candidate package identity missing or inconsistent')
-    llama_source = sources[0]
-    if set(llama_source) != {'root', 'base_head', 'source_manifest_sha256', 'dependency_lock_sha256'}:
-        raise ValueError('current candidate package identity differs')
-    source_root = llama_source['root']
-    if not isinstance(source_root, str) or not source_root:
-        raise ValueError('current candidate llama source root missing')
-    reviewed = authority('v4', fixture_root=ROOT, llama_root=Path(source_root))
-    source_manifest = Path(source_root).parents[2] / 'source-manifest.json'
-    if (not source_manifest.is_file() or
-            hashlib.sha256(source_manifest.read_bytes()).hexdigest() != llama_source['source_manifest_sha256']):
-        raise ValueError('current candidate source manifest differs')
-    if (llama_source['base_head'] != reviewed['producer_base_head'] or
-            llama_source['dependency_lock_sha256'] != reviewed['dependency_lock_sha256']):
-        raise ValueError('current candidate package identity differs')
+    from sim.cycle.corpus_authority import CorpusError, authority_reference
+    from sim.tests.cycle.current_corpus import preflight_document, prepare_corpus
+    reviewed, llama_source = prepare_corpus(profiles, corpus_revision)
     from scripts.gemmini_rtl_build_binding import verify_build
     bindings = {p['profile']: verify_build(Path(p['resolved_profile']).parent, p['profile']) for p in profiles}
+    if corpus_revision == 'v5' and any(binding.get('llama_source') != llama_source for binding in bindings.values()):
+        raise CorpusError('current build package identity differs')
+    if preflight:
+        result = preflight_document(corpus_revision, library, bindings)
+        result['llama_source'] = llama_source
+        write_json(out / 'corpus-preflight.json', result)
+        return result
     results: list[dict[str, Any]] = []
     captures = {}
     corpora = {}
@@ -417,7 +410,7 @@ def certify(build_root: Path, library: Path, out: Path) -> dict[str, Any]:
               'build_manifest_sha256': rtl.sha256(build_root / 'result.json'),
               'model_library_sha256': rtl.sha256(library),
               'rtl_build_bindings': bindings,
-              'llama_source': llama_source, 'corpus_authority': authority_reference('v4'),
+              'llama_source': llama_source, 'corpus_authority': authority_reference(corpus_revision),
               'hardware_contracts': {name: binding['hardware_contract'] for name, binding in bindings.items()},
               'historical_goldens_used': False, 'historical_exclusions_used': False,
               'cases': results}
@@ -434,14 +427,21 @@ def main() -> int:
                         help='historical evidence root with checksums, source inventory, and raw comparisons')
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--corpus-revision', choices=('v4', 'v5'), default='v4',
+                        help='reviewed external package authority for a fresh host-test build (default: v4)')
+    parser.add_argument('--preflight', action='store_true',
+                        help='verify package/build inputs and record the planned corpus without running RTL')
     args = parser.parse_args()
     if args.reuse_verified_evidence is not None:
+        if args.preflight or args.corpus_revision != 'v4':
+            parser.error('--preflight and --corpus-revision v5 require --build-root')
         from sim.tests.cycle.reaggregate_certificate import reaggregate
         result = reaggregate(args.reuse_verified_evidence.resolve(), args.library.resolve(), args.out.resolve())
     else:
-        result = certify(args.build_root.resolve(), args.library.resolve(), args.out.resolve())
+        result = certify(args.build_root.resolve(), args.library.resolve(), args.out.resolve(),
+                         corpus_revision=args.corpus_revision, preflight=args.preflight)
     print(json.dumps({k: v for k, v in result.items() if k != 'cases'}, indent=2))
-    return 0 if result['status'] == 'PASS' else 1
+    return 0 if result['status'] == 'PASS' or args.preflight and result['status'] == 'PREFLIGHT_ONLY' else 1
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 #pragma once
 #include "cycle_model.hpp"
+#include "../include/im2p_cycle_sequence.h"
 #include <array>
 #include <deque>
 #include <optional>
@@ -22,6 +23,14 @@ enum class Kind {
   LoopControl
 };
 struct Command {
+  struct Origin {
+    U generation = 0, ordinal = 0, work = 0;
+    unsigned submission = 0, frame = 0, fragment = 0;
+    bool record_events = false;
+    bool operator==(const Origin &other) const {
+      return generation == other.generation && ordinal == other.ordinal;
+    }
+  } origin;
   Kind kind = Kind::LoopControl;
   unsigned index = 0, frame = 0, fragment = 0;
   unsigned i = 0, j = 0, k = 0, rows = 0, cols = 0;
@@ -59,6 +68,7 @@ struct DmaController {
   unsigned state = 0, row = 0, command_id = 0;
 };
 struct Read {
+  Command::Origin origin;
   unsigned id = 0, command = 0, row = 0;
   bool scale = false;
   TimingEvent timing;
@@ -70,7 +80,9 @@ struct Memory {
   std::optional<Read> backing;
   std::vector<Read> responses;
   std::optional<unsigned> dma_response;
+  Command::Origin dma_response_origin;
   unsigned store_state = 0, store_command = 0, store_address = 0;
+  Command::Origin store_origin;
   bool acc_read_issued = false;
   unsigned settling = 0;
   std::optional<TimingEvent> write_due;
@@ -91,12 +103,14 @@ struct Tag {
   Command preload;
 };
 struct MeshRow {
+  Command::Origin origin;
   TimingEvent timing;
   unsigned id = 0;
   bool last = false;
   U parent = 0;
 };
 struct Array {
+  Command::Origin origin;
   bool request = false;
   unsigned rows = 0, counter = 0, id = 0;
   std::array<bool, 3> written{};
@@ -111,6 +125,7 @@ struct Execute {
   std::array<unsigned, 3> counter{};
   std::array<bool, 3> started{};
   std::array<unsigned, 2> pending{{none, none}};
+  std::array<Command::Origin, 2> pending_origin{};
 };
 struct Context {
   Command command;
@@ -138,7 +153,6 @@ struct Loop {
 };
 struct State {
   U cycle = 0;
-  unsigned frame = 0;
   unsigned host = 0; // accepting / waiting / releasing / retired
   unsigned release = 0;
   unsigned scale_state = 0, scale_row = 0, scale_column = 0;
@@ -152,42 +166,83 @@ struct State {
   std::array<Bank, 4> banks{};
   Execute execute;
   Array array;
+  U tag_enqueues = 0, tag_dequeues = 0;
   Writeback writeback;
 };
 struct Signals {
   std::optional<Write> raw_write, write;
   std::optional<unsigned> raw_completed, wb_completed, completed;
+  Command::Origin raw_completed_origin;
   int wb_grant = -1, load_completed = -1, store_completed = -1;
   std::array<bool, 4> sp_consume{}, sp_ready{}, sp_request{};
   std::optional<Read> dma_read;
   std::optional<unsigned> dma_store_return;
   std::array<int, 3> issued{{-1, -1, -1}};
 };
+struct WorkContext {
+  Command::Origin origin;
+  im2p_cycle_request_t request;
+  Schedule schedule;
+  std::vector<Programs> programs;
+  unsigned frame = 0;
+  ModelResult result;
+  bool drain_final_release = false;
+  WorkContext(const im2p_cycle_model_config_t &, const im2p_cycle_request_t &,
+              const im2p_compact_runs_t *runs = nullptr);
+};
+struct DiagnosticEvent {
+  Command::Origin origin;
+  im2p_cycle_event_t event;
+};
 class Engine {
 public:
+  explicit Engine(const im2p_cycle_model_config_t &, bool sequence_events = false);
   Engine(const im2p_cycle_model_config_t &, const im2p_cycle_request_t &,
          const im2p_compact_runs_t *runs = nullptr);
   ModelResult run(bool drain_final_release = false);
+  bool step();
+  void accept(WorkContext &&, U cycle, unsigned scratchpad_half,
+              unsigned accumulator_half, U generation = 1);
+  void retire_work();
+  bool resource_ready() const;
+  const WorkContext *current_work() const { return work ? &*work : nullptr; }
+  const ModelResult &finish();
+  U cycle() const { return state.cycle; }
+  const Array &array_state_for_test() const { return state.array; }
+  U tag_enqueues_for_test() const { return state.tag_enqueues; }
+  U tag_dequeues_for_test() const { return state.tag_dequeues; }
+  unsigned row_count_peak() const { return max_row_occupancy; }
+  const Execute &execute_state_for_test() const { return state.execute; }
+  const std::array<Bank, 4> &banks_state_for_test() const {
+    return state.banks;
+  }
+  bool domain_snapshot(im2p_cycle_sequence_domain_snapshot_t &) const;
+  size_t buffered_event_count() const { return events.size(); }
+  size_t drain_events(DiagnosticEvent *output, size_t capacity);
+  const im2p_cycle_result_t &cumulative_counters() const { return cumulative; }
 
 private:
-  const im2p_cycle_model_config_t &config;
-  const im2p_cycle_request_t &request;
-  Schedule schedule;
-  RtlTimingProfile profile;
-  std::vector<Programs> programs;
+  const im2p_cycle_model_config_t config;
+  const RtlTimingProfile profile;
   State state;
-  ModelResult result;
-  bool drain_final_release = false;
+  std::optional<WorkContext> work;
+  const bool sequence_events;
+  U next_event_id = 0, next_work_ordinal = 0;
+  std::deque<DiagnosticEvent> events;
+  im2p_cycle_result_t cumulative{};
+  unsigned max_tag_occupancy = 0;
+  unsigned max_row_occupancy = 0;
   U record(const State &, EventType, Resource, const Command & = {},
-           U detail = 0, U parent = 0);
-  void expand_commands();
-  void step();
+           U detail = 0, U parent = 0,
+           const Command::Origin *origin = nullptr);
+  void count(const Command::Origin &, U im2p_cycle_result_t::*);
+  void expand_commands(WorkContext &);
   void execute(State &, const State &, Signals &);
   void writeback(State &, const State &, Signals &);
   void memory(State &, const State &, Signals &);
   void dma(State &, const State &, Signals &);
   void reservation(State &, const State &, Signals &);
-  void control(State &, const State &, Signals &);
+  void control(State &, const State &, Signals &, unsigned &next_frame);
   bool busy(const State &) const;
 };
 } // namespace im2p::cycle::detail

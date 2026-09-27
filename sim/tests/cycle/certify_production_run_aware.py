@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -22,6 +24,12 @@ WORKSPACE = ROOT.parent
 sys.path.insert(0, str(ROOT))
 from scripts.gemmini_rtl_build_binding import verify_build
 from sim.cycle.certificate_contract import array_value, read_document
+from sim.cycle.current_run_corpus import (
+    CURRENT_SOURCE_FILES,
+    SelectedCertificate,
+    artifact,
+    load_selected_manifest,
+)
 from sim.cycle.npu_trace_schema import Record, object_value, text
 from sim.cycle.run_aware_certificate import validate_run_certificate
 from sim.cycle.run_aware_production_evidence import (
@@ -34,10 +42,8 @@ from sim.tests.cycle.production_run_work import (
     PRODUCTION_MANIFEST_SHA256,
     PRODUCTION_SOURCE_FILES,
     Artifact,
-    Certificate,
     CertificateCase,
     estimate_case,
-    load_manifest,
     read_work_fixture,
 )
 from sim.tests.cycle.rtl_hardening import normalized_model_events
@@ -53,8 +59,10 @@ def official_profile_root(files: Mapping[str, Path]) -> Path:
     return root
 
 
-def certify(inputs: Path, library: Path, out: Path) -> Certificate:
-    manifest = load_manifest()
+def certify(inputs: Path, library: Path, out: Path, *, corpus: Path | None = None) -> SelectedCertificate:
+    if out.exists():
+        raise FileExistsError(out)
+    manifest = load_selected_manifest(corpus)
     routes = array_value(read_document(inputs).get("cases"), "input routes")
     indexed: dict[tuple[str, str], Record] = {}
     for value in routes:
@@ -68,7 +76,7 @@ def certify(inputs: Path, library: Path, out: Path) -> Certificate:
             (case["profile"], case["case"]) for case in cases}:
         raise ValueError("input routing must cover the fixed production corpus exactly")
     source_hashes = {name: sha256((WORKSPACE / name).read_bytes()).hexdigest()
-                     for name in PRODUCTION_SOURCE_FILES}
+                     for name in (PRODUCTION_SOURCE_FILES if corpus is None else CURRENT_SOURCE_FILES)}
     answer_rows: list[CertificateCase] = []
     mutation_case = ""
     for case in cases:
@@ -113,7 +121,7 @@ def certify(inputs: Path, library: Path, out: Path) -> Certificate:
         row["artifacts"] = artifacts
         answer_rows.append(row)
     first = next((row for row in answer_rows if row["status"] != "PASS"), None)
-    result: Certificate = {"status": "PASS" if first is None else "FAIL",
+    result: SelectedCertificate = {"status": "PASS" if first is None else "FAIL",
               "artifact_role": "PRODUCTION_GENERATED",
               "production_one_logical_cross_block_gemm": "READY" if first is None else "NOT_READY",
               "expected": manifest["case_count"], "attempted": len(answer_rows),
@@ -125,15 +133,24 @@ def certify(inputs: Path, library: Path, out: Path) -> Certificate:
               "event_plus_one_mutation_rejected": bool(mutation_case),
               "event_plus_one_mutation_case": mutation_case,
               "max_abs_delta_cycles": max(abs(row["delta_cycles"]) for row in answer_rows),
-              "first_mismatch": first, "manifest_sha256": PRODUCTION_MANIFEST_SHA256,
+              "first_mismatch": first, "manifest_sha256": (PRODUCTION_MANIFEST_SHA256 if corpus is None
+                                                          else sha256(corpus.read_bytes()).hexdigest()),
               "library_sha256": sha256(library.read_bytes()).hexdigest(),
               "source_sha256": source_hashes, "cases": answer_rows}
-    out.mkdir(parents=True, exist_ok=False)
-    _ = (out / "production-run-aware-certificate.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n")
-    if result["status"] == "PASS" and validate_run_certificate(
-            out / "production-run-aware-certificate.json", library) != "PRODUCTION_GENERATED":
-        raise ValueError("production certificate failed self-admission")
+    if corpus is not None:
+        result['corpus_authority'] = artifact(corpus)
+    if any(sha256((WORKSPACE / name).read_bytes()).hexdigest() != digest
+           for name, digest in source_hashes.items()):
+        raise ValueError('production sources changed during certification')
+    encoded = json.dumps(result, indent=2, sort_keys=True) + '\n'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.im2p-run-certificate-', dir=out.parent) as directory:
+        pending = Path(directory) / 'certificate.json'
+        pending.write_text(encoded)
+        if result['status'] == 'PASS' and validate_run_certificate(pending, library) != 'PRODUCTION_GENERATED':
+            raise ValueError('production certificate failed self-admission')
+        out.mkdir(exist_ok=False)
+        os.link(pending, out / 'production-run-aware-certificate.json')
     return result
 
 
@@ -142,13 +159,15 @@ def main() -> int:
         inputs: Path = Path()
         library: Path = Path()
         out: Path = Path()
+        corpus: Path | None = None
 
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("--inputs", type=Path, required=True)
     _ = parser.add_argument("--library", type=Path, required=True)
     _ = parser.add_argument("--out", type=Path, required=True)
+    _ = parser.add_argument('--corpus', type=Path, help='explicit validated current native corpus (historical default unchanged)')
     args = parser.parse_args(namespace=Options())
-    result = certify(args.inputs, args.library, args.out)
+    result = certify(args.inputs, args.library, args.out, corpus=args.corpus)
     print(json.dumps({key: result[key] for key in
                       ("status", "expected", "exact", "first_mismatch")}))
     return 0 if result["status"] == "PASS" else 1

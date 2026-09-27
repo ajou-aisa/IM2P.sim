@@ -21,3 +21,48 @@ The additive `PRODUCTION_GENERATED_SEQUENCE` version 2 certificate references th
 For each case the validator reprojects the exact producer work and ownership from the trace, lifecycle, and semantic graph, compares the numeric RTL input to that projection, verifies the official RTL build and compiled probe, and recomputes C-service endpoints, counters, and selected events from the bound library. It checks one reset and one RTL instance, per-work result, final scale release, resource readiness, carried halves, numerical output, and either physically empty internal queues or a separately bound `INERT_WS_TAG_CARRY` proof. The tag-carry proof binds the raw RTL log and source hashes, checks the garbage head and next dequeue, verifies ID wrap, and rules out queue-capacity backpressure. It never describes a nonempty queue as empty. The provider admits only an entire certified ordered work/phase/half vector; a fixture certificate, scope string, partial case set, or separately mixed phase rows cannot enable reconstructed scheduling.
 
 The first same-instance A4D16 observation had exact public endpoints and counters but left one mesh tag queue entry at public resource readiness. Its historical `OBSERVED_UNDRAINED` report remains rejected. A current-source `im2p-inert-ws-tag-carry` proof must show an invalid garbage head, enqueue/dequeue conservation, no cumulative queue growth or full-queue stall, matching next-work dequeue, valid first output tag, and exact service/numerical results. The queue is not physically empty. Only a validated version 2 certificate for the pinned four-work producer trace, period-five phase vector, and initial halves `(0, 0)` grants `CURRENT_CERTIFIED_SEQUENCE`; it does not admit other traces, arbitrary mixed phases, or paper latency without a separate operating-clock artifact.
+
+## Stateful sequence certificate boundary
+
+The additive stateful certificate is a different authority from both the
+version-1 drained fixture certificate and the version-2 exact producer-sequence
+certificate above. Exact-v2 validates its fixed four-work vectors from drained
+service transitions. Stateful validation instead binds a persistent native
+session and its admissible queue/ownership state across ordered works. Neither
+artifact may be relabeled as the other, and isolated single-work certificates
+remain a third scope.
+
+The stateful domain is limited to the six A4W4/A8W8, DIM16/32/64 HP1 profiles,
+period-5 reference memory, planner-block submissions, initial halves `(0, 0)`,
+and one accepted logical work at a time. A logical request may be available
+before the prior resource-ready boundary, but electrical offer is delayed until
+that boundary. Acceptance is a distinct native edge at or after electrical
+offer. Reports retain offered, accepted, result-ready, final-scale-release, and
+resource-ready epochs plus next halves. This is not a multi-logical-outstanding
+hardware certificate.
+
+Admission is typed and source-bound. A production provider must carry
+`ProductionStatefulAdmission`, not merely a certificate path or scope string.
+The admission binds the reviewed stateful certificate and evidence root, its
+base/run-aware/service parents, exact trace identity and ordered work/request
+digests, native library and sequence source closure, and the Python ABI,
+binding, provider, admission, and validator sources. The provider checks the
+same identities before each transition and again before publication. It also
+checks pre/post native domain snapshots, reviewed tag peak at most 4, row peak
+strictly below 6, no ready-boundary violation, and complete ordered work
+coverage. Pre-admission rejection leaves the session unchanged; a
+post-transition failure faults the provider. Neither falls back to isolated
+estimation.
+
+Current base/run-aware/service parents are necessary but not sufficient:
+stateful production admission also requires the reviewed guarded-state
+relation and complete source-bound transitions. The current actual GPT-2
+run has 3 validated works from a 16-work subset. Work 3 observed tag peak 5,
+outside the reviewed maximum 4, although row peak was 4 and remained below the
+row limit. That observation is an admission failure, not evidence for widening
+the tag domain. The first cold 374-work attempt also stopped after 3 validated
+works at that boundary, without publishing a result; the second full attempt
+is `NOT_RUN`. The latest exploratory
+RTL attempt stopped at the unchanged 128 MiB queue-edge limit and has no parity
+verdict. Historical exact-v2 results, this partial native observation, and that
+incomplete RTL attempt therefore provide no wider stateful authority.

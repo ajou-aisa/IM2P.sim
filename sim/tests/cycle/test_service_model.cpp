@@ -26,8 +26,17 @@ int main() {
   const auto original_count = im2p_cycle_model_event_count(model.get());
   std::array<im2p_cycle_event_t, 10000> original_events{};
   assert(original_count < original_events.size());
-  for (std::uint64_t i = 0; i < original_count; ++i)
-    assert(im2p_cycle_model_event(model.get(), i, &original_events[i]) == IM2P_CYCLE_OK);
+  bool saw_read_request = false;
+  for (std::uint64_t i = 0; i < original_count; ++i) {
+    assert(im2p_cycle_model_event(model.get(), i, &original_events[i]) ==
+           IM2P_CYCLE_OK);
+    if (std::strcmp(im2p_cycle_event_name(original_events[i].type),
+                    "read_request") == 0) {
+      saw_read_request = true;
+      assert(original_events[i].fragment == 0);
+    }
+  }
+  assert(saw_read_request);
   im2p_cycle_service_result_t service{};
   assert(im2p_cycle_estimate_service(model.get(), &request, nullptr, &drained,
                                      &service) == IM2P_CYCLE_OK);
@@ -37,6 +46,11 @@ int main() {
   assert(service.final_scale_release_cycle == 446);
   assert(service.resource_ready_cycle == 448);
   assert(service.next_scratchpad_half == 1 && service.next_accumulator_half == 1);
+  assert(original.start_cycle == request.accepted_cycle);
+  assert(original.done_cycle == service.result_ready_cycle);
+  assert(original.total_cycles == service.result_ready_cycle - request.accepted_cycle);
+  assert(service.result_ready_cycle < service.final_scale_release_cycle &&
+         service.final_scale_release_cycle < service.resource_ready_cycle);
   assert(drained.done_cycle == original.done_cycle && drained.total_cycles == original.total_cycles);
   assert(drained.event_count > original_count);
   for (std::uint64_t i = 0; i < original_count; ++i) {
@@ -47,6 +61,12 @@ int main() {
   im2p_cycle_result_t repeated{};
   assert(im2p_cycle_estimate(model.get(), &request, &repeated) == IM2P_CYCLE_OK);
   assert(std::memcmp(&original, &repeated, sizeof(original)) == 0);
+  const auto first_service = service;
+  const auto first_drained = drained;
+  assert(im2p_cycle_estimate_service(model.get(), &request, nullptr, &drained,
+                                     &service) == IM2P_CYCLE_OK);
+  assert(std::memcmp(&first_service, &service, sizeof(service)) == 0);
+  assert(std::memcmp(&first_drained, &drained, sizeof(drained)) == 0);
   const auto before = service;
   const auto before_result = drained;
   request.tile_k = 0;

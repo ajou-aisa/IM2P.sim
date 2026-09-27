@@ -95,6 +95,72 @@ Null destruction is safe. Calls on different handles are independent; callers
 must serialize calls on one handle. Configuration and request version/size are
 validated. C11 and C++ tests check layout and calls through the actual thin C ABI.
 
+### Additive stateful sequence session
+
+`sim/include/im2p_cycle_sequence.h` is an additive API; it does not change the
+isolated `im2p_cycle_model.h` ABI or reinterpret an isolated estimate as a
+continuous run. `im2p_cycle_sequence_create` copies the resolved hardware,
+timing, and software limits into an opaque native handle. A generation begins
+only when the caller explicitly resets that handle. The handle then retains the
+value-free engine queues, ownership state, cumulative counters, current buffer
+halves, and bounded report/event state across ordered logical works. Calls on one
+live handle require external serialization; distinct handles remain independent.
+
+The sequence descriptor carries caller-owned geometry, tiles, strides,
+submission framing, logical work ID, and optional compact runs. `offer` validates
+these fields and deep-copies the descriptor and run view before returning.
+Pre-admission failures leave the cursor, halves, pending state, and output
+buffers unchanged. The ABI has capacity for one copied pending descriptor and
+one accepted logical work; a second pending offer returns `WOULD_BLOCK`. The
+production provider is narrower: it presents one logical work at a time and does
+not use the pending slot as a second hardware-outstanding work.
+
+The C ABI's offer cycle is request availability, not an already accepted epoch;
+the copied request may remain pending until the port is ready. Physical
+scratchpad/accumulator halves and the accepted cycle are selected at the first
+resource-ready edge no earlier than the offer. The production provider uses a
+stricter policy: it passes the selected electrical offer edge only after the
+previous work releases the NPU resource.
+`advance_until(t)` is half-open: it commits edges `[cursor, t)`, leaving edge `t`
+unprocessed. A completed unread report can stop advancement on the
+resource-ready edge so the report is consumed before another pending descriptor
+could accept there. Reports preserve separate offered, accepted, result-ready,
+final-scale-release, and resource-ready cycles plus carried halves and per-work
+counters. Status, tag, row-pressure, domain, error, event, and cumulative-counter
+reads do not advance simulated time.
+
+Normal reset rejects pending, active, or unread-report work. Reset after
+`FAULTED` explicitly discards the incomplete generation, increments generation,
+and exposes the discarded generation through status. A mid-step hard limit or
+invariant failure faults the handle; there is no fallback to isolated estimates.
+`destroy(NULL)` is a no-op, while a destroyed non-null pointer is outside the C
+caller contract.
+
+The Python session binding resolves only the six
+`a4w4-d{16,32,64}-hp1` and `a8w8-d{16,32,64}-hp1` profiles. The typed stateful
+provider further fixes read-ready period 5, `planner-blocks`, source-bound
+trace geometry/runs, and one logical outstanding work. This scope is distinct
+from:
+
+- isolated single-work estimates and their historical/current isolated
+  certificates;
+- the historical exact-v2 producer corpus, which does not certify persistent
+  state;
+- stateful same-session evidence, which must bind the native source/library,
+  trace, certificate parents, Python binding/provider, and admitted state
+  domain.
+
+Production admission requires current base, run-aware, and exact-sequence
+parents plus reviewed stateful evidence; API availability alone is not a
+readiness marker. The current actual GPT-2 observation validated 3
+works of a 16-work subset. Work ID 3 reached native tag peak 5, above the
+reviewed limit 4, while row peak was 4 (the admitted row bound is strictly below
+6). That observation cannot widen admission. A separate cold 374-work attempt
+also stopped after 3 validated works at the same boundary, without publishing
+a result. The second full attempt is `NOT_RUN`. The latest exploratory RTL
+attempt reached the unchanged 128 MiB
+queue-edge limit and produced no parity verdict.
+
 ### Explicit compact-run fixture entry
 
 `im2p_cycle_estimate_runs` is an additive entry. It keeps the version 1 cycle

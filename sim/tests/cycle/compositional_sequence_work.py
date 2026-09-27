@@ -9,13 +9,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import re
-import shlex
 import subprocess
 import sys
-from collections import Counter
-from dataclasses import asdict
 from pathlib import Path
 from typing import Final
 
@@ -23,197 +20,52 @@ ROOT: Final = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from scripts.gemmini_resolve_profile import JsonValue
-from scripts.gemmini_rtl_build_binding import verify_build
-from sim.cycle.execution_lifecycle import project_lifecycle
-from sim.cycle.execution_pipeline_contract import (
-    OWNER_FIELDS,
-    PARENT_FIELDS,
-    parse_pipeline,
-    required_ids,
+from sim.cycle.npu_trace_schema import (
+    Record,
+    integer,
+    object_value,
+    unique_pairs,
 )
-from sim.cycle.npu_trace import work_binding
-from sim.cycle.npu_trace_integrity import read_records, start_trace
-from sim.cycle.npu_trace_schema import INPUT_KEYS, Record, integer, object_value
-from sim.cycle.reconstruct_graph import array, json_records, read_manifest, sha256
+from sim.cycle.reconstruct_graph import array, sha256
+from sim.tests.cycle.compositional_sequence_repeat import (
+    REPEAT_KIND,
+    build_repeat_stimulus,
+    frozen_stimulus_text,
+)
+from sim.tests.cycle.compositional_sequence_v1_runtime import validate_log
+from sim.tests.cycle.compositional_sequence_v2_compile import compile_probe
+from sim.tests.cycle.compositional_sequence_v2_runtime import (
+    validate_absolute_log,
+    validate_absolute_log_stream,
+)
+from sim.tests.cycle.compositional_sequence_v2_stimulus import (
+    ABSOLUTE_POLICY,
+    BASE,
+    POLICY,
+    SOURCE,
+    STIMULUS_SCHEMA,
+    STIMULUS_SOURCES,
+    AbsoluteOfferError,
+    absolute_stimulus,
+    project,
+    stimulus_digest,
+    stimulus_source_hashes,
+    validate_stimulus,
+)
+from sim.tests.cycle.compositional_sequence_v2_stream import tag_pressure_rows
+from sim.tests.cycle.compositional_sequence_v2_text import (
+    absolute_numeric_text,
+    numeric_text,
+)
+from sim.tests.cycle.compositional_sequence_v2_values import value_argv, value_report
 
-SOURCE: Final = ROOT / 'sim/tests/cycle/compositional_sequence_probe.cpp'
-BASE: Final = ROOT / 'sim/tests/cycle/production_sequence_probe.cpp'
-POLICY: Final = 'public-ready-or-later-arrival-v1'
-
-
-def project(trace: Path, lifecycle: Path, semantic: Path, delays: tuple[int, ...],
-            parent_indices: tuple[int, ...] = (0, 1)) -> Record:
-    graph = read_manifest(semantic)
-    projected_lifecycle = project_lifecycle(json_records(lifecycle), graph)
-    records = read_records(trace)
-    state = start_trace(records)
-    pairs = [(row, work) for row in records if (work := state.consume(row)) is not None]
-    all_parents = [{key: row[key] for key in PARENT_FIELDS} for row in projected_lifecycle.pipeline_parents]
-    all_owners = [{key: row[key] for key in OWNER_FIELDS} for row in projected_lifecycle.pipeline_owners]
-    contract: Record = {'pipeline_parents': list[JsonValue](all_parents),
-                        'pipeline_owners': list[JsonValue](all_owners)}
-    _ = parse_pipeline(contract, {'npu:' + str(integer(row, 'work_id')): row for row, _ in pairs})
-    expected = [work_id for parent in all_parents for work_id in required_ids(parent, 'required_work_ids')]
-    if sorted(expected) != sorted(work.identity for _, work in pairs):
-        raise ValueError('producer parent/fence work coverage differs from trace')
-    if not parent_indices or parent_indices[0] < 0 or parent_indices != tuple(range(parent_indices[0],
-            parent_indices[0] + len(parent_indices))) or parent_indices[-1] >= len(all_parents):
-        raise ValueError('select consecutive producer parent indices')
-    parents = [all_parents[index] for index in parent_indices]
-    selected = {work_id for parent in parents for work_id in required_ids(parent, 'required_work_ids')}
-    pairs = [(row, work) for row, work in pairs if work.identity in selected]
-    if len(pairs) <= 4 or len(delays) != len(pairs) or any(value < 0 for value in delays):
-        raise ValueError('selected parents require >4 works and one nonnegative delay per work')
-    if delays[0] >= 5:
-        raise ValueError('first delay is a start phase in 0..4')
-    owners = [row for row in all_owners if integer(row, 'parent_id') in
-              {integer(parent, 'parent_id') for parent in parents}]
-    dense_slots = {work.identity: integer(row, 'host_slot') for row, work in pairs
-                   if work.scope == 'stripe'}
-    residual_slots = {integer(binding, 'work_id'): dense_slots[integer(binding, 'dense_work_id')]
-                      for parent in parents for binding in map(object_value, array(parent['residual_bindings']))}
-    works: list[JsonValue] = []
-    for ordinal, ((record, work), delay) in enumerate(zip(pairs, delays, strict=True)):
-        slot = dense_slots.get(work.identity, residual_slots.get(work.identity))
-        if slot not in (0, 1) or record['host_slot'] not in (None, slot):
-            raise ValueError('producer workspace ownership differs from trace')
-        works.append({'ordinal': ordinal, 'work_id': work.identity, 'scope': work.scope,
-                      'slot': slot, 'arrival_delay': delay, 'work_binding': work_binding(work),
-                      'input': dict(zip(INPUT_KEYS, work.inputs, strict=True)),
-                      'original_k': work.original_k, 'runs': [asdict(run) for run in work.runs],
-                      'trace_record': record})
-    return {'schema': 'im2p-compositional-sequence-projection', 'version': 1,
-            'offer_policy': POLICY, 'profile': state.run.profile,
-            'selected_parent_indices': list(parent_indices),
-            'hardware_contract': state.run.contract, 'npu_summary': state.summary(),
-            'producer_artifacts': {name: {'path': str(path), 'sha256': sha256(path)}
-                                   for name, path in (('trace', trace), ('lifecycle', lifecycle),
-                                                      ('semantic_graph', semantic))},
-            'pipeline_parents': list[JsonValue](parents),
-            'pipeline_owners': list[JsonValue](owners), 'works': works}
-
-
-def numeric_text(projection: Record) -> str:
-    lines = ['IM2P_COMPOSITIONAL_SEQUENCE_V1 ' + str(projection['profile']), 'PERIOD 5']
-    works = array(projection['works'])
-    lines.append(f'WORKS {len(works)}')
-    for raw in works:
-        row = object_value(raw)
-        trace = object_value(row['trace_record'])
-        inputs = object_value(row['input'])
-        runs = array(row['runs'])
-        fields = (row['ordinal'], row['work_id'], 'R' if row['scope'] == 'residual_compact' else 'D',
-                  row['slot'], row['arrival_delay'], trace['parent_id'], trace['call_id'],
-                  trace['stripe_id'] if trace['stripe_id'] is not None else 0,
-                  trace['row_begin'], trace['parent_m'], *(inputs[key] for key in INPUT_KEYS),
-                  row['original_k'] if row['original_k'] is not None else 0,
-                  row['work_binding'], len(runs))
-        lines.append('W ' + ' '.join(map(str, fields)))
-        for run in runs:
-            span = object_value(run)
-            lines.append('R ' + ' '.join(str(span[key]) for key in
-                        ('original_block_id', 'original_k_mask', 'compact_k_begin', 'compact_k_count')))
-    return '\n'.join(lines) + '\n'
-
-
-def compile_probe(build: Path, library: Path, out: Path, projection: Record) -> Path:
-    if verify_build(build, str(projection['profile']))['hardware_contract'] != projection['hardware_contract']:
-        raise ValueError('RTL build hardware contract differs from producer')
-    source = BASE.read_text()
-    marker = '#undef IM2P_SERVICE_PROBE_NO_MAIN\n'
-    event = '''void event(const char *kind, std::uint64_t cycle) {
-  if (current_ordinal != UINT32_MAX)
-    std::cout << "RTL_EVENT " << current_ordinal << ' ' << current_work_id << ' '
-              << cycle << ' ' << kind << '\\n';
-}'''
-    atomic_event = '''void event(const char *kind, std::uint64_t cycle) {
-  if (current_ordinal != UINT32_MAX)
-    std::fprintf(stdout, "RTL_EVENT %u %u %llu %s\\n", current_ordinal, current_work_id, static_cast<unsigned long long>(cycle), kind);
-}'''
-    if source.count(marker) != 1 or source.count(event) != 1:
-        raise ValueError('base probe inclusion seam changed')
-    generated = out / 'compositional-base.inc'
-    generated.write_text('#include <cstdio>\n' + source.replace(
-        marker, marker + '#define main legacy_sequence_main\n').replace(event, atomic_event))
-    resolved = json.loads((build / 'resolved-profile.json').read_text())
-    makefile = (build / 'rtl-test-obj/VIM2PGemminiWSHP1RtlTest.mk').read_text()
-    flags_match = re.search(r'VM_USER_CFLAGS = \\\n(.*?)\n\n', makefile, re.DOTALL)
-    root_match = re.search(r'^VERILATOR_ROOT = (.+)$', makefile, re.MULTILINE)
-    if flags_match is None or root_match is None:
-        raise ValueError('official Verilator compile inputs missing')
-    flags = shlex.split(flags_match[1].replace('\\\n', ' ').rstrip().removesuffix('\\'))
-    top = resolved.get('selected_top')
-    if not isinstance(top, str) or not re.fullmatch(r'IM2PGemminiWSHP1A[48]W[48]D(?:16|32|64)', top):
-        raise ValueError('official generated top missing')
-    flags.append('-DIM2P_RTL_SELECTED_TOP=' + top)
-    if resolved.get('llama_source') is not None:
-        recorded = object_value(resolved['llama_source'])['root']
-        flags = [flag.replace(str(recorded), str(ROOT.parent / 'llama.cpp-gemmini')) for flag in flags]
-    objects = build / 'rtl-test-obj'
-    include = Path(root_match[1]) / 'include'
-    flags += ['-ffunction-sections', '-fdata-sections', f'-I{objects}', f'-I{include}',
-              f'-I{include / "vltstd"}', '-O1', f'-I{SOURCE.parent}',
-              '-DIM2P_COMPOSITIONAL_BASE_SOURCE="' + str(generated) + '"']
-    binary = out / 'compositional-probe'
-    link = (['-Wl,-dead_strip', '-Wl,-U,__Z15vl_time_stamp64v,-U,__Z13sc_time_stampv']
-            if sys.platform == 'darwin' else ['-Wl,--gc-sections'])
-    argv = ['c++', *flags, str(SOURCE), str(ROOT / 'sim/common/gemmini_schedule.cpp'),
-            str(objects / 'VIM2PGemminiWSHP1RtlTest__ALL.a'), str(objects / 'verilated.o'),
-            str(objects / 'verilated_threads.o'), str(library), f'-Wl,-rpath,{library.parent}',
-            *link, '-pthread', '-o', str(binary)]
-    (out / 'compile-command.json').write_text(json.dumps(argv, indent=2) + '\n')
-    with (out / 'compile.log').open('x') as log:
-        completed = subprocess.run(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                   check=False, timeout=300)
-    if completed.returncode:
-        raise ValueError(f'probe compile failed: {out / "compile.log"}')
-    return binary
-
-
-def validate_log(raw: str, projection: Record) -> list[Record]:
-    works = []
-    runs = []
-    rtl: Counter[tuple[int, int, int, str]] = Counter()
-    model: Counter[tuple[int, int, int, str]] = Counter()
-    counts: dict[int, tuple[int, ...]] = {}
-    for line in raw.splitlines():
-        if line.startswith('COMPOSITION_RUN '):
-            runs.append(object_value(json.loads(line.removeprefix('COMPOSITION_RUN '))))
-        elif line.startswith('COMPOSITION_WORK '):
-            works.append(object_value(json.loads(line.removeprefix('COMPOSITION_WORK '))))
-        elif line.startswith(('RTL_EVENT ', 'MODEL_EVENT ')):
-            kind, ordinal, work_id, cycle, name = line.split()
-            (rtl if kind == 'RTL_EVENT' else model)[int(ordinal), int(work_id), int(cycle), name] += 1
-        elif line.startswith('MODEL_COUNTS '):
-            _, ordinal, _, *values = line.split()
-            counts[int(ordinal)] = tuple(map(int, values))
-    expected = [object_value(row) for row in array(projection['works'])]
-    if len(runs) != 1 or runs[0].get('instance_count') != 1 or runs[0].get('reset_count') != 1 or \
-            runs[0].get('work_count') != len(expected) or len(works) != len(expected):
-        raise ValueError('one-instance >4-work run evidence missing')
-    if not rtl or rtl != model or {row[0] for row in rtl} != set(range(len(expected))):
-        raise ValueError('selected RTL/model event stream differs')
-    for index, (observed, requested) in enumerate(zip(works, expected, strict=True)):
-        if (observed['ordinal'], observed['work_id'], observed['work_binding'], observed['slot']) != \
-                (index, requested['work_id'], requested['work_binding'], requested['slot']):
-            raise ValueError('producer identity/order/slot differs')
-        if observed['offered'] != observed['predicted_offered'] or \
-                observed['accepted'] != observed['predicted_accepted']:
-            raise ValueError('independent acceptance epoch differs')
-        if index and observed['offered'] != works[index-1]['resource_ready'] + requested['arrival_delay']:
-            raise ValueError('successor offer policy differs')
-        if observed['resource_ready'] != observed['predicted_resource_ready'] or \
-                observed['numeric_pass'] is not True:
-            raise ValueError('resource prediction or numeric result differs')
-        modeled = counts.get(index)
-        actual = tuple(observed[key] for key in ('submissions', 'scale_read_requests',
-                        'scale_read_responses', 'scale_release_count', 'load_requests',
-                        'load_responses', 'store_requests', 'store_responses',
-                        'result_ready', 'final_scale_release', 'resource_ready',
-                        'next_scratchpad_half', 'next_accumulator_half'))
-        if modeled != actual:
-            raise ValueError(f'composition counters/endpoints differ at work {index}')
-    return works
+__all__ = (
+    'ABSOLUTE_POLICY', 'BASE', 'POLICY', 'ROOT', 'SOURCE', 'STIMULUS_SCHEMA',
+    'STIMULUS_SOURCES', 'absolute_numeric_text', 'absolute_stimulus',
+    'build_repeat_stimulus', 'compile_probe', 'main', 'numeric_text', 'project', 'run', 'run_absolute',
+    'stimulus_digest', 'stimulus_source_hashes', 'validate_absolute_log',
+    'validate_log', 'validate_stimulus',
+)
 
 
 def run(trace: Path, lifecycle: Path, semantic: Path, build: Path, library: Path,
@@ -227,11 +79,11 @@ def run(trace: Path, lifecycle: Path, semantic: Path, build: Path, library: Path
         completed = subprocess.run([str(binary), str(out / 'projection.txt')], cwd=ROOT,
                                    stdout=log, stderr=diagnostics, check=False, timeout=1800)
     if completed.returncode:
-        raise ValueError(f'probe execution failed: {out / "rtl.log"}')
+        raise AbsoluteOfferError(f'probe execution failed: {out / "rtl.log"}')
     works = validate_log((out / 'rtl.log').read_text(), projection)
     if any(sha256(path) != object_value(object_value(projection['producer_artifacts'])[name])['sha256']
            for name, path in (('trace', trace), ('lifecycle', lifecycle), ('semantic_graph', semantic))):
-        raise ValueError('producer artifact changed during probe')
+        raise AbsoluteOfferError('producer artifact changed during probe')
     report = {'schema': 'im2p-compositional-sequence-run', 'version': 1,
               'status': 'SINGLE_PARENT_DIAGNOSTIC' if len(parent_indices) == 1 else 'PASS_DIAGNOSTIC_ONLY',
               'offer_policy': POLICY, 'selected_parent_indices': parent_indices,
@@ -252,18 +104,182 @@ def run(trace: Path, lifecycle: Path, semantic: Path, build: Path, library: Path
                       'report': str(out / 'report.json')}))
 
 
+def run_absolute(stimulus_path: Path, case_id: str, out: Path,
+                 build: Path | None, library: Path | None, *,
+                 expected_stimulus_sha256: str | None = None,
+                 expected_repeats: int | None = None,
+                 require_queue_payload_v2: bool = False) -> None:
+    raw_stimulus = stimulus_path.read_bytes()
+    file_sha256 = hashlib.sha256(raw_stimulus).hexdigest()
+    stimulus = object_value(json.loads(raw_stimulus, object_pairs_hook=unique_pairs))
+    repeat_mode = stimulus.get('fixture_kind') == REPEAT_KIND
+    require_boundary_v2 = 'BOUNDARY_V2' in array(stimulus.get('required_observations', []))
+    if repeat_mode and (expected_stimulus_sha256 is None or expected_repeats is None):
+        raise AbsoluteOfferError('expected repeat authority missing')
+    if expected_stimulus_sha256 is not None and file_sha256 != expected_stimulus_sha256:
+        raise AbsoluteOfferError('frozen stimulus file digest mismatch')
+    validate_stimulus(stimulus, expected_stimulus_sha256=expected_stimulus_sha256,
+                      expected_repeats=expected_repeats)
+    if stimulus['case_id'] != case_id:
+        raise AbsoluteOfferError('stimulus case identity differs')
+    if (build is None) != (library is None):
+        raise AbsoluteOfferError('RTL build and native library must be provided together')
+    if require_queue_payload_v2 and (build is None or library is None):
+        raise AbsoluteOfferError('queue payload v2 requires an RTL and native runtime')
+    if library is not None and sha256(library) != stimulus['cycle_library_sha256']:
+        raise AbsoluteOfferError('cycle library digest mismatch before run')
+    out.mkdir(parents=True, exist_ok=False)
+    (out / 'projection.json').write_text(json.dumps(stimulus, indent=2, sort_keys=True) + '\n')
+    (out / 'projection.txt').write_text(absolute_numeric_text(
+        stimulus, expected_stimulus_sha256=expected_stimulus_sha256,
+        expected_repeats=expected_repeats))
+    report: Record = {
+        'schema': 'im2p-compositional-sequence-run', 'version': 2,
+        'status': 'STATIC_VALIDATED_RUNTIME_PENDING', 'case_id': case_id,
+        'profile': stimulus['profile'], 'work_count': len(array(stimulus['works'])),
+        'stimulus_sha256': stimulus['stimulus_sha256'], 'stimulus_file_sha256': file_sha256,
+        'numeric_projection_sha256': sha256(out / 'projection.txt'),
+        'fixture_kind': stimulus.get('fixture_kind', 'GENUINE_COMPLETE_PARENT'),
+        'producer_artifacts': stimulus.get('producer_artifacts', {}),
+        'diagnostic_source': stimulus.get('diagnostic_source'), **value_report(stimulus, build is not None),
+        'required_observations': stimulus.get('required_observations', []),
+        'tag_full_pressure_status': (
+            'UNRESOLVED' if 'TAG_FULL_PRESSURE' in array(stimulus.get('required_observations', []))
+            else 'NOT_RUN'),
+    }
+    if build is not None and library is not None:
+        binary = compile_probe(build, library, out, stimulus)
+        observer = ['--tag-observer-v2'] if repeat_mode or require_boundary_v2 or require_queue_payload_v2 else []
+        if require_boundary_v2 or require_queue_payload_v2:
+            observer.append('--boundary-schema=2')
+        if require_queue_payload_v2:
+            observer.append('--queue-edge-schema=2')
+        with (out / 'rtl.log').open('x') as log, (out / 'rtl-diagnostics.log').open('x') as diagnostics:
+            completed = subprocess.run([str(binary), str(out / 'projection.txt'),
+                                        *value_argv(stimulus), *observer], cwd=ROOT,
+                                       stdout=log, stderr=diagnostics, check=False,
+                                       timeout=1800)
+        if completed.returncode:
+            raise AbsoluteOfferError(f'absolute probe execution failed: {out / "rtl.log"}')
+        if repeat_mode or require_boundary_v2 or require_queue_payload_v2:
+            log_path = out / 'rtl.log'
+            ids = tuple(integer(object_value(row), 'work_id') for row in array(stimulus['works']))
+            works = validate_absolute_log_stream(
+                log_path, stimulus, ids,
+                expected_stimulus_sha256=expected_stimulus_sha256,
+                expected_repeats=expected_repeats,
+                require_boundary_v2=require_boundary_v2 or require_queue_payload_v2,
+                require_queue_payload_v2=require_queue_payload_v2)
+            if repeat_mode:
+                pressure = tag_pressure_rows(log_path, ids)
+                report['tag_pressure_v2'] = list[JsonValue](pressure)
+                report['tag_full_pressure_status'] = ('FULL_STALL_OBSERVED' if any(
+                    integer(row, 'full_stall_cycles') for row in pressure) else 'FULL_STALL_NOT_OBSERVED')
+        else:
+            works = validate_absolute_log((out / 'rtl.log').read_text(), stimulus, expected_stimulus_sha256=expected_stimulus_sha256)
+        if sha256(library) != stimulus['cycle_library_sha256']:
+            raise AbsoluteOfferError('cycle library digest changed during run')
+        report['status'] = ('PASS_TEST_ONLY_REPEAT_TEMPLATE' if repeat_mode else
+                            'PASS_TEST_ONLY_RUN_AWARE_DIAGNOSTIC'
+                            if stimulus.get('fixture_kind') == 'TEST_ONLY_RUN_AWARE_DIAGNOSTIC'
+                            else 'PASS_ABSOLUTE_MODEL_RTL')
+        report['works'] = list[JsonValue](works)
+        report['source_sha256'] = {str(path.relative_to(ROOT)): sha256(path)
+                                   for path in (SOURCE, BASE)}
+        report['rtl_build_binding_sha256'] = sha256(build / 'rtl-build-binding.json')
+        report['cycle_library_sha256'] = stimulus['cycle_library_sha256']
+        report['binary_sha256'] = sha256(binary)
+        report['rtl_log_sha256'] = sha256(out / 'rtl.log')
+        report['rtl_diagnostics_sha256'] = sha256(out / 'rtl-diagnostics.log')
+        if require_queue_payload_v2:
+            report['queue_payload_schema'] = 2
+    if repeat_mode:
+        if expected_stimulus_sha256 is None or expected_repeats is None:
+            raise AbsoluteOfferError('expected repeat authority missing before publication')
+        report['source_template'] = stimulus['source_template']
+        report['repeat_count'] = stimulus['repeat_count']
+        report['synthetic_parent_occurrences'] = stimulus['synthetic_parent_occurrences']
+        report['repeat_authority'] = {
+            'expected_stimulus_sha256': expected_stimulus_sha256,
+            'expected_repeats': expected_repeats,
+            'expected_work_count': 12 * expected_repeats,
+            'expected_parent_occurrences': 2 * expected_repeats,
+        }
+        if sha256(stimulus_path) != expected_stimulus_sha256:
+            raise AbsoluteOfferError('frozen stimulus file digest changed before publication')
+    (out / 'report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+    print(json.dumps({'status': report['status'], 'work_count': report['work_count'],
+                      'report': str(out / 'report.json')}))
+
+
+def freeze_repeat(template: Path, matrix: Path, case_id: str, repeats: int, out: Path) -> None:
+    repeated = build_repeat_stimulus(template, matrix, case_id, repeats)
+    frozen = frozen_stimulus_text(repeated)
+    file_sha256 = hashlib.sha256(frozen.encode()).hexdigest()
+    validate_stimulus(repeated, expected_stimulus_sha256=file_sha256,
+                      expected_repeats=repeats)
+    out.mkdir(parents=True, exist_ok=False)
+    (out / 'stimulus.json').write_text(frozen)
+    (out / 'projection.txt').write_text(absolute_numeric_text(
+        repeated, expected_stimulus_sha256=file_sha256, expected_repeats=repeats))
+    print(json.dumps({'status': 'FROZEN_TEST_ONLY_REPEAT_TEMPLATE',
+                      'work_count': len(array(repeated['works'])),
+                      'synthetic_parent_occurrences': len(array(repeated['synthetic_parent_occurrences'])),
+                      'stimulus_file_sha256': file_sha256,
+                      'stimulus': str(out / 'stimulus.json')}))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run producer composition on one RTL instance')
     for name in ('trace', 'lifecycle', 'semantic-graph', 'rtl-build', 'library', 'out'):
-        parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--delays', required=True, help='first start phase, then arrival cycles after public ready')
+        parser.add_argument('--' + name, type=Path, required=name == 'out')
+    parser.add_argument('--delays', help='v1: first start phase, then arrival cycles after public ready')
+    parser.add_argument('--stimulus', type=Path, help='sealed v2 absolute-offer JSON manifest')
+    parser.add_argument('--repeat-template', type=Path, help='frozen Todo13 A4W4-D16 source template')
+    parser.add_argument('--repeat-matrix-receipt', type=Path, help='frozen Todo13 matrix receipt')
+    parser.add_argument('--repeats', type=int, help='test-only source-template repetitions (1..32)')
+    parser.add_argument('--expected-stimulus-sha256', help='reviewed frozen stimulus file SHA256')
+    parser.add_argument('--expected-repeats', type=int, help='reviewed repeat denominator (1..32)')
+    parser.add_argument('--require-queue-payload-v2', action='store_true',
+                        help='require source-bound RTL/native QUEUE_EDGE_V2 payload parity')
+    parser.add_argument('--case', help='v2 case identity declared in stimulus')
     parser.add_argument('--parent-indices', default='0,1', help='increasing producer parent indices')
     args = parser.parse_args()
     try:
-        delays = tuple(map(int, args.delays.split(',')))
-        parents = tuple(map(int, args.parent_indices.split(',')))
-        run(args.trace.resolve(), args.lifecycle.resolve(), args.semantic_graph.resolve(),
-            args.rtl_build.resolve(), args.library.resolve(), args.out.resolve(), delays, parents)
+        if args.repeat_template is not None:
+            if (args.case is None or args.repeat_matrix_receipt is None or args.repeats is None or
+                    any(value is not None for value in (args.stimulus, args.rtl_build, args.library,
+                                                         args.trace, args.lifecycle,
+                                                         args.semantic_graph, args.delays,
+                                                         args.expected_stimulus_sha256,
+                                                         args.expected_repeats,
+                                                         args.require_queue_payload_v2))):
+                raise AbsoluteOfferError('repeat freeze requires source, matrix, case and repeats only')
+            freeze_repeat(args.repeat_template.resolve(), args.repeat_matrix_receipt.resolve(),
+                          args.case, args.repeats, args.out.resolve())
+        elif args.stimulus is not None:
+            if args.case is None or any(value is not None for value in
+                    (args.trace, args.lifecycle, args.semantic_graph, args.delays,
+                     args.repeat_matrix_receipt, args.repeats)):
+                raise AbsoluteOfferError('v2 requires --case and excludes v1 trace/delays arguments')
+            run_absolute(args.stimulus.resolve(), args.case, args.out.resolve(),
+                         args.rtl_build.resolve() if args.rtl_build else None,
+                         args.library.resolve() if args.library else None,
+                         expected_stimulus_sha256=args.expected_stimulus_sha256,
+                         expected_repeats=args.expected_repeats,
+                         require_queue_payload_v2=args.require_queue_payload_v2)
+        else:
+            if (args.case is not None or args.repeat_matrix_receipt is not None or
+                    args.repeats is not None or args.expected_stimulus_sha256 is not None or
+                    args.expected_repeats is not None or args.require_queue_payload_v2 or
+                    any(value is None for value in
+                    (args.trace, args.lifecycle, args.semantic_graph, args.rtl_build,
+                     args.library, args.delays))):
+                raise AbsoluteOfferError('v1 requires trace, lifecycle, semantic graph, RTL build, library and delays')
+            delays = tuple(map(int, args.delays.split(',')))
+            parents = tuple(map(int, args.parent_indices.split(',')))
+            run(args.trace.resolve(), args.lifecycle.resolve(), args.semantic_graph.resolve(),
+                args.rtl_build.resolve(), args.library.resolve(), args.out.resolve(), delays, parents)
     except (OSError, ValueError, IndexError, KeyError, subprocess.TimeoutExpired) as error:
         print(f'compositional sequence: {error}', file=sys.stderr)
         return 1

@@ -159,6 +159,66 @@ invalid mesh tag's physical queue occupancy. See
 one-NPU, one-outstanding, drained reference-memory domain. A string label alone
 cannot admit real scheduling.
 
+### Stateful session scheduling
+
+`StatefulSequenceProvider` is a separate provider, not a mode of the isolated
+service estimator. It opens one `SequenceSession` for the schedule, admits the
+ordered trace once, and advances that same native handle for every NPU node.
+The provider accepts only the six A4W4/A8W8, DIM16/32/64 HP1 profiles with
+period-5 reference memory and planner-block submissions. Each work must match
+the next source-bound trace work exactly. Reordering, duplication, changed
+geometry/runs, offering before the native cursor or previous resource release,
+or attempting another transition after a fault is rejected.
+
+Three scheduler epochs must not be collapsed:
+
+- `request_available_ns` is when execution-IR dependencies make the logical
+  request available;
+- `port_offer_ns` is the clock-aligned edge when the scheduler may electrically
+  offer it after the previous NPU resource-ready boundary;
+- `accepted_ns` / `accepted_cycle` is the native port handshake, which is no
+  earlier than the electrical offer.
+
+A request may become available while the prior work still owns the NPU. That
+wait is recorded between request availability and electrical offer; it is not
+raw-port backpressure. Result-ready enables result consumers, final-scale-release
+is retained as a separate endpoint, and only resource-ready releases the shared
+NPU for the next logical work. The supported production policy has one accepted
+logical work at a time. It does not infer multi-work hardware concurrency from
+the native ABI's single copied pending slot.
+
+Production scheduling requires the concrete `StatefulSequenceProvider` with a
+typed `ProductionStatefulAdmission`, `validation_scope` equal to
+`STATEFUL_SEQUENCE_PRODUCTION`, a reconstructed scenario, the exact validated
+clock/profile, and complete equality between scheduled NPU IDs and the
+certificate-bound trace works. Admission binds the certificate and evidence
+root, trace identity and digest, native library/profile/source closure, Python
+ABI/binding/provider/admission sources, and ordered work identities/request
+digests. `DiagnosticStatefulProvider` instead emits
+`DIAGNOSTIC_STATEFUL_SEQUENCE` under a configured test frequency and cannot be
+promoted by copying a scope string.
+
+Stateful schedules are schema version 2 and include scheduler and execution-CLI
+source hashes; SQLite also binds the SQLite scheduler source. JSON publication
+rechecks completion and source hashes before linking the new output. SQLite
+publication runs the same stateful provider and complete verification gate.
+`verify-schedule` creates a fresh provider/native session and recomputes every
+node and endpoint for either storage format; it does not trust the prior
+schedule's scope label. The official wrapper defaults to SQLite. JSON remains
+the explicit small/debug path.
+
+These scopes remain independent: isolated estimates, the exact-v2 drained
+producer sequence, diagnostic stateful schedules, and typed production stateful
+schedules are not interchangeable. Current parent certificates and typed native
+admission do not replace validated post-route clock and target-host/application
+evidence. Those inputs remain unavailable, so diagnostic schedules do not
+authorize TTFT/TPOT or an E2E reconstruction marker. The current actual GPT-2
+observation covers 3 validated works of a 16-work subset; work 3 exceeded the
+reviewed tag limit (peak 5 versus 4) while row peak was 4. A separate cold
+374-work attempt stopped after the same 3 validated works without publication;
+the second full attempt is `NOT_RUN`. The latest 128 MiB queue-edge RTL attempt
+yielded no parity verdict.
+
 ```bash
 python3 -m sim.cycle.execution_cli schedule \
   --bundle execution-bundle.json --cycle-library libim2p_cycle_model.dylib \

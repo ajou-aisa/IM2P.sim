@@ -5,6 +5,7 @@
 
 namespace im2p::cycle::detail {
 namespace {
+struct EventBufferFull {};
 unsigned first_free(const DmaController &d, unsigned count) {
   for (unsigned i = 0; i < count; ++i)
     if (!d.tracker[i].valid)
@@ -51,11 +52,13 @@ std::pair<Range, Range> operands(const Command &c) {
 }
 } // namespace
 
-Engine::Engine(const im2p_cycle_model_config_t &c,
-               const im2p_cycle_request_t &r, const im2p_compact_runs_t *runs)
-    : config(c), request(r), schedule(expand_work(c, r, runs)),
-      profile{c.hardware, c.timing} {
-  state.cycle = r.accepted_cycle;
+WorkContext::WorkContext(const im2p_cycle_model_config_t &c,
+                         const im2p_cycle_request_t &r,
+                         const im2p_compact_runs_t *runs)
+    : request(r), schedule(expand_work(c, request, runs)) {
+  origin.work = r.logical_work_id;
+  origin.submission = r.submission;
+  origin.record_events = r.record_events != 0;
   result.trace.enabled = r.record_events;
   result.trace.limit = c.max_trace_events;
   result.trace.work = r.logical_work_id;
@@ -65,14 +68,193 @@ Engine::Engine(const im2p_cycle_model_config_t &c,
   result.counters.logical_work_count = 1;
   result.counters.planner_loop_count = schedule.planner_loops;
   result.counters.fragment_count = schedule.fragments;
-  expand_commands();
+}
+Engine::Engine(const im2p_cycle_model_config_t &c,
+               const im2p_cycle_request_t &r, const im2p_compact_runs_t *runs)
+    : Engine(c) {
+  work.emplace(config, r, runs);
+  work->origin.generation = 1;
+  work->origin.ordinal = ++next_work_ordinal;
+  state.cycle = work->request.accepted_cycle;
+  expand_commands(*work);
+}
+Engine::Engine(const im2p_cycle_model_config_t &c, bool bounded_events)
+    : config(c), profile{config.hardware, config.timing},
+      sequence_events(bounded_events) {
+  cumulative.abi_version = IM2P_CYCLE_MODEL_ABI_VERSION;
+  cumulative.struct_size = sizeof(cumulative);
+}
+
+bool Engine::resource_ready() const {
+  return !work || (state.host == 3 &&
+                   state.cycle >= work->result.service.resource_ready_cycle);
+}
+
+bool Engine::domain_snapshot(
+    im2p_cycle_sequence_domain_snapshot_t &out) const {
+  const auto &s = state;
+  const auto &a = s.array;
+  if (a.row_counts.size() > IM2P_CYCLE_SEQUENCE_DOMAIN_CAPACITY ||
+      a.tags.size() > IM2P_CYCLE_SEQUENCE_DOMAIN_CAPACITY)
+    return false;
+  out.resource_ready = resource_ready();
+  out.row_count = static_cast<uint32_t>(a.row_counts.size());
+  out.tag_count = static_cast<uint32_t>(a.tags.size());
+  out.max_tag_occupancy = max_tag_occupancy;
+  for (size_t i = 0; i < a.row_counts.size(); ++i)
+    out.rows[i] = {a.row_counts[i].id, a.row_counts[i].rows};
+  for (size_t i = 0; i < a.tags.size(); ++i) {
+    const auto &tag = a.tags[i];
+    const auto &preload = tag.preload;
+    out.tags[i] = {preload.origin.generation,
+                   preload.origin.ordinal,
+                   preload.origin.work,
+                   tag.id,
+                   tag.rows,
+                   preload.rob != none,
+                   preload.rob,
+                   preload.src,
+                   preload.dst,
+                   preload.output_rows,
+                   preload.output_cols,
+                   preload.accumulate};
+  }
+  const auto any_true = [](const auto &values) {
+    return std::any_of(values.begin(), values.end(),
+                       [](auto value) { return value != 0; });
+  };
+  const auto dma_bad = [](const DmaController &dma) {
+    return dma.state || dma_busy(dma);
+  };
+  if (dma_bad(s.load) || dma_bad(s.store))
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_DMA;
+  const auto &m = s.memory;
+  if (any_true(m.active) || !m.queued.empty() || m.backing ||
+      !m.responses.empty() || m.dma_response || m.store_state ||
+      m.acc_read_issued || m.settling || m.write_due)
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_MEMORY;
+  const auto &e = s.execute;
+  if (!e.transpose.empty() || !e.queue.empty() || !e.controls.empty() ||
+      e.mode || any_true(e.counter) || any_true(e.started) ||
+      std::any_of(e.pending.begin(), e.pending.end(),
+                  [](unsigned value) { return value != none; }))
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_EXECUTE;
+  if (s.loop.configured || s.loop.running || any_true(s.loop.utilized) ||
+      std::any_of(s.station.begin(), s.station.end(),
+                  [](const Entry &entry) { return entry.valid; }))
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_LOOP;
+  if (a.request || !a.outputs.empty() || a.counter || any_true(a.written) ||
+      a.output_counter ||
+      std::any_of(a.tags.begin(), a.tags.end(),
+                  [](const Tag &tag) { return tag.preload.rob != none; }))
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_ARRAY;
+  if (!a.row_counts.empty())
+    out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_ROWS;
+  for (size_t bank = 0; bank < s.banks.size(); ++bank) {
+    const auto &current = s.banks[bank];
+    auto &snapshot = out.banks[bank];
+    snapshot.pending = current.pending;
+    snapshot.queued = current.queued;
+    for (size_t stage = 0; stage < current.pipe.size(); ++stage)
+      snapshot.pipe_valid_mask |= uint32_t(current.pipe[stage]) << stage;
+    if (snapshot.pending || snapshot.queued || snapshot.pipe_valid_mask)
+      out.ready_violation_mask |= IM2P_CYCLE_SEQUENCE_DOMAIN_BANKS;
+  }
+  return true;
+}
+
+void Engine::retire_work() {
+  if (!work || !resource_ready())
+    throw Error(IM2P_CYCLE_INTERNAL, "work retired before resource release");
+  work.reset();
+}
+
+void Engine::accept(WorkContext &&candidate, U cycle, unsigned half,
+                    unsigned acc, U generation) {
+  if (state.cycle != cycle || !resource_ready())
+    throw Error(IM2P_CYCLE_INTERNAL, "work accepted while resource busy");
+  const auto ordinal = checked_add(next_work_ordinal, 1);
+  candidate.request.accepted_cycle = cycle;
+  candidate.request.initial_scratchpad_half = half;
+  candidate.request.initial_accumulator_half = acc;
+  candidate.drain_final_release = true;
+  candidate.origin.generation = generation;
+  candidate.origin.ordinal = ordinal;
+  candidate.result.trace.next_id = next_event_id;
+  candidate.result.counters.start_cycle = cycle;
+  expand_commands(candidate);
+  auto next_cumulative = cumulative;
+  if (!next_cumulative.logical_work_count)
+    next_cumulative.start_cycle = cycle;
+  next_cumulative.logical_work_count =
+      checked_add(next_cumulative.logical_work_count, 1);
+  next_cumulative.planner_loop_count = checked_add(
+      next_cumulative.planner_loop_count,
+      candidate.result.counters.planner_loop_count);
+  next_cumulative.fragment_count = checked_add(
+      next_cumulative.fragment_count, candidate.result.counters.fragment_count);
+  work.emplace(std::move(candidate));
+  next_work_ordinal = ordinal;
+  cumulative = next_cumulative;
+  state.host = 0;
+  state.release = 0;
 }
 U Engine::record(const State &s, EventType type, Resource resource,
-                 const Command &c, U detail, U parent) {
-  return result.trace.add(s.cycle, type, resource, s.frame, c.fragment,
-                          parent ? parent : c.parent, detail, c.i, c.j, c.k);
+                 const Command &c, U detail, U parent,
+                 const Command::Origin *explicit_origin) {
+  const auto &origin = explicit_origin ? *explicit_origin
+                       : c.origin;
+  if (!origin.ordinal) {
+    if (sequence_events)
+      throw Error(IM2P_CYCLE_INTERNAL, "event without diagnostic origin");
+    return 0;
+  }
+  const auto frame = c.origin.ordinal ? c.frame
+                                      : origin.frame;
+  if (!sequence_events) {
+    if (!work || origin != work->origin)
+      return 0;
+    const auto id = work->result.trace.add(
+        s.cycle, type, resource, frame, c.fragment, parent ? parent : c.parent,
+        detail, c.i, c.j, c.k);
+    next_event_id = work->result.trace.next_id;
+    return id;
+  }
+  const auto id = next_event_id = checked_add(next_event_id, 1);
+  if (origin.record_events) {
+    if (events.size() >= config.max_trace_events)
+      throw EventBufferFull{};
+    events.push_back({origin,
+                      {id, s.cycle, origin.work, frame,
+                       c.origin.ordinal ? c.fragment : origin.fragment,
+                       parent ? parent : c.parent, detail,
+                       static_cast<uint32_t>(type),
+                       static_cast<uint32_t>(resource), c.i, c.j, c.k, 0}});
+  }
+  ++cumulative.event_count;
+  if (work && origin == work->origin)
+    ++work->result.counters.event_count;
+  return id;
 }
-void Engine::expand_commands() {
+void Engine::count(const Command::Origin &origin,
+                   U im2p_cycle_result_t::*field) {
+  if (!work || origin != work->origin)
+    throw Error(IM2P_CYCLE_INTERNAL, "response has no active owning work");
+  ++(work->result.counters.*field);
+  ++(cumulative.*field);
+}
+size_t Engine::drain_events(DiagnosticEvent *output, size_t capacity) {
+  const auto count = std::min(events.size(), capacity);
+  for (size_t i = 0; i < count; ++i) {
+    output[i] = events.front();
+    events.pop_front();
+  }
+  return count;
+}
+void Engine::expand_commands(WorkContext &context) {
+  const auto &request = context.request;
+  const auto &schedule = context.schedule;
+  std::vector<Programs> programs;
   const auto dim = profile.hardware.dim;
   unsigned half = request.initial_scratchpad_half,
            acc = request.initial_accumulator_half;
@@ -96,6 +278,9 @@ void Engine::expand_commands() {
       command.j = j;
       command.k = k;
       command.matmul = true;
+      command.origin = context.origin;
+      command.origin.frame = widx;
+      command.origin.fragment = fidx;
       command.rows = f.rows;
       command.cols = f.reduction;
       command.output_rows = f.rows;
@@ -139,6 +324,7 @@ void Engine::expand_commands() {
     if (w.final_store)
       acc ^= 1;
   }
+  context.programs = std::move(programs);
 }
 
 bool Engine::busy(const State &s) const {
@@ -177,18 +363,19 @@ void Engine::memory(State &n, const State &s, Signals &g) {
       continue;
     nm.responses.erase(nm.responses.begin() + static_cast<std::ptrdiff_t>(pos));
     if (read.scale) {
-      ++result.counters.scale_response_count;
+      count(read.origin, &im2p_cycle_result_t::scale_response_count);
       if (s.scale_state != 2)
         throw Error(IM2P_CYCLE_INTERNAL, "unexpected scale response");
       n.scale_state = 3;
       n.scale_column = 0;
       record(s, EventType::ScaleResponse, Resource::ScalePath, {}, read.id,
-             read.parent);
+             read.parent, &read.origin);
     } else {
       nm.active[read.id] = false;
       nm.dma_response = read.command;
+      nm.dma_response_origin = read.origin;
       record(s, EventType::ReadResponse, Resource::Backing, {}, read.id,
-             read.parent);
+             read.parent, &read.origin);
     }
     break;
   }
@@ -207,11 +394,11 @@ void Engine::memory(State &n, const State &s, Signals &g) {
     read.parent =
         record(s, read.scale ? EventType::ScaleRequest : EventType::ReadRequest,
                read.scale ? Resource::ScalePath : Resource::Backing, {},
-               read.id, read.parent);
+               read.id, read.parent, &read.origin);
     nm.responses.push_back(read);
     nm.backing.reset();
     if (read.scale)
-      ++result.counters.scale_request_count;
+      count(read.origin, &im2p_cycle_result_t::scale_request_count);
   }
   if (m.write_due && m.write_due->eligible(s.cycle)) {
     if (m.store_state != 3)
@@ -219,8 +406,9 @@ void Engine::memory(State &n, const State &s, Signals &g) {
     nm.write_due.reset();
     nm.store_state = 0;
     g.dma_store_return = m.store_command;
-    ++result.counters.store_response_count;
-    record(s, EventType::WriteCompletion, Resource::Backing);
+    count(m.store_origin, &im2p_cycle_result_t::store_response_count);
+    record(s, EventType::WriteCompletion, Resource::Backing, {}, 0, 0,
+           &m.store_origin);
   }
   if (m.store_state == 1) {
     const bool hazard = std::any_of(
@@ -242,7 +430,8 @@ void Engine::memory(State &n, const State &s, Signals &g) {
     nm.write_due =
         TimingEvent::accepted(s.cycle, profile.memory.backing_write_delay, 1,
                               EventType::WriteCompletion, Resource::Backing);
-    record(s, EventType::WriteRequest, Resource::Backing);
+    record(s, EventType::WriteRequest, Resource::Backing, {}, 0, 0,
+           &m.store_origin);
   }
 }
 
@@ -255,7 +444,8 @@ void Engine::dma(State &n, const State &s, Signals &g) {
     if (!t.valid || !t.remaining)
       throw Error(IM2P_CYCLE_INTERNAL, "load return without credit");
     --t.remaining;
-    ++result.counters.load_response_count;
+    count(s.memory.dma_response_origin,
+          &im2p_cycle_result_t::load_response_count);
   }
   if (g.dma_store_return) {
     auto &t = n.store.tracker[*g.dma_store_return];
@@ -299,18 +489,20 @@ void Engine::dma(State &n, const State &s, Signals &g) {
         read.id = read_id;
         read.command = id;
         read.row = c.dst + row;
+        read.origin = c.origin;
         read.parent =
             record(s, EventType::LoadDma, Resource::LoadEngine, c, read.row);
         g.dma_read = read;
         n.memory.active[read_id] = true;
-        ++result.counters.load_request_count;
+        count(c.origin, &im2p_cycle_result_t::load_request_count);
       }
     } else if (valid && which == 1 && s.memory.store_state == 0) {
       fire = true;
       n.memory.store_state = 1;
       n.memory.store_address = c.src + row;
       n.memory.store_command = id;
-      ++result.counters.store_request_count;
+      n.memory.store_origin = c.origin;
+      count(c.origin, &im2p_cycle_result_t::store_request_count);
       record(s, EventType::StoreDma, Resource::StoreEngine, c, c.src + row);
     }
     if (fire) {
@@ -332,6 +524,10 @@ void Engine::dma(State &n, const State &s, Signals &g) {
     Read read;
     read.id = 15;
     read.scale = true;
+    if (work)
+      read.origin = work->origin;
+    if (work)
+      read.origin.frame = work->frame;
     n.memory.backing = read;
     n.scale_state = 2;
   } else if (operand_take) {
@@ -479,18 +675,31 @@ void Engine::reservation(State &n, const State &s, Signals &g) {
   }
 }
 
-void Engine::control(State &n, const State &s, Signals &) {
-  const auto &w = schedule.work[s.frame];
-  const auto &p = programs[s.frame];
+void Engine::control(State &n, const State &s, Signals &,
+                     unsigned &next_frame) {
+  if (!work || s.host == 3)
+    return;
+  auto &context = *work;
+  const auto &schedule = context.schedule;
+  const auto &request = context.request;
+  const auto &programs = context.programs;
+  auto &result = context.result;
+  const unsigned frame = context.frame;
+  const auto &w = schedule.work[frame];
+  const auto &p = programs[frame];
   const auto &l = s.loop;
   auto &nl = n.loop;
   const bool output_ready = s.unrolled.size() < P::unrolled_queue;
   std::optional<Command> generated;
   int stage = -1;
-  const bool a_active = l.started[0] && l.position[0] < p.a.size();
-  const bool b_active = l.started[1] && l.position[1] < p.b.size();
-  const bool ex_active = l.started[3] && l.position[2] < p.execute.size();
-  const bool st_active = l.started[4] && l.position[3] < p.store.size();
+  const bool a_active =
+      l.configured && l.started[0] && l.position[0] < p.a.size();
+  const bool b_active =
+      l.configured && l.started[1] && l.position[1] < p.b.size();
+  const bool ex_active =
+      l.configured && l.started[3] && l.position[2] < p.execute.size();
+  const bool st_active =
+      l.configured && l.started[4] && l.position[3] < p.store.size();
   auto ahead = [](const Command &next, const Command &target, bool a) {
     return next.k > target.k ||
            (next.k == target.k && (a ? next.i > target.i : next.j > target.j));
@@ -597,6 +806,8 @@ void Engine::control(State &n, const State &s, Signals &) {
                     [](bool b) { return b; })) {
       nl.configured = false;
       nl.running = false;
+      nl.started.fill(false);
+      nl.completed.fill(false);
     }
   }
   const bool controller_busy = busy(s);
@@ -610,7 +821,9 @@ void Engine::control(State &n, const State &s, Signals &) {
       n.bridge_state = 2;
   } else if (s.bridge_state == 1 && s.raw.size() < P::incoming_queue) {
     Command c;
-    c.frame = s.frame;
+    c.origin = context.origin;
+    c.origin.frame = frame;
+    c.frame = frame;
     c.index = s.bridge_index;
     c.kind = c.index < 3    ? Kind::LoadConfig
              : c.index == 3 ? Kind::StoreConfig
@@ -628,18 +841,22 @@ void Engine::control(State &n, const State &s, Signals &) {
     } else
       ++n.bridge_index;
   } else if (s.bridge_state == 2) {
-    record(s, EventType::LoopDone, Resource::HostWork);
+    record(s, EventType::LoopDone, Resource::HostWork, {}, 0, 0,
+           &context.origin);
     n.bridge_issued = false;
     n.bridge_state = 0;
     n.saw_busy = false;
     n.host = 2;
     n.release = 0;
-    if (s.frame + 1 == schedule.work.size()) {
+    if (frame + 1 == schedule.work.size()) {
       result.counters.done_cycle = s.cycle;
       result.counters.total_cycles = s.cycle - request.accepted_cycle;
+      cumulative.done_cycle = s.cycle;
+      cumulative.total_cycles += result.counters.total_cycles;
       result.service.result_ready_cycle = s.cycle;
-      record(s, EventType::LogicalDone, Resource::HostWork);
-      n.host = drain_final_release ? 2 : 3;
+      record(s, EventType::LogicalDone, Resource::HostWork, {}, 0, 0,
+             &context.origin);
+      n.host = context.drain_final_release ? 2 : 3;
     }
   }
   if (s.host == 0 && s.scale_state == 0) {
@@ -647,11 +864,15 @@ void Engine::control(State &n, const State &s, Signals &) {
     n.scale_state = 1;
     n.scale_row = n.scale_column = 0;
     ++result.counters.loop_count;
+    ++cumulative.loop_count;
     Command c;
-    c.frame = s.frame;
+    c.origin = context.origin;
+    c.origin.frame = frame;
+    c.frame = frame;
     record(s, EventType::Work, Resource::HostWork, c);
   } else if (s.scale_state == 3) {
-    record(s, EventType::ScaleLane, Resource::ScalePath, {}, s.scale_column);
+    record(s, EventType::ScaleLane, Resource::ScalePath, {}, s.scale_column, 0,
+           &context.origin);
     if (s.scale_column + 1 == profile.hardware.dim) {
       n.scale_column = 0;
       if (s.scale_row + 1 == w.scale_rows)
@@ -673,53 +894,91 @@ void Engine::control(State &n, const State &s, Signals &) {
   }
   if (s.host == 2) {
     if (s.release < w.scale_rows * profile.hardware.dim) {
-      record(s, EventType::ScaleRelease, Resource::ScalePath, {}, s.release);
+      record(s, EventType::ScaleRelease, Resource::ScalePath, {}, s.release, 0,
+             &context.origin);
       ++n.release;
-      if (s.frame + 1 == schedule.work.size())
+      if (frame + 1 == schedule.work.size())
         result.service.final_scale_release_cycle = s.cycle;
     } else {
-      if (s.frame + 1 == schedule.work.size()) {
+      if (frame + 1 == schedule.work.size()) {
         n.host = 3;
         // UpstreamWsHp1Top clears activeSlots on the registered zero count;
         // work.ready observes that ownership update on the following cycle.
         result.service.resource_ready_cycle = checked_add(s.cycle, 1);
       } else {
-        ++n.frame;
+        ++next_frame;
         n.host = 0;
         n.loop = {};
       }
     }
   }
 }
-void Engine::step() {
+bool Engine::step() {
+  auto old_result = sequence_events && work
+                              ? std::optional<ModelResult>(work->result)
+                              : std::nullopt;
+  const auto old_cumulative = cumulative;
+  const auto old_id = next_event_id;
+  const auto old_event_size = events.size();
   State next = state;
   Signals signals;
-  execute(next, state, signals);
-  writeback(next, state, signals);
-  memory(next, state, signals);
-  dma(next, state, signals);
-  reservation(next, state, signals);
-  control(next, state, signals);
-  next.cycle = checked_add(state.cycle, 1);
-  state = std::move(next);
-}
-ModelResult Engine::run(bool drain_release) {
-  drain_final_release = drain_release;
-  while (state.host != 3) {
-    if (state.cycle - request.accepted_cycle >= config.max_cycles)
-      throw Error(IM2P_CYCLE_LIMIT,
-                  drain_final_release ? "cycle budget exhausted before resource release"
-                                      : "cycle budget exhausted before logical completion");
-    step();
+  unsigned next_frame = work ? work->frame : 0;
+  const auto rollback = [&] {
+    while (events.size() > old_event_size)
+      events.pop_back();
+    if (old_result)
+      work->result = std::move(*old_result);
+    cumulative = old_cumulative;
+    next_event_id = old_id;
+  };
+  try {
+    const auto next_cycle = checked_add(state.cycle, 1);
+    execute(next, state, signals);
+    writeback(next, state, signals);
+    memory(next, state, signals);
+    dma(next, state, signals);
+    reservation(next, state, signals);
+    control(next, state, signals, next_frame);
+    next.cycle = next_cycle;
+  } catch (const EventBufferFull &) {
+    rollback();
+    return false;
+  } catch (...) {
+    rollback();
+    throw;
   }
-  result.counters.event_count = result.trace.events.size();
+  state = std::move(next);
+  max_tag_occupancy = std::max(
+      max_tag_occupancy, static_cast<unsigned>(state.array.tags.size()));
+  max_row_occupancy = std::max(
+      max_row_occupancy, static_cast<unsigned>(state.array.row_counts.size()));
+  if (work) {
+    work->frame = next_frame;
+    work->origin.frame = next_frame;
+  }
+  return true;
+}
+const ModelResult &Engine::finish() {
+  if (sequence_events &&
+      (state.array.request || !state.array.outputs.empty() ||
+       !state.execute.controls.empty()))
+    throw Error(IM2P_CYCLE_INTERNAL,
+                "event-producing token survives resource release");
+  auto &context = *work;
+  const auto &request = context.request;
+  const auto &schedule = context.schedule;
+  auto &result = context.result;
+  if (!sequence_events)
+    result.counters.event_count = result.trace.events.size();
   result.service.abi_version = IM2P_CYCLE_SERVICE_ABI_VERSION;
   result.service.struct_size = sizeof(result.service);
   result.service.next_scratchpad_half =
       request.initial_scratchpad_half ^ (schedule.work.size() % 2);
-  result.service.next_accumulator_half = request.initial_accumulator_half ^
+  result.service.next_accumulator_half =
+      request.initial_accumulator_half ^
       (std::count_if(schedule.work.begin(), schedule.work.end(),
-                     [](const auto &work) { return work.final_store; }) % 2);
+                     [](const auto &work) { return work.final_store; }) %
+       2);
   if (result.counters.load_request_count !=
           result.counters.load_response_count ||
       result.counters.store_request_count !=
@@ -728,6 +987,21 @@ ModelResult Engine::run(bool drain_release) {
           result.counters.scale_response_count)
     throw Error(IM2P_CYCLE_INTERNAL,
                 "logical completion before response conservation");
+  return result;
+}
+ModelResult Engine::run(bool drain_release) {
+  auto &context = *work;
+  context.drain_final_release = drain_release;
+  while (state.host != 3) {
+    if (state.cycle - context.request.accepted_cycle >= config.max_cycles)
+      throw Error(IM2P_CYCLE_LIMIT,
+                  context.drain_final_release
+                      ? "cycle budget exhausted before resource release"
+                      : "cycle budget exhausted before logical completion");
+    step();
+  }
+  finish();
+  auto &result = context.result;
   return std::move(result);
 }
 } // namespace im2p::cycle::detail
@@ -735,7 +1009,8 @@ ModelResult Engine::run(bool drain_release) {
 namespace im2p::cycle {
 ModelResult estimate(const im2p_cycle_model_config_t &config,
                      const im2p_cycle_request_t &request,
-                     const im2p_compact_runs_t *runs, bool drain_final_release) {
+                     const im2p_compact_runs_t *runs,
+                     bool drain_final_release) {
   return detail::Engine(config, request, runs).run(drain_final_release);
 }
 } // namespace im2p::cycle
