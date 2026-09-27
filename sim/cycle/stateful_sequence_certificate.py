@@ -305,23 +305,29 @@ def validate_current(path: Path, context: EvidenceContext, document: Record) -> 
 
 
 def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
+    try:
+        document = read_document(path)
+    except (OSError, ValueError, TypeError) as error:
+        raise StatefulCertificateError('document', str(error)) from error
+    if document.get('schema') == 'stateful-profile-domain-v1':
+        from sim.cycle import stateful_profile_certificate as profile_certificate
+
+        document = profile_certificate.validate_document(path, context)
+        return ScopedEvidence(sha256(path), sha256(context.library), (str(document['case_id']),),
+                              state_domain_revision=str(document['state_domain_revision']))
     if context.tag6_evidence_input is not None:
         from sim.cycle import stateful_sequence_replay_certificate as replay
         from sim.cycle.stateful_sequence_evidence_tag6 import validate_document
 
         require(context.current_evidence_input is None and context.domain_delta_input is None,
                 'NOT_READY', 'Tag6 and historical evidence selectors are mutually exclusive')
-        full_replay = read_document(path).get('schema') == replay.SCHEMA
+        full_replay = document.get('schema') == replay.SCHEMA
         document = replay.validate_document(path, context) if full_replay else validate_document(path, context)
         case = 'actual-gpt2-full374' if full_replay else 'actual-gpt2-prefix240'
         return ScopedEvidence(sha256(path), sha256(context.library), (case,),
                               state_domain_revision=str(document['state_domain_revision']))
     require(context.domain_delta_input is None or context.current_evidence_input is not None,
             'NOT_READY', 'tag5 delta requires reviewed current v2 evidence; historical hashes cannot be rebased')
-    try:
-        document = read_document(path)
-    except (OSError, ValueError, TypeError) as error:
-        raise StatefulCertificateError('document', str(error)) from error
     if context.current_evidence_input is not None:
         return validate_current(path, context, document)
     require(document.get('schema') == SCHEMA and document.get('version') == 1 and
@@ -360,6 +366,8 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
 
 def admit(path: Path, context: EvidenceContext) -> None:
     _ = validate(path, context)
+    if read_document(path).get('schema') == 'stateful-profile-domain-v1':
+        return
     if context.tag6_evidence_input is not None:
         from sim.cycle import stateful_sequence_replay_certificate as replay
 

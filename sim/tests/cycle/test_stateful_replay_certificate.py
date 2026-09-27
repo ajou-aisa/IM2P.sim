@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -23,9 +24,17 @@ def verified(context: EvidenceContext) -> tuple[Record, Record, Record]:
     return replay._verified(context)
 
 
-def test_actual_complete_three_certificate_chain_admits(context: EvidenceContext) -> None:
+@pytest.fixture(scope="module")
+def replay_certificate(context: EvidenceContext) -> Path:
+    """Select explicit current consumer evidence without rebasing historical bytes."""
+    selected = os.environ.get("IM2P_TAG6_REPLAY_CERTIFICATE")
+    return Path(selected) if selected is not None else context.evidence_root / "full374/stateful-full374-replay-v1.json"
+
+
+def test_actual_complete_three_certificate_chain_admits(
+        context: EvidenceContext, replay_certificate: Path) -> None:
     # Given: the actual independently completed374 replay and all three certificates.
-    path = context.evidence_root / "full374/stateful-full374-replay-v1.json"
+    path = replay_certificate
     # When: the public production gate validates every link.
     certificate.admit(path, context)
     # Then: the resulting scope identifies the complete original trace, not prefix240 alone.
@@ -41,10 +50,10 @@ def test_domain_without_replay_remains_not_ready(context: EvidenceContext) -> No
 @pytest.mark.parametrize("missing", ["domain_certificate", "state_transition_certificate", "replay_proofs"])
 def test_missing_link_cannot_admit(
         context: EvidenceContext, verified: tuple[Record, Record, Record],
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, replay_certificate: Path) -> None:
     # Given: cached genuine proof bytes, and a primary certificate with one link omitted.
     monkeypatch.setattr(replay, "_verified", lambda supplied: verified)
-    original = read_document(context.evidence_root / "full374/stateful-full374-replay-v1.json")
+    original = read_document(replay_certificate)
     changed = deepcopy(original)
     changed.pop(missing)
     path = tmp_path / "incomplete.json"
@@ -71,7 +80,7 @@ def test_mutated_state_certificate_is_not_a_status_label(
 
 def test_consumer_source_change_rejects_before_admission(
         context: EvidenceContext, verified: tuple[Record, Record, Record],
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replay_certificate: Path) -> None:
     # Given: the genuine certificate with a changed current consumer implementation.
     monkeypatch.setattr(replay, "_verified", lambda supplied: verified)
     changed = tmp_path / "consumer.py"
@@ -79,4 +88,4 @@ def test_consumer_source_change_rejects_before_admission(
     monkeypatch.setattr(replay, "CONSUMER_SOURCES", (str(changed),))
     # When/Then: proof artifacts do not override consumer source drift.
     with pytest.raises(StatefulCertificateError, match="consumer source"):
-        certificate.admit(context.evidence_root / "full374/stateful-full374-replay-v1.json", context)
+        certificate.admit(replay_certificate, context)

@@ -39,6 +39,9 @@ CONSUMER_SOURCES: Final = (
     "sim/cycle/stateful_sequence_certificate.py", "sim/cycle/execution_sequence_admission.py",
     "sim/cycle/execution_sequence_provider.py", "sim/cycle/execution_cli.py",
     "sim/cycle/sequence_trace_cli.py", "sim/cycle/scheduler.py", "sim/cycle/scheduler_sqlite.py",
+    "sim/cycle/stateful_domain.py", "sim/cycle/stateful_domain_admission.py",
+    "sim/cycle/stateful_profile_certificate.py", "sim/cycle/stateful_measurement_contract.py",
+    "sim/cycle/stateful_measurement.py",
 )
 
 
@@ -126,7 +129,11 @@ def _publish(path: Path, document: Record) -> None:
 
 def build(output: Path, context: EvidenceContext) -> Path:
     domain, references, transition = _verified(context)
-    _publish(context.evidence_root / STATE_PATH, _state(domain, references, transition))
+    state_path = context.evidence_root / STATE_PATH
+    if not state_path.exists():
+        _publish(state_path, _state(domain, references, transition))
+    # expected() verifies an existing immutable state certificate before a new
+    # consumer-source binding is published elsewhere; old evidence is never replaced.
     document = expected(context)
     _publish(output, document)
     validate_document(output, context)

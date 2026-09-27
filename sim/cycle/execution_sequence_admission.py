@@ -20,6 +20,7 @@ from sim.cycle.npu_trace_schema import Work as TraceWork
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.sequence_binding import SequenceError, SequenceSession, SourceIdentity
 from sim.cycle.sequence_domain import TAG5_PROFILE, TAG6_REVISION
+from sim.cycle.stateful_domain import A8D32_REVISION, InitialState, WorkClass
 from sim.cycle.stateful_sequence_certificate import ScopedEvidence
 from sim.cycle.stateful_sequence_evidence import (
     EvidenceContext,
@@ -67,6 +68,7 @@ class StatefulAdmission:
     validation_scope: str = field(default="DIAGNOSTIC_SCOPED_EVIDENCE", init=False)
     production_admitted: bool = field(default=False, init=False)
     trace_identity: tuple[int, ...] = ()
+    extension_source_sha256: tuple[tuple[str, str], ...] = ()
 
     @property
     def certificate_sha256(self) -> str:
@@ -107,6 +109,18 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
                 object_value(document["trace"], "Tag6 trace")["sha256"] != trace_digest or
                 tuple(item.trace.identity for item in bound) != tuple(range(374))):
             raise StatefulProviderError("Tag6 corpus", "only the certified original374 trace is supported")
+    if scoped.state_domain_revision in (TAG6_REVISION, A8D32_REVISION):
+        from sim.cycle.stateful_domain_admission import check_profile_scope
+
+        domain = check_profile_scope(state.run.profile, inputs, scoped)
+        domain.check_initial_state(InitialState())
+        for item in bound:
+            domain.check_work_class(WorkClass(item.trace.provenance,
+                                             item.trace.residual_work_revision or "dense"))
+        if scoped.state_domain_revision == A8D32_REVISION:
+            document = read_document(inputs.certificate)
+            if [item.trace.identity for item in bound] != document["work_ids"]:
+                raise StatefulProviderError("profile corpus", "complete certified work order required")
     admission_type = ProductionStatefulAdmission if production else StatefulAdmission
     admission = admission_type(
         scoped, trace_digest, sequence_binding.source_identity(inputs.library, state.run.profile),
@@ -117,6 +131,8 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
         state.run.profile,
         tuple((item.trace.identity, item.trace.parent_id, item.request.request_sha256) for item in bound),
         trace_identity=trace_identity,
+        extension_source_sha256=tuple((name, sha256(Path(__file__).with_name(name))) for name in (
+            "stateful_domain.py", "stateful_domain_admission.py", "stateful_profile_certificate.py")),
     )
     return admission, bound
 
@@ -132,7 +148,9 @@ def verify_sources(admission: StatefulAdmission, inputs: AdmissionInputs,
                  sha256(Path(cli.__file__)) != admission.cli_sha256 or
                  sha256(Path(__file__).with_name("execution_sequence_provider.py")) != admission.provider_sha256 or
                 sha256(Path(__file__)) != admission.admission_sha256 or
-                sha256(Path(stateful_sequence_certificate.__file__)) != admission.validator_sha256):
+                sha256(Path(stateful_sequence_certificate.__file__)) != admission.validator_sha256 or
+                any(sha256(Path(__file__).with_name(name)) != digest
+                    for name, digest in admission.extension_source_sha256)):
             raise StatefulProviderError("source binding", "certificate, trace, or Python source changed")
         session.verify_identity()
         if not publication:
