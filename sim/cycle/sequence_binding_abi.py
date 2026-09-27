@@ -149,6 +149,26 @@ class RowPressure(C.Structure):
                 ("cursor", U64), ("row_count", U32), ("max_row_occupancy", U32)]
 
 
+class MeshState(C.Structure):
+    _fields_ = [("abi_version", U32), ("struct_size", U32), ("generation", U64),
+                ("cursor", U64)] + [
+        (name, U32) for name in (
+            "next_scratchpad_half", "next_accumulator_half", "request_valid",
+            "request_rows", "request_counter", "written_mask", "matmul_id",
+        )
+    ] + [
+        (name, U64) for name in (
+            "request_owner_generation", "request_owner_ordinal", "request_owner_work",
+        )
+    ] + [
+        (name, U32) for name in (
+            "control_valid", "control_first", "control_fire_mask", "control_read_mask",
+            "side_valid_mask", "side_ready_mask", "mesh_request_valid",
+            "mesh_request_ready", "mesh_request_fire", "stall_reason_mask",
+        )
+    ]
+
+
 class DomainRow(C.Structure):
     _fields_ = [("id", U32), ("rows", U32)]
 

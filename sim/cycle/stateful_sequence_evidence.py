@@ -34,6 +34,7 @@ class EvidenceContext:
     service_parent: Path
     current_evidence_input: Path | None = None
     domain_delta_input: Path | None = None
+    tag6_evidence_input: Path | None = None
 
 
 class StatefulCertificateError(ValueError):

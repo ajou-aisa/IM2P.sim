@@ -10,6 +10,7 @@ from sim.cycle import (
     sequence_binding_abi,
     stateful_sequence_certificate,
 )
+from sim.cycle.certificate_contract import object_value, read_document
 from sim.cycle.execution_ir import ServiceId
 from sim.cycle.execution_services import NpuWork
 from sim.cycle.npu_trace import _identity, work_binding
@@ -18,6 +19,7 @@ from sim.cycle.npu_trace_schema import VERSION
 from sim.cycle.npu_trace_schema import Work as TraceWork
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.sequence_binding import SequenceError, SequenceSession, SourceIdentity
+from sim.cycle.sequence_domain import TAG5_PROFILE, TAG6_REVISION
 from sim.cycle.stateful_sequence_certificate import ScopedEvidence
 from sim.cycle.stateful_sequence_evidence import (
     EvidenceContext,
@@ -99,6 +101,12 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
     _ = state.summary()
     if not bound or _identity(inputs.trace) != trace_identity or sha256(inputs.trace) != trace_digest:
         raise StatefulProviderError("trace", "empty or changed during parse")
+    if scoped.state_domain_revision == TAG6_REVISION:
+        document = read_document(inputs.certificate)
+        if (state.run.profile != TAG5_PROFILE or
+                object_value(document["trace"], "Tag6 trace")["sha256"] != trace_digest or
+                tuple(item.trace.identity for item in bound) != tuple(range(374))):
+            raise StatefulProviderError("Tag6 corpus", "only the certified original374 trace is supported")
     admission_type = ProductionStatefulAdmission if production else StatefulAdmission
     admission = admission_type(
         scoped, trace_digest, sequence_binding.source_identity(inputs.library, state.run.profile),

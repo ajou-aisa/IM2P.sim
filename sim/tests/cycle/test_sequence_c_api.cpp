@@ -31,6 +31,13 @@ static_assert(sizeof(im2p_cycle_sequence_descriptor_t) == 112);
 static_assert(sizeof(im2p_cycle_sequence_status_t) == 112);
 static_assert(sizeof(im2p_cycle_sequence_tag_state_t) == 64);
 static_assert(sizeof(im2p_cycle_sequence_row_pressure_t) == 32);
+static_assert(IM2P_CYCLE_SEQUENCE_MESH_STATE_ABI_VERSION == 1u);
+static_assert(sizeof(im2p_cycle_sequence_mesh_state_t) == 120);
+static_assert(offsetof(im2p_cycle_sequence_mesh_state_t,
+                       request_owner_generation) == 56);
+static_assert(offsetof(im2p_cycle_sequence_mesh_state_t, control_valid) == 80);
+static_assert(offsetof(im2p_cycle_sequence_mesh_state_t, stall_reason_mask) ==
+              116);
 static_assert(IM2P_CYCLE_SEQUENCE_DOMAIN_ABI_VERSION == 2u);
 static_assert(sizeof(im2p_cycle_sequence_domain_snapshot_t) == 528);
 static_assert(offsetof(im2p_cycle_sequence_domain_snapshot_t, tags) == 96);
@@ -89,6 +96,30 @@ int main() {
   assert(im2p_cycle_sequence_create(&config, &sequence) ==
          IM2P_CYCLE_SEQUENCE_OK);
   assert(im2p_cycle_sequence_reset(sequence) == IM2P_CYCLE_SEQUENCE_OK);
+  im2p_cycle_sequence_mesh_state_t mesh;
+  im2p_cycle_sequence_mesh_state_init(&mesh);
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_OK &&
+         mesh.generation == 1 && mesh.cursor == 0 && !mesh.request_valid &&
+         !mesh.control_valid && !mesh.mesh_request_valid &&
+         mesh.mesh_request_ready && !mesh.mesh_request_fire &&
+         mesh.side_ready_mask == 7 && !mesh.stall_reason_mask);
+  const auto cold_mesh = mesh;
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_OK &&
+         std::memcmp(&mesh, &cold_mesh, sizeof(mesh)) == 0);
+  ++mesh.abi_version;
+  const auto malformed_mesh_version = mesh;
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_INVALID &&
+         std::memcmp(&mesh, &malformed_mesh_version, sizeof(mesh)) == 0);
+  mesh = cold_mesh;
+  --mesh.struct_size;
+  const auto malformed_mesh_size = mesh;
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_INVALID &&
+         std::memcmp(&mesh, &malformed_mesh_size, sizeof(mesh)) == 0);
+  mesh = cold_mesh;
   im2p_cycle_sequence_row_pressure_t pressure;
   im2p_cycle_sequence_row_pressure_init(&pressure);
   assert(im2p_cycle_sequence_get_row_pressure(sequence, &pressure) ==
@@ -151,13 +182,57 @@ int main() {
   assert(im2p_cycle_sequence_get_tag_state(sequence, &tags) ==
              IM2P_CYCLE_SEQUENCE_OK &&
          std::memcmp(&tags, &cold_tags, sizeof(tags)) == 0);
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_OK &&
+         std::memcmp(&mesh, &cold_mesh, sizeof(mesh)) == 0);
   im2p_cycle_sequence_report_init(&report);
   const auto empty_report = report;
   assert(im2p_cycle_sequence_pop_report(sequence, &report) ==
          IM2P_CYCLE_SEQUENCE_WOULD_BLOCK);
   assert(std::memcmp(&report, &empty_report, sizeof(report)) == 0);
-  assert(im2p_cycle_sequence_advance_until(sequence, 1000) ==
-         IM2P_CYCLE_SEQUENCE_OK);
+  bool saw_control = false, saw_request = false;
+  bool saw_attempt_without_ready = false, saw_fire = false;
+  for (unsigned step = 0; step < 1000; ++step) {
+    im2p_cycle_sequence_status_init(&after);
+    assert(im2p_cycle_sequence_get_status(sequence, &after) ==
+           IM2P_CYCLE_SEQUENCE_OK);
+    if (after.has_report)
+      break;
+    const int advanced =
+        im2p_cycle_sequence_advance_until(sequence, after.cursor + 1);
+    assert(advanced == IM2P_CYCLE_SEQUENCE_INCOMPLETE ||
+           advanced == IM2P_CYCLE_SEQUENCE_OK);
+    im2p_cycle_sequence_mesh_state_init(&mesh);
+    assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+               IM2P_CYCLE_SEQUENCE_OK &&
+           mesh.cursor == after.cursor + 1 && mesh.generation == 1);
+    saw_control |= mesh.control_valid;
+    saw_request |= mesh.request_valid;
+    saw_attempt_without_ready |=
+        mesh.mesh_request_valid && !mesh.mesh_request_ready &&
+        !mesh.mesh_request_fire;
+    saw_fire |= mesh.mesh_request_fire;
+    assert(!mesh.mesh_request_fire ||
+           (mesh.mesh_request_valid && mesh.mesh_request_ready));
+    assert(!(mesh.stall_reason_mask &
+             IM2P_CYCLE_SEQUENCE_MESH_STALL_RESIDENT_NOT_LAST) ||
+           (mesh.request_valid &&
+            mesh.request_counter + 1 != mesh.request_rows));
+  }
+  assert(saw_control && saw_request && saw_attempt_without_ready && saw_fire);
+  im2p_cycle_sequence_status_init(&after);
+  assert(im2p_cycle_sequence_get_status(sequence, &after) ==
+             IM2P_CYCLE_SEQUENCE_OK &&
+         after.has_report);
+  im2p_cycle_sequence_mesh_state_init(&mesh);
+  assert(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) ==
+             IM2P_CYCLE_SEQUENCE_OK &&
+         mesh.cursor == after.cursor &&
+         mesh.next_scratchpad_half == after.next_scratchpad_half &&
+         mesh.next_accumulator_half == after.next_accumulator_half &&
+         !mesh.request_valid && !mesh.control_valid &&
+         !mesh.mesh_request_valid && mesh.mesh_request_ready &&
+         !mesh.mesh_request_fire && !mesh.stall_reason_mask);
   assert(im2p_cycle_sequence_pop_report(sequence, &report) ==
              IM2P_CYCLE_SEQUENCE_OK &&
          report.logical_work_id == descriptor.logical_work_id);

@@ -9,6 +9,7 @@ extern "C" {
 
 #define IM2P_CYCLE_SEQUENCE_ABI_VERSION 1u
 #define IM2P_CYCLE_SEQUENCE_DOMAIN_ABI_VERSION 2u
+#define IM2P_CYCLE_SEQUENCE_MESH_STATE_ABI_VERSION 1u
 #define IM2P_CYCLE_SEQUENCE_ROW_PRESSURE_ABI_VERSION 1u
 #define IM2P_CYCLE_SEQUENCE_DOMAIN_CAPACITY 6u
 
@@ -19,6 +20,10 @@ extern "C" {
 #define IM2P_CYCLE_SEQUENCE_DOMAIN_ARRAY (1u << 4)
 #define IM2P_CYCLE_SEQUENCE_DOMAIN_ROWS (1u << 5)
 #define IM2P_CYCLE_SEQUENCE_DOMAIN_BANKS (1u << 6)
+
+#define IM2P_CYCLE_SEQUENCE_MESH_STALL_RESIDENT_NOT_LAST (1u << 0)
+#define IM2P_CYCLE_SEQUENCE_MESH_STALL_TAG_FULL (1u << 1)
+#define IM2P_CYCLE_SEQUENCE_MESH_STALL_ROW_FULL (1u << 2)
 
 typedef struct im2p_cycle_sequence im2p_cycle_sequence_t;
 
@@ -126,6 +131,35 @@ typedef struct im2p_cycle_sequence_row_pressure {
   uint32_t max_row_occupancy;
 } im2p_cycle_sequence_row_pressure_t;
 
+/* Read-only pre-edge mesh request/control projection at cursor. Valid records
+   an attempted request independently of ready; fire is the accepted request. */
+typedef struct im2p_cycle_sequence_mesh_state {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t generation;
+  uint64_t cursor;
+  uint32_t next_scratchpad_half;
+  uint32_t next_accumulator_half;
+  uint32_t request_valid;
+  uint32_t request_rows;
+  uint32_t request_counter;
+  uint32_t written_mask;
+  uint32_t matmul_id;
+  uint64_t request_owner_generation;
+  uint64_t request_owner_ordinal;
+  uint64_t request_owner_work;
+  uint32_t control_valid;
+  uint32_t control_first;
+  uint32_t control_fire_mask;
+  uint32_t control_read_mask;
+  uint32_t side_valid_mask;
+  uint32_t side_ready_mask;
+  uint32_t mesh_request_valid;
+  uint32_t mesh_request_ready;
+  uint32_t mesh_request_fire;
+  uint32_t stall_reason_mask;
+} im2p_cycle_sequence_mesh_state_t;
+
 typedef struct im2p_cycle_sequence_domain_row {
   uint32_t id;
   uint32_t rows;
@@ -223,6 +257,8 @@ void im2p_cycle_sequence_tag_state_init(
     im2p_cycle_sequence_tag_state_t *tag_state);
 void im2p_cycle_sequence_row_pressure_init(
     im2p_cycle_sequence_row_pressure_t *pressure);
+void im2p_cycle_sequence_mesh_state_init(
+    im2p_cycle_sequence_mesh_state_t *mesh_state);
 void im2p_cycle_sequence_domain_snapshot_init(
     im2p_cycle_sequence_domain_snapshot_t *snapshot);
 void im2p_cycle_sequence_report_init(im2p_cycle_sequence_report_t *report);
@@ -267,6 +303,11 @@ int im2p_cycle_sequence_get_tag_state(
 int im2p_cycle_sequence_get_row_pressure(
     const im2p_cycle_sequence_t *sequence,
     im2p_cycle_sequence_row_pressure_t *pressure);
+/* Exact version and struct_size are required; failure leaves output untouched.
+   This read-only diagnostic never advances or mutates the native engine. */
+int im2p_cycle_sequence_get_mesh_state(
+    const im2p_cycle_sequence_t *sequence,
+    im2p_cycle_sequence_mesh_state_t *mesh_state);
 /* Exact version and struct_size are required; failure leaves output untouched.
    This is a read-only diagnostic and never advances the session cursor. */
 int im2p_cycle_sequence_get_domain_snapshot(

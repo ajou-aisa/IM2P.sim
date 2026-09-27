@@ -153,6 +153,14 @@ void im2p_cycle_sequence_row_pressure_init(
   pressure->abi_version = IM2P_CYCLE_SEQUENCE_ROW_PRESSURE_ABI_VERSION;
   pressure->struct_size = sizeof(*pressure);
 }
+void im2p_cycle_sequence_mesh_state_init(
+    im2p_cycle_sequence_mesh_state_t *mesh_state) {
+  if (!mesh_state)
+    return;
+  *mesh_state = {};
+  mesh_state->abi_version = IM2P_CYCLE_SEQUENCE_MESH_STATE_ABI_VERSION;
+  mesh_state->struct_size = sizeof(*mesh_state);
+}
 void im2p_cycle_sequence_domain_snapshot_init(
     im2p_cycle_sequence_domain_snapshot_t *snapshot) {
   if (!snapshot)
@@ -472,6 +480,25 @@ int im2p_cycle_sequence_get_row_pressure(
       static_cast<uint32_t>(sequence->engine->array_state_for_test().row_counts.size());
   copy.max_row_occupancy = sequence->engine->row_count_peak();
   *pressure = copy;
+  return IM2P_CYCLE_SEQUENCE_OK;
+}
+int im2p_cycle_sequence_get_mesh_state(
+    const im2p_cycle_sequence_t *sequence,
+    im2p_cycle_sequence_mesh_state_t *mesh_state) {
+  if (!sequence || !mesh_state ||
+      mesh_state->abi_version !=
+          IM2P_CYCLE_SEQUENCE_MESH_STATE_ABI_VERSION ||
+      mesh_state->struct_size != sizeof(*mesh_state) ||
+      !sequence->status.initialized || !sequence->engine)
+    return IM2P_CYCLE_SEQUENCE_INVALID;
+  im2p_cycle_sequence_mesh_state_t copy;
+  im2p_cycle_sequence_mesh_state_init(&copy);
+  copy.generation = sequence->status.generation;
+  copy.cursor = sequence->status.cursor;
+  copy.next_scratchpad_half = sequence->status.next_scratchpad_half;
+  copy.next_accumulator_half = sequence->status.next_accumulator_half;
+  sequence->engine->mesh_state(copy);
+  *mesh_state = copy;
   return IM2P_CYCLE_SEQUENCE_OK;
 }
 int im2p_cycle_sequence_get_domain_snapshot(

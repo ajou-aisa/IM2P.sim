@@ -305,6 +305,17 @@ def validate_current(path: Path, context: EvidenceContext, document: Record) -> 
 
 
 def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
+    if context.tag6_evidence_input is not None:
+        from sim.cycle import stateful_sequence_replay_certificate as replay
+        from sim.cycle.stateful_sequence_evidence_tag6 import validate_document
+
+        require(context.current_evidence_input is None and context.domain_delta_input is None,
+                'NOT_READY', 'Tag6 and historical evidence selectors are mutually exclusive')
+        full_replay = read_document(path).get('schema') == replay.SCHEMA
+        document = replay.validate_document(path, context) if full_replay else validate_document(path, context)
+        case = 'actual-gpt2-full374' if full_replay else 'actual-gpt2-prefix240'
+        return ScopedEvidence(sha256(path), sha256(context.library), (case,),
+                              state_domain_revision=str(document['state_domain_revision']))
     require(context.domain_delta_input is None or context.current_evidence_input is not None,
             'NOT_READY', 'tag5 delta requires reviewed current v2 evidence; historical hashes cannot be rebased')
     try:
@@ -349,6 +360,12 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
 
 def admit(path: Path, context: EvidenceContext) -> None:
     _ = validate(path, context)
+    if context.tag6_evidence_input is not None:
+        from sim.cycle import stateful_sequence_replay_certificate as replay
+
+        if read_document(path).get('schema') == replay.SCHEMA:
+            return
+        raise NotReadyError('NOT_READY', 'Tag6 domain alone requires full374 replay and state-transition certificates')
     if context.current_evidence_input is not None:
         document = read_document(path)
         bound = object_value(document['parents'], 'parent certificates')
@@ -391,6 +408,22 @@ def _recheck_current(document: Record) -> None:
 
 
 def build(output: Path, context: EvidenceContext) -> Path:
+    if context.tag6_evidence_input is not None:
+        from sim.cycle.stateful_sequence_evidence_tag6 import expected as tag6_expected
+
+        require(context.current_evidence_input is None and context.domain_delta_input is None,
+                'NOT_READY', 'Tag6 and historical evidence selectors are mutually exclusive')
+        if os.path.lexists(output):
+            raise FileExistsError(output)
+        document = tag6_expected(context)
+        with tempfile.TemporaryDirectory(prefix=f'.{output.name}.', dir=output.parent) as temporary:
+            staged = Path(temporary) / 'certificate.json'
+            with staged.open('x') as stream:
+                json.dump(document, stream, indent=2, sort_keys=True)
+                _ = stream.write('\n')
+            _ = validate(staged, context)
+            os.link(staged, output)
+        return output
     require(context.domain_delta_input is None or context.current_evidence_input is not None,
             'NOT_READY', 'tag5 delta requires reviewed current v2 evidence; historical hashes cannot be rebased')
     if context.current_evidence_input is not None:
@@ -420,6 +453,7 @@ def main() -> int:
         parser.add_argument(f'--{name.replace("_", "-")}', type=Path, required=True)
     parser.add_argument('--current-evidence-input', type=Path)
     parser.add_argument('--domain-delta-input', type=Path)
+    parser.add_argument('--tag6-evidence-input', type=Path)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('build').add_argument('output', type=Path)
     commands.add_parser('validate').add_argument('path', type=Path)
@@ -427,7 +461,7 @@ def main() -> int:
     args = parser.parse_args()
     context = EvidenceContext(args.evidence_root, args.library, args.shared_library,
                               args.base_parent, args.run_aware_parent, args.service_parent,
-                              args.current_evidence_input, args.domain_delta_input)
+                              args.current_evidence_input, args.domain_delta_input, args.tag6_evidence_input)
     try:
         match args.command:
             case 'build':

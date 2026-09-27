@@ -216,6 +216,7 @@ public:
   const std::array<Bank, 4> &banks_state_for_test() const {
     return state.banks;
   }
+  void mesh_state(im2p_cycle_sequence_mesh_state_t &) const;
   bool domain_snapshot(im2p_cycle_sequence_domain_snapshot_t &) const;
   size_t buffered_event_count() const { return events.size(); }
   size_t drain_events(DiagnosticEvent *output, size_t capacity);

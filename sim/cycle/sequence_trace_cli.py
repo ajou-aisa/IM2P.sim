@@ -46,6 +46,8 @@ SOURCE_NAMES = ("sim/cycle/sequence_binding.py", "sim/cycle/sequence_binding_abi
                 "sim/cycle/sequence_domain.py", "sim/cycle/stateful_sequence_certificate.py",
                 "sim/cycle/stateful_sequence_evidence.py", "sim/cycle/stateful_sequence_evidence_v2.py",
                 "sim/cycle/stateful_sequence_evidence_tag5.py",
+                "sim/cycle/stateful_sequence_evidence_tag6.py", "sim/cycle/stateful_sequence_tag6_pins.py",
+                "sim/cycle/stateful_sequence_replay_certificate.py", "sim/cycle/stateful_sequence_replay_state.py",
                 "sim/cycle/stateful_sequence_evidence_equivalence.py",
                 "sim/tests/cycle/compositional_sequence_bounded.py")
 
@@ -74,6 +76,7 @@ def validated_domain(args: argparse.Namespace) -> tuple[str, str | None]:
     if not isinstance(evidence_root, Path):
         raise NpuTraceError("stateful evidence root must be a path")
     document = read_document(certificate)
+    tag6 = document.get("schema") in ("stateful-tag6-domain-v1", "stateful-full374-replay-v1")
     parents = object_value(document["parents"])
     context = EvidenceContext(
         evidence_root, Path(str(object_value(document["library"])["path"])),
@@ -81,13 +84,17 @@ def validated_domain(args: argparse.Namespace) -> tuple[str, str | None]:
         Path(str(object_value(parents["base"])["path"])),
         Path(str(object_value(parents["run_aware"])["path"])),
         Path(str(object_value(parents["service"])["path"])),
-        Path(str(object_value(document["evidence_input"])["path"])),
+        Path(str(object_value(document["evidence_input"])["path"])) if not tag6 else None,
         (Path(str(object_value(object_value(object_value(document["domain_delta"])["artifacts"])
                               ["input"])["path"])) if document["version"] == 3 else None),
+        Path(str(object_value(document["evidence_input"])["path"])) if tag6 else None,
     )
     require(args.library.resolve(strict=True) == context.shared_library.resolve(strict=True),
             "native library differs from stateful certificate")
     scoped = validate_stateful_certificate(certificate, context)
+    if tag6:
+        require(sha256(args.trace) == object_value(document["trace"])["sha256"],
+                "Tag6 requires the certified original374 trace")
     return scoped.state_domain_revision, scoped.certificate_sha256
 
 
@@ -141,7 +148,8 @@ def completed_domain_failure(status: sequence_binding.Status,
                              profile: str = "a8w8-d16-hp1",
                              domain_revision: str = LEGACY_REVISION) -> dict[str, object] | None:
     limits = profile_domain(profile, domain_revision)
-    tag_predicate = "tag_peak_le_four" if limits.max_tag_occupancy == 4 else "tag_peak_le_five"
+    tag_predicate = {4: "tag_peak_le_four", 5: "tag_peak_le_five", 6: "tag_peak_le_six"}[
+        limits.max_tag_occupancy]
     checks = {
         "generation": (status.generation, domain.generation, report.generation) == (1, 1, 1),
         "cursor": status.cursor == domain.cursor == report.resource_ready_cycle,

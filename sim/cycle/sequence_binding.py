@@ -32,6 +32,7 @@ from sim.cycle.sequence_binding_abi import (
     DomainRow,
     DomainSnapshot,
     DomainTag,
+    MeshState,
     Report,
     RowPressure,
     Run,
@@ -49,7 +50,7 @@ from sim.cycle.sequence_binding_abi import (
 from sim.cycle.sequence_binding_abi import _checked as _checked_code
 
 __all__ = ("Code", "Config", "Descriptor", "Diagnostic", "DomainBank", "DomainRow",
-           "DomainSnapshot", "DomainTag", "Report", "RowPressure", "Run", "SequenceError", "SequenceEvent",
+           "DomainSnapshot", "DomainTag", "MeshState", "Report", "RowPressure", "Run", "SequenceError", "SequenceEvent",
            "SequenceSession", "Settings", "SourceIdentity", "Status", "StopReason", "TagState", "Work",
            "source_identity")
 
@@ -238,6 +239,20 @@ class SequenceSession:
         self._checked(lib.im2p_cycle_sequence_get_row_pressure(
             handle, C.byref(pressure)), "get_row_pressure")
         return pressure
+
+    def mesh_state(self) -> MeshState:
+        lib, handle = self._native()
+        try:
+            initialize = lib.im2p_cycle_sequence_mesh_state_init
+            observe = lib.im2p_cycle_sequence_get_mesh_state
+        except AttributeError as error:
+            raise SequenceError(Code.UNSUPPORTED, "mesh observation ABI") from error
+        initialize.argtypes, initialize.restype = [C.POINTER(MeshState)], None
+        observe.argtypes, observe.restype = [C.c_void_p, C.POINTER(MeshState)], C.c_int
+        state = MeshState()
+        initialize(C.byref(state))
+        self._checked(observe(handle, C.byref(state)), "get_mesh_state")
+        return state
 
     def domain_snapshot(self) -> DomainSnapshot:
         lib, handle = self._native()

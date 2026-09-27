@@ -49,6 +49,11 @@ bool queue_edge_schema_v2 = false;
 bool availability_driven = false;
 bool model_only = false;
 bool queue_edge_limit_set = false;
+std::uint64_t mesh_observer_work = UINT64_MAX;
+std::uint64_t probe_max_trace_events = 10000000;
+bool trace_event_limit_set = false;
+std::uint64_t last_rtl_mesh_cycle = UINT64_MAX;
+std::uint64_t last_native_mesh_cycle = UINT64_MAX;
 static_assert(IM2P_CYCLE_SEQUENCE_DOMAIN_ABI_VERSION == 2u,
               "queue payload V2 requires native domain ABI V2");
 
@@ -226,7 +231,7 @@ std::vector<std::string> absolute_window;
 bool absolute_mode = false;
 const AbsoluteManifest *absolute_manifest = nullptr;
 constexpr std::uint64_t default_queue_edge_byte_limit = 128ULL * 1024 * 1024;
-constexpr std::uint64_t maximum_queue_edge_byte_limit = 4ULL * 1024 * 1024 * 1024;
+constexpr std::uint64_t maximum_queue_edge_byte_limit = 128ULL * 1024 * 1024 * 1024;
 std::uint64_t queue_edge_byte_limit = default_queue_edge_byte_limit;
 
 struct QueueSnapshot {
@@ -403,6 +408,92 @@ QueueSnapshot rtl_queue_snapshot(const Dut &d) {
   return s;
 }
 
+void emit_mesh_state(std::string_view prefix,
+                     const im2p_cycle_sequence_mesh_state_t &s,
+                     const QueueSnapshot &q, unsigned ordinal,
+                     std::uint64_t work, bool rtl) {
+  const auto tag_read = rtl ? q.tag_read : q.tag_dequeues % 6;
+  const auto tag_write = rtl ? q.tag_write : q.tag_enqueues % 6;
+  check(rtl || q.tag_enqueues >= q.row_count, "native row accounting invalid");
+  const auto row_read = rtl ? q.row_read : (q.tag_enqueues - q.row_count) % 6;
+  const auto row_write = rtl ? q.row_write : q.tag_enqueues % 6;
+  std::cout << prefix << " {\"mesh_schema\":1,\"generation\":" << s.generation
+            << ",\"cycle\":" << s.cursor << ",\"ordinal\":" << ordinal
+            << ",\"work_id\":" << work << ",\"request_valid\":" << s.request_valid
+            << ",\"request_rows\":" << s.request_rows
+            << ",\"request_counter\":" << s.request_counter
+            << ",\"written_mask\":" << s.written_mask
+            << ",\"matmul_id\":" << s.matmul_id
+            << ",\"control_valid\":" << s.control_valid
+            << ",\"control_first\":" << s.control_first
+            << ",\"control_fire_mask\":" << s.control_fire_mask
+            << ",\"side_valid_mask\":" << (s.side_valid_mask & s.control_fire_mask)
+            << ",\"side_ready_mask\":" << s.side_ready_mask
+            << ",\"attempt_valid\":" << s.mesh_request_valid
+            << ",\"request_ready\":" << s.mesh_request_ready
+            << ",\"request_fire\":" << s.mesh_request_fire
+            << ",\"stall_reason_mask\":" << s.stall_reason_mask
+            << ",\"tag_count\":" << q.tag_count << ",\"row_count\":" << q.row_count
+            << ",\"tag_read\":" << tag_read << ",\"tag_write\":" << tag_write
+            << ",\"row_read\":" << row_read << ",\"row_write\":" << row_write
+            << ",\"tag_valid\":" << (q.tag_count != 0)
+            << ",\"row_valid\":" << (q.row_count != 0)
+            << ",\"owner_generation\":" << s.request_owner_generation
+            << ",\"owner_ordinal\":" << s.request_owner_ordinal
+            << ",\"owner_work\":" << s.request_owner_work
+            << ",\"owner_source\":\"" << (rtl ? "active-manifest-attribution" : "native-origin")
+            << "\",\"pointer_source\":\"" << (rtl ? "physical-register" : "logical-fifo-accounting")
+            << "\"}\n";
+}
+
+void capture_rtl_mesh(const Dut &d) {
+  if (mesh_observer_work == UINT64_MAX || current_ordinal == UINT32_MAX ||
+      current_work_id != mesh_observer_work || last_rtl_mesh_cycle == d.io_coreCycle)
+    return;
+  last_rtl_mesh_cycle = d.io_coreCycle;
+  const auto *r = d.rootp;
+#define MESH(field) r->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT__mesh__DOT__##field)
+#define EXEC(field) r->IM2P_SEQUENCE_TAP(IM2P_RTL_SELECTED_TOP, execute__DOT__##field)
+  im2p_cycle_sequence_mesh_state_t s;
+  im2p_cycle_sequence_mesh_state_init(&s);
+  s.generation = 1;
+  s.cursor = d.io_coreCycle;
+  s.request_valid = MESH(req_valid);
+  s.request_rows = MESH(req_bits_total_rows);
+  s.request_counter = MESH(fire_counter);
+  s.written_mask = unsigned(MESH(a_written)) | (unsigned(MESH(b_written)) << 1) |
+                   (unsigned(MESH(d_written)) << 2);
+  s.matmul_id = MESH(matmul_id);
+  if (s.request_valid) {
+    s.request_owner_generation = 1;
+    s.request_owner_ordinal = current_ordinal + 1;
+    s.request_owner_work = current_work_id;
+  }
+  const auto &head = EXEC(mesh_cntl_signals_q__DOT___ram_ext_R0_data);
+  const auto bit = [&](unsigned position) {
+    return unsigned((head[position / 32] >> (position % 32)) & 1U);
+  };
+  s.control_valid = !EXEC(mesh_cntl_signals_q__DOT__empty);
+  if (s.control_valid) {
+    s.control_first = bit(control_first_bit(IM2P_ACTIVATION_BITS, IM2P_DIM));
+    s.control_fire_mask = bit(19) | (bit(20) << 1) | (bit(21) << 2);
+  }
+  s.side_valid_mask = unsigned(EXEC(_GEN_1)) | (unsigned(EXEC(_GEN_0)) << 1) |
+                      (unsigned(EXEC(_GEN)) << 2);
+  s.side_ready_mask = unsigned(EXEC(_mesh_io_a_ready)) |
+                      (unsigned(EXEC(_mesh_io_b_ready)) << 1) |
+                      (unsigned(EXEC(_mesh_io_d_ready)) << 2);
+  s.mesh_request_valid = s.control_valid && s.control_fire_mask != 0;
+  s.mesh_request_ready = EXEC(_mesh_io_req_ready);
+  s.mesh_request_fire = s.mesh_request_ready && EXEC(_GEN_40);
+  const auto q = rtl_queue_snapshot(d);
+  s.stall_reason_mask = (s.request_valid && !MESH(last_fire) ? 1U : 0U) |
+                        (q.tag_count == 6 ? 2U : 0U) | (q.row_count == 6 ? 4U : 0U);
+  emit_mesh_state("RTL_MESH_STATE_V1", s, q, current_ordinal, current_work_id, true);
+#undef EXEC
+#undef MESH
+}
+
 void capture_rtl_queue_edge(const Dut &d) {
   const auto next = rtl_queue_snapshot(d);
   if (have_previous_rtl_queue) {
@@ -554,6 +645,7 @@ void capture_rtl_tag(const Dut &d) {
 void observe_absolute(Adapter &state) {
   const auto &d = state.dut;
   if (boundary_schema_v2) capture_rtl_queue_edge(d);
+  capture_rtl_mesh(d);
   if (active_absolute_offer && d.io_work_valid && d.io_work_ready)
     absolute_fragments += std::uint64_t(d.io_work_bits_maxI) *
                           d.io_work_bits_maxJ * d.io_work_bits_maxK;
@@ -623,7 +715,7 @@ Prediction estimate(const WorkInput &w, unsigned period, std::uint64_t accepted,
                      IM2P_BANK_ROWS, IM2P_ACC_ROWS, sp_bytes, acc_bytes, 4, 2};
   config.timing.read_ready_period = period;
   config.timing.backing_cycle_offset = offset;
-  config.max_trace_events = 10000000;
+  config.max_trace_events = probe_max_trace_events;
   std::unique_ptr<im2p_cycle_model_t, decltype(&im2p_cycle_model_destroy)> model(
       im2p_cycle_model_create(&config), im2p_cycle_model_destroy);
   check(bool(model), "service model rejected profile");
@@ -835,6 +927,7 @@ void measure_absolute(Adapter &state, const WorkInput &w, const AbsoluteOffer &o
   }
   const auto head = tag_head(state.dut);
   capture_rtl_tag(state.dut);
+  capture_rtl_mesh(state.dut);
   active_absolute_offer = nullptr;
   current_ordinal = UINT32_MAX;
   check(absolute_accepted && milestones.accepted == absolute_fire &&
@@ -998,6 +1091,23 @@ QueueSnapshot native_queue_snapshot(const im2p_cycle_sequence_t *sequence) {
   return s;
 }
 
+void capture_native_mesh(const im2p_cycle_sequence_t *sequence, unsigned ordinal,
+                         const QueueSnapshot &queue) {
+  if (mesh_observer_work == UINT64_MAX || !absolute_manifest ||
+      ordinal >= absolute_manifest->works.size() ||
+      absolute_manifest->works[ordinal].id != mesh_observer_work ||
+      last_native_mesh_cycle == queue.cycle)
+    return;
+  last_native_mesh_cycle = queue.cycle;
+  im2p_cycle_sequence_mesh_state_t mesh;
+  im2p_cycle_sequence_mesh_state_init(&mesh);
+  check(im2p_cycle_sequence_get_mesh_state(sequence, &mesh) == IM2P_CYCLE_SEQUENCE_OK &&
+            mesh.cursor == queue.cycle && mesh.generation == queue.generation,
+        "native mesh getter differs from queue cursor");
+  emit_mesh_state("MODEL_MESH_STATE_V1", mesh, queue, ordinal,
+                  absolute_manifest->works[ordinal].id, false);
+}
+
 void capture_native_queue_edge(const QueueSnapshot &old,
                                const QueueSnapshot &next) {
   check(old.generation == next.generation && old.cycle < UINT64_MAX &&
@@ -1029,7 +1139,7 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
                      IM2P_BANK_ROWS, IM2P_ACC_ROWS, sp_bytes, acc_bytes, 4, 2};
   config.timing.read_ready_period = manifest.period;
   config.timing.backing_cycle_offset = static_cast<std::uint32_t>(offset);
-  config.max_trace_events = 10000000;
+  config.max_trace_events = probe_max_trace_events;
   im2p_cycle_sequence_t *created = nullptr;
   check(im2p_cycle_sequence_create(&config, &created) == IM2P_CYCLE_SEQUENCE_OK,
         "native sequence creation failed");
@@ -1200,6 +1310,8 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
         check(old_queue.cycle == before.cursor &&
                   old_queue.generation == before.generation,
               "native queue preedge differs from session status");
+      if (mesh_observer_work != UINT64_MAX)
+        capture_native_mesh(sequence.get(), static_cast<unsigned>(reported), old_queue);
       const int code = im2p_cycle_sequence_advance_until(sequence.get(), before.cursor + 1);
       const auto consumed = flush();
       if (code == IM2P_CYCLE_SEQUENCE_WOULD_BLOCK) {
@@ -1284,6 +1396,9 @@ void measure_native_absolute(const AbsoluteManifest &manifest, std::uint64_t off
     const auto terminal = native_queue_snapshot(sequence.get());
     check(terminal.row_count < 6 && terminal.tag_count < 6,
           "native full queue lacks a terminal successor");
+    if (mesh_observer_work != UINT64_MAX)
+      capture_native_mesh(sequence.get(), static_cast<unsigned>(manifest.works.size() - 1),
+                          terminal);
   }
   if (tag_observer_v2)
     for (std::size_t ordinal = 0; ordinal < selected_event_counts.size(); ++ordinal)
@@ -1300,7 +1415,8 @@ int main(int argc, char **argv) {
                    "[--boundary-schema=2] [--queue-edge-schema=2] "
                    "[--availability-driven] "
                    "[--model-only] "
-                   "[--queue-edge-byte-limit=BYTES]\n";
+                   "[--queue-edge-byte-limit=BYTES] "
+                   "[--max-trace-events=COUNT] [--mesh-observer-work=ID]\n";
       return 0;
     }
     int argument_count = argc;
@@ -1321,6 +1437,22 @@ int main(int argc, char **argv) {
       } else if (option == "--model-only") {
         check(!model_only, "duplicate model-only option");
         model_only = true;
+      } else if (option.starts_with("--mesh-observer-work=")) {
+        check(mesh_observer_work == UINT64_MAX, "duplicate mesh observer work");
+        const auto token = option.substr(std::string_view("--mesh-observer-work=").size());
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(),
+                                            mesh_observer_work);
+        check(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() &&
+                  mesh_observer_work != UINT64_MAX, "mesh observer work ID invalid");
+      } else if (option.starts_with("--max-trace-events=")) {
+        check(!trace_event_limit_set, "duplicate trace event limit");
+        const auto token = option.substr(std::string_view("--max-trace-events=").size());
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(),
+                                            probe_max_trace_events);
+        check(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() &&
+                  probe_max_trace_events > 0 && probe_max_trace_events <= 64000000,
+              "trace event limit must be in [1,64000000]");
+        trace_event_limit_set = true;
       } else if (option.starts_with("--queue-edge-byte-limit=")) {
         check(!queue_edge_limit_set, "duplicate queue edge byte limit option");
         const auto token = option.substr(std::string_view("--queue-edge-byte-limit=").size());
@@ -1329,7 +1461,7 @@ int main(int argc, char **argv) {
                                             parsed_limit);
         check(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() &&
                   parsed_limit > 0 && parsed_limit <= maximum_queue_edge_byte_limit,
-              "queue edge byte limit must be in [1,4294967296]");
+              "queue edge byte limit must be in [1,137438953472]");
         queue_edge_byte_limit = parsed_limit;
         queue_edge_limit_set = true;
       } else break;
@@ -1362,6 +1494,13 @@ int main(int argc, char **argv) {
     check(!model_only || (absolute_mode && availability_driven),
           "model-only requires availability-driven absolute v2 stimulus");
     const auto absolute = absolute_mode ? read_absolute_work(argv[1]) : AbsoluteManifest{};
+    check(!trace_event_limit_set || absolute_mode, "trace event override requires absolute mode");
+    check(mesh_observer_work == UINT64_MAX ||
+              (availability_driven && boundary_schema_v2 && queue_edge_schema_v2 &&
+               IM2P_ACTIVATION_BITS == 8 && IM2P_OPERAND_BITS == 8 && IM2P_DIM == 16 &&
+               std::any_of(absolute.works.begin(), absolute.works.end(),
+                   [](const auto &work) { return work.id == mesh_observer_work; })),
+          "mesh observer requires a selected A8W8/DIM16 availability-driven work");
     check(!boundary_schema_v2 || absolute.works.size() >= 2,
           "boundary schema v2 requires two absolute works");
     absolute_manifest = absolute_mode ? &absolute : nullptr;

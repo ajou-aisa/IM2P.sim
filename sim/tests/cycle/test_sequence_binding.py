@@ -14,17 +14,55 @@ from sim.cycle.cli import CompactRun, CompactRuns, Event, Hardware, Result, Timi
 ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.fixture(scope="module")
-def library(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def _build_library(tmp_path_factory: pytest.TempPathFactory,
+                   extra_config: tuple[str, ...] = ()) -> Path:
     build = tmp_path_factory.mktemp("sequence-binding-build")
     subprocess.run(["cmake", "-S", str(ROOT / "sim/cycle"), "-B", str(build),
-                    "-DIM2P_CYCLE_BUILD_TESTS=OFF"],
+                    "-DIM2P_CYCLE_BUILD_TESTS=OFF", *extra_config],
                    check=True, capture_output=True, text=True, timeout=30)
     subprocess.run(
         ["cmake", "--build", str(build), "--target", "im2p_cycle_model_shared", "-j2"],
         check=True, capture_output=True, text=True, timeout=120,
     )
     return next(build.glob("libim2p_cycle_model.*"))
+
+
+@pytest.fixture(scope="module")
+def library(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _build_library(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def library_without_mesh(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    # Keep the real engine and older API, but do not export the two new symbols.
+    flags = ("-Dim2p_cycle_sequence_mesh_state_init=im2p_hidden_mesh_state_init "
+             "-Dim2p_cycle_sequence_get_mesh_state=im2p_hidden_get_mesh_state")
+    return _build_library(tmp_path_factory, (f"-DCMAKE_CXX_FLAGS={flags}",))
+
+
+def test_existing_api_executes_without_optional_mesh_symbols(library_without_mesh: Path) -> None:
+    # Given: a real native library with the existing exported API only.
+    with binding.SequenceSession(library_without_mesh, "a8w8-d16-hp1") as session:
+        # When: an ordinary work executes through native boundary advancement.
+        assert session.offer(binding.Work(53, 1, 1, 1), 0) == binding.Code.OK
+        assert session.advance_to_boundary(100_000, 100_000) == binding.Code.OK
+        report = session.pop_report()
+        # Then: the older API completes normally without loading optional observation symbols.
+        assert isinstance(report, binding.Report)
+        assert report.logical_work_id == 53 and report.generation == 1
+        assert report.resource_ready_cycle == session.status().cursor
+
+
+def test_missing_mesh_api_rejects_only_observation(library_without_mesh: Path) -> None:
+    # Given: the same older exported API and a valid, cold session.
+    with binding.SequenceSession(library_without_mesh, "a8w8-d16-hp1") as session:
+        before = bytes(session.status())
+        # When: the caller explicitly requests the unavailable observation ABI.
+        with pytest.raises(binding.SequenceError) as caught:
+            session.mesh_state()
+        # Then: a typed unsupported error leaves the existing session untouched.
+        assert caught.value.code == binding.Code.UNSUPPORTED
+        assert bytes(session.status()) == before
 
 
 def test_public_native_abi_layout_and_lifetime(library: Path, tmp_path: Path) -> None:
@@ -72,12 +110,16 @@ def test_python_layout_matches_public_c_abi() -> None:
     layouts = (
         (Hardware, 48), (Timing, 32), (CompactRun, 16), (CompactRuns, 32),
         (Result, 120), (Event, 80), (binding.Config, 136), (binding.Descriptor, 112),
-        (binding.Status, 112), (binding.TagState, 64), (binding.Report, 200),
+        (binding.Status, 112), (binding.TagState, 64), (binding.MeshState, 120),
+        (binding.Report, 200),
         (binding.SequenceEvent, 112), (binding.Diagnostic, 296),
     )
     offsets = (
         (binding.Config, "max_work_ids", 128), (binding.Descriptor, "compact_runs", 96),
         (binding.Status, "stop_reason", 104), (binding.TagState, "queue_len", 48),
+        (binding.MeshState, "request_owner_generation", 56),
+        (binding.MeshState, "control_valid", 80),
+        (binding.MeshState, "stall_reason_mask", 116),
         (binding.Report, "counters", 80), (binding.SequenceEvent, "event", 32),
         (binding.Diagnostic, "partial_counters", 48), (binding.Diagnostic, "message", 168),
     )
@@ -98,6 +140,51 @@ def test_python_binding_opens_one_native_lifetime(library: Path) -> None:
     with pytest.raises(binding.SequenceError) as closed:
         session.status()
     assert closed.value.code == binding.Code.INVALID
+
+
+def test_mesh_state_observes_native_edges_without_mutation(library: Path) -> None:
+    # Given: a cold native session and a multi-row work.
+    with binding.SequenceSession(library, "a8w8-d16-hp1") as session:
+        cold = session.mesh_state()
+        assert (cold.generation, cold.cursor, cold.mesh_request_ready,
+                cold.side_ready_mask) == (1, 0, 1, 7)
+        assert bytes(session.mesh_state()) == bytes(cold)
+        lib, handle = session._native()
+        malformed = binding.MeshState.from_buffer_copy(bytes(cold))
+        malformed.abi_version += 1
+        unchanged = bytes(malformed)
+
+        # When: malformed output is rejected, then real native edges execute.
+        assert lib.im2p_cycle_sequence_get_mesh_state(
+            handle, C.byref(malformed)) == binding.Code.INVALID
+        assert bytes(malformed) == unchanged
+        assert session.offer(binding.Work(31, 1, 1, 22, tile_k=2, submission=1), 0) == binding.Code.OK
+        observed: list[binding.MeshState] = []
+        for _ in range(1000):
+            status = session.status()
+            if status.has_report:
+                break
+            assert session.advance_until(status.cursor + 1) in (binding.Code.INCOMPLETE,
+                                                               binding.Code.OK)
+            observed.append(session.mesh_state())
+
+        # Then: valid/ready/fire stay distinct and report state is drained.
+        assert any(state.control_valid for state in observed)
+        assert any(state.request_valid for state in observed)
+        assert any(state.mesh_request_valid and not state.mesh_request_ready
+                   and not state.mesh_request_fire for state in observed)
+        assert any(state.mesh_request_fire for state in observed)
+        report_status = session.status()
+        report_state = session.mesh_state()
+        assert report_status.has_report == 1
+        assert (report_state.cursor, report_state.next_scratchpad_half,
+                report_state.next_accumulator_half) == (
+                    report_status.cursor, report_status.next_scratchpad_half,
+                    report_status.next_accumulator_half)
+        assert (report_state.request_valid, report_state.control_valid,
+                report_state.mesh_request_valid, report_state.mesh_request_ready,
+                report_state.mesh_request_fire, report_state.stall_reason_mask) == (
+                    0, 0, 0, 1, 0, 0)
 
 
 def test_one_session_object_cannot_reopen_another_native_handle(library: Path) -> None:

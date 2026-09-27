@@ -24,6 +24,8 @@ SEQUENCE_SOURCES = (
     "sim/include/im2p_cycle_sequence.h", "sim/cycle/sequence_c_api.cpp",
     "sim/cycle/sequence_binding.py", "sim/cycle/sequence_binding_abi.py",
     "sim/cycle/sequence_domain.py", "sim/cycle/stateful_sequence_evidence_tag5.py",
+    "sim/cycle/stateful_sequence_evidence_tag6.py", "sim/cycle/stateful_sequence_tag6_pins.py",
+    "sim/cycle/stateful_sequence_replay_certificate.py", "sim/cycle/stateful_sequence_replay_state.py",
     "sim/cycle/stateful_sequence_evidence_equivalence.py",
     "sim/cycle/execution_sequence_provider.py", "sim/cycle/execution_sequence_admission.py",
     "sim/cycle/stateful_sequence_certificate.py", "sim/cycle/stateful_sequence_evidence.py",
@@ -34,6 +36,9 @@ SEQUENCE_SOURCES = (
     "sim/tests/cycle/test_sequence_c_api.cpp", "sim/tests/cycle/tag_pressure_observer.hpp",
     "sim/tests/cycle/compositional_sequence_probe.cpp",
     "sim/tests/cycle/compositional_sequence_bounded.py",
+    "sim/tests/cycle/compositional_sequence_mesh.py", "sim/tests/cycle/test_compositional_sequence_mesh.py",
+    "sim/tests/cycle/test_stateful_sequence_tag6.py", "sim/tests/cycle/test_tag6_provider_gate.py",
+    "sim/tests/cycle/test_stateful_replay_state.py", "sim/tests/cycle/test_stateful_replay_certificate.py",
     "sim/tests/cycle/test_compositional_sequence_bounded.py",
     "sim/tests/cycle/compositional_sequence_work.py",
     "sim/tests/cycle/compositional_sequence_repeat.py",
@@ -123,12 +128,14 @@ import sys
 from pathlib import Path
 from sim.cycle import execution_sequence_provider, sequence_binding as binding
 from sim.cycle import stateful_sequence_evidence_v2 as evidence
+from sim.cycle import stateful_sequence_evidence_tag6
 from sim.tests.cycle.compositional_sequence_v2_base import stimulus_source_hashes
 root = Path(sys.argv[2]).resolve()
 assert all(Path(module.__file__).resolve().is_relative_to(root)
            for name, module in tuple(sys.modules.items())
            if name.startswith(('sim.', 'scripts.')) and getattr(module, '__file__', None))
 assert evidence._python_closure()
+assert stateful_sequence_evidence_tag6.SCHEMA == 'stateful-tag6-domain-v1'
 assert stimulus_source_hashes()
 with binding.SequenceSession(Path(sys.argv[1]), 'a8w8-d16-hp1') as session:
     previous = 0

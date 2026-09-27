@@ -90,6 +90,61 @@ bool Engine::resource_ready() const {
                    state.cycle >= work->result.service.resource_ready_cycle);
 }
 
+void Engine::mesh_state(im2p_cycle_sequence_mesh_state_t &out) const {
+  const auto &a = state.array;
+  out.request_valid = a.request;
+  out.request_rows = a.rows;
+  out.request_counter = a.counter;
+  out.matmul_id = a.id;
+  for (unsigned side = 0; side < a.written.size(); ++side)
+    out.written_mask |= uint32_t(a.written[side]) << side;
+  if (a.request) {
+    out.request_owner_generation = a.origin.generation;
+    out.request_owner_ordinal = a.origin.ordinal;
+    out.request_owner_work = a.origin.work;
+  }
+
+  const bool row_input =
+      a.request && std::all_of(a.written.begin(), a.written.end(),
+                              [](bool value) { return value; });
+  const bool last_input = row_input && a.counter + 1 == a.rows;
+  if (a.request && !last_input)
+    out.stall_reason_mask |=
+        IM2P_CYCLE_SEQUENCE_MESH_STALL_RESIDENT_NOT_LAST;
+  if (a.tags.size() >= P::tag_queue)
+    out.stall_reason_mask |= IM2P_CYCLE_SEQUENCE_MESH_STALL_TAG_FULL;
+  if (a.row_counts.size() >= P::tag_queue)
+    out.stall_reason_mask |= IM2P_CYCLE_SEQUENCE_MESH_STALL_ROW_FULL;
+  out.mesh_request_ready = out.stall_reason_mask == 0;
+  for (unsigned side = 0; side < a.written.size(); ++side) {
+    const bool ready =
+        !a.written[side] || row_input || out.mesh_request_ready;
+    out.side_ready_mask |= uint32_t(ready) << side;
+  }
+
+  const auto &controls = state.execute.controls;
+  if (controls.empty())
+    return;
+  const auto &control = controls.front();
+  out.control_valid = 1;
+  out.control_first = control.first;
+  bool control_pop = !control.first || out.mesh_request_ready;
+  for (unsigned side = 0; side < control.fire.size(); ++side) {
+    out.control_fire_mask |= uint32_t(control.fire[side]) << side;
+    out.control_read_mask |= uint32_t(control.reads[side]) << side;
+    const bool valid =
+        !control.reads[side] ||
+        state.banks[control.banks[side]].pipe.back();
+    out.side_valid_mask |= uint32_t(valid) << side;
+    const bool ready = out.side_ready_mask & (uint32_t(1) << side);
+    const bool fire = control.fire[side] && valid && ready;
+    control_pop &= !control.fire[side] || fire || !ready;
+  }
+  out.mesh_request_valid = out.control_fire_mask != 0;
+  out.mesh_request_fire = control_pop && out.mesh_request_valid &&
+                          out.mesh_request_ready;
+}
+
 bool Engine::domain_snapshot(
     im2p_cycle_sequence_domain_snapshot_t &out) const {
   const auto &s = state;

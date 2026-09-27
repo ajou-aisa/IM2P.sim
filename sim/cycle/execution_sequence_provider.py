@@ -17,7 +17,7 @@ from sim.cycle.execution_sequence_admission import (
 )
 from sim.cycle.execution_services import NpuWork
 from sim.cycle.sequence_binding import Code, SequenceSession, Settings, StopReason
-from sim.cycle.sequence_domain import profile_domain
+from sim.cycle.sequence_domain import TAG6_REVISION, profile_domain
 from sim.cycle.stateful_sequence_evidence import EvidenceContext
 
 MAX_WORK_CYCLES: Final = 10_000_000
@@ -46,9 +46,13 @@ class _StatefulProvider:
         self._admission, bound = admit_trace(inputs, production=production)
         self._domain = profile_domain(self._admission.profile,
                                       self._admission.scoped.state_domain_revision)
+        # The certified original trace's output projection exceeds the legacy
+        # per-work watchdog. Keep the existing total-session watchdog unchanged.
+        work_limit = (MAX_SESSION_CYCLES if self._admission.scoped.state_domain_revision == TAG6_REVISION
+                      else MAX_WORK_CYCLES)
         if (settings.read_ready_period != 5 or
                 (settings.max_work_cycles is not None and
-                 not 0 < settings.max_work_cycles <= MAX_WORK_CYCLES) or
+                 not 0 < settings.max_work_cycles <= work_limit) or
                 (settings.max_session_cycles is not None and
                  not 0 < settings.max_session_cycles <= MAX_SESSION_CYCLES)):
             raise StatefulProviderError("reference memory", "unsupported period or cycle budget")
@@ -60,7 +64,7 @@ class _StatefulProvider:
         self.scratchpad_half, self.accumulator_half = 0, 0
         self.faulted, self._closed = False, False
         limits = Settings(read_ready_period=5,
-                          max_work_cycles=settings.max_work_cycles or MAX_WORK_CYCLES,
+                          max_work_cycles=settings.max_work_cycles or work_limit,
                           max_session_cycles=settings.max_session_cycles or MAX_SESSION_CYCLES,
                           max_fragments=settings.max_fragments,
                           max_trace_events=settings.max_trace_events,
@@ -156,6 +160,9 @@ class _StatefulProvider:
                 offered_cycle < self.previous_resource_cycle or offered_cycle >= 1 << 64 or
                 status.has_pending or status.has_active or status.has_report or status.faulted):
             raise StatefulProviderError("offer epoch", "offer precedes native cursor/resource or state is busy")
+        if (self.admission.scoped.state_domain_revision == TAG6_REVISION and
+                offered_cycle != self.previous_resource_cycle):
+            raise StatefulProviderError("Tag6 offer policy", "only certified back-to-back NPU offers are supported")
         verify_sources(self.admission, self._inputs, self._session, publication=False)
         domain, rows = self._session.domain_snapshot(), self._session.row_pressure()
         if not (
