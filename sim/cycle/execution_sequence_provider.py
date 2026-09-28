@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes as C
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -16,7 +18,14 @@ from sim.cycle.execution_sequence_admission import (
     verify_sources,
 )
 from sim.cycle.execution_services import NpuWork
-from sim.cycle.sequence_binding import Code, SequenceSession, Settings, StopReason
+from sim.cycle.sequence_binding import (
+    Code,
+    SequenceEvent,
+    SequenceSession,
+    Settings,
+    StopReason,
+)
+from sim.cycle.sequence_binding_abi import U64
 from sim.cycle.sequence_domain import TAG6_REVISION
 from sim.cycle.stateful_domain import (
     A8D32_REVISION,
@@ -27,7 +36,10 @@ from sim.cycle.stateful_sequence_evidence import EvidenceContext
 
 MAX_WORK_CYCLES: Final = 10_000_000
 MAX_SESSION_CYCLES: Final = 1_000_000_000
+EVENT_BUFFER_EVENTS: Final = 1 << 20
 _DEFAULT_SETTINGS: Final = Settings()
+# Receives raw native SequenceEvent records (bytes, count); observation cannot alter timing.
+EventSink = Callable[[memoryview, int], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +58,10 @@ class StatefulWindow:
 
 
 class _StatefulProvider:
-    def __init__(self, inputs: AdmissionInputs, settings: Settings, *, production: bool) -> None:
+    def __init__(self, inputs: AdmissionInputs, settings: Settings, *, production: bool,
+                 event_sink: EventSink | None = None) -> None:
         self._inputs = inputs
+        self._event_sink = event_sink
         self._admission, bound = admit_trace(inputs, production=production)
         self._domain = state_domain(self._admission.profile,
                                     self._admission.scoped.state_domain_revision).limits
@@ -59,8 +73,12 @@ class _StatefulProvider:
                 (settings.max_work_cycles is not None and
                  not 0 < settings.max_work_cycles <= work_limit) or
                 (settings.max_session_cycles is not None and
-                 not 0 < settings.max_session_cycles <= MAX_SESSION_CYCLES)):
-            raise StatefulProviderError("reference memory", "unsupported period or cycle budget")
+                 not 0 < settings.max_session_cycles <= MAX_SESSION_CYCLES) or
+                (event_sink is not None and settings.max_trace_events is not None and
+                 not 0 < settings.max_trace_events <= EVENT_BUFFER_EVENTS)):
+            raise StatefulProviderError("reference memory", "unsupported period, cycle or event budget")
+        event_capacity = (settings.max_trace_events or EVENT_BUFFER_EVENTS) if event_sink is not None else 0
+        self._event_buffer = (SequenceEvent * event_capacity)() if event_capacity else None
         self._bound = bound
         self.requests = tuple(item.request for item in bound)
         self.completed: frozenset[ServiceId] = frozenset()
@@ -72,7 +90,7 @@ class _StatefulProvider:
                           max_work_cycles=settings.max_work_cycles or work_limit,
                           max_session_cycles=settings.max_session_cycles or MAX_SESSION_CYCLES,
                           max_fragments=settings.max_fragments,
-                          max_trace_events=settings.max_trace_events,
+                          max_trace_events=event_capacity or settings.max_trace_events,
                           max_work_ids=settings.max_work_ids)
         self._session = SequenceSession(inputs.library, self.admission.profile, settings=limits,
                                         expected_identity=self.admission.source_identity)
@@ -188,7 +206,7 @@ class _StatefulProvider:
             original_k=trace.original_k,
             runs=tuple(sequence_binding.Run(run.original_block_id, run.original_k_mask,
                                             run.compact_k_begin, run.compact_k_count)
-                       for run in trace.runs), submission=0)
+                       for run in trace.runs), submission=0, record_events=self._event_sink is not None)
         if self._session.offer(descriptor, offered_cycle) != Code.OK:
             raise StatefulProviderError("native offer", "work was not accepted into pending state")
         committed = False
@@ -200,9 +218,14 @@ class _StatefulProvider:
                     if stop != StopReason.REPORT_AVAILABLE:
                         raise StatefulProviderError("native advance", "report boundary missing")
                     break
+                if (self._event_sink is not None and code == Code.WOULD_BLOCK and
+                        stop == StopReason.EVENT_BUFFER_AVAILABLE):
+                    self._drain_events()
+                    continue
                 if code != Code.INCOMPLETE or stop != StopReason.SOFT_BUDGET:
                     raise StatefulProviderError("native advance", f"unexpected {code.name}")
             window = self._check_report(item, offered_cycle)
+            self._drain_events()
             self.completed = self.completed | {work.identity}
             self.invocations += 1
             self.previous_resource_cycle = window.resource_ready_cycle
@@ -214,6 +237,20 @@ class _StatefulProvider:
             if not committed:
                 self.faulted = True
 
+    def _drain_events(self) -> None:
+        if self._event_sink is None or self._event_buffer is None:
+            return
+        lib, handle = self._session._native()
+        capacity, count = len(self._event_buffer), U64()
+        while True:
+            code = Code(lib.im2p_cycle_sequence_read_events(handle, self._event_buffer, capacity, C.byref(count)))
+            if code != Code.OK or count.value > capacity:
+                raise StatefulProviderError("native events", f"event drain failed: {code.name}")
+            if count.value == 0:
+                return
+            self._event_sink(memoryview(self._event_buffer).cast("B")[:count.value * C.sizeof(SequenceEvent)],
+                             count.value)
+
     def verify_complete(self) -> None:
         if (self.faulted or self._closed or self.invocations != len(self._bound) or
                 self.completed != frozenset(work.identity for work in self.requests)):
@@ -223,7 +260,8 @@ class _StatefulProvider:
             verify_sources(self.admission, self._inputs, self._session)
             status = self._session.status()
             if (status.has_pending or status.has_active or status.has_report or status.faulted or
-                    self._session.counters().logical_work_count != self.invocations):
+                    self._session.counters().logical_work_count != self.invocations or
+                    self._session.event_count() != 0):
                 raise StatefulProviderError("completion", "native session has unfinished work")
             verified = True
         finally:
@@ -239,5 +277,7 @@ class DiagnosticStatefulProvider(_StatefulProvider):
 
 class StatefulSequenceProvider(_StatefulProvider):
     def __init__(self, library: Path, trace: Path, certificate: Path,
-                 context: EvidenceContext, *, settings: Settings = _DEFAULT_SETTINGS) -> None:
-        super().__init__(AdmissionInputs(library, trace, certificate, context), settings, production=True)
+                 context: EvidenceContext, *, settings: Settings = _DEFAULT_SETTINGS,
+                 event_sink: EventSink | None = None) -> None:
+        super().__init__(AdmissionInputs(library, trace, certificate, context), settings, production=True,
+                         event_sink=event_sink)
