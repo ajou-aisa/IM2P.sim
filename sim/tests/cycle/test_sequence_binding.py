@@ -96,8 +96,9 @@ def test_public_native_abi_layout_and_lifetime(library: Path, tmp_path: Path) ->
     # When: C11 compiles and calls the public lifetime directly.
     subprocess.run(
         ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "sim/include"),
+         "-x", "c", "-", "-x", "none",
          "-L", str(library.parent), "-Wl,-rpath," + str(library.parent),
-         "-lim2p_cycle_model", "-x", "c", "-", "-o", str(executable)],
+         "-lim2p_cycle_model", "-o", str(executable)],
         input=probe, check=True, capture_output=True, text=True, timeout=15,
     )
 
