@@ -173,8 +173,14 @@ def finish_native_collection(collection: NativeCollection) -> Path:
     execution_kind = text(workload, 'execution_kind')
     forced = execution_kind == 'FORCED_CPU_COST_ONLY'
     require(forced == ('--forced-token-ids' in collection.command), 'forced execution kind/command mismatch')
-    require(endpoint.get('execution_kind') == execution_kind and integer(endpoint, 'decode_calls') == 127 and
-            integer(endpoint, 'actual_sampler_calls') == (0 if forced else 128), 'native sampling/decode execution mismatch')
+    generated = integer(workload, 'requested_generated_tokens')
+    smoke = workload.get('diagnostic_smoke') is True
+    require(generated == 128 or (smoke and generated == 1),
+            'native workload must be the 128-token contract or the declared 1-token diagnostic smoke')
+    require(endpoint.get('execution_kind') == execution_kind and
+            integer(endpoint, 'decode_calls') == generated - 1 and
+            integer(endpoint, 'actual_sampler_calls') == (0 if forced else generated),
+            'native sampling/decode execution mismatch')
     paths = {'cycle_log': log_root / 'cycle-log.jsonl', 'semantic_graph': log_root / 'semantic-graph.jsonl',
              'execution_lifecycle': log_root / 'execution-lifecycle.jsonl', 'application_endpoints': endpoint_path}
     if collection.build.role == 'POTAL_COLLECTION':
@@ -200,7 +206,8 @@ def finish_native_collection(collection: NativeCollection) -> Path:
     proof: Record = {'schema': 'im2p-collection-provenance', 'version': 2,
         'source_role': collection.build.role, 'process_exit_code': 0, 'collection_success': True,
         'execution_kind': execution_kind, 'trajectory_source': 'POTAL' if forced else 'NATIVE_SAMPLING',
-        'actual_sampler_calls': 0 if forced else 128, 'decode_calls': 127, 'chunk_id': chunk_id,
+        'actual_sampler_calls': 0 if forced else generated, 'decode_calls': generated - 1,
+        'requested_generated_tokens': generated, 'diagnostic_smoke': smoke, 'chunk_id': chunk_id,
         'recipe_id': workload.get('recipe_id'),
         'input_tokens_sha256': hashlib.sha256(json.dumps(chunk['input_tokens'], separators=(',', ':')).encode()).hexdigest(),
         'output_tokens_sha256': hashlib.sha256(json.dumps(endpoint['generated_tokens'], separators=(',', ':')).encode()).hexdigest(),

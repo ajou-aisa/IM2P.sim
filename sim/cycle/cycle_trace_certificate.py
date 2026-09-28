@@ -39,7 +39,7 @@ from sim.cycle.stateful_sequence_evidence import (
 SCHEMA: Final = "im2p-cycle-trace-certificate-v1"
 EQUIVALENCE: Final = "EXACT_ORDERED_NPU_WORK_DESCRIPTORS"
 PARENT_SCHEMAS: Final = ("stateful-full374-replay-v1", "stateful-profile-domain-v1",
-                         "stateful-profile-extension-v1")
+                         "stateful-profile-extension-v1", "im2p-actual-trace-certificate-v1")
 PROVIDER_SOURCES: Final = (
     "sim/cycle/cycle_trace_certificate.py", "sim/cycle/execution_sequence_provider.py",
     "sim/cycle/execution_sequence_admission.py", "sim/cycle/stateful_sequence_certificate.py",

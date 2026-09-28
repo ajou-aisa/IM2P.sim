@@ -313,6 +313,10 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
         from sim.cycle import cycle_trace_certificate
 
         return cycle_trace_certificate.validate(path, context)
+    if document.get('schema') == 'im2p-actual-trace-certificate-v1':
+        from sim.cycle import actual_trace_certificate
+
+        return actual_trace_certificate.validate(path, context)
     if document.get('schema') == 'stateful-profile-extension-v1':
         from sim.cycle import stateful_profile_extension
 
@@ -377,7 +381,8 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
 def admit(path: Path, context: EvidenceContext) -> None:
     _ = validate(path, context)
     if read_document(path).get('schema') in ('stateful-profile-domain-v1', 'stateful-profile-extension-v1',
-                                             'im2p-cycle-trace-certificate-v1'):
+                                             'im2p-cycle-trace-certificate-v1',
+                                             'im2p-actual-trace-certificate-v1'):
         return
     if context.tag6_evidence_input is not None:
         from sim.cycle import stateful_sequence_replay_certificate as replay

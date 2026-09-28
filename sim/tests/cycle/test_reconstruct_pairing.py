@@ -85,6 +85,20 @@ class ForcedPairingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_source_pair(full,potal,'f'*64)
 
+    def test_declared_single_token_smoke_pairs_only_with_matching_declaration(self):
+        full, potal = pair()
+        for row in (full, potal):
+            row.update(decode_calls=0, requested_generated_tokens=1, diagnostic_smoke=True)
+        potal['actual_sampler_calls'] = 1
+        validate_source_pair(full, potal, 'f'*64)
+        for side, field, value in (('potal', 'diagnostic_smoke', False), ('full', 'requested_generated_tokens', 128),
+                                   ('potal', 'requested_generated_tokens', 2), ('potal', 'actual_sampler_calls', 128),
+                                   ('full', 'decode_calls', 127)):
+            wrong: dict[str, Record] = {'full': copy.deepcopy(full), 'potal': copy.deepcopy(potal)}
+            wrong[side][field] = value
+            with self.subTest(side=side, field=field), self.assertRaises(ValueError):
+                validate_source_pair(wrong['full'], wrong['potal'], 'f'*64)
+
 
 if __name__ == '__main__':
     unittest.main()

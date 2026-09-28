@@ -23,6 +23,9 @@ PROFILE_EXTENSION_REVISIONS: Final = {
     "stateful-a4w4-d32-v1": "a4w4-d32-hp1",
     "stateful-a4w4-d64-v1": "a4w4-d64-hp1",
 }
+ACTUAL_TRACE_REVISIONS: Final = {
+    "GUARDED_A8D32_ACTUAL_EVAL_TAG5_ROW_LT5_V1": ("a8w8-d32-hp1", DomainLimits(5, max_row_occupancy_exclusive=5)),
+}
 
 
 class Revision(StrEnum):
@@ -34,6 +37,7 @@ class Revision(StrEnum):
     A4D16 = "stateful-a4w4-d16-v1"
     A4D32 = "stateful-a4w4-d32-v1"
     A4D64 = "stateful-a4w4-d64-v1"
+    A8D32_ACTUAL = "GUARDED_A8D32_ACTUAL_EVAL_TAG5_ROW_LT5_V1"
 
 
 class StateDomainError(ValueError):
@@ -111,6 +115,10 @@ def state_domain(profile: str, revision: str) -> StateDomain:
             if profile != "a8w8-d32-hp1":
                 raise DomainRevisionError(profile, revision)
             limits = DomainLimits(4, max_row_occupancy_exclusive=4)
+        case Revision.A8D32_ACTUAL:
+            certified_profile, limits = ACTUAL_TRACE_REVISIONS[revision]
+            if certified_profile != profile:
+                raise DomainRevisionError(profile, revision)
         case Revision.LEGACY | Revision.TAG5 | Revision.TAG6:
             limits = profile_domain(profile, revision)
         case unreachable:

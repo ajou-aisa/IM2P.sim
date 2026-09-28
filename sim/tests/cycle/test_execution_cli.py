@@ -65,6 +65,26 @@ class ExecutionCliTests(unittest.TestCase):
             self.assertIn('binding mismatch', result.stderr)
             self.assertFalse((root / 'bundle.json').exists())
 
+    def test_decode_fingerprints_when_sample_count_declares_decode_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture_files(root)
+            summary = json.loads((root / 'summary.json').read_text())
+            lifecycle = json.loads((root / 'lifecycle.json').read_text())
+            for fingerprints, application in (({}, None), ({'0': True}, {'expected_samples': 1})):
+                summary['decode_token_fingerprint_matches'] = fingerprints
+                (root / 'summary.json').write_text(json.dumps(summary))
+                if application is not None:
+                    lifecycle['application'] = application
+                (root / 'lifecycle.json').write_text(json.dumps(lifecycle))
+                result = self.invoke(['adapt', '--dataset', str(root / 'dataset.jsonl'), '--npu-results', str(root / 'npu.jsonl'),
+                                      '--lifecycle', str(root / 'lifecycle.json'), '--join-summary', str(root / 'summary.json'),
+                                      '--output', str(root / 'bundle.json')])
+                with self.subTest(fingerprints=fingerprints):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('missing fingerprints', result.stderr)
+                    self.assertFalse((root / 'bundle.json').exists())
+
     def test_help_when_requested(self) -> None:
         result = self.invoke(['--help'])
         self.assertEqual(result.returncode, 0)

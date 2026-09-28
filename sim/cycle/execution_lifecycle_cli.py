@@ -65,8 +65,10 @@ def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
            object_value(source['npu_results'])['sha256'] == sha256(files.npu_results) and
            summary['potal_provenance_sha256'] == sha256(files.provenance), 'join source binding mismatch')
     fingerprints = object_value(summary['decode_token_fingerprint_matches'])
-    ensure(bool(fingerprints) and all(value is True for value in fingerprints.values()), 'decode input trajectory mismatch')
     graph = read_manifest(files.semantic_graph)
+    decode_phases = sum(phase['phase_kind'] == 'decode' for phase in graph.phases)
+    ensure(len(fingerprints) == decode_phases and all(value is True for value in fingerprints.values()),
+           'decode input trajectory mismatch')
     sidecar = tuple(json_records(files.sidecar))
     projection = project_lifecycle(sidecar, graph)
     pipeline = bool(sidecar) and integer(sidecar[0], 'version') == 3

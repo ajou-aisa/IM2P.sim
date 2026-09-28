@@ -5,6 +5,19 @@ import re
 from sim.cycle.npu_trace_schema import Record, integer, object_value, require, text
 from sim.cycle.reconstruct_graph import Manifest, array
 
+PAPER_GENERATED_TOKENS = 128
+DIAGNOSTIC_SMOKE_GENERATED_TOKENS = 1
+
+
+def declared_generation(provenance: Record) -> int:
+    if 'requested_generated_tokens' not in provenance:
+        return PAPER_GENERATED_TOKENS
+    generated = integer(provenance, 'requested_generated_tokens')
+    require(generated == PAPER_GENERATED_TOKENS or
+            (generated == DIAGNOSTIC_SMOKE_GENERATED_TOKENS and provenance.get('diagnostic_smoke') is True),
+            'declared generation must be the 128-token contract or the declared 1-token diagnostic smoke')
+    return generated
+
 
 def validate_source_pair(full: Record, potal: Record, potal_provenance_sha256: str) -> None:
     if full.get('execution_kind') != 'FORCED_CPU_COST_ONLY':
@@ -29,8 +42,11 @@ def validate_source_pair(full: Record, potal: Record, potal_provenance_sha256: s
     require(full.get('version') == 2 and potal.get('version') == 2 and
             full.get('source_role') == 'FULL_CPU' and potal.get('source_role') == 'POTAL_COLLECTION',
             'forced pairing requires current native FullCPU/PoTal provenance')
+    generated = declared_generation(potal)
+    require(declared_generation(full) == generated, 'forced pairing generation length differs')
     require(full.get('trajectory_source') == 'POTAL' and full.get('actual_sampler_calls') == 0 and
-            potal.get('actual_sampler_calls') == 128 and full.get('decode_calls') == potal.get('decode_calls') == 127,
+            potal.get('actual_sampler_calls') == generated and
+            full.get('decode_calls') == potal.get('decode_calls') == generated - 1,
             'forced pairing must not count CPU sampling as actual generation')
     require(full.get('recipe_id') == potal.get('recipe_id') == 'wikitext2-test-256x128-greedy-seed1234-v1',
             'forced pairing recipe mismatch')

@@ -7,14 +7,20 @@ from sim.cycle.execution_lifecycle import token_fingerprint
 from sim.cycle.npu_trace_schema import Record, integer, object_value
 from sim.cycle.reconstruct_graph import Manifest, fields, phase_key
 
+PAPER_FORCED_TOKENS = 128
+DIAGNOSTIC_SMOKE_FORCED_TOKENS = 1
+
 
 def validate_forced_lifecycle(events: Iterable[Record], graph: Manifest,
                               expected_tokens: tuple[int, ...]) -> tuple[int, ...]:
     producer = object_value(graph.run['producer'])
+    generated = len(expected_tokens)
     ensure(graph.run['source_role'] == 'FULL_CPU' and producer.get('execution_kind') == 'FORCED_CPU_COST_ONLY' and
-           producer.get('trajectory_source') == 'POTAL' and len(expected_tokens) == 128 and
-           integer(object_value(graph.run['workload']), 'generated_tokens') == 128,
-           'forced lifecycle requires paired FullCPU cost-only scope and 128 PoTal tokens')
+           producer.get('trajectory_source') == 'POTAL' and
+           generated in (PAPER_FORCED_TOKENS, DIAGNOSTIC_SMOKE_FORCED_TOKENS) and
+           integer(object_value(graph.run['workload']), 'generated_tokens') == generated,
+           'forced lifecycle requires paired FullCPU cost-only scope and 128 PoTal tokens '
+           '(or the 1-token diagnostic smoke)')
     tokens: list[int] = []
     phases: list[Record] = []
     active: Record | None = None
@@ -30,7 +36,7 @@ def validate_forced_lifecycle(events: Iterable[Record], graph: Manifest,
                     'execution_kind', 'trajectory_source', 'expected_tokens', 'performance_scope'})
                 ensure(sequence == 0 and record['source_role'] == 'full_cpu' and record['source_commit'] == producer['git_commit'] and
                        record['execution_kind'] == 'FORCED_CPU_COST_ONLY' and record['trajectory_source'] == 'POTAL' and
-                       integer(record, 'expected_tokens') == 128 and integer(record, 'expected_samples') == 0 and
+                       integer(record, 'expected_tokens') == generated and integer(record, 'expected_samples') == 0 and
                        record['performance_scope'] == 'ORDINARY_CPU_COST_ONLY' and record['target_mode_scope'] == 'CPU_ONLY' and
                        record['execution_policy'] == 'blocking-llama-decode-synchronize-v1' and
                        record['graph_policy'] == 'semantic-session-completes-before-next-graph-v1' and
@@ -61,7 +67,7 @@ def validate_forced_lifecycle(events: Iterable[Record], graph: Manifest,
             case 'FORCED_TOKEN':
                 fields(record, common | {'token_index', 'token_id', 'graph_end', 'dispatch_id', 'token_ready',
                                          'actual_sampling', 'phase_kind', 'decode_index'})
-                ensure(active is None and bool(phases) and integer(record, 'token_index') == len(tokens) < 128 and
+                ensure(active is None and bool(phases) and integer(record, 'token_index') == len(tokens) < generated and
                        len(phases) == len(tokens) + 1 and integer(record, 'graph_end') == cursor and
                        integer(record, 'dispatch_id') + 1 == dispatches and record['token_ready'] is True and
                        record['actual_sampling'] is False and phase_key(record) == phase_key(phases[-1]),
@@ -70,14 +76,14 @@ def validate_forced_lifecycle(events: Iterable[Record], graph: Manifest,
             case 'RUN_END':
                 fields(record, common | {'success', 'samples', 'phases', 'dispatches', 'graphs', 'forced_tokens', 'completed_tokens'})
                 ensure(started and active is None and record['success'] is True and integer(record, 'samples') == 0 and
-                       integer(record, 'forced_tokens') == integer(record, 'completed_tokens') == len(tokens) == 128 and
-                       integer(record, 'phases') == len(phases) == len(graph.phases) == 128 and
+                       integer(record, 'forced_tokens') == integer(record, 'completed_tokens') == len(tokens) == generated and
+                       integer(record, 'phases') == len(phases) == len(graph.phases) == generated and
                        integer(record, 'dispatches') == dispatches and integer(record, 'graphs') == cursor == len(graph.graphs),
-                       'forced completion requires 128 tokens and zero sampling')
+                       'forced completion requires every declared token and zero sampling')
                 ended = True
             case _:
                 ensure(False, 'forced cost-only lifecycle cannot contain sampling or unknown events')
-    ensure(ended and tuple(tokens) == expected_tokens, 'forced token trajectory differs from all 128 PoTal IDs')
+    ensure(ended and tuple(tokens) == expected_tokens, 'forced token trajectory differs from the declared PoTal IDs')
     for index, token in enumerate(tokens[:-1]):
         ensure(graph.phases[index + 1]['token_fingerprint'] == token_fingerprint(token) and
                graph.phases[index + 1]['input_tokens'] == 1, 'forced decode input fingerprint differs')

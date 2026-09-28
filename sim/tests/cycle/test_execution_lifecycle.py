@@ -120,6 +120,55 @@ class ForcedLifecycleTests(unittest.TestCase):
                 validate_forced_lifecycle(json_records(root / 'forced.jsonl'), read_manifest(root / 'graph.jsonl'), tokens)
 
 
+def forced_smoke_graph(generated_tokens: int = 1) -> list[Record]:
+    rows = graph_records('FULL_CPU')
+    object_value(rows[0]['producer']).update(git_commit='candidate', execution_kind='FORCED_CPU_COST_ONLY',
+                                             trajectory_source='POTAL')
+    object_value(rows[0]['workload'])['generated_tokens'] = generated_tokens
+    return rows
+
+
+def forced_smoke_events(token: int) -> list[Record]:
+    scope: Record = {'phase_kind': 'prefill', 'decode_index': None}
+    events: list[Record] = [
+        {'kind': 'RUN', 'source_role': 'full_cpu', 'source_commit': 'candidate', 'expected_samples': 0,
+         'execution_policy': 'blocking-llama-decode-synchronize-v1',
+         'graph_policy': 'semantic-session-completes-before-next-graph-v1',
+         'operation_exit_policy': 'ALL_MEMBER_COMPLETIONS', 'target_mode_scope': 'CPU_ONLY',
+         'requires_binary_manifest_binding': True, 'execution_kind': 'FORCED_CPU_COST_ONLY',
+         'trajectory_source': 'POTAL', 'expected_tokens': 1, 'performance_scope': 'ORDINARY_CPU_COST_ONLY'},
+        {'kind': 'PHASE', **scope, 'graph_begin': 0, 'phase_ordinal': 0},
+        {'kind': 'DISPATCH_BEGIN', **scope, 'dispatch_id': 0, 'graph_begin': 0},
+        {'kind': 'DISPATCH_END', **scope, 'dispatch_id': 0, 'graph_end': 1, 'status': 0, 'synchronized': True},
+        {'kind': 'FORCED_TOKEN', **scope, 'token_index': 0, 'token_id': token, 'graph_end': 1,
+         'dispatch_id': 0, 'token_ready': True, 'actual_sampling': False},
+        {'kind': 'RUN_END', 'success': True, 'samples': 0, 'phases': 1, 'dispatches': 1, 'graphs': 1,
+         'forced_tokens': 1, 'completed_tokens': 1},
+    ]
+    for sequence, event in enumerate(events):
+        event.update(schema='potal-execution-lifecycle', version=2, sequence=sequence)
+    return events
+
+
+class ForcedSmokeLifecycleTests(unittest.TestCase):
+    def validate(self, rows: list[Record], events: list[Record], tokens: tuple[int, ...]) -> tuple[int, ...]:
+        from sim.cycle.execution_lifecycle import validate_forced_lifecycle
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'graph.jsonl'
+            write_rows(path, rows)
+            return validate_forced_lifecycle(events, read_manifest(path), tokens)
+
+    def test_single_token_smoke_when_workload_and_run_declare_it(self) -> None:
+        self.assertEqual(self.validate(forced_smoke_graph(), forced_smoke_events(7), (7,)), (7,))
+        with self.assertRaisesRegex(ExecutionError, 'forced token trajectory'):
+            self.validate(forced_smoke_graph(), forced_smoke_events(8), (7,))
+
+    def test_undeclared_length_when_tokens_or_workload_leave_the_contract(self) -> None:
+        for generated, tokens in ((128, (7,)), (2, (7, 8)), (1, (7, 8))):
+            with self.subTest(generated=generated, tokens=tokens), self.assertRaisesRegex(ExecutionError, 'forced lifecycle requires'):
+                self.validate(forced_smoke_graph(generated), forced_smoke_events(7), tokens)
+
+
 class PipelineLifecycleTests(unittest.TestCase):
     def test_pipeline_owners_are_preserved_with_source_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

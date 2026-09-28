@@ -126,6 +126,21 @@ def provider(arguments: Arguments) -> TimingProvider:
             reference(path, text(row, 'sha256'))
             return path
 
+        constructor = DiagnosticStatefulProvider if arguments.stateful_diagnostic else StatefulSequenceProvider
+        if certificate.get('schema') == 'im2p-cycle-trace-certificate-v1':
+            from sim.cycle.cycle_trace_certificate import context_from
+
+            parent = read_document(path_from(object_value(certificate['parent_certificate'])))
+            memory = object_value(parent['reference_memory'])
+            ensure(memory['timing'] == scenario.timing and
+                   memory['initial_scratchpad_half'] == arguments.initial_scratchpad_half and
+                   memory['initial_accumulator_half'] == arguments.initial_accumulator_half,
+                   'cycle trace parent reference memory mismatch')
+            context = context_from(object_value(certificate['evidence_context']))
+            ensure(context.evidence_root == arguments.stateful_evidence_root.resolve(),
+                   'stateful evidence root differs from the certified evidence context')
+            return constructor(arguments.cycle_library, arguments.npu_trace,
+                               arguments.stateful_sequence_certificate, context)
         parents = object_value(certificate['parents'])
         tag6 = certificate.get('schema') in ('stateful-tag6-domain-v1', 'stateful-full374-replay-v1')
         memory = object_value(certificate['reference_memory'])
@@ -139,7 +154,6 @@ def provider(arguments: Arguments) -> TimingProvider:
              path_from(object_value(object_value(object_value(certificate['domain_delta'])['artifacts'])['input']))
              if certificate['version'] == 3 else None,
              path_from(object_value(certificate['evidence_input'])) if tag6 else None)
-        constructor = DiagnosticStatefulProvider if arguments.stateful_diagnostic else StatefulSequenceProvider
         return constructor(arguments.cycle_library, arguments.npu_trace, arguments.stateful_sequence_certificate, context)
     return CycleServiceProvider(arguments.cycle_library, arguments.npu_trace, scenario,
                                 service_certificate=arguments.service_certificate,
@@ -267,7 +281,9 @@ def main() -> int:
             ensure(summary.get('status') == 'PASS' and summary.get('scope') == 'structural-three-source-reconstruction',
                    'successful current structural join required')
             fingerprints = object_value(summary['decode_token_fingerprint_matches'])
-            ensure(bool(fingerprints) and all(value is True for value in fingerprints.values()),
+            application = lifecycle.get('application')
+            decode_free = isinstance(application, dict) and application.get('expected_samples') == 1
+            ensure(bool(fingerprints) != decode_free and all(value is True for value in fingerprints.values()),
                    'decode trajectory mismatch or missing fingerprints')
             ensure(object_value(object_value(summary['source_artifacts'])['npu_results'])['sha256'] == sha256(args.npu_results),
                    'join/NPU result binding mismatch')

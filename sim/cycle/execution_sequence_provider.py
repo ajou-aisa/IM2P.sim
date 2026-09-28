@@ -29,6 +29,7 @@ from sim.cycle.sequence_binding_abi import U64
 from sim.cycle.sequence_domain import TAG6_REVISION
 from sim.cycle.stateful_domain import (
     A8D32_REVISION,
+    ACTUAL_TRACE_REVISIONS,
     PROFILE_EXTENSION_REVISIONS,
     state_domain,
 )
@@ -184,7 +185,7 @@ class _StatefulProvider:
                 status.has_pending or status.has_active or status.has_report or status.faulted):
             raise StatefulProviderError("offer epoch", "offer precedes native cursor/resource or state is busy")
         if (self.admission.scoped.state_domain_revision in
-                (TAG6_REVISION, A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS) and
+                (TAG6_REVISION, A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS, *ACTUAL_TRACE_REVISIONS) and
                 offered_cycle != self.previous_resource_cycle):
             raise StatefulProviderError("Tag6 offer policy", "only certified back-to-back NPU offers are supported")
         verify_sources(self.admission, self._inputs, self._session, publication=False)
