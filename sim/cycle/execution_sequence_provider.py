@@ -18,7 +18,11 @@ from sim.cycle.execution_sequence_admission import (
 from sim.cycle.execution_services import NpuWork
 from sim.cycle.sequence_binding import Code, SequenceSession, Settings, StopReason
 from sim.cycle.sequence_domain import TAG6_REVISION
-from sim.cycle.stateful_domain import A8D32_REVISION, state_domain
+from sim.cycle.stateful_domain import (
+    A8D32_REVISION,
+    PROFILE_EXTENSION_REVISIONS,
+    state_domain,
+)
 from sim.cycle.stateful_sequence_evidence import EvidenceContext
 
 MAX_WORK_CYCLES: Final = 10_000_000
@@ -161,7 +165,8 @@ class _StatefulProvider:
                 offered_cycle < self.previous_resource_cycle or offered_cycle >= 1 << 64 or
                 status.has_pending or status.has_active or status.has_report or status.faulted):
             raise StatefulProviderError("offer epoch", "offer precedes native cursor/resource or state is busy")
-        if (self.admission.scoped.state_domain_revision in (TAG6_REVISION, A8D32_REVISION) and
+        if (self.admission.scoped.state_domain_revision in
+                (TAG6_REVISION, A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS) and
                 offered_cycle != self.previous_resource_cycle):
             raise StatefulProviderError("Tag6 offer policy", "only certified back-to-back NPU offers are supported")
         verify_sources(self.admission, self._inputs, self._session, publication=False)

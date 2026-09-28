@@ -20,7 +20,12 @@ from sim.cycle.npu_trace_schema import Work as TraceWork
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.sequence_binding import SequenceError, SequenceSession, SourceIdentity
 from sim.cycle.sequence_domain import TAG5_PROFILE, TAG6_REVISION
-from sim.cycle.stateful_domain import A8D32_REVISION, InitialState, WorkClass
+from sim.cycle.stateful_domain import (
+    A8D32_REVISION,
+    PROFILE_EXTENSION_REVISIONS,
+    InitialState,
+    WorkClass,
+)
 from sim.cycle.stateful_sequence_certificate import ScopedEvidence
 from sim.cycle.stateful_sequence_evidence import (
     EvidenceContext,
@@ -109,7 +114,7 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
                 object_value(document["trace"], "Tag6 trace")["sha256"] != trace_digest or
                 tuple(item.trace.identity for item in bound) != tuple(range(374))):
             raise StatefulProviderError("Tag6 corpus", "only the certified original374 trace is supported")
-    if scoped.state_domain_revision in (TAG6_REVISION, A8D32_REVISION):
+    if scoped.state_domain_revision in (TAG6_REVISION, A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS):
         from sim.cycle.stateful_domain_admission import check_profile_scope
 
         domain = check_profile_scope(state.run.profile, inputs, scoped)
@@ -117,7 +122,7 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
         for item in bound:
             domain.check_work_class(WorkClass(item.trace.provenance,
                                              item.trace.residual_work_revision or "dense"))
-        if scoped.state_domain_revision == A8D32_REVISION:
+        if scoped.state_domain_revision in (A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS):
             document = read_document(inputs.certificate)
             if [item.trace.identity for item in bound] != document["work_ids"]:
                 raise StatefulProviderError("profile corpus", "complete certified work order required")
@@ -132,7 +137,9 @@ def admit_trace(inputs: AdmissionInputs, *, production: bool = False,
         tuple((item.trace.identity, item.trace.parent_id, item.request.request_sha256) for item in bound),
         trace_identity=trace_identity,
         extension_source_sha256=tuple((name, sha256(Path(__file__).with_name(name))) for name in (
-            "stateful_domain.py", "stateful_domain_admission.py", "stateful_profile_certificate.py")),
+            "stateful_domain.py", "stateful_domain_admission.py", "stateful_profile_certificate.py",
+            "stateful_profile_extension.py", "stateful_profile_extension_evidence.py",
+            "stateful_profile_extension_pins.py")),
     )
     return admission, bound
 

@@ -309,6 +309,12 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
         document = read_document(path)
     except (OSError, ValueError, TypeError) as error:
         raise StatefulCertificateError('document', str(error)) from error
+    if document.get('schema') == 'stateful-profile-extension-v1':
+        from sim.cycle import stateful_profile_extension
+
+        document = stateful_profile_extension.validate_document(path, context)
+        return ScopedEvidence(sha256(path), sha256(context.library), (str(document['case_id']),),
+                              state_domain_revision=str(document['state_domain_revision']))
     if document.get('schema') == 'stateful-profile-domain-v1':
         from sim.cycle import stateful_profile_certificate as profile_certificate
 
@@ -366,7 +372,7 @@ def validate(path: Path, context: EvidenceContext) -> ScopedEvidence:
 
 def admit(path: Path, context: EvidenceContext) -> None:
     _ = validate(path, context)
-    if read_document(path).get('schema') == 'stateful-profile-domain-v1':
+    if read_document(path).get('schema') in ('stateful-profile-domain-v1', 'stateful-profile-extension-v1'):
         return
     if context.tag6_evidence_input is not None:
         from sim.cycle import stateful_sequence_replay_certificate as replay

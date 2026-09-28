@@ -17,6 +17,12 @@ from sim.cycle.sequence_domain import (
 )
 
 A8D32_REVISION: Final = "GUARDED_A8D32_PRODUCER_TAG4_ROW_LT4_V1"
+PROFILE_EXTENSION_REVISIONS: Final = {
+    "stateful-a8w8-d64-v1": "a8w8-d64-hp1",
+    "stateful-a4w4-d16-v1": "a4w4-d16-hp1",
+    "stateful-a4w4-d32-v1": "a4w4-d32-hp1",
+    "stateful-a4w4-d64-v1": "a4w4-d64-hp1",
+}
 
 
 class Revision(StrEnum):
@@ -24,6 +30,10 @@ class Revision(StrEnum):
     TAG5 = TAG5_REVISION
     TAG6 = TAG6_REVISION
     A8D32 = A8D32_REVISION
+    A8D64 = "stateful-a8w8-d64-v1"
+    A4D16 = "stateful-a4w4-d16-v1"
+    A4D32 = "stateful-a4w4-d32-v1"
+    A4D64 = "stateful-a4w4-d64-v1"
 
 
 class StateDomainError(ValueError):
@@ -93,6 +103,10 @@ def state_domain(profile: str, revision: str) -> StateDomain:
     except ValueError as error:
         raise DomainRevisionError(profile, revision) from error
     match selected:
+        case Revision.A8D64 | Revision.A4D16 | Revision.A4D32 | Revision.A4D64:
+            if PROFILE_EXTENSION_REVISIONS[revision] != profile:
+                raise DomainRevisionError(profile, revision)
+            limits = DomainLimits(4, max_row_occupancy_exclusive=4)
         case Revision.A8D32:
             if profile != "a8w8-d32-hp1":
                 raise DomainRevisionError(profile, revision)
