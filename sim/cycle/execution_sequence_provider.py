@@ -30,6 +30,7 @@ from sim.cycle.sequence_domain import TAG6_REVISION
 from sim.cycle.stateful_domain import (
     A8D32_REVISION,
     ACTUAL_TRACE_REVISIONS,
+    INTERLEAVED_TRACE_REVISIONS,
     PROFILE_EXTENSION_REVISIONS,
     state_domain,
 )
@@ -81,6 +82,14 @@ class _StatefulProvider:
         event_capacity = (settings.max_trace_events or EVENT_BUFFER_EVENTS) if event_sink is not None else 0
         self._event_buffer = (SequenceEvent * event_capacity)() if event_capacity else None
         self._bound = bound
+        # Interleaved certificates admit exactly their certified CPU/NPU issue sequence and nothing else.
+        self._certified_offers: tuple[int, ...] | None = None
+        if self._admission.scoped.state_domain_revision in INTERLEAVED_TRACE_REVISIONS:
+            from sim.cycle.interleaved_schedule_certificate import certified_offers
+
+            self._certified_offers = certified_offers(inputs.certificate)
+            if len(self._certified_offers) != len(bound):
+                raise StatefulProviderError("interleaved offer policy", "certified issue sequence coverage differs")
         self.requests = tuple(item.request for item in bound)
         self.completed: frozenset[ServiceId] = frozenset()
         self.invocations = 0
@@ -184,7 +193,11 @@ class _StatefulProvider:
                 offered_cycle < self.previous_resource_cycle or offered_cycle >= 1 << 64 or
                 status.has_pending or status.has_active or status.has_report or status.faulted):
             raise StatefulProviderError("offer epoch", "offer precedes native cursor/resource or state is busy")
-        if (self.admission.scoped.state_domain_revision in
+        if self._certified_offers is not None:
+            if offered_cycle != self._certified_offers[self.invocations]:
+                raise StatefulProviderError("interleaved offer policy",
+                                            "offer differs from the certified CPU/NPU issue sequence")
+        elif (self.admission.scoped.state_domain_revision in
                 (TAG6_REVISION, A8D32_REVISION, *PROFILE_EXTENSION_REVISIONS, *ACTUAL_TRACE_REVISIONS) and
                 offered_cycle != self.previous_resource_cycle):
             raise StatefulProviderError("Tag6 offer policy", "only certified back-to-back NPU offers are supported")

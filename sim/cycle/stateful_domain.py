@@ -26,6 +26,10 @@ PROFILE_EXTENSION_REVISIONS: Final = {
 ACTUAL_TRACE_REVISIONS: Final = {
     "GUARDED_A8D32_ACTUAL_EVAL_TAG5_ROW_LT5_V1": ("a8w8-d32-hp1", DomainLimits(5, max_row_occupancy_exclusive=5)),
 }
+# One certified CPU/NPU-interleaved issue sequence each; never implies back-to-back or arbitrary gaps.
+INTERLEAVED_TRACE_REVISIONS: Final = {
+    "GUARDED_A8D32_INTERLEAVED_ISSUE_TAG5_ROW_LT5_V1": ("a8w8-d32-hp1", DomainLimits(5, max_row_occupancy_exclusive=5)),
+}
 
 
 class Revision(StrEnum):
@@ -38,6 +42,7 @@ class Revision(StrEnum):
     A4D32 = "stateful-a4w4-d32-v1"
     A4D64 = "stateful-a4w4-d64-v1"
     A8D32_ACTUAL = "GUARDED_A8D32_ACTUAL_EVAL_TAG5_ROW_LT5_V1"
+    A8D32_INTERLEAVED = "GUARDED_A8D32_INTERLEAVED_ISSUE_TAG5_ROW_LT5_V1"
 
 
 class StateDomainError(ValueError):
@@ -117,6 +122,10 @@ def state_domain(profile: str, revision: str) -> StateDomain:
             limits = DomainLimits(4, max_row_occupancy_exclusive=4)
         case Revision.A8D32_ACTUAL:
             certified_profile, limits = ACTUAL_TRACE_REVISIONS[revision]
+            if certified_profile != profile:
+                raise DomainRevisionError(profile, revision)
+        case Revision.A8D32_INTERLEAVED:
+            certified_profile, limits = INTERLEAVED_TRACE_REVISIONS[revision]
             if certified_profile != profile:
                 raise DomainRevisionError(profile, revision)
         case Revision.LEGACY | Revision.TAG5 | Revision.TAG6:
