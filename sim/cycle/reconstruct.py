@@ -49,7 +49,9 @@ def reconstruct(inputs: Inputs, outputs: ReplayOutputs) -> Record:
     sources = (inputs.full_cpu.log, inputs.full_cpu.graph, inputs.full_cpu.provenance,
                inputs.potal.log, inputs.potal.graph, inputs.potal.provenance,
                inputs.npu.trace, inputs.npu.results, inputs.npu.artifacts.certificate, inputs.npu.artifacts.library) + (
-               (inputs.npu.artifacts.run_certificate,) if inputs.npu.artifacts.run_certificate is not None else ())
+               (inputs.npu.artifacts.run_certificate,) if inputs.npu.artifacts.run_certificate is not None else ()) + (
+               (inputs.npu.artifacts.transition_certificate,)
+               if inputs.npu.artifacts.transition_certificate is not None else ())
     paths = [path.resolve() for path in (*sources, outputs.results, outputs.summary)]
     require(len(set(paths)) == len(paths), 'reconstruction input/output paths must be distinct')
     require(not outputs.results.exists() and not outputs.summary.exists(), 'reconstruction outputs must be new')
@@ -61,8 +63,10 @@ def reconstruct(inputs: Inputs, outputs: ReplayOutputs) -> Record:
         copied = [snapshot.snapshot for snapshot in snapshots]
         full_cpu = CollectionFiles(*copied[:3])
         potal_cpu = CollectionFiles(*copied[3:6])
-        npu = NpuFiles(copied[6], copied[7], ReplayArtifacts(copied[9], copied[8],
-                       copied[10] if len(copied) == 11 else None))
+        optional = iter(copied[10:])
+        run_copy = next(optional) if inputs.npu.artifacts.run_certificate is not None else None
+        transition_copy = next(optional) if inputs.npu.artifacts.transition_certificate is not None else None
+        npu = NpuFiles(copied[6], copied[7], ReplayArtifacts(copied[9], copied[8], run_copy, transition_copy))
         effective = Inputs(full_cpu, potal_cpu, npu)
         full, potal = read_manifest(effective.full_cpu.graph), read_manifest(effective.potal.graph)
         compare_manifests(full, potal)
@@ -152,12 +156,15 @@ def main() -> int:
     for name in ('npu-trace', 'npu-results', 'library', 'cycle-certificate', 'summary'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--run-aware-certificate', type=Path)
+    parser.add_argument('--transition-certificate', type=Path,
+                        help='reviewed OLD->CURRENT library transition for an OLD-library base certificate')
     parser.add_argument('--output', type=Path, required=True, help='New JSONL dataset; .gz selects deterministic gzip storage')
     args = parser.parse_args()
     inputs = Inputs(CollectionFiles(args.full_cpu_log, args.full_cpu_graph, args.full_cpu_provenance),
                     CollectionFiles(args.potal_log, args.potal_graph, args.potal_provenance),
                     NpuFiles(args.npu_trace, args.npu_results, ReplayArtifacts(
-                        args.library, args.cycle_certificate, args.run_aware_certificate)))
+                        args.library, args.cycle_certificate, args.run_aware_certificate,
+                        args.transition_certificate)))
     try:
         summary = reconstruct(inputs, ReplayOutputs(args.output, args.summary))
         print(json.dumps({'status': summary['status'], 'scope': summary['scope'], 'npu_work_count': summary['npu_work_count']}))

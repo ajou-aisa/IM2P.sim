@@ -21,6 +21,7 @@ from scripts.gemmini_resolve_profile import BuildFailure
 from sim.cycle import cli
 from sim.cycle.input_snapshot import snapshot_file
 from sim.cycle.certificate_contract import read_document, validate_certificate
+from sim.cycle.library_transition import certified_library
 from sim.cycle.npu_trace_integrity import read_records, start_trace
 from sim.cycle.npu_trace_schema import INPUT_KEYS, Record, SCHEMA, VERSION, Work, integer, object_value, require
 from sim.cycle.optrace_schema import REPLAY_MAX_CYCLES
@@ -67,6 +68,7 @@ class ReplayArtifacts:
     library: Path
     certificate: Path
     run_certificate: Path | None = None
+    transition_certificate: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +119,9 @@ def verify_input_snapshots(snapshots: tuple[InputSnapshot, ...], context: str) -
 
 def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Record:
     cert = read_document(artifacts.certificate)
-    validate_certificate(cert, artifacts.library)
+    base_library, transition_sha256 = certified_library(artifacts.certificate, artifacts.library,
+                                                        artifacts.transition_certificate)
+    validate_certificate(cert, base_library)
     run_scope = (validate_run_certificate(artifacts.run_certificate, artifacts.library)
                  if artifacts.run_certificate is not None else None)
     records = read_records(trace_path)
@@ -129,6 +133,7 @@ def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Rec
                           'cycle_library_sha256': hashlib.sha256(artifacts.library.read_bytes()).hexdigest(),
                           'certificate_sha256': hashlib.sha256(artifacts.certificate.read_bytes()).hexdigest(),
                           'certificate_schema': cert['schema'], 'certificate_version': cert['version'],
+                          'transition_certificate_sha256': transition_sha256,
                           'producer_execution_kind': 'CPU_FUNCTIONAL', 'target_work_validation': 'PASS',
                           'cycle_model_validation': 'CURRENT_CERTIFIED',
                           'actual_rtl_acceptance_in_collection': 'NOT_APPLICABLE',
@@ -197,7 +202,8 @@ def _replay(trace_path: Path, artifacts: ReplayArtifacts, stream: TextIO) -> Rec
 
 def replay(trace_path: Path, artifacts: ReplayArtifacts, outputs: ReplayOutputs) -> Record:
     inputs = (trace_path, artifacts.certificate, artifacts.library) + (
-        (artifacts.run_certificate,) if artifacts.run_certificate is not None else ())
+        (artifacts.run_certificate,) if artifacts.run_certificate is not None else ()) + (
+        (artifacts.transition_certificate,) if artifacts.transition_certificate is not None else ())
     paths = tuple(path.resolve() for path in inputs) + (outputs.results.resolve(), outputs.summary.resolve())
     require(len(set(paths)) == len(paths), 'input/output paths must be distinct')
     require(not outputs.results.exists() and not outputs.summary.exists(), 'outputs must be new files')
@@ -206,11 +212,14 @@ def replay(trace_path: Path, artifacts: ReplayArtifacts, outputs: ReplayOutputs)
          tempfile.TemporaryDirectory(prefix='npu-summary-', dir=outputs.summary.parent) as summary_dir:
         snapshots = snapshot_inputs(inputs, Path(snapshot_dir))
         trace_snapshot, certificate_snapshot, library_snapshot = (snapshot.snapshot for snapshot in snapshots[:3])
-        run_snapshot = snapshots[3].snapshot if len(snapshots) == 4 else None
+        optional = iter(snapshot.snapshot for snapshot in snapshots[3:])
+        run_snapshot = next(optional) if artifacts.run_certificate is not None else None
+        transition_snapshot = next(optional) if artifacts.transition_certificate is not None else None
         result = Path(result_dir)/'result.jsonl'
         summary_path = Path(summary_dir)/'summary.json'
         with result.open('x', encoding='utf-8') as stream:
-            summary = _replay(trace_snapshot, ReplayArtifacts(library_snapshot, certificate_snapshot, run_snapshot), stream)
+            summary = _replay(trace_snapshot, ReplayArtifacts(library_snapshot, certificate_snapshot, run_snapshot,
+                                                              transition_snapshot), stream)
         verify_input_snapshots(snapshots, 'replay')
         with summary_path.open('x', encoding='utf-8') as stream:
             json.dump(summary, stream, indent=2, sort_keys=True, allow_nan=False)
@@ -226,12 +235,14 @@ def main() -> int:
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--cycle-certificate', type=Path, required=True)
     parser.add_argument('--run-aware-certificate', type=Path)
+    parser.add_argument('--transition-certificate', type=Path,
+                        help='reviewed OLD->CURRENT library transition for an OLD-library base certificate')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--summary', type=Path, required=True)
     args = parser.parse_args()
     try:
         summary = replay(args.trace, ReplayArtifacts(args.library, args.cycle_certificate,
-                                                     args.run_aware_certificate),
+                                                     args.run_aware_certificate, args.transition_certificate),
                          ReplayOutputs(args.output, args.summary))
         print(json.dumps({key: summary[key] for key in ('status', 'npu_work_count', 'isolated_cycle_sum')}))
     except (OSError, ValueError, BuildFailure, RuntimeError) as error:

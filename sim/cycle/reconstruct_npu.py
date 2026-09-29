@@ -10,6 +10,7 @@ from scripts.gemmini_replay_contract import canonical_json, compatible, hardware
 from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.certificate_contract import read_document, validate_certificate
 from sim.cycle.cli import RESULT_FIELDS
+from sim.cycle.library_transition import certified_library
 from sim.cycle.npu_trace import ReplayArtifacts, work_binding
 from sim.cycle.npu_trace_schema import Record, SEMANTIC_FIELDS, SemanticKey, integer, object_value, require, semantic_key
 from sim.cycle.npu_trace_integrity import read_records, start_trace
@@ -35,7 +36,9 @@ class NpuJoin:
 
     def write(self, stream: TextIO) -> Record:
         cert = read_document(self.files.artifacts.certificate)
-        validate_certificate(cert, self.files.artifacts.library)
+        base_library, transition_hash = certified_library(self.files.artifacts.certificate, self.files.artifacts.library,
+                                                          self.files.artifacts.transition_certificate)
+        validate_certificate(cert, base_library)
         run_certificate = self.files.artifacts.run_certificate
         run_scope = (validate_run_certificate(run_certificate, self.files.artifacts.library)
                      if run_certificate is not None else None)
@@ -94,7 +97,8 @@ class NpuJoin:
                 extra = {'profile', 'cycle_library_sha256', 'certificate_sha256', 'certificate_schema', 'certificate_version',
                          'producer_execution_kind', 'target_work_validation', 'cycle_model_validation',
                          'actual_rtl_acceptance_in_collection', 'accounting_kind', 'cycle_unit', 'trace_sequence',
-                         'run_view_sha256', 'run_aware_certificate_sha256', 'run_aware_certificate_scope', 'modeled'}
+                         'run_view_sha256', 'run_aware_certificate_sha256', 'run_aware_certificate_scope', 'modeled',
+                         'transition_certificate_sha256'}
                 fields(result, set(record) | extra)
                 require(result['schema'] == 'im2p-npu-cycle-result' and
                         integer(result, 'version') == record['version'] and
@@ -105,8 +109,10 @@ class NpuJoin:
                         (run_hash, run_scope), 'NPU result run-aware certificate mismatch')
                 expected = {name: value for name, value in record.items() if name not in ('schema', 'kind', 'sequence')}
                 require(canonical_json({name: result[name] for name in expected}) == canonical_json(expected), 'NPU work/result field mismatch')
-                require((result['profile'], result['certificate_sha256'], result['cycle_library_sha256']) ==
-                        (state.run.profile, certificate_hash, library_hash), 'NPU result profile/certificate/library mismatch')
+                require((result['profile'], result['certificate_sha256'], result['cycle_library_sha256'],
+                         result['transition_certificate_sha256']) ==
+                        (state.run.profile, certificate_hash, library_hash, transition_hash),
+                        'NPU result profile/certificate/library/transition mismatch')
                 require(result['certificate_schema'] == cert['schema'] and result['certificate_version'] == cert['version'] and
                         result['cycle_model_validation'] == 'CURRENT_CERTIFIED' and result['target_work_validation'] == 'PASS' and
                         result['actual_rtl_acceptance_in_collection'] == 'NOT_APPLICABLE' and result['producer_execution_kind'] == 'CPU_FUNCTIONAL' and
@@ -167,6 +173,7 @@ class NpuJoin:
         return {'npu_work_count': self.counts['npu_work_count'], 'target_npu_operation_count': len(self.targets),
                 'potal_host_count': self.counts['potal_host_count'], 'functional_emulation_count': self.counts['functional_emulation_count'],
                 'certificate_sha256': certificate_hash, 'cycle_library_sha256': library_hash,
+                'transition_certificate_sha256': transition_hash,
                 'run_aware_certificate_sha256': run_hash, 'run_aware_certificate_scope': run_scope,
                 'residual_work_revision': state.run.residual_work_revision,
                 'npu_work_result_bijection': 'PASS', 'host_stage_measurement_coverage': 'PASS', 'structural_dependency_dag': 'PASS'}
