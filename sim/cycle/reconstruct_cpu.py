@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
@@ -9,8 +10,10 @@ import sqlite3
 
 from scripts.gemmini_replay_contract import contract_digest
 from sim.cycle.npu_trace_schema import Record, SemanticKey, integer, object_value, require, semantic_key, text, unique_pairs
-from sim.cycle.reconstruct_graph import Manifest, array, json_records, sha256
-from sim.cycle.reconstruct_timing import NAMED_TIMING_FIELDS, duration_sample, validate_named_timing, valid_measurement
+from sim.cycle.reconstruct_graph import Manifest, array, sha256
+from sim.cycle.strict_json import strict_loads, strict_records
+from sim.cycle.reconstruct_timing import (HOST_CORE_FIELDS, NAMED_TIMING_FIELDS, duration_sample, validate_named_timing,
+                                         valid_measurement)
 
 CPU_STAGE_ALIASES = {'SOFT_MAX': 'cpu.softmax', 'SOFT_MAX_BACK': 'cpu.softmax_back'}
 
@@ -85,8 +88,13 @@ def verify_provenance(files: CollectionFiles, role: str, npu_trace: Path | None 
     return document
 
 
+@lru_cache(maxsize=1 << 16)
 def encoded_key(key: SemanticKey) -> str:
-    return json.dumps(key, separators=(',', ':'))
+    return _COMPACT.encode(key)
+
+
+_COMPACT = json.JSONEncoder(separators=(',', ':'))
+_SORTED = json.JSONEncoder(sort_keys=True)
 
 
 class CpuIndex:
@@ -102,7 +110,7 @@ class CpuIndex:
     def load(self, path: Path, manifest: Manifest) -> None:
         role = text(manifest.run, 'source_role')
         canonical_batch: list[tuple[str, int, int, int]] = []
-        for source_line, record in enumerate(json_records(path), 1):
+        for source_line, record in enumerate(strict_records(path), 1):
             if record.get('schema') is None:
                 require(record.get('kind') in ('cpu', 'segment') and
                         record.get('duration_role') == 'OBSERVATION_ONLY' and
@@ -169,10 +177,10 @@ class CpuIndex:
             try:
                 keys = ('source', 'unit', 'start', 'end', 'delta', 'valid', 'worker_id', 'worker_count',
                         'reason', 'sample_reason', 'op', 'cpu_service', 'cpu_service_exclusion',
-                        'duration_role', 'operation_success', *NAMED_TIMING_FIELDS)
+                        'duration_role', 'operation_success', *NAMED_TIMING_FIELDS, *HOST_CORE_FIELDS)
                 stored: Record = {**{name: record[name] for name in keys if name in record}, 'source_line': source_line}
                 self.db.execute('INSERT INTO samples VALUES(?,?,?,?,?,?,?)',
-                                (role, encoded_key(key), op, worker, workers, host, json.dumps(stored, sort_keys=True)))
+                                (role, encoded_key(key), op, worker, workers, host, _SORTED.encode(stored)))
             except sqlite3.IntegrityError as error:
                 raise ValueError('duplicate/ambiguous CPU interval identity') from error
         if canonical_batch:
@@ -194,7 +202,7 @@ class CpuIndex:
         values = list(self.db.execute('SELECT body FROM samples WHERE role=? AND semantic=? AND host IS NULL ORDER BY stage,worker',
                                      ('FULL_CPU', encoded_key(key))))
         require(bool(values), 'missing FullCPU ordinary reference cost')
-        records = [object_value(json.loads(row[0], object_pairs_hook=unique_pairs)) for row in values]
+        records = [object_value(strict_loads(row[0])) for row in values]
         groups: defaultdict[str, list[Record]] = defaultdict(list)
         for record in records:
             require(record['duration_role'] == 'ORDINARY_CPU_REFERENCE', 'ordinary cost is not FullCPU reference')
@@ -209,12 +217,14 @@ class CpuIndex:
     def host(self, record: Record) -> Record | None:
         identity = integer(record, 'host_stage_id')
         row = self.db.execute('SELECT semantic,body FROM samples WHERE role=? AND host=?', ('POTAL_COLLECTION', identity)).fetchone()
+        body: Record = {}
         if row is not None:
             require(row[0] == encoded_key(semantic_key(record)), 'host measurement semantic identity mismatch')
-            require(object_value(json.loads(row[1], object_pairs_hook=unique_pairs))['op'] == record['stage_name'], 'host stage name mismatch')
+            body = object_value(strict_loads(row[1]))  # the stored body is decoded once for every check below
+            require(body['op'] == record['stage_name'], 'host stage name mismatch')
         if record['execution_class'] == 'FUNCTIONAL_EMULATION':
             if row is not None:
-                observation = object_value(json.loads(row[1], object_pairs_hook=unique_pairs))
+                observation = body
                 require(observation['duration_role'] == 'OBSERVATION_ONLY' and observation.get('cpu_service') is False,
                         'functional emulation claimed target CPU cost')
         else:
@@ -222,7 +232,7 @@ class CpuIndex:
                     f'missing measured PoTal host stage id={identity} stage={record.get("stage_name")}')
             if row is None: raise ValueError('missing host measurement')
             require(row[0] == encoded_key(semantic_key(record)), 'host measurement semantic identity mismatch')
-            measurement = object_value(json.loads(row[1], object_pairs_hook=unique_pairs))
+            measurement = body
             require(measurement['duration_role'] == 'POTAL_HOST' and measurement['op'] == record['stage_name'],
                     'host stage measurement ownership/name mismatch')
             valid_measurement(measurement)

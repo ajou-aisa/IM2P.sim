@@ -36,8 +36,12 @@ from sim.cycle.input_snapshot import (
     SQLITE_WORKING_SET_FACTOR,
     require_storage_budget,
 )
+from sim.cycle.npu_result_admission import ResultAdmission, certified_results
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
-from sim.cycle.reconstruct_graph import array, json_records, sha256
+from sim.cycle.reconstruct_graph import array, sha256
+from sim.cycle.strict_json import strict_records
+
+_COMPACT = json.JSONEncoder(separators=(',', ':'))
 
 
 class ExecutionStore:
@@ -57,11 +61,11 @@ class ExecutionStore:
         body = node_record(node)
         body['dependencies'] = []
         self.db.execute('INSERT INTO nodes VALUES(?,?,?,?,0)',
-                        (node.identity, node.kind.value, node.operation, json.dumps(body, separators=(',', ':'))))
+                        (node.identity, node.kind.value, node.operation, _COMPACT.encode(body)))
         self.edges(node.identity, node.dependencies)
         self.count += 1
         if service is not None:
-            self.db.execute('INSERT INTO services VALUES(?,?)', (node.identity, json.dumps(service, separators=(',', ':'))))
+            self.db.execute('INSERT INTO services VALUES(?,?)', (node.identity, _COMPACT.encode(service)))
             self.service_count += 1
 
     def edges(self, identity: NodeId, dependencies: tuple[Dependency, ...]) -> None:
@@ -87,7 +91,8 @@ class ExecutionStore:
         ensure(visited == self.count, 'cyclic SQLite execution graph')
 
 
-def adapt_stream(files: AdapterFiles, output: Path) -> Record:
+def adapt_stream(files: AdapterFiles, output: Path, admit_results: ResultAdmission = certified_results) -> Record:
+    """Streaming execution IR store; NPU results are admitted by `admit_results` (CURRENT_CERTIFIED by default)."""
     contract = read_document(files.lifecycle)
     validate_lifecycle_contract(contract)
     ensure(not output.exists(), 'execution store output must be new')
@@ -100,7 +105,7 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
         ensure(sha256(path) == expected, 'lifecycle input binding mismatch')
     operations: dict[str, Record] = {}
     pipeline_rows: dict[str, Record] = {}
-    for row in json_records(files.dataset):
+    for row in strict_records(files.dataset):
         if row['kind'] == 'OPERATION_CONTAINER':
             identity = text(row, 'node_id')
             ensure(identity not in operations, 'duplicate operation container')
@@ -122,10 +127,9 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
     results: dict[str, NpuWork] = {}
     result_rows: dict[str, Record] = {}
     calls: set[str] = set()
-    for row in json_records(files.npu_results):
+    for row in admit_results(strict_records(files.npu_results), 'certified FULL/run-aware NPU results required'):
         ensure(row.get('scope') in (('full', 'residual_compact', 'stripe') if contract['version'] == 2
-                                    else ('full', 'residual_compact')) and
-               row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
+                                    else ('full', 'residual_compact')),
                'certified FULL/run-aware NPU results required')
         identity, call = 'npu:' + str(integer(row, 'work_id')), str(integer(row, 'call_id'))
         ensure(identity not in results and call not in calls, 'duplicate work/call result')
@@ -153,7 +157,7 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
                 store.add(Node(begin, Kind.OP_ENTER, identity, phase, 0, incoming))
                 store.add(Node(end, Kind.OP_EXIT, identity, phase, 0, ()))
                 available[begin], available[end] = Kind.OP_ENTER, Kind.OP_EXIT
-            for row in json_records(files.dataset):
+            for row in strict_records(files.dataset):
                 counts['input_record_count'] += 1
                 if row['kind'] == 'OPERATION_CONTAINER':
                     continue
@@ -224,7 +228,7 @@ def adapt_stream(files: AdapterFiles, output: Path) -> Record:
             if files.application is not None:
                 declaration = object_value(contract['application'])
                 ensure(declaration['sha256'] == sha256(files.application), 'application binding mismatch')
-                application = project_application(available, ApplicationSource(tuple(json_records(files.application)), declaration))
+                application = project_application(available, ApplicationSource(tuple(strict_records(files.application)), declaration))
                 for node in application.nodes:
                     service = application.services.get(ServiceId(node.identity))
                     stored = None if service is None else services_record(Services({ServiceId(node.identity): service}, {}))

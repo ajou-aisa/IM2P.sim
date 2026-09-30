@@ -15,8 +15,44 @@ from sim.cycle.npu_trace import ReplayArtifacts, work_binding
 from sim.cycle.npu_trace_schema import Record, SEMANTIC_FIELDS, SemanticKey, integer, object_value, require, semantic_key
 from sim.cycle.npu_trace_integrity import read_records, start_trace
 from sim.cycle.reconstruct_cpu import CpuIndex, duration_sample, encoded_key
-from sim.cycle.reconstruct_graph import Manifest, array, emit, fields, json_records, service_identity, sha256
+from sim.cycle.reconstruct_graph import Manifest, array, fields, service_identity, sha256
+from sim.cycle.strict_json import record_line, strict_records
 from sim.cycle.run_aware_certificate import validate_run_certificate
+
+
+@dataclass(frozen=True, slots=True)
+class NpuAuthority:
+    """Admitted identity of the NPU results; the join core compares results to it and never reads certificates.
+
+    `hardware_contracts` is the admitted per-profile contract map (None when the authority has none; the repository
+    profile contract is always checked). `residual_admitted` says whether run-aware residual works are admitted.
+    `summary_extra` is merged into the join summary (empty for the certified authority, whose schema is unchanged)."""
+    validation: str
+    certificate_sha256: str
+    certificate_schema: JsonValue
+    certificate_version: JsonValue
+    library_sha256: str
+    transition_certificate_sha256: str | None
+    run_aware_certificate_sha256: str | None
+    run_aware_certificate_scope: str | None
+    residual_admitted: bool
+    hardware_contracts: Record | None
+    summary_extra: Record
+
+
+def certified_authority(artifacts: ReplayArtifacts) -> NpuAuthority:
+    """CURRENT_CERTIFIED admission: the reviewed certificate chain must name these library bytes."""
+    cert = read_document(artifacts.certificate)
+    base_library, transition_hash = certified_library(artifacts.certificate, artifacts.library,
+                                                      artifacts.transition_certificate)
+    validate_certificate(cert, base_library)
+    run_certificate = artifacts.run_certificate
+    run_scope = (validate_run_certificate(run_certificate, artifacts.library)
+                 if run_certificate is not None else None)
+    run_hash = sha256(run_certificate) if run_certificate is not None else None
+    return NpuAuthority('CURRENT_CERTIFIED', sha256(artifacts.certificate), cert['schema'], cert['version'],
+                        sha256(artifacts.library), transition_hash, run_hash, run_scope,
+                        run_scope == 'PRODUCTION_GENERATED', object_value(cert['hardware_contracts']), {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,22 +71,20 @@ class NpuJoin:
         self.call_works: dict[int, str] = {}
 
     def write(self, stream: TextIO) -> Record:
-        cert = read_document(self.files.artifacts.certificate)
-        base_library, transition_hash = certified_library(self.files.artifacts.certificate, self.files.artifacts.library,
-                                                          self.files.artifacts.transition_certificate)
-        validate_certificate(cert, base_library)
-        run_certificate = self.files.artifacts.run_certificate
-        run_scope = (validate_run_certificate(run_certificate, self.files.artifacts.library)
-                     if run_certificate is not None else None)
-        run_hash = sha256(run_certificate) if run_certificate is not None else None
-        certificate_hash, library_hash = sha256(self.files.artifacts.certificate), sha256(self.files.artifacts.library)
+        return self.write_admitted(stream, certified_authority(self.files.artifacts))
+
+    def write_admitted(self, stream: TextIO, authority: NpuAuthority) -> Record:
+        """Authority-independent NPU join: results must carry exactly the admitted authority identity."""
+        certificate_hash, library_hash = authority.certificate_sha256, authority.library_sha256
+        transition_hash = authority.transition_certificate_sha256
+        run_hash, run_scope = authority.run_aware_certificate_sha256, authority.run_aware_certificate_scope
         records = read_records(self.files.trace)
         state = start_trace(records)
         require(state.run.run_config_id == self.graph.run['run_config_id'], 'NPU/graph configuration mismatch')
-        contracts = object_value(cert['hardware_contracts'])
-        compatible(state.run.contract, object_value(contracts.get(state.run.profile)))
+        if authority.hardware_contracts is not None:
+            compatible(state.run.contract, object_value(authority.hardware_contracts.get(state.run.profile)))
         compatible(state.run.contract, hardware_contract(state.run.profile))
-        results = json_records(self.files.results)
+        results = strict_records(self.files.results)
         phase_index = 0
         for record in records:
             work = state.consume(record)
@@ -89,7 +123,7 @@ class NpuJoin:
                     raise ValueError('NPU work was not admitted by trace validator')
                 require(work.provenance != 'residual' or bool(work.runs),
                         'legacy block-local residual trace cannot be upgraded to run-aware join')
-                require(work.provenance != 'residual' or run_scope == 'PRODUCTION_GENERATED',
+                require(work.provenance != 'residual' or authority.residual_admitted,
                         'production-generated run-aware certificate required for current residual join')
                 result = next(results, None)
                 require(result is not None, 'missing NPU model result')
@@ -113,15 +147,16 @@ class NpuJoin:
                          result['transition_certificate_sha256']) ==
                         (state.run.profile, certificate_hash, library_hash, transition_hash),
                         'NPU result profile/certificate/library/transition mismatch')
-                require(result['certificate_schema'] == cert['schema'] and result['certificate_version'] == cert['version'] and
-                        result['cycle_model_validation'] == 'CURRENT_CERTIFIED' and result['target_work_validation'] == 'PASS' and
+                require(result['certificate_schema'] == authority.certificate_schema and
+                        result['certificate_version'] == authority.certificate_version and
+                        result['cycle_model_validation'] == authority.validation and result['target_work_validation'] == 'PASS' and
                         result['actual_rtl_acceptance_in_collection'] == 'NOT_APPLICABLE' and result['producer_execution_kind'] == 'CPU_FUNCTIONAL' and
                         result['accounting_kind'] == 'isolated-work-accounting' and result['cycle_unit'] == 'cycles', 'invalid NPU result scope')
                 modeled = object_value(result['modeled']); fields(modeled, set(RESULT_FIELDS))
                 for name in RESULT_FIELDS: integer(modeled, name)
                 require(modeled['logical_work_count'] == 1 and integer(modeled, 'total_cycles') > 0 and
                         integer(modeled, 'done_cycle') - integer(modeled, 'start_cycle') == modeled['total_cycles'], 'invalid model endpoints/counters')
-                emit(stream, {'kind': 'SERVICE', 'node_class': 'TARGET_NPU', 'duration_source': 'NPU_MODEL', 'resource_kind': 'NPU',
+                stream.write(record_line({'kind': 'SERVICE', 'node_class': 'TARGET_NPU', 'duration_source': 'NPU_MODEL', 'resource_kind': 'NPU',
                               'duration': {'source': 'NPU_MODEL', 'unit': 'cycles', 'cycles': modeled['total_cycles']},
                               'source_record': {'input': 'npu_results', 'work_id': record['work_id'],
                                                 'sequence': result['sequence'], 'trace_sequence': record['sequence']},
@@ -131,12 +166,12 @@ class NpuJoin:
                               'node_id': 'npu:' + str(record['work_id']), 'is_execution_node': True,
                               'operation_node_id': operation_node,
                               'dependencies': list[JsonValue](['call:' + str(record['call_id']) + ':INVOKE'] +
-                                              ['host:' + str(stage) for stage in array(record['required_host_stage_ids'])])})
+                                              ['host:' + str(stage) for stage in array(record['required_host_stage_ids'])])}))
                 self.call_works[integer(record, 'call_id')] = 'npu:' + str(record['work_id'])
                 self.counts['npu_work_count'] += 1
             elif kind == 'HOST_STAGE' and record['event'] == 'BEGIN':
                 measurement = self.cpu.host(record)
-                emit(stream, {'kind': 'SERVICE', 'node_class': record['execution_class'],
+                stream.write(record_line({'kind': 'SERVICE', 'node_class': record['execution_class'],
                               'duration_source': 'POTAL_COLLECTION' if measurement is not None else 'NONE',
                               'resource_kind': 'CPU', 'duration': duration_sample(measurement) if measurement is not None else None,
                               'cost_included': measurement is not None, 'host_stage_id': record['host_stage_id'],
@@ -145,7 +180,7 @@ class NpuJoin:
                               'node_id': 'host:' + str(record['host_stage_id']), 'is_execution_node': True,
                               'operation_node_id': operation_node,
                               'dependencies': list[JsonValue](sorted(set(predecessors + ['npu:' + str(work) for work in array(record['required_work_ids'])] +
-                                                         ['host:' + str(stage) for stage in array(record['required_host_stage_ids'])])))})
+                                                         ['host:' + str(stage) for stage in array(record['required_host_stage_ids'])])))}))
                 self.counts[str(record['execution_class']).lower() + '_count'] += 1
             elif kind == 'NPU_CALL':
                 identity = integer(record, 'call_id')
@@ -153,12 +188,12 @@ class NpuJoin:
                 dependencies = [self.call_steps[identity]] if identity in self.call_steps else predecessors
                 dependencies += ['npu:' + str(work) for work in array(record['required_work_ids'])]
                 if record['stage'] == 'PUBLISH': dependencies.append(self.call_works[identity])
-                emit(stream, {'kind': 'CALL_BOUNDARY', 'node_class': 'TARGET_NPU', 'duration_source': 'NONE',
+                stream.write(record_line({'kind': 'CALL_BOUNDARY', 'node_class': 'TARGET_NPU', 'duration_source': 'NONE',
                               'resource_kind': 'STRUCTURAL', 'duration': None, 'call_id': record['call_id'],
                               'call_kind': record['call_kind'], 'stage': record['stage'], 'trace_sequence': record['sequence'],
                               **service_identity(key, self.graph.nodes[key]), 'producer_operation_id': record['operation_id'],
                               'node_id': node_id, 'is_execution_node': False, 'operation_node_id': operation_node,
-                              'dependencies': list[JsonValue](sorted(set(dependencies)))})
+                              'dependencies': list[JsonValue](sorted(set(dependencies)))}))
                 if record['stage'] == 'CONTINUATION':
                     self.call_steps.pop(identity, None); self.call_works.pop(identity, None)
                 else:
@@ -176,4 +211,5 @@ class NpuJoin:
                 'transition_certificate_sha256': transition_hash,
                 'run_aware_certificate_sha256': run_hash, 'run_aware_certificate_scope': run_scope,
                 'residual_work_revision': state.run.residual_work_revision,
-                'npu_work_result_bijection': 'PASS', 'host_stage_measurement_coverage': 'PASS', 'structural_dependency_dag': 'PASS'}
+                'npu_work_result_bijection': 'PASS', 'host_stage_measurement_coverage': 'PASS', 'structural_dependency_dag': 'PASS',
+                **authority.summary_extra}

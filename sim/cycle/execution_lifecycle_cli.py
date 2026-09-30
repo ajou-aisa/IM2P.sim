@@ -11,6 +11,7 @@ from sim.cycle.collection_native import validate_receipt
 from sim.cycle.execution_cli import publish
 from sim.cycle.execution_ir import ensure
 from sim.cycle.execution_lifecycle import project_lifecycle
+from sim.cycle.npu_result_admission import ResultAdmission, certified_results
 from sim.cycle.npu_trace_schema import Record, integer, object_value
 from sim.cycle.reconstruct_graph import array, json_records, read_manifest, sha256
 from scripts.gemmini_resolve_profile import JsonValue
@@ -39,7 +40,8 @@ def producer_payload(row: Record) -> Record:
             if key not in ('schema', 'version', 'kind', 'sequence')}
 
 
-def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
+def build(files: LifecycleFiles, scenario: CpuScenario, admit_results: ResultAdmission = certified_results) -> Record:
+    """Producer lifecycle projection; NPU results are admitted by `admit_results` (CURRENT_CERTIFIED by default)."""
     proof = read_document(files.provenance)
     ensure(proof.get('schema') == 'im2p-collection-provenance' and proof.get('version') == 2 and
            proof.get('source_role') == 'POTAL_COLLECTION' and proof.get('collection_success') is True and
@@ -101,9 +103,8 @@ def build(files: LifecycleFiles, scenario: CpuScenario) -> Record:
     slots: Record = {}
     submission: list[str] = []
     work_rows: dict[int, Record] = {}
-    for row in json_records(files.npu_results):
-        ensure(row.get('schema') == 'im2p-npu-cycle-result' and row.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
-               'current official NPU results required')
+    for row in admit_results(json_records(files.npu_results), 'current official NPU results required'):
+        ensure(row.get('schema') == 'im2p-npu-cycle-result', 'current official NPU results required')
         ensure(row['scope'] in (('stripe', 'residual_compact') if pipeline else ('full', 'residual_compact')) and
                (pipeline or row['host_slot'] is None), 'NPU result scope differs from producer lifecycle')
         call = str(integer(row, 'call_id'))

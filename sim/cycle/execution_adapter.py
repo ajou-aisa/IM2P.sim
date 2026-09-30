@@ -12,6 +12,7 @@ from sim.cycle.execution_application import ApplicationSource, add_application
 from sim.cycle.execution_ir import Dependency, ExecutionIR, Kind, Milestone, Node, NodeId, ResourceId, ServiceId, ensure
 from sim.cycle.execution_pipeline import project_pipeline
 from sim.cycle.execution_services import CpuService, NpuWork, Services, bind_cpu_resource, cpu_service
+from sim.cycle.npu_result_admission import ResultAdmission, certified_results
 from sim.cycle.npu_trace_schema import Record, integer, object_value, text
 from sim.cycle.reconstruct_graph import array, fields, json_records, sha256
 
@@ -24,11 +25,11 @@ class AdapterFiles:
     application: Path | None = None
 
 
-def adapt(files: AdapterFiles) -> tuple[ExecutionIR, Services]:
+def adapt(files: AdapterFiles, admit_results: ResultAdmission = certified_results) -> tuple[ExecutionIR, Services]:
     lifecycle = read_document(files.lifecycle)
     ensure(lifecycle.get('dataset_sha256') == sha256(files.dataset), 'dataset/lifecycle binding mismatch')
     ensure(lifecycle.get('npu_results_sha256') == sha256(files.npu_results), 'NPU result/lifecycle binding mismatch')
-    ir, services = adapt_records(json_records(files.dataset), lifecycle, json_records(files.npu_results))
+    ir, services = adapt_records(json_records(files.dataset), lifecycle, json_records(files.npu_results), admit_results)
     if files.application is not None:
         application = object_value(lifecycle['application'])
         ensure(application.get('sha256') == sha256(files.application), 'application/lifecycle binding mismatch')
@@ -60,7 +61,9 @@ def validate_lifecycle_contract(contract: Record) -> None:
                    for value in binding.values()), 'producer lifecycle artifact binding missing')
 
 
-def adapt_records(rows: Iterable[Record], contract: Record, results: Iterable[Record]) -> tuple[ExecutionIR, Services]:
+def adapt_records(rows: Iterable[Record], contract: Record, results: Iterable[Record],
+                  admit_results: ResultAdmission = certified_results) -> tuple[ExecutionIR, Services]:
+    """Execution IR from a dataset and lifecycle; NPU results are admitted by `admit_results`."""
     validate_lifecycle_contract(contract)
     indexed: dict[str, Record] = {}
     for row in rows:
@@ -79,11 +82,10 @@ def adapt_records(rows: Iterable[Record], contract: Record, results: Iterable[Re
     ensure(len(set(submission)) == len(submission), 'duplicate target submission order')
     result_map: dict[ServiceId, NpuWork] = {}
     result_rows: dict[str, Record] = {}
-    for result in results:
+    for result in admit_results(results, 'NPU model result is not certified'):
         identity = ServiceId('npu:' + str(integer(result, 'work_id')))
         ensure(identity not in result_map, 'duplicate NPU model result')
-        ensure(result.get('schema') == 'im2p-npu-cycle-result' and result.get('cycle_model_validation') == 'CURRENT_CERTIFIED',
-               'NPU model result is not certified')
+        ensure(result.get('schema') == 'im2p-npu-cycle-result', 'NPU model result is not certified')
         result_map[identity] = NpuWork(ServiceId(identity), text(result, 'run_view_sha256'), text(result, 'profile'))
         result_rows[str(identity)] = result
     npu_rows = {key for key, row in indexed.items() if row.get('node_class') == 'TARGET_NPU' and row['kind'] == 'SERVICE'}

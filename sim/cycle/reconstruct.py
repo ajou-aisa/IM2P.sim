@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Callable
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
 import json
@@ -33,8 +34,9 @@ from scripts.gemmini_resolve_profile import JsonValue
 from sim.cycle.npu_trace import ReplayArtifacts, ReplayOutputs, snapshot_inputs, verify_input_snapshots
 from sim.cycle.npu_trace_schema import Record, integer, object_value, require
 from sim.cycle.reconstruct_cpu import CollectionFiles, CpuIndex, duration_sample, encoded_key, verify_provenance
-from sim.cycle.reconstruct_graph import compare_manifests, emit, read_manifest, service_identity, sha256
-from sim.cycle.reconstruct_npu import NpuFiles, NpuJoin
+from sim.cycle.reconstruct_graph import compare_manifests, read_manifest, service_identity, sha256
+from sim.cycle.strict_json import record_line
+from sim.cycle.reconstruct_npu import NpuAuthority, NpuFiles, NpuJoin, certified_authority
 from sim.cycle.reconstruct_pairing import validate_forced_phases, validate_source_pair
 
 
@@ -45,7 +47,9 @@ class Inputs:
     npu: NpuFiles
 
 
-def reconstruct(inputs: Inputs, outputs: ReplayOutputs) -> Record:
+def reconstruct(inputs: Inputs, outputs: ReplayOutputs,
+                admit: Callable[[ReplayArtifacts], NpuAuthority] = certified_authority) -> Record:
+    """Three-source join; `admit` turns the (snapshotted) NPU artifacts into the admitted result authority."""
     sources = (inputs.full_cpu.log, inputs.full_cpu.graph, inputs.full_cpu.provenance,
                inputs.potal.log, inputs.potal.graph, inputs.potal.provenance,
                inputs.npu.trace, inputs.npu.results, inputs.npu.artifacts.certificate, inputs.npu.artifacts.library) + (
@@ -96,22 +100,22 @@ def reconstruct(inputs: Inputs, outputs: ReplayOutputs) -> Record:
                 predecessors = ['operation:' + encoded_key(source) for source in potal.edges[key]]
                 if node_class == 'ORDINARY_CPU':
                     vector = cpu.ordinary(key)
-                    emit(stream, {'kind': 'SERVICE', 'node_class': node_class, 'duration_source': 'FULL_CPU', 'resource_kind': 'CPU',
+                    stream.write(record_line({'kind': 'SERVICE', 'node_class': node_class, 'duration_source': 'FULL_CPU', 'resource_kind': 'CPU',
                                   'duration': {'worker_intervals': [duration_sample(sample) for sample in vector],
                                                'aggregation': 'PER_WORKER_NOT_NODE_LATENCY'},
                                   'cost_included': True, 'potal_ordinary_measurements': 'OBSERVATION_ONLY', **identity,
                                   'node_id': 'ordinary:' + encoded_key(key), 'is_execution_node': True,
-                                  'operation_node_id': operation_node, 'dependencies': list[JsonValue](predecessors)})
+                                  'operation_node_id': operation_node, 'dependencies': list[JsonValue](predecessors)}))
                 elif node_class == 'EXCLUDED':
-                    emit(stream, {'kind': 'SERVICE', 'node_class': node_class, 'duration_source': 'NONE',
+                    stream.write(record_line({'kind': 'SERVICE', 'node_class': node_class, 'duration_source': 'NONE',
                                   'resource_kind': 'STRUCTURAL', 'duration': None, 'cost_included': False,
                                   'reason': 'EXCLUDED_GRAPH_NODE', **identity, 'node_id': 'excluded:' + encoded_key(key),
-                                  'is_execution_node': True, 'operation_node_id': operation_node, 'dependencies': list[JsonValue](predecessors)})
-                emit(stream, {'kind': 'OPERATION_CONTAINER', 'node_class': node_class, 'duration_source': 'NONE',
+                                  'is_execution_node': True, 'operation_node_id': operation_node, 'dependencies': list[JsonValue](predecessors)}))
+                stream.write(record_line({'kind': 'OPERATION_CONTAINER', 'node_class': node_class, 'duration_source': 'NONE',
                               'resource_kind': 'STRUCTURAL', 'duration': None, **identity,
                               'node_id': operation_node, 'is_execution_node': False, 'dependencies': list[JsonValue](predecessors),
-                              'reason': 'REPLACED_BY_NPU' if node_class == 'TARGET_NPU' else 'LOGICAL_OPERATION_METADATA'})
-            npu = NpuJoin(effective.npu, potal, cpu).write(stream)
+                              'reason': 'REPLACED_BY_NPU' if node_class == 'TARGET_NPU' else 'LOGICAL_OPERATION_METADATA'}))
+            npu = NpuJoin(effective.npu, potal, cpu).write_admitted(stream, admit(effective.npu.artifacts))
             execution_counts: Record = {'ORDINARY_CPU': counts['ORDINARY_CPU'], 'POTAL_HOST': npu['potal_host_count'],
                 'TARGET_NPU': npu['npu_work_count'], 'FUNCTIONAL_EMULATION': npu['functional_emulation_count'],
                 'EXCLUDED': counts['EXCLUDED'], 'UNSUPPORTED': 0}

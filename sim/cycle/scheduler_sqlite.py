@@ -5,13 +5,24 @@ import json
 import os
 import sqlite3
 import tempfile
+from array import array
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import assert_never
+from typing import Final, TypeAlias, assert_never, cast
 
-from sim.cycle.execution_ir import Kind, Milestone, Node, ensure, parse_ir
+from sim.cycle.execution_ir import (
+    Kind,
+    Milestone,
+    Node,
+    NodeId,
+    ResourceId,
+    ServiceId,
+    ensure,
+    parse_ir,
+)
 from sim.cycle.execution_sequence_provider import (
     DiagnosticStatefulProvider,
     StatefulSequenceProvider,
@@ -23,10 +34,11 @@ from sim.cycle.input_snapshot import (
     require_storage_budget,
 )
 from sim.cycle.npu_trace import snapshot_inputs, verify_input_snapshots
-from sim.cycle.npu_trace_schema import Record, integer, object_value, unique_pairs
+from sim.cycle.npu_trace_schema import Record, integer, object_value
 from sim.cycle.reconstruct_graph import sha256
 from sim.cycle.scheduler import (
     Scenario,
+    ScheduledNode,
     ServiceExecutor,
     TimingProvider,
     complete_provider,
@@ -37,6 +49,18 @@ from sim.cycle.scheduler import (
     validate_environment,
     validation_scope,
 )
+from sim.cycle.strict_json import strict_loads
+
+Queue: TypeAlias = list[tuple[int, str, int, Node]]
+# Receives every scheduled node once, in schedule order, after its row is stored: (ordinal, node, endpoints, row).
+Observer: TypeAlias = Callable[[int, Node, ScheduledNode, Record], None]
+FIRE_ORDER: Final = tuple(Milestone)
+SLOT: Final = {milestone.value: slot for slot, milestone in enumerate(FIRE_ORDER)}
+KINDS: Final = tuple(Kind)
+KIND_CODE: Final = {kind: code for code, kind in enumerate(KINDS)}
+RESULT_BATCH: Final = 2048
+SQLITE_INTEGER_LIMIT: Final = 1 << 63
+_COMPACT = json.JSONEncoder(separators=(',', ':'))
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +70,7 @@ class SqliteScheduleInputs:
 
 
 def _document(body: str) -> Record:
-    return object_value(json.loads(body, object_pairs_hook=unique_pairs))
+    return object_value(strict_loads(body))
 
 
 def _same_record(actual: Record, expected: Record) -> bool:
@@ -61,41 +85,125 @@ def _node(body: str) -> Node:
                      'source_sha256': 'node-shape-validation-only', 'nodes': [record]}).nodes[0]
 
 
-def _prepare(database: sqlite3.Connection) -> tuple[int, tuple[str, ...]]:
+class _Graph:
+    """The validated IR as columns (no object per node) with CSR child lists per (parent, milestone).
+
+    A Node object exists only while its node is ready and unstarted (queued); `remaining` counts every incoming edge
+    and reaches zero when all of them fired, exactly when the former `state.remaining` did."""
+
+    def __init__(self) -> None:
+        self.index: dict[str, int] = {}
+        self.identity: list[str] = []
+        self.kind = bytearray()
+        self.order = array('q')
+        self.operation: list[str] = []
+        self.phase: list[str] = []
+        self.service: list[ServiceId | None] = []
+        self.resources: list[tuple[ResourceId, ...]] = []
+        self.group = array('H')
+        self.remaining = array('l')
+        self.offsets = array('Q')
+        self.children = array('I')
+        self._interned: dict[object, object] = {}
+
+    def _intern(self, value: object) -> object:
+        return self._interned.setdefault(value, value)
+
+    def add(self, node: Node, group: int) -> None:
+        if node.identity in self.index:
+            raise sqlite3.IntegrityError('UNIQUE constraint failed: state.identity')
+        if node.order >= SQLITE_INTEGER_LIMIT:
+            raise OverflowError('Python int too large to convert to SQLite INTEGER')
+        self.index[node.identity] = len(self.identity)
+        self.identity.append(node.identity)
+        self.kind.append(KIND_CODE[node.kind])
+        self.order.append(node.order)
+        self.operation.append(cast(str, self._intern(node.operation)))
+        self.phase.append(cast(str, self._intern(node.phase)))
+        self.service.append(node.identity if node.service == node.identity else node.service)  # type: ignore[arg-type]
+        self.resources.append(cast(tuple[ResourceId, ...], self._intern(node.resources)))
+        self.group.append(group)
+
+    def link(self, database: sqlite3.Connection) -> None:
+        """One validation pass over the authoritative edges (endpoint and milestone checks, incoming counts), then
+        a second pass filling the child lists of each (parent, milestone)."""
+        nodes = len(self.identity)
+        counts = array('Q', bytes(8 * 3 * nodes))
+        self.remaining = array('l', bytes(self.remaining.itemsize * nodes))
+        missing = unknown = False
+        index = self.index
+        for parent, milestone, node in database.execute('SELECT parent,milestone,node FROM ir.edges'):
+            source, child = index.get(parent), index.get(node)
+            if source is None or child is None:
+                missing = True
+                continue
+            self.remaining[child] += 1
+            slot = SLOT.get(milestone) if isinstance(milestone, str) else None
+            if slot is None:
+                unknown = unknown or milestone is not None  # a NULL milestone was never an unknown one; it never fires
+                continue
+            counts[3 * source + slot] += 1
+        ensure(not missing, 'unresolved SQLite schedule dependency')
+        ensure(not unknown, 'unknown dependency milestone')
+        self.offsets = array('Q', bytes(8 * (3 * nodes + 1)))
+        total = 0
+        for position in range(3 * nodes):
+            self.offsets[position] = total
+            total += counts[position]
+        self.offsets[3 * nodes] = total
+        self.children = array('I', bytes(4 * total))
+        cursor = counts
+        for position in range(3 * nodes):
+            cursor[position] = self.offsets[position]
+        for parent, milestone, node in database.execute('SELECT parent,milestone,node FROM ir.edges'):
+            slot = SLOT.get(milestone) if isinstance(milestone, str) else None
+            if slot is not None:
+                position = 3 * index[parent] + slot
+                self.children[cursor[position]] = index[node]
+                cursor[position] += 1
+
+    def node(self, index: int) -> Node:
+        return Node(NodeId(self.identity[index]), KINDS[self.kind[index]], self.operation[index], self.phase[index],
+                    self.order[index], (), self.service[index], self.resources[index])
+
+    def ready(self, index: int, queues: list[Queue]) -> None:
+        heapq.heappush(queues[self.group[index]], (self.order[index], self.identity[index], index, self.node(index)))
+
+    def release(self, index: int, slot: int, queues: list[Queue]) -> None:
+        position = 3 * index + slot
+        for child in self.children[self.offsets[position]:self.offsets[position + 1]]:
+            self.remaining[child] -= 1
+            if self.remaining[child] == 0:
+                self.ready(child, queues)
+
+
+def _prepare(database: sqlite3.Connection) -> tuple[_Graph, list[Queue]]:
+    """Validate the IR with one parse per node and two passes over the edges; the SQLite output holds only the
+    schedule results and its manifest (readiness lives in the compact graph)."""
     database.executescript('''PRAGMA cache_size=-16384;
-      CREATE TABLE state(identity TEXT PRIMARY KEY, remaining INTEGER, started INTEGER, resource_group TEXT, priority INTEGER);
-      CREATE INDEX ready_group ON state(resource_group,started,remaining,priority,identity);
       CREATE TABLE results(identity TEXT PRIMARY KEY, ordinal INTEGER UNIQUE, body TEXT);
       CREATE TABLE metadata(key TEXT PRIMARY KEY,body TEXT);''')
-    groups: set[str] = set()
-    count = 0
+    graph = _Graph()
+    groups: dict[str, int] = {}
     for identity, body in database.execute('SELECT identity,body FROM ir.nodes'):
         node = _node(str(body))
         ensure(node.identity == identity, 'SQLite node identity/body mismatch')
         group = json.dumps([node.kind == Kind.NPU, sorted(node.resources)], separators=(',', ':'))
-        groups.add(group)
+        code = groups.setdefault(group, len(groups))
         ensure(len(groups) <= 4096, 'explicit resource scenario exceeds bounded scheduler group limit')
-        database.execute('INSERT INTO state VALUES(?,0,0,?,?)', (node.identity, group, node.order))
-        count += 1
-    ensure(count > 0, 'empty SQLite execution graph')
-    missing = database.execute('SELECT e.node FROM ir.edges e LEFT JOIN state p ON p.identity=e.parent '
-                               'LEFT JOIN state n ON n.identity=e.node WHERE p.identity IS NULL OR n.identity IS NULL LIMIT 1').fetchone()
-    ensure(missing is None, 'unresolved SQLite schedule dependency')
-    ensure(database.execute('SELECT COUNT(*) FROM ir.edges WHERE milestone NOT IN (?,?,?)',
-                            tuple(value.value for value in Milestone)).fetchone()[0] == 0, 'unknown dependency milestone')
-    database.execute('UPDATE state SET remaining=(SELECT COUNT(*) FROM ir.edges WHERE node=state.identity)')
-    for identity, body in database.execute('SELECT identity,body FROM ir.nodes'):
-        node = _node(str(body))
-        record = database.execute('SELECT body FROM ir.services WHERE identity=?', (identity,)).fetchone()
-        ensure((node.service is not None) == (record is not None), 'missing/extra SQLite service')
-    ensure(database.execute('SELECT COUNT(*) FROM ir.services s LEFT JOIN state n ON n.identity=s.identity '
+        graph.add(node, code)
+    ensure(bool(graph.identity), 'empty SQLite execution graph')
+    graph.link(database)
+    for identity, service in database.execute('SELECT n.identity,s.identity IS NOT NULL FROM ir.nodes n '
+                                               'LEFT JOIN ir.services s ON s.identity=n.identity ORDER BY n.rowid'):
+        ensure((graph.service[graph.index[str(identity)]] is not None) == bool(service), 'missing/extra SQLite service')
+    ensure(database.execute('SELECT COUNT(*) FROM ir.services s LEFT JOIN ir.nodes n ON n.identity=s.identity '
                             'WHERE n.identity IS NULL').fetchone()[0] == 0, 'extra SQLite service')
-    return count, tuple(sorted(groups))
-
-
-def _fire(database: sqlite3.Connection, identity: str, milestone: str) -> None:
-    database.execute('UPDATE state SET remaining=remaining-1 WHERE identity IN '
-                      '(SELECT node FROM ir.edges WHERE parent=? AND milestone=?)', (identity, milestone))
+    queues: list[Queue] = [[] for _ in groups]
+    for index, remaining in enumerate(graph.remaining):
+        if remaining == 0:
+            graph.ready(index, queues)
+    return graph, queues
 
 
 def _request_available(database: sqlite3.Connection, node: Node) -> Fraction:
@@ -119,7 +227,7 @@ def _request_available(database: sqlite3.Connection, node: Node) -> Fraction:
 
 
 def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
-         observed: sqlite3.Connection | None = None) -> Record:
+         observed: sqlite3.Connection | None = None, observer: Observer | None = None) -> Record:
     stateful = isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider))
     source_binding = schedule_source_binding(Path(__file__)) if stateful else {}
     manifest_row = database.execute("SELECT body FROM ir.metadata WHERE key='manifest'").fetchone()
@@ -130,60 +238,67 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
            'unsupported SQLite execution input')
     scope = 'BOUND_DATASET' if manifest['scope'] == 'PRODUCER_DECLARED' else 'SYNTHETIC'
     validate_environment(scope, inputs.provider, inputs.scenario)
-    count, groups = _prepare(database)
+    graph, queues = _prepare(database)
+    count = len(graph.identity)
     engine = ServiceExecutor(inputs.provider, inputs.scenario)
-    events: list[tuple[Fraction, str, str]] = []
+    events: list[tuple[Fraction, str, str, int]] = []
+    rows: list[tuple[str, int, str]] = []
+
+    def flush() -> None:
+        database.executemany('INSERT INTO results VALUES(?,?,?)', rows)
+        rows.clear()
     now = result_end = resource_end = Fraction(0)
     finished = 0
     while finished < count:
         while events and events[0][0] <= now:
-            _, identity, milestone = heapq.heappop(events)
-            _fire(database, identity, milestone)
-        candidates: list[Node] = []
+            _, _, milestone, index = heapq.heappop(events)
+            graph.release(index, SLOT[milestone], queues)
+        # Group heads in (priority, identity) order: the first head that can start now is the minimum over every
+        # startable head, and earliest() has no side effects, so the heads after it need no evaluation.
         future: list[Fraction] = []
-        for group in groups:
-            row = database.execute('SELECT n.body FROM state s JOIN ir.nodes n ON n.identity=s.identity '
-                'WHERE s.resource_group=? AND s.started=0 AND s.remaining=0 ORDER BY s.priority,s.identity LIMIT 1', (group,)).fetchone()
-            if row is None:
-                continue
-            node = _node(str(row[0]))
+        for queue in sorted(queue for queue in queues if queue):
+            node = queue[0][3]
             earliest = engine.earliest(node, now)
             if earliest == now:
-                candidates.append(node)
-            else:
-                future.append(earliest)
-        if not candidates:
+                break
+            future.append(earliest)
+        else:
             if events:
                 future.append(events[0][0])
             ensure(bool(future), 'execution stalled: causal cycle or unresolved resource dependency')
             now = min(future)
             continue
-        node = min(candidates, key=lambda candidate: (candidate.order, candidate.identity))
         row = database.execute('SELECT body FROM ir.services WHERE identity=?', (node.identity,)).fetchone()
         services = Services({}, {}) if row is None else parse_services(_document(str(row[0])))
         ensure(set(services.cpu) | set(services.npu) == ({node.service} if node.service is not None else set()),
                'SQLite service identity mismatch')
-        request_available = _request_available(database, node) if isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider)) else None
+        if stateful:
+            flush()  # the parents' stored rows are read back by the stateful provider
+        request_available = _request_available(database, node) if stateful else None
         completed = engine.execute(node, services, now, request_available)
-        database.execute('UPDATE state SET started=1 WHERE identity=?', (node.identity,))
+        _, _, index, _ = heapq.heappop(queue)
         record = scheduled_record(completed)
         if observed is not None:
             actual = observed.execute('SELECT identity,body FROM results WHERE ordinal=?', (finished,)).fetchone()
             ensure(actual is not None and actual[0] == node.identity and _same_record(_document(str(actual[1])), record),
                    'SQLite schedule node/endpoint mismatch')
-        database.execute('INSERT INTO results VALUES(?,?,?)',
-                         (node.identity, finished, json.dumps(record, separators=(',', ':'))))
-        for milestone in Milestone:
+        rows.append((node.identity, finished, _COMPACT.encode(record)))
+        if len(rows) == RESULT_BATCH:
+            flush()
+        if observer is not None:
+            observer(finished, node, completed, record)
+        for slot, milestone in enumerate(FIRE_ORDER):
             epoch = completed.milestone(milestone)
             if epoch <= now:
-                _fire(database, node.identity, milestone.value)
+                graph.release(index, slot, queues)
             else:
-                heapq.heappush(events, (epoch, node.identity, milestone.value))
+                heapq.heappush(events, (epoch, node.identity, milestone.value, index))
         result_end = max(result_end, completed.result_ready_ns)
         resource_end = max(resource_end, completed.resource_ready_ns)
         finished += 1
         if finished % 10_000 == 0:
             ensure(len(events) <= 16384, 'scenario exceeds bounded concurrent event capacity')
+    flush()
     complete_provider(inputs.provider, inputs.scenario)
     from sim.cycle.execution_cycle_provider import CycleServiceProvider
     if isinstance(inputs.provider, (DiagnosticStatefulProvider, StatefulSequenceProvider)):
@@ -208,7 +323,9 @@ def _run(database: sqlite3.Connection, inputs: SqliteScheduleInputs,
     return summary
 
 
-def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) -> Record:
+def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs,
+                    observer: Observer | None = None) -> Record:
+    """Schedule the SQLite IR into a new SQLite schedule; `observer` sees each node as it is scheduled (one pass)."""
     ensure(source.resolve() != output.resolve() and not output.exists(), 'schedule output must be new and distinct')
     require_storage_budget(output, COPY_RESERVE_BYTES + (SQLITE_WORKING_SET_FACTOR + 1) * source.stat().st_size)
     with tempfile.TemporaryDirectory(prefix='schedule-sqlite-', dir=output.parent) as temporary:
@@ -217,7 +334,7 @@ def schedule_sqlite(source: Path, output: Path, inputs: SqliteScheduleInputs) ->
         staged = root / 'result.sqlite'
         with closing(sqlite3.connect(staged, uri=True)) as database:
             database.execute('ATTACH DATABASE ? AS ir', (snapshots[0].snapshot.resolve().as_uri() + '?mode=ro',))
-            summary = _run(database, inputs)
+            summary = _run(database, inputs, observer=observer)
             summary['input_sqlite_sha256'] = sha256(snapshots[0].snapshot)
             database.execute('INSERT INTO metadata VALUES(?,?)', ('manifest', json.dumps(summary, sort_keys=True)))
             database.commit()

@@ -6,6 +6,10 @@ NAMED_TIMING_FIELDS = ('cpu_work_cycles', 'cpu_work_cycles_source', 'cpu_work_cy
                        'cpu_work_cycles_reason', 'thread_cpu_ns', 'thread_cpu_valid', 'thread_cpu_reason',
                        'host_elapsed_ns', 'host_elapsed_valid', 'host_elapsed_reason', 'host_start_ns',
                        'host_end_ns', 'host_execution_id', 'thread_id', 'interval_class')
+# Optional observed-host fields (Linux collectors): sched_getcpu at both endpoints, the cycle scope and the native
+# sample reason. Older logs lack them; when present they are validated and carried to the timeline unchanged.
+HOST_CORE_FIELDS = ('host_cpu_core_start', 'host_cpu_core_end', 'cpu_migrated', 'cpu_work_cycles_scope',
+                    'cpu_work_cycles_sample_reason')
 
 
 def valid_measurement(record: Record) -> None:
@@ -22,7 +26,22 @@ def valid_measurement(record: Record) -> None:
 def duration_sample(record: Record) -> Record:
     keys = ('source', 'unit', 'start', 'end', 'delta', 'valid', 'worker_id', 'worker_count',
             'reason', 'sample_reason', 'source_line')
-    return {**{name: record[name] for name in (*keys, *NAMED_TIMING_FIELDS) if name in record}, 'stage': record['op']}
+    return {**{name: record[name] for name in (*keys, *NAMED_TIMING_FIELDS, *HOST_CORE_FIELDS) if name in record},
+            'stage': record['op']}
+
+
+def validate_host_cores(record: Record) -> None:
+    """Observed cores are non-negative CPU indices or null; cpu_migrated must equal start != end."""
+    if not any(name in record for name in HOST_CORE_FIELDS):
+        return
+    require(all(name in record for name in HOST_CORE_FIELDS), 'incomplete host core timing fields')
+    cores = [record['host_cpu_core_start'], record['host_cpu_core_end']]
+    require(all(core is None or (type(core) is int and core >= 0) for core in cores), 'malformed host CPU core id')
+    migrated = record['cpu_migrated']
+    require(migrated is None if None in cores or record.get('thread_id') is None else migrated is (cores[0] != cores[1]),
+            'host CPU migration flag differs from its cores')
+    require(record['cpu_work_cycles_scope'] == ('user+kernel' if record.get('cpu_work_cycles_valid') is True else None),
+            'CPU cycle scope must be user+kernel for valid cycles')
 
 
 def validate_named_timing(record: Record, host: int | None) -> None:
@@ -64,3 +83,4 @@ def validate_named_timing(record: Record, host: int | None) -> None:
     require(record['interval_class'] == expected, 'invalid timing interval class')
     require((host is not None and host_valid) or (host is None and (cycles_valid or thread_valid)),
             'authoritative timing metric unavailable')
+    validate_host_cores(record)
