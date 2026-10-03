@@ -1,0 +1,60 @@
+{
+  "schema": "im2p-cycle-corpus-authority",
+  "version": 3,
+  "revision": "cycle-sim-c617-run-aware-base-gemm-v3",
+  "base_manifest_sha256": "fa9424bf6831c8813bdebbb5e0dd6d8c3d086dfa35fe5660cae33d83bd51989d",
+  "producer_base_head": "c61702970df8b287b1ed75b3e51abab559021b51",
+  "dependency_lock_sha256": "89600fe0911ed14ac644b94bb377883bc5b5469e9fda63d81f1bb262cf9a193d",
+  "producer_source_sha256": {
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-builder.cpp": "6dbc6fe9442dcd260341890183d809acdb6bce6472836fc81ffea5ce6af598e9",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-builder.hpp": "a72167c0d1a9cb061be86c34155a838be9de674edfc89a426c54cb3e483fa5f8",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-compose.cpp": "b153c01b16512bb516f5fd968189f0439f8552b76277bc3dac8067a259a8be8d",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-compose.hpp": "e54184779010b767403a2bffce7055f7864fec80589bb7386e6019836a4b95a7",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.cpp": "1b3f95ba2ba1f54dffd104422e384352bf04bbd4dc1dac41c99eb7d88e97b6d0",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-executor.hpp": "6f6b27226b4d8af81590493c1380a38d93c58301a20eb4c2b6f2145c0892e195",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-im2p-executor.cpp": "78c6014444db80e0c9fb4dee095b334332c9895d5760ad0c9b2c95de5bb656c0",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-im2p-executor.hpp": "7c8304b27c97f3af005412a3ec5e89fb843f3491b1ef23b1584bf4544f8d45d1",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.cpp": "26a9ece7883de2d0b8a80b5e3dec57a8f8d4b64228538400d63aa851eb93dfe6",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-reference.hpp": "bf01d59922831de3c493b72e913d54bdb8bea72bd56f64101dfd3c7bd99b441b",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-run-aware.cpp": "3718f10f6b7fea4b3e102151668e5f851aeff86a2df087bb1d358aa429a6272c",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-run-aware.hpp": "458764546ac8bedaf787f59a27808ffbcca441db5329a0c6df701bdfea8ef823",
+    "ggml/src/ggml-gemmini/residual/rmd/rmd-types.hpp": "25b928585d234a7e8cc148f85fff17a75f36098faa304f67f719af46e68efa4a"
+  },
+  "selector_source_sha256": {
+    "RISC-V-DynDNN-gemmini-include/gemmini.h": "8226c0153efeff0fee5f88c39092c65cd4a798bd786b58be0099b74ae519db70"
+  },
+  "fixture_source_sha256": {
+    "fpga/gemmini_hp1/host/test_ws_rtl.cpp": "4eaba8c9f69c974d0e66f34c7f531048216bf85178e3eb36c8df9a7596ed5e43",
+    "fpga/gemmini_hp1/host/frontend_rtl_fixture.cpp": "6b0eb7d16181227be85f18f5def96526efde33c8219c9d0c7469de0c510dce0f",
+    "fpga/gemmini_hp1/host/frontend_rtl_fixture.hpp": "b53f0dc35a215e160b097353cded3ebc83d196a0d153335a0f1dab78999621e2",
+    "fpga/gemmini_hp1/host/rmd_rtl_fixture.cpp": "f914f6cda097ebb1e7add4c855219b11b4fe763e3935eddb251b6c1172921537",
+    "fpga/gemmini_hp1/host/rmd_rtl_fixture.hpp": "2c5151f4a9ad9ae65a16cf3c4c38a4b5581bf7f33cf46bae65c94b9668c752c4",
+    "fpga/gemmini_hp1/host/bound_rmd_rtl_fixture.cpp": "5278ec76daa8df0437b805ff682d131f6e542e1ea1724c866112bc26b83ae1ae",
+    "fpga/gemmini_hp1/host/bound_rmd_rtl_fixture.hpp": "01f8102b3e2412f718d1d1781bff9dd739ba4ec99b0374c96fda55cb8d3affd3",
+    "fpga/gemmini_hp1/host/run_aware_rtl_driver.inc": "8767a6f7b30e74aa1d5e59ccd5d918d4fa0205dd958c61d1dd49f1f388224069",
+    "fpga/gemmini_hp1/host/rmd.cpp": "84997785e122bd383b044e651014a97ffbd91b6528c05142736e3c9219badc5b",
+    "fpga/gemmini_hp1/host/rmd.hpp": "97062a637b6bf672b2e0791fe12390dd0420370b648fe741b990978f626048f8"
+  },
+  "captured_case_ids": [
+    "captured-001", "captured-002", "captured-003", "captured-004", "captured-005", "captured-006", "captured-007",
+    "captured-008", "captured-009", "captured-010", "captured-011", "captured-012", "captured-013", "captured-014",
+    "captured-015"
+  ],
+  "observed_total": 15,
+  "retained_historical_case_ids": [
+    "captured-001", "captured-002", "captured-003", "captured-004", "captured-005", "captured-006", "captured-007",
+    "captured-021", "captured-022", "captured-023", "captured-030", "captured-033", "captured-036", "captured-039",
+    "captured-041"
+  ],
+  "moved_historical_residual_case_ids": [
+    "captured-008", "captured-009", "captured-010", "captured-011", "captured-012", "captured-013", "captured-014",
+    "captured-015", "captured-016", "captured-017", "captured-018", "captured-019", "captured-020", "captured-024",
+    "captured-025", "captured-026", "captured-027", "captured-028", "captured-029", "captured-031", "captured-032",
+    "captured-034", "captured-035", "captured-037", "captured-038", "captured-040", "captured-042"
+  ],
+  "large_k": [32, 64, 96, 3072, 8256],
+  "profiles": [
+    "a4w4-d16-hp1", "a4w4-d32-hp1", "a4w4-d64-hp1",
+    "a8w8-d16-hp1", "a8w8-d32-hp1", "a8w8-d64-hp1"
+  ]
+}

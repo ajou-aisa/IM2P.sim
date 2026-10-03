@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://im2p.local/schemas/gemmini-hp1-board-v1.json",
+  "title": "Gemmini HP1 board manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "board_id",
+    "part",
+    "top",
+    "clock",
+    "xdc",
+    "pin_constraints",
+    "memory_interface",
+    "deployment_artifact"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": 1 },
+    "board_id": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "part": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "top": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$" },
+        { "type": "null" }
+      ]
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "frequency_mhz"],
+      "properties": {
+        "port": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$" },
+            { "type": "null" }
+          ]
+        },
+        "frequency_mhz": {
+          "oneOf": [
+            { "type": "number", "exclusiveMinimum": 0 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "xdc": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "pin_constraints": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "memory_interface": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "deployment_artifact": {
+      "enum": ["bit", "xclbin", "pdi", null]
+    }
+  }
+}

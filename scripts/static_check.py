@@ -89,9 +89,6 @@ EXPECTED_TESTS = {
 }
 
 EXPECTED_SYNTH = {
-    "FullReplay.bsv",
-    "DensePipeline.bsv",
-    "ScuPipeline.bsv",
     "SynthA4W4D16.bsv",
     "SynthA4W4D32.bsv",
     "SynthA4W4D64.bsv",
@@ -112,7 +109,7 @@ DIAGNOSTIC_SYNTH_TOPS = {
     "SynthSchedulerDiagnostics.bsv": ("mkWorkSchedulerDiagnostic", "mkMatmulSchedulerDiagnostic"),
 }
 
-SYNTH_HELPERS = {"WindowBuffer.bsv"}
+SYNTH_HELPERS: set[str] = set()
 
 INTEGER_SYNTH_TOPS = (
     "SynthA4W4D16.bsv",
@@ -728,7 +725,7 @@ def check_exsia_integration_contracts() -> None:
         ROOT / "README.md",
         ROOT / "frontend/README.md",
         ROOT / "docs/VERIFICATION.md",
-        ROOT / "docs/ARCHITECTURE.md",
+        ROOT / "docs/legacy/ARCHITECTURE.md",
     )
     for path in contract_docs:
         require_substrings(path, ("matched ExSIA", "A4/Q4", "A8/Q8", "A16/Q16"))
@@ -1136,11 +1133,6 @@ def main() -> None:
     for synth in SYNTH.glob("*.bsv"):
         text = synth.read_text(encoding="utf-8")
         if synth.name in SYNTH_HELPERS:
-            continue
-        if synth.name in {"FullReplay.bsv", "DensePipeline.bsv", "ScuPipeline.bsv"}:
-            require_substrings(synth, ("IM2PCore::*", "SynthA8W8D16::*", "let core <- mkSynthA8W8D16;"))
-            if strip_comments(text).count("<- mkSynthA8W8D16") != 1:
-                fail(f"board provider must instantiate exactly one profile core: {synth.name}")
             continue
         if synth.name == "SynthActivationFIFO.bsv":
             require_substrings(synth, ("FIFOF#(Vector#(16, Int#(8)))", "mkGFIFOF(False, True)"))

@@ -13,7 +13,7 @@ from typing import TypedDict
 
 from scripts.im2p_config import ProfileConfig, profile_config
 
-SCHEMA = "im2p-real-lib-cache-v4"
+SCHEMA = "im2p-real-lib-cache-v5"
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -40,6 +40,7 @@ class ToolIdentity(TypedDict):
 
 class IdentityData(ProfileConfig):
     id: str
+    implementation: str
     block_size: int
     platform: str
     platform_release: str
@@ -144,6 +145,7 @@ def verify_manifest(
     expected_build_config: BuildConfig | None = None,
     expected_artifacts: tuple[str, ...] | None = None,
     expected_identity: str | None = None,
+    expected_implementation: str | None = None,
     expected_block_size: int | None = None,
     expected_platform: str | None = None,
     expected_platform_release: str | None = None,
@@ -173,6 +175,8 @@ def verify_manifest(
         }
         if any(identity.get(field) != value for field, value in derived.items()):
             return False, "identity fields"
+        if identity.get("implementation") not in ("LEGACY_BSV", "GEMMINI_HP1"):
+            return False, "identity.implementation"
         profile = profile_config(**derived)
         for field, value in profile.items():
             if type(identity.get(field)) is not type(value) or identity.get(field) != value:
@@ -181,6 +185,7 @@ def verify_manifest(
             return False, "identity"
         expected = (
             ("id", expected_identity),
+            ("implementation", expected_implementation),
             ("block_size", expected_block_size),
             ("platform", expected_platform),
             ("platform_release", expected_platform_release),

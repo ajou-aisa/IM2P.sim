@@ -1,0 +1,113 @@
+#include "im2p_cycle_model.h"
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+_Static_assert(offsetof(im2p_cycle_request_t, m) == 8,
+               "request layout changed");
+_Static_assert(sizeof(im2p_cycle_hardware_t) == 48,
+               "hardware profile layout changed");
+_Static_assert(sizeof(im2p_cycle_request_t) == 120, "request ABI size changed");
+_Static_assert(sizeof(im2p_cycle_event_t) == 80, "event ABI size changed");
+
+int main(void) {
+  im2p_cycle_model_config_t c;
+  im2p_cycle_request_t r;
+  im2p_cycle_result_t out;
+  im2p_cycle_model_config_init(&c);
+  im2p_cycle_request_init(&r);
+  c.hardware =
+      (im2p_cycle_hardware_t){8, 8, 32, 32, 32, 4, 2048, 512, 32, 128, 4, 2};
+  r.m = r.n = 1;
+  r.k = 32;
+  r.accepted_cycle = 106449;
+  im2p_cycle_model_t *model = im2p_cycle_model_create(&c);
+  if (!model || im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_OK ||
+      out.start_cycle != 106449 || out.done_cycle != 106765 ||
+      out.total_cycles != 316 || out.load_request_count != 33 ||
+      out.load_response_count != 33 || out.store_request_count != 1 ||
+      out.store_response_count != 1 || out.scale_request_count != 1 ||
+      out.scale_response_count != 1)
+    return 1;
+  const im2p_cycle_result_t isolated = out;
+  if (im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_OK ||
+      memcmp(&isolated, &out, sizeof(out)) != 0)
+    return 1;
+  r.accepted_cycle = 106450;
+  im2p_cycle_result_t phase_reused, phase_fresh;
+  im2p_cycle_model_t *fresh = im2p_cycle_model_create(&c);
+  if (!fresh ||
+      im2p_cycle_estimate(model, &r, &phase_reused) != IM2P_CYCLE_OK ||
+      im2p_cycle_estimate(fresh, &r, &phase_fresh) != IM2P_CYCLE_OK ||
+      memcmp(&phase_reused, &phase_fresh, sizeof(phase_reused)) != 0 ||
+      phase_reused.start_cycle != r.accepted_cycle ||
+      phase_reused.done_cycle != 106765 || phase_reused.total_cycles != 315 ||
+      phase_reused.done_cycle != r.accepted_cycle + phase_reused.total_cycles)
+    return 1;
+  im2p_cycle_model_destroy(fresh);
+  r.accepted_cycle = 106449;
+  out = isolated;
+  r.k = 0;
+  im2p_cycle_result_t before = out;
+  if (im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0 ||
+      !*im2p_cycle_model_error(model))
+    return 1;
+  r.k = 32;
+  r.record_events = 1;
+  if (im2p_cycle_estimate(model, &r, &out) != IM2P_CYCLE_OK ||
+      im2p_cycle_model_event_count(model) == 0)
+    return 1;
+  before = out;
+  if (im2p_cycle_estimate(model, NULL, &out) != IM2P_CYCLE_INVALID ||
+      im2p_cycle_model_event_count(model) != 0 ||
+      memcmp(&before, &out, sizeof(out)) != 0 ||
+      !*im2p_cycle_model_error(model))
+    return 1;
+  if (im2p_cycle_estimate(model, &r, NULL) != IM2P_CYCLE_INVALID ||
+      im2p_cycle_model_event_count(model) != 0)
+    return 1;
+  im2p_compact_run_t runs[] = {{0, 0xfff, 0, 12}, {1, 0x3ff, 12, 10}};
+  im2p_compact_runs_t view = {IM2P_COMPACT_RUNS_VERSION, sizeof(view), 42, 2,
+                              runs};
+  r.k = 22;
+  r.accepted_cycle = 1;
+  r.record_events = 0;
+  r.submission = IM2P_CYCLE_TILE_SUBMISSIONS;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_OK ||
+      out.start_cycle != 1 || out.logical_work_count != 1 ||
+      out.loop_count != 2 || out.planner_loop_count != 2 ||
+      out.fragment_count != 2 || out.scale_request_count != 2)
+    return 1;
+  before = out;
+  runs[1].compact_k_begin = 11;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0 ||
+      !*im2p_cycle_model_error(model))
+    return 1;
+  runs[1].compact_k_begin = 12;
+  r.tile_k = 0;
+  if (im2p_cycle_estimate_runs(model, &r, &view, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0)
+    return 1;
+  r.tile_k = 1;
+  if (im2p_cycle_estimate_runs(model, &r, NULL, &out) != IM2P_CYCLE_INVALID ||
+      memcmp(&before, &out, sizeof(out)) != 0)
+    return 1;
+  im2p_cycle_model_destroy(model);
+  im2p_cycle_model_destroy(NULL);
+  if (im2p_cycle_model_create(NULL) != NULL ||
+      im2p_cycle_estimate(NULL, &r, &out) != IM2P_CYCLE_INVALID)
+    return 1;
+  printf("CYCLE_C_ABI_PASS version=1 layout=exact admitted=0 loops=%llu "
+         "fragments=%llu scales=%llu invalid=1 transactional_failure=1 "
+         "isolated_replay=1 phase_fresh=1 isolated_total=%llu "
+         "phase_total=%llu phase_done=%llu\n",
+         (unsigned long long)before.loop_count,
+         (unsigned long long)before.fragment_count,
+         (unsigned long long)before.scale_request_count,
+         (unsigned long long)isolated.total_cycles,
+         (unsigned long long)phase_reused.total_cycles,
+         (unsigned long long)phase_reused.done_cycle);
+  return 0;
+}

@@ -5,6 +5,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "im2p_geometry.h"
+#include "im2p_compact_runs.h"
 
 #define IM2P_SCU_NUMERICAL_REVISION "signed-scu-sat-v2"
 
@@ -15,10 +17,22 @@ extern "C" {
 typedef struct im2p_sim im2p_sim_t;
 typedef struct im2p_stream im2p_stream_t;
 
+/*
+ * Optional process-wide sink for Verilated RTL printf/$display output. The
+ * callback is invoked synchronously by whichever simulator thread emits the
+ * message. Passing NULL restores the standalone stdout behavior.
+ * `message` is not required to be NUL-terminated; use `length`.
+ */
+typedef void (*im2p_rtl_log_fn)(
+    void *context, const char *message, size_t length
+);
+void im2p_set_rtl_log_callback(im2p_rtl_log_fn callback, void *context);
+
 uint32_t im2p_compiled_accumulator_bits(void);
 uint32_t im2p_compiled_accumulator_rows(void);
 uint32_t im2p_compiled_partial_bits(void);
 const char *im2p_compiled_numerical_semantics_revision(void);
+const char *im2p_sim_implementation(void);
 
 /*
  * Raw handles are single-thread/thread-affine. The thread that starts an
@@ -253,6 +267,45 @@ int im2p_execute_matmul_extended(
     const im2p_matmul_desc_t *descriptor,
     im2p_work_stats_extended_t *stats
 );
+/* Additive, request-scoped production geometry. Copies the companion before
+ * work starts; an invalid/missing explicit plan fails without a 1/1/1 fallback.
+ * Existing descriptor layouts and legacy entry points are unchanged.
+ */
+int im2p_execute_matmul_planned(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_t *descriptor,
+    const im2p_production_geometry_v1_t *geometry,
+    im2p_work_stats_extended_t *stats
+);
+/* Runs cover compact K exactly. Weight callbacks receive compact K rows;
+ * read_scale receives the run ordinal. On success write_output is called once
+ * with block=row=column=0 and count=m*n contiguous row-major final lanes;
+ * absent that callback, output is committed after all reads succeed. Caller
+ * callback side effects are outside the library's rollback guarantee.
+ */
+int im2p_execute_matmul_planned_runs(
+    im2p_sim_t *sim,
+    const im2p_matmul_desc_t *descriptor,
+    const im2p_production_geometry_v1_t *geometry,
+    const im2p_compact_runs_t *runs,
+    im2p_work_stats_extended_t *stats
+);
+int im2p_begin_striped_matmul_planned(
+    im2p_sim_t *sim,
+    const im2p_stripe_work_desc_t *descriptor,
+    const im2p_production_geometry_v1_t *geometry,
+    im2p_stream_t **stream
+);
+/* A planned stream requires a matching STRIPE companion on every publication.
+ * Rejected/backpressured publications copy nothing; accepted plans are stored
+ * with that stripe, not in mutable global state. Factors may differ by stripe.
+ */
+int im2p_publish_stripe_planned(
+    im2p_stream_t *stream,
+    const im2p_activation_stripe_t *stripe,
+    const im2p_production_geometry_v1_t *geometry
+);
+
 /* The returned stream remains valid if `sim` is destroyed. */
 int im2p_begin_striped_matmul(
     im2p_sim_t *sim,

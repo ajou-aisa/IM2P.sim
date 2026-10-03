@@ -102,6 +102,16 @@ impl Im2pSimulator {
         output: &mut MatrixViewMut<'_, i32>,
         layout: MatmulLayout,
     ) -> Result<WorkStats, Error> {
+        self.execute_matmul_layout_with_geometry(work, output, layout, None)
+    }
+
+    pub(crate) fn execute_matmul_layout_with_geometry(
+        &mut self,
+        work: &MatmulWork<'_>,
+        output: &mut MatrixViewMut<'_, i32>,
+        layout: MatmulLayout,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+    ) -> Result<WorkStats, Error> {
         validate_work(work, output)?;
         if work.activations.rows > u32::MAX as usize
             || work.activations.columns > u32::MAX as usize
@@ -164,9 +174,7 @@ impl Im2pSimulator {
             vector_op: work.vector_op.encoding(),
         };
 
-        // SAFETY: the descriptor is copied synchronously and no pointer is retained.
-        let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
-        self.require_ready("start_matmul", started)?;
+        self.start_matmul_geometry(&descriptor, geometry, "start_matmul")?;
 
         let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
         loop {
@@ -200,6 +208,103 @@ impl Im2pSimulator {
         work_context: u64,
         layout: MatmulLayout,
         provider: MemoryProvider,
+    ) -> Result<WorkStats, Error> {
+        self.execute_matmul_provider_with_geometry(
+            activations,
+            rows,
+            columns,
+            reduction,
+            weight_row_stride,
+            output_row_stride,
+            block_size,
+            vector_op,
+            work_context,
+            layout,
+            provider,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_matmul_provider_with_geometry(
+        &mut self,
+        activations: MatrixView<'_, ActivationValue>,
+        rows: usize,
+        columns: usize,
+        reduction: usize,
+        weight_row_stride: usize,
+        output_row_stride: usize,
+        block_size: usize,
+        vector_op: crate::VectorOp,
+        work_context: u64,
+        layout: MatmulLayout,
+        provider: MemoryProvider,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+    ) -> Result<WorkStats, Error> {
+        self.execute_matmul_provider_with_geometry_impl(
+            activations,
+            rows,
+            columns,
+            reduction,
+            weight_row_stride,
+            output_row_stride,
+            block_size,
+            vector_op,
+            work_context,
+            layout,
+            provider,
+            geometry,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_matmul_provider_with_geometry_runs(
+        &mut self,
+        activations: MatrixView<'_, ActivationValue>,
+        rows: usize,
+        columns: usize,
+        reduction: usize,
+        weight_row_stride: usize,
+        output_row_stride: usize,
+        block_size: usize,
+        vector_op: crate::VectorOp,
+        work_context: u64,
+        layout: MatmulLayout,
+        provider: MemoryProvider,
+        geometry: &crate::production_geometry::ProductionGeometry,
+        runs: &ffi::CompactRuns,
+    ) -> Result<WorkStats, Error> {
+        self.execute_matmul_provider_with_geometry_impl(
+            activations,
+            rows,
+            columns,
+            reduction,
+            weight_row_stride,
+            output_row_stride,
+            block_size,
+            vector_op,
+            work_context,
+            layout,
+            provider,
+            Some(geometry),
+            Some(runs),
+        )
+    }
+
+    fn execute_matmul_provider_with_geometry_impl(
+        &mut self,
+        activations: MatrixView<'_, ActivationValue>,
+        rows: usize,
+        columns: usize,
+        reduction: usize,
+        weight_row_stride: usize,
+        output_row_stride: usize,
+        block_size: usize,
+        vector_op: crate::VectorOp,
+        work_context: u64,
+        layout: MatmulLayout,
+        provider: MemoryProvider,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
+        runs: Option<&ffi::CompactRuns>,
     ) -> Result<WorkStats, Error> {
         crate::activation_validation::validate_activation_matrix(&activations)?;
         if rows == 0
@@ -252,7 +357,7 @@ impl Im2pSimulator {
             tile_i_rows: rtl_tile_i_rows,
             tile_j_columns: rtl_tile_j_columns,
             k_origin: 0,
-            scale_total_k: rtl_reduction_count,
+            scale_total_k: runs.map_or(rtl_reduction_count, |view| view.original_k),
             scale_block_size: rtl_scale_block_size,
             scale_context: work_context,
             accumulate_first_fragment: 0,
@@ -263,8 +368,21 @@ impl Im2pSimulator {
             PROVIDER_START_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(Error::ProviderFailure);
         }
-        let started = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &descriptor) };
-        self.require_ready("start_matmul", started)?;
+        if let Some(runs) = runs {
+            #[cfg(im2p_gemmini_integrated)]
+            self.start_matmul_geometry_runs(
+                &descriptor,
+                geometry.ok_or(Error::InvalidLayout)?,
+                runs,
+            )?;
+            #[cfg(not(im2p_gemmini_integrated))]
+            {
+                let _ = runs;
+                return Err(Error::InvalidLayout);
+            }
+        } else {
+            self.start_matmul_geometry(&descriptor, geometry, "start_matmul")?;
+        }
 
         let mut watchdog = FullProgressWatchdog::new(MATRIX_STALL_CYCLES, self.full_progress());
         loop {
@@ -274,7 +392,9 @@ impl Im2pSimulator {
                 weight_row_stride,
                 columns,
                 reduction,
-                block_size,
+                runs.map_or(reduction.div_ceil(block_size), |view| {
+                    (view.original_k as usize).div_ceil(32)
+                }),
                 vector_op,
             )?;
             self.service_provider_output(provider, rows, columns, output_row_stride, vector_op)?;
@@ -297,7 +417,7 @@ impl Im2pSimulator {
         weight_row_stride: usize,
         columns: usize,
         reduction: usize,
-        block_size: usize,
+        scale_rows: usize,
         vector_op: crate::VectorOp,
     ) -> Result<(), Error> {
         self.service_provider_read(
@@ -309,14 +429,7 @@ impl Im2pSimulator {
             vector_op,
         )?;
         if vector_op != crate::VectorOp::Bypass {
-            self.service_provider_read(
-                false,
-                provider,
-                columns,
-                reduction.div_ceil(block_size),
-                columns,
-                vector_op,
-            )?;
+            self.service_provider_read(false, provider, columns, scale_rows, columns, vector_op)?;
         }
         Ok(())
     }

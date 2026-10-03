@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "profile": "a8w8-d32-hp1",
+  "activation_bits": 8,
+  "weight_bits": 8,
+  "dim": 32,
+  "accumulator_bits": 32,
+  "bank_count": 4,
+  "bank_rows": 2048,
+  "accumulator_rows": 512,
+  "scratchpad_row_bytes": 32,
+  "accumulator_row_bytes": 128,
+  "scratchpad_total_bytes": 262144,
+  "accumulator_total_bytes": 65536,
+  "ws_double_buffered": true,
+  "ws_scratchpad_rows_per_buffer": 4096,
+  "ws_accumulator_rows_per_buffer": 256,
+  "provenance": {
+    "kind": "observed-alternate-header",
+    "policy": "fixed-256kib-packed-sp-64kib-int32-acc-v1",
+    "reference": "alternate_d32_reference"
+  },
+  "tile_policy": "existing-gemmini-h-runtime"
+}

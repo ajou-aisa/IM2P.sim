@@ -262,6 +262,7 @@ pub struct StreamBox {
     pub columns: usize,
     pub reduction: usize,
     pub failed: bool,
+    pub geometry: Option<crate::production_geometry::ProductionGeometry>,
 }
 
 #[cfg(test)]

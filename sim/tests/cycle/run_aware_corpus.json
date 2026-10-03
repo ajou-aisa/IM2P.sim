@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "artifact_role": "FIXTURE_ONLY",
+  "source": "fpga/gemmini_hp1/host/test_run_aware_rtl.cpp",
+  "profiles": [
+    "a4w4-d16-hp1",
+    "a4w4-d32-hp1",
+    "a4w4-d64-hp1",
+    "a8w8-d16-hp1",
+    "a8w8-d32-hp1",
+    "a8w8-d64-hp1"
+  ],
+  "case_count": 48,
+  "case_key_sha256": "268fa642294cc3a50156b8a2f60a744b31caea812059154ca38669c857f619e5",
+  "geometry": {"m": 1, "n": 1, "tile_i": 1, "tile_j": 1, "tile_k": 2},
+  "timing": {
+    "backing_read_delay": 3,
+    "even_read_id_delay": 13,
+    "scale_read_extra_delay": 17,
+    "backing_write_delay": 11,
+    "read_ready_period": 5,
+    "backing_cycle_offset": 5
+  },
+  "cases": [
+    {"name": "unequal_12_10", "k": 22, "original_k": 42, "expected_value": 32, "carriers": [0, 1],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]},
+    {"name": "gap_0_3", "k": 22, "original_k": 106, "expected_value": 32, "carriers": [0, 1],
+     "runs": [[0, 4095, 0, 12], [3, 1023, 12, 10]]},
+    {"name": "boundary_31_1", "k": 32, "original_k": 33, "expected_value": 33, "carriers": [0, 1],
+     "runs": [[0, 2147483647, 0, 31], [1, 1, 31, 1]]},
+    {"name": "zero_sentinel", "k": 22, "original_k": 42, "expected_value": 20, "carriers": [2147483648, 1],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]},
+    {"name": "high_exponent", "k": 22, "original_k": 42, "expected_value": 2147483647, "carriers": [32767, 0],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]},
+    {"name": "positive_sat32", "k": 22, "original_k": 42, "expected_value": 2147483647, "carriers": [31, 31],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]},
+    {"name": "negative_sat32", "k": 22, "original_k": 42, "expected_value": -2147483648, "carriers": [31, 31],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]},
+    {"name": "sat32_order", "k": 22, "original_k": 42, "expected_value": -1, "carriers": [31, 31],
+     "runs": [[0, 4095, 0, 12], [1, 1023, 12, 10]]}
+  ]
+}

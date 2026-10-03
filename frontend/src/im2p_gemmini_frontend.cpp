@@ -1,4 +1,13 @@
 #include "im2p_gemmini_frontend.hpp"
+#ifndef IM2P_PRODUCTION_TRACE_ENABLED
+#define IM2P_PRODUCTION_TRACE_ENABLED 1
+#endif
+#if IM2P_PRODUCTION_TRACE_ENABLED
+#include "im2p_production_trace.hpp"
+#endif
+#if CYCLE_SIM
+#include "im2p_cycle_sim.hpp"
+#endif
 
 #include "ggml-gemmini-args.h"
 #include "ggml-gemmini-config.hpp"
@@ -30,11 +39,71 @@
 static_assert(DIM == IM2P_GEMMINI_FRONTEND_EXPECTED_DIM,
               "Gemmini parameter DIM does not match the selected IM2P RTL");
 #endif
+#if CYCLE_SIM
+static_assert(BANK_NUM == IM2P_GEMMINI_BANK_COUNT &&
+                  BANK_ROWS == IM2P_GEMMINI_BANK_ROWS &&
+                  ACC_ROWS == IM2P_ACCUMULATOR_ROWS,
+              "CPU-functional production header differs from the target memory contract");
+#endif
 
 namespace im2p::gemmini {
 namespace {
 namespace wroute = ggml::gemmini::quants::wroute;
 namespace exsia = ggml::gemmini::quants::act::exsia;
+
+class HostStageTiming {
+public:
+  HostStageTiming(const Options &options, const char *stage
+#if CYCLE_SIM
+                  , const cycle_sim::log::Context &context = {},
+                  std::vector<uint64_t> *host_dependencies = nullptr
+#endif
+                  ) noexcept
+      : options_(options), stage_(stage) {
+#if CYCLE_SIM
+    context_ = context;
+    host_dependencies_ = host_dependencies;
+    if (std::strcmp(stage_, "frontend.input_snapshot") == 0 && context_) {
+      try {
+        host_stage_ = std::make_unique<cycle_sim::HostStageScope>(context_, stage_,
+            "POTAL_HOST", "IM2P.sim", "frontend/src/im2p_gemmini_frontend.cpp:retain_provider_operands",
+            nullptr, std::vector<uint64_t>{}, host_dependencies_ ? *host_dependencies_ : std::vector<uint64_t>{}, true);
+      } catch (...) { context_.session->record_failure("input snapshot declaration failed"); }
+    } else if (std::strcmp(stage_, "frontend.output_copy") == 0)
+      cpu_start_ = ggml::gemmini::read_matmul_cpu_sample();
+#endif
+    if (options_.host_stage_timing)
+      options_.host_stage_timing(options_.host_stage_context, stage_, true);
+  }
+  ~HostStageTiming() noexcept {
+#if CYCLE_SIM
+    if (host_stage_) {
+      host_stage_->finish();
+      if (host_dependencies_ && host_stage_->id()) {
+        try { host_dependencies_->push_back(*host_stage_->id()); }
+        catch (...) { context_.session->record_failure("input snapshot dependency failed"); }
+      }
+    }
+    if (cpu_start_.collected)
+      cycle_sim::record_cpu_stage(nullptr, stage_, cpu_start_,
+          ggml::gemmini::read_matmul_cpu_sample(), true);
+#endif
+    if (options_.host_stage_timing)
+      options_.host_stage_timing(options_.host_stage_context, stage_, false);
+  }
+  HostStageTiming(const HostStageTiming &) = delete;
+  HostStageTiming &operator=(const HostStageTiming &) = delete;
+
+private:
+  const Options &options_;
+  const char *stage_;
+#if CYCLE_SIM
+  ggml::gemmini::MatmulCpuSample cpu_start_;
+  cycle_sim::log::Context context_;
+  std::vector<uint64_t> *host_dependencies_ = nullptr;
+  std::unique_ptr<cycle_sim::HostStageScope> host_stage_;
+#endif
+};
 
 #if defined(IM2P_GEMMINI_FRONTEND_TESTING)
 std::atomic<bool> fail_timing_reserve_injected{false};
@@ -489,6 +558,28 @@ ScalarSnapshot snapshot_scalars(const ggml_gemmini_args_t &a) noexcept {
 
 constexpr uint64_t minimum_stall_cycles = 65536;
 
+im2p_production_geometry_v1_t geometry_snapshot(
+    const ScalarSnapshot &s, uint32_t scope, uint64_t begin,
+    uint64_t rows, uint64_t stripe) noexcept {
+  return {IM2P_PRODUCTION_GEOMETRY_VERSION,
+          sizeof(im2p_production_geometry_v1_t), s.activation_bits,
+          GGML_GEMMINI_WEIGHT_BITS, DIM, scope, s.i, s.j, s.k,
+          s.tile_i, s.tile_j, s.tile_k, s.activation_rows_per_stripe,
+          begin, rows, stripe};
+}
+
+bool geometry_matches(const im2p_production_geometry_v1_t &g,
+                      const ScalarSnapshot &s, uint32_t scope) noexcept {
+  return g.version == IM2P_PRODUCTION_GEOMETRY_VERSION &&
+      g.struct_size == sizeof(g) && g.activation_bits == s.activation_bits &&
+      g.weight_bits == GGML_GEMMINI_WEIGHT_BITS && g.dim == DIM && g.scope == scope &&
+      g.m == s.i && g.n == s.j && g.k == s.k &&
+      g.tile_i_count && g.tile_j_count && g.tile_k_count &&
+      g.tile_i_count <= UINT16_MAX / DIM && g.tile_j_count <= UINT16_MAX / DIM &&
+      g.tile_k_count <= UINT32_MAX / DIM && g.stripe_rows &&
+      g.stripe_rows == s.activation_rows_per_stripe && g.stripe_rows <= UINT32_MAX;
+}
+
 PointerSnapshot snapshot_pointers(const ggml_gemmini_args_t &a) noexcept {
   return {a.A.raw_data(),
           a.B,
@@ -530,6 +621,7 @@ struct Run::Impl {
     uint64_t run_id = 0;
     size_t stripe_id = 0, slot = 0, row_begin = 0, row_end = 0;
     exsia::StripeReadyEvent residual_event;
+    im2p_production_geometry_v1_t geometry{};
   };
 
   Impl(const ggml_gemmini_args_t *source, Mode requested_mode,
@@ -537,6 +629,15 @@ struct Run::Impl {
       : scalars(snapshot_scalars(*source)),
         pointers(snapshot_pointers(*source)), mode(requested_mode),
         options(requested_options),
+#if IM2P_PRODUCTION_TRACE_ENABLED
+        trace_context(source->optrace_context),
+        trace_layer(trace_context ? source->matmul_layer : std::string{}),
+#endif
+#if CYCLE_SIM
+        cycle_sim_context(source->cycle_sim_context),
+        cycle_sim_layer(source->matmul_layer),
+        cycle_sim_host_dependencies(source->cycle_sim_host_dependencies),
+#endif
         stall_cycle_limit(
             std::max(requested_options.max_stalled_cycles,
                      minimum_stall_cycles)),
@@ -552,6 +653,32 @@ struct Run::Impl {
   PointerSnapshot pointers;
   Mode mode;
   Options options;
+#if IM2P_PRODUCTION_TRACE_ENABLED
+  std::shared_ptr<const ggml::gemmini::optrace::Context> trace_context;
+  std::string trace_layer;
+#endif
+#if CYCLE_SIM
+  cycle_sim::log::Context cycle_sim_context;
+  std::string cycle_sim_layer;
+  std::vector<uint64_t> cycle_sim_host_dependencies;
+  std::vector<uint64_t> cycle_sim_reconstruction_stages;
+  std::vector<uint64_t> cycle_sim_work_ids;
+
+  bool record_pipeline_owner(cycle_sim::log::ProducerEventKind kind,
+                             const DenseEvent &event, const char *source) noexcept {
+    if (!cycle_sim_context || mode != Mode::stripe_pipeline)
+      return true;
+    try {
+      return cycle_sim_context.session->producer_event(cycle_sim_context,
+          {kind, event.run_id, event.stripe_id, event.row_begin, event.row_end,
+           event.slot, bool(event.residual_event.rmd_packet),
+           bool(event.residual_event.direct_residual), source});
+    } catch (...) {
+      cycle_sim_context.session->record_failure("pipeline owner declaration failed");
+      return false;
+    }
+  }
+#endif
   uint64_t stall_cycle_limit;
   Route route;
   bool native;
@@ -617,6 +744,11 @@ struct Run::Impl {
   size_t final_output_count = 0;
 
   bool retain_legacy_operands() {
+    HostStageTiming timing(options, "frontend.input_snapshot"
+#if CYCLE_SIM
+        , cycle_sim_context, &cycle_sim_host_dependencies
+#endif
+    );
     size_t weight_count = 0, output_count = 0;
     const size_t sb = scalars.sb ? scalars.sb : scalars.j;
     const size_t sc = scalars.sc ? scalars.sc : scalars.j;
@@ -639,6 +771,11 @@ struct Run::Impl {
   }
 
   bool retain_provider_operands() {
+    HostStageTiming timing(options, "frontend.input_snapshot"
+#if CYCLE_SIM
+        , cycle_sim_context, &cycle_sim_host_dependencies
+#endif
+    );
     try {
       switch (route) {
       case Route::q8_0_unpacked_to_h1: {
@@ -788,7 +925,8 @@ struct Run::Impl {
     return true;
   }
 
-  void commit_output() noexcept {
+  bool commit_output() noexcept {
+    const auto copy = [&] {
     if (integer_output_stage && integer_output_destination) {
       auto *destination = static_cast<int32_t *>(integer_output_destination);
       const size_t stride = scalars.sc ? scalars.sc : scalars.j;
@@ -804,6 +942,26 @@ struct Run::Impl {
           float_output_destination[row * rs + column * cs] =
               (*float_output_stage)[row * rs + column * cs];
     }
+    };
+#if CYCLE_SIM
+    if (integer_output_stage && integer_output_destination)
+      return cycle_sim::publish_output(cycle_sim_context, "frontend.output_copy", "IM2P.sim",
+          "frontend/src/im2p_gemmini_frontend.cpp:commit_output", cycle_sim_layer.c_str(),
+          static_cast<int32_t *>(integer_output_destination), scalars.i, scalars.j,
+          scalars.sc ? scalars.sc : scalars.j, 1, cycle_sim_work_ids,
+          cycle_sim_reconstruction_stages, copy);
+    if (float_output_stage && float_output_destination)
+      return cycle_sim::publish_output(cycle_sim_context, "frontend.output_copy", "IM2P.sim",
+          "frontend/src/im2p_gemmini_frontend.cpp:commit_output", cycle_sim_layer.c_str(),
+          float_output_destination, scalars.i, scalars.j,
+          scalars.stride_f_out ? scalars.stride_f_out : scalars.j,
+          scalars.col_stride_f_out ? scalars.col_stride_f_out : 1,
+          cycle_sim_work_ids, cycle_sim_reconstruction_stages, copy);
+#else
+    HostStageTiming timing(options, "frontend.output_copy");
+#endif
+    copy();
+    return true;
   }
 
   struct FactorCache {
@@ -1255,7 +1413,20 @@ struct Run::Impl {
                                    size_t column, size_t count,
                                    const int64_t *values, uint32_t domain) {
     auto &x = *static_cast<Impl *>(context);
-    const int result = x.write_output(block, row, column, count, values, domain);
+#if CYCLE_SIM
+    cycle_sim::HostStageScope host_stage(cycle_sim::log::current_context(),
+        "im2p.output_reconstruction", "POTAL_HOST", "IM2P.sim",
+        "frontend/src/im2p_gemmini_frontend.cpp:provider_write_output", x.cycle_sim_layer.c_str(),
+        cycle_sim::continuation_work_ids(), {}, true);
+#endif
+    int result = x.write_output(block, row, column, count, values, domain);
+#if CYCLE_SIM
+    host_stage.finish(result == IM2P_OK);
+    try {
+      if (x.cycle_sim_context) x.cycle_sim_context.session->ensure_healthy();
+      if (host_stage.id()) x.cycle_sim_reconstruction_stages.push_back(*host_stage.id());
+    } catch (...) { result = IM2P_ERROR; }
+#endif
     if (result != IM2P_OK)
       x.provider_failed = true;
     return result;
@@ -1272,6 +1443,10 @@ struct Run::Impl {
   }
 
   void set_error(Status value) noexcept {
+#if CYCLE_SIM
+    if (cycle_sim_context)
+      cycle_sim_context.session->record_failure(value.message);
+#endif
     std::lock_guard lock(mutex);
     if (final_status.ok())
       final_status = value;
@@ -1279,6 +1454,10 @@ struct Run::Impl {
   }
 
   void worker_failed(Status value) noexcept {
+#if CYCLE_SIM
+    if (cycle_sim_context)
+      cycle_sim_context.session->record_failure(value.message);
+#endif
     std::lock_guard lock(mutex);
     if (final_status.ok())
       final_status = value;
@@ -1386,9 +1565,13 @@ struct Run::Impl {
                             "external FULL executor required"));
       return;
     }
-    result = options.full_executor(options.full_executor_context, &d, &stats);
+    {
+      HostStageTiming timing(options, "frontend.device_host_call");
+      result = options.full_executor(options.full_executor_context, &d, &stats);
+    }
 #else
     if (options.full_executor) {
+      HostStageTiming timing(options, "frontend.device_host_call");
       result = options.full_executor(options.full_executor_context, &d, &stats);
     } else {
       std::unique_ptr<im2p_sim_t, SimDelete> sim(im2p_sim_create());
@@ -1397,7 +1580,35 @@ struct Run::Impl {
                               "failed to create IM2P simulator"));
         return;
       }
-      result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+      {
+        HostStageTiming timing(options, "frontend.device_host_call");
+#if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
+        const auto g = geometry_snapshot(scalars, IM2P_GEOMETRY_FULL, 0, scalars.i, 0);
+#if CYCLE_SIM
+        auto selected_work = cycle_sim::full(d, g);
+        selected_work.required_host_stage_ids = cycle_sim_host_dependencies;
+        cycle_sim::DispatchEvents dispatch_events(cycle_sim_context, &selected_work);
+        cpu_functional::TimingRegistration dispatch_registration(dispatch_events.observer());
+#endif
+        result = options.production_geometry
+            ? im2p_execute_matmul_planned(sim.get(), &d, &g, &stats)
+            : im2p_execute_matmul_extended(sim.get(), &d, &stats);
+#if CYCLE_SIM
+        if (result == IM2P_OK) dispatch_events.complete();
+#endif
+#if IM2P_PRODUCTION_TRACE_ENABLED
+        if (trace_context && result == IM2P_OK)
+          trace_context->session->accepted(
+              *trace_context, production_trace::full(d, g, trace_layer));
+#endif
+#if CYCLE_SIM
+        if (cycle_sim_context && result == IM2P_OK)
+          cycle_sim_context.session->ensure_healthy();
+#endif
+#else
+        result = im2p_execute_matmul_extended(sim.get(), &d, &stats);
+#endif
+      }
     }
 #endif
     if (provider_failed)
@@ -1406,9 +1617,16 @@ struct Run::Impl {
     else if (result != IM2P_OK)
       set_error(
           from_c_status(result, route, "IM2P full execution failed", native));
+#if IM2P_PRODUCTION_TRACE_ENABLED
+    else if (trace_context)
+      // Count successful production calls independently of serialization.
+      trace_context->session->independent_count(
+          *trace_context, trace_layer, "dense_main", 1);
+#endif
   }
 
   int publish(im2p_stream_t *stream, const DenseEvent &e) {
+    HostStageTiming timing(options, "frontend.stripe_submit");
     size_t offset = 0;
     const size_t stride = scalars.activation_row_stride_bytes;
     if (!checked_mul(e.row_begin, stride, offset))
@@ -1426,17 +1644,51 @@ struct Run::Impl {
     s.activations = static_cast<const uint8_t *>(pointers.a) + offset;
     s.activation_row_stride_bytes = stride;
     s.context = e.run_id;
+#if CYCLE_SIM
+    auto selected_work = cycle_sim::stripe(stripe_descriptor(), s, e.geometry, e.slot);
+    selected_work.required_host_stage_ids = cycle_sim_host_dependencies;
+    cycle_sim::append_host_dependencies(selected_work.required_host_stage_ids,
+                                        e.residual_event.cycle_sim_host_dependencies);
+    cycle_sim::DispatchEvents dispatch_events(cycle_sim_context, &selected_work,
+                                             cycle_sim::log::CallKind::Stripe);
+    cpu_functional::TimingRegistration dispatch_registration(dispatch_events.observer());
+#endif
 #if defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
     const int result = options.stream_executor->publish(
         options.stream_executor->context, &s);
 #else
     const int result = options.stream_executor
         ? options.stream_executor->publish(options.stream_executor->context, &s)
+#if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
+        : options.production_geometry ? im2p_publish_stripe_planned(stream, &s, &e.geometry)
+#endif
         : im2p_publish_stripe(stream, &s);
 #endif
     if (result == IM2P_OK) {
-      std::lock_guard lock(mutex);
-      in_flight.emplace(s.stripe_id, e);
+#if CYCLE_SIM
+      dispatch_events.complete();
+#endif
+      {
+        std::lock_guard lock(mutex);
+        in_flight.emplace(s.stripe_id, e);
+      }
+#if CYCLE_SIM
+      if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::StreamWorkAccepted,
+                                 e, "frontend/src/im2p_gemmini_frontend.cpp:publish"))
+        return IM2P_ERROR;
+#endif
+      // Only runtime-accepted publications are work. A retry/backpressure
+      // return must never allocate a trace sequence or increment trace count.
+#if IM2P_PRODUCTION_TRACE_ENABLED
+      if (trace_context)
+        trace_context->session->accepted(*trace_context,
+            production_trace::stripe(stripe_descriptor(), s, e.geometry,
+                                     trace_layer, e.slot));
+#endif
+#if CYCLE_SIM
+      if (cycle_sim_context)
+        cycle_sim_context.session->ensure_healthy();
+#endif
     }
     return result;
   }
@@ -1524,11 +1776,29 @@ struct Run::Impl {
              found->second.row_begin, found->second.row_end,
              extended.publish_cycle, extended.completion_cycle,
              extended.publish_to_completion_cycles});
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::StreamWorkCompleted,
+                                   found->second, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline completion owner declaration failed");
+          changed.notify_all();
+          return false;
+        }
+#endif
         if (residual_enabled()) {
           residual_pending.emplace(std::move(found->second));
           run_residual = true;
         } else {
           --outstanding;
+#if CYCLE_SIM
+          if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityRelease,
+                                     found->second, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+            final_status = make_status(StatusCode::execution_failure, route, native,
+                                       "pipeline capacity release declaration failed");
+            changed.notify_all();
+            return false;
+          }
+#endif
         }
         in_flight.erase(found);
         ++completion_count;
@@ -1593,7 +1863,27 @@ struct Run::Impl {
         rmd_stats = accumulated_stats;
         ++semantic_completion_count;
         ++semantic_generation;
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::ResidualCallbackCompleted,
+                                   event, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline residual owner declaration failed");
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+#endif
         --outstanding;
+#if CYCLE_SIM
+        if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityRelease,
+                                   event, "frontend/src/im2p_gemmini_frontend.cpp:poll")) {
+          final_status = make_status(StatusCode::execution_failure, route, native,
+                                     "pipeline capacity release declaration failed");
+          residual_pending.reset();
+          changed.notify_all();
+          return false;
+        }
+#endif
         residual_pending.reset();
         changed.notify_all();
       }
@@ -1715,7 +2005,14 @@ struct Run::Impl {
                               "failed to create residual IM2P simulator"));
       } else {
         auto d = stripe_descriptor();
+#if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
+        const auto g = geometry_snapshot(scalars, IM2P_GEOMETRY_STREAM, 0, scalars.i, 0);
+        const int result = options.production_geometry
+            ? im2p_begin_striped_matmul_planned(sim.get(), &d, &g, &raw)
+            : im2p_begin_striped_matmul(sim.get(), &d, &raw);
+#else
         const int result = im2p_begin_striped_matmul(sim.get(), &d, &raw);
+#endif
         if (result != IM2P_OK)
           set_error(from_c_status(result, route, "failed to start IM2P stream",
                                   native));
@@ -1762,6 +2059,7 @@ struct Run::Impl {
         std::unique_lock lock(mutex);
         if (ready.empty() && in_flight.empty() && !residual_pending &&
             lifecycle != Lifecycle::closing && final_status.ok()) {
+          HostStageTiming timing(options, "frontend.worker_queue_wait");
           changed.wait(lock, [&] {
             return !ready.empty() || !in_flight.empty() || residual_pending ||
                    lifecycle == Lifecycle::closing || !final_status.ok();
@@ -1775,8 +2073,16 @@ struct Run::Impl {
         if (!ready.empty() && raw_slot_available) {
           event = ready.front();
           ready.pop_front();
+#if CYCLE_SIM
+          if (!record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendQueueDequeue,
+                                     event, "frontend/src/im2p_gemmini_frontend.cpp:run_pipeline")) {
+            final_status = make_status(StatusCode::execution_failure, route, native,
+                                       "pipeline queue dequeue declaration failed");
+            changed.notify_all();
+          }
+#endif
           changed.notify_all();
-          have = true;
+          have = final_status.ok();
         } else if (ready.empty() && lifecycle == Lifecycle::closing) {
           if (next_row != scalars.i)
             final_status =
@@ -1849,6 +2155,13 @@ struct Run::Impl {
       else if (result != IM2P_OK)
         set_error(
             from_c_status(result, route, "IM2P stream fence failed", native));
+#if IM2P_PRODUCTION_TRACE_ENABLED
+      else if (trace_context)
+        // The runtime owns this acceptance counter; it is not computed from
+        // publication callbacks or from the op-trace writer's count.
+        trace_context->session->independent_count(
+            *trace_context, trace_layer, "dense_main", stats.base.stripes_published);
+#endif
     } else if (provider_failed) {
       set_error(make_status(StatusCode::execution_failure, route, native,
                             "IM2P provider callback failed"));
@@ -1895,6 +2208,12 @@ ArgsLayoutFingerprint compiled_args_layout_fingerprint() noexcept {
           offset(&args.col_stride_f_out),
           offset(&args.stride_f_out),
           offset(&args.tile_I)};
+}
+
+im2p_production_geometry_v1_t capture_production_geometry(
+    const ggml_gemmini_args_t &args, uint32_t scope, uint64_t row_begin,
+    uint64_t row_count, uint64_t stripe_id) noexcept {
+  return geometry_snapshot(snapshot_scalars(args), scope, row_begin, row_count, stripe_id);
 }
 
 ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
@@ -1985,8 +2304,36 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                         "failed to allocate IM2P run"),
             {}};
   auto &x = *run->impl_;
+#if CYCLE_SIM
+  cycle_sim::log::ScopedContext cycle_context(x.cycle_sim_context);
+  if (
+#if IM2P_PRODUCTION_TRACE_ENABLED
+      x.trace_context ||
+#endif
+      (x.cycle_sim_context &&
+      (!x.cycle_sim_context.operation_id || !options.production_geometry ||
+       options.full_executor || options.stream_executor))) {
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                 "CPU-functional work requires target context, not production optrace");
+    x.lifecycle = Run::Impl::Lifecycle::terminal;
+    return {x.final_status, std::move(run)};
+  }
+#endif
   const RoutePolicy policy = route_policy(x.route);
-  if (x.scu_route() && options.residual_stage_mode != ResidualStageMode::none)
+  const bool hp1_residual_supported =
+#if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1)
+      (x.route == Route::q4_hp1 || x.route == Route::q8_hp1) &&
+      options.residual_stage_fn &&
+      options.residual_stage_mode != ResidualStageMode::none;
+#elif defined(IM2P_FPGA_ARCH_GEMMINI_HP1)
+      (x.route == Route::q4_hp1 || x.route == Route::q8_hp1) &&
+      options.stream_executor && options.residual_stage_fn &&
+      options.residual_stage_mode == ResidualStageMode::im2p_compact;
+#else
+      false;
+#endif
+  if (x.scu_route() && options.residual_stage_mode != ResidualStageMode::none &&
+      !hp1_residual_supported)
     x.final_status = make_status(StatusCode::unsupported_route, x.route, x.native,
                                  "SCU residual radix and merge contract is not enabled");
   if (policy == RoutePolicy::deprecated) {
@@ -2002,6 +2349,30 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   if (!x.final_status.ok()) {
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
+  }
+#if IM2P_PRODUCTION_TRACE_ENABLED
+  if (x.trace_context && (!*x.trace_context || !options.production_geometry ||
+                          options.full_executor || options.stream_executor)) {
+    x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                 "optrace requires an owned phase and generic planned HP1 dispatch");
+    x.lifecycle = Run::Impl::Lifecycle::terminal;
+    return {x.final_status, std::move(run)};
+  }
+#endif
+  if (options.production_geometry) {
+#if defined(IM2P_SIM_IMPLEMENTATION_GEMMINI_HP1) && !defined(IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY)
+    const auto scope = mode == Mode::full ? IM2P_GEOMETRY_FULL : IM2P_GEOMETRY_STREAM;
+    const auto g = geometry_snapshot(x.scalars, scope, 0, x.scalars.i, 0);
+    if (options.full_executor || options.stream_executor ||
+        !geometry_matches(g, x.scalars, scope)) {
+#else
+    {
+#endif
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "explicit production geometry requires a valid generic HP1 plan");
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      return {x.final_status, std::move(run)};
+    }
   }
   if (!normalize_tile_count(x.scalars.tile_i, x.scalars.i, x.tile_i_rows) ||
       !normalize_tile_count(x.scalars.tile_j, x.scalars.j, x.tile_j_columns)) {
@@ -2135,6 +2506,43 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
     x.lifecycle = Run::Impl::Lifecycle::terminal;
     return {x.final_status, std::move(run)};
   }
+#if IM2P_PRODUCTION_TRACE_ENABLED
+  if (x.trace_context) {
+    try {
+      const auto scope = mode == Mode::full ? IM2P_GEOMETRY_FULL : IM2P_GEOMETRY_STREAM;
+      const auto geometry = geometry_snapshot(x.scalars, scope, 0, x.scalars.i, 0);
+      auto parent = mode == Mode::full
+          ? production_trace::full(x.full_descriptor(), geometry, x.trace_layer)
+          : production_trace::common(x.stripe_descriptor(), geometry, x.trace_layer);
+      parent.scope = mode == Mode::full ? "full" : "stripe";
+      parent.activation_stride_bytes = x.scalars.activation_row_stride_bytes;
+      x.trace_context = std::make_shared<const ggml::gemmini::optrace::Context>(
+          x.trace_context->session->parent_begin(*x.trace_context, parent));
+    } catch (...) {
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "optrace parent declaration failed");
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      return {x.final_status, std::move(run)};
+    }
+  }
+#endif
+#if CYCLE_SIM
+  if (x.cycle_sim_context) {
+    try {
+      x.cycle_sim_context = x.cycle_sim_context.session->new_dispatch(x.cycle_sim_context);
+      if (mode == Mode::stripe_pipeline &&
+          !x.cycle_sim_context.session->producer_parent_geometry(
+              x.cycle_sim_context,
+              geometry_snapshot(x.scalars, IM2P_GEOMETRY_STREAM, 0, x.scalars.i, 0)))
+        throw std::runtime_error("pipeline parent geometry declaration failed");
+    } catch (...) {
+      x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                   "cycle-sim dispatch declaration failed");
+      x.lifecycle = Run::Impl::Lifecycle::terminal;
+      return {x.final_status, std::move(run)};
+    }
+  }
+#endif
   {
     std::lock_guard lock(x.mutex);
     x.lifecycle = Run::Impl::Lifecycle::starting;
@@ -2142,7 +2550,15 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
       auto *impl_ptr = &x;
       x.worker = std::thread([impl_ptr] {
         auto &state = *impl_ptr;
+        if (state.options.worker_timing)
+          state.options.worker_timing(state.options.worker_timing_context, true);
         try {
+#if CYCLE_SIM
+          cycle_sim::log::ScopedContext cycle_context(state.cycle_sim_context);
+          cycle_sim::WorkCollector work_collector(state.cycle_sim_work_ids);
+          cycle_sim::DispatchEvents dispatch_events(state.cycle_sim_context);
+          cpu_functional::TimingRegistration timing_registration(dispatch_events.observer());
+#endif
           if (state.mode == Mode::full)
             state.run_full();
           else
@@ -2156,6 +2572,8 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
                                           state.route, state.native,
                                           "IM2P worker exception"));
         }
+        if (state.options.worker_timing)
+          state.options.worker_timing(state.options.worker_timing_context, false);
       });
       x.lifecycle = Run::Impl::Lifecycle::running;
     } catch (const std::bad_alloc &) {
@@ -2172,6 +2590,7 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
   }
   if (mode == Mode::stripe_pipeline) {
     std::unique_lock lock(x.mutex);
+    HostStageTiming startup_wait(x.options, "frontend.startup_wait");
     x.changed.wait(lock,
                    [&] { return x.startup_done || !x.final_status.ok(); });
     if (!x.final_status.ok())
@@ -2183,6 +2602,12 @@ ExecuteResult execute(const ggml_gemmini_args_t *args, Mode mode,
 
 Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
                      StripeMetadata metadata) noexcept {
+  return submit_stripe_planned(run, e, nullptr, metadata);
+}
+
+Status submit_stripe_planned(Run &run, const exsia::StripeReadyEvent &e,
+                             const im2p_production_geometry_v1_t *geometry,
+                             StripeMetadata metadata) noexcept {
   auto &x = *run.impl_;
   std::unique_lock lock(x.mutex);
   if (x.lifecycle != Run::Impl::Lifecycle::running ||
@@ -2197,6 +2622,13 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
       (x.bound_run && e.run_id != x.run_id))
     return make_status(StatusCode::invalid_argument, x.route, x.native,
                        "invalid stripe run, order, or bounds");
+  if (x.options.production_geometry != (geometry != nullptr) ||
+      (geometry && (!geometry_matches(*geometry, x.scalars, IM2P_GEOMETRY_STRIPE) ||
+                    geometry->row_begin != e.row_begin ||
+                    geometry->row_count != e.row_end - e.row_begin ||
+                    geometry->stripe_id != e.stripe_id)))
+    return make_status(StatusCode::invalid_contract, x.route, x.native,
+                       "missing or mismatched final stripe dispatch geometry");
   const size_t rows = e.row_end - e.row_begin,
                expected = x.scalars.activation_rows_per_stripe;
   if ((e.row_end != x.scalars.i && rows != expected) ||
@@ -2206,6 +2638,7 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
   if (x.outstanding >= Run::Impl::producer_slot_count) {
     ++x.blocked_producers;
     x.changed.notify_all();
+    HostStageTiming capacity_wait(x.options, "frontend.producer_capacity_wait");
     x.changed.wait(lock, [&] {
       return x.outstanding < Run::Impl::producer_slot_count ||
              !x.final_status.ok();
@@ -2232,6 +2665,7 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
   }
   Run::Impl::DenseEvent dense{e.run_id, e.stripe_id, e.slot, e.row_begin,
                               e.row_end, e};
+  if (geometry) dense.geometry = *geometry;
   try {
     x.ready.push_back(dense);
   } catch (const std::bad_alloc &) {
@@ -2248,12 +2682,27 @@ Status submit_stripe(Run &run, const exsia::StripeReadyEvent &e,
   ++x.outstanding;
   ++x.next_stripe;
   x.next_row = e.row_end;
+#if CYCLE_SIM
+  if (!x.record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendCapacityAcquire,
+                               dense, "frontend/src/im2p_gemmini_frontend.cpp:submit_stripe_planned") ||
+      !x.record_pipeline_owner(cycle_sim::log::ProducerEventKind::FrontendQueueEnqueue,
+                               dense, "frontend/src/im2p_gemmini_frontend.cpp:submit_stripe_planned")) {
+    x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                 "pipeline submission owner declaration failed");
+    x.changed.notify_all();
+    return x.final_status;
+  }
+#endif
   x.changed.notify_all();
   return make_status(StatusCode::success, x.route, x.native, "success");
 }
 
 FenceResult fence(Run &run) noexcept {
   auto &x = *run.impl_;
+#if CYCLE_SIM
+  cycle_sim::log::ScopedContext cycle_context(x.cycle_sim_context);
+  cycle_sim::log::Context fence_context;
+#endif
   const auto result_locked = [&x]() noexcept {
     FenceResult result{};
     result.status = x.final_status;
@@ -2286,15 +2735,30 @@ FenceResult fence(Run &run) noexcept {
       x.changed.notify_all();
     }
     if (x.join_in_progress) {
+      HostStageTiming waiter(x.options, "frontend.fence_wait");
       x.changed.wait(
           lock, [&] { return x.lifecycle == Run::Impl::Lifecycle::terminal; });
       return result_locked();
     }
     x.join_in_progress = true;
     worker = std::move(x.worker);
+#if CYCLE_SIM
+    if (x.cycle_sim_context) {
+      try {
+        fence_context = x.cycle_sim_context.session->call_begin(
+            x.cycle_sim_context, cycle_sim::log::CallKind::Fence);
+        fence_context.session->call_event(fence_context, cycle_sim::log::CallStage::Invoke);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim fence declaration failed");
+      }
+    }
+#endif
   }
-  if (worker.joinable())
+  if (worker.joinable()) {
+    HostStageTiming join_wait(x.options, "frontend.worker_join_wait");
     worker.join();
+  }
   {
     std::lock_guard lock(x.mutex);
     if (x.final_status.ok() && x.scu_route() &&
@@ -2312,9 +2776,49 @@ FenceResult fence(Run &run) noexcept {
       x.final_status = make_status(StatusCode::execution_failure, x.route,
                                    x.native,
                                    "incomplete residual stage coverage");
+#if IM2P_PRODUCTION_TRACE_ENABLED
+    if (x.final_status.ok() && x.trace_context) {
+      try {
+        x.trace_context->session->parent_end(*x.trace_context);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::invalid_contract, x.route, x.native,
+                                     "optrace parent completion failed");
+      }
+    }
+#endif
+#if CYCLE_SIM
+    if (x.final_status.ok() && fence_context) {
+      try {
+        fence_context.session->call_event(fence_context,
+            cycle_sim::log::CallStage::CompleteRequired, x.cycle_sim_work_ids);
+        fence_context.session->call_event(fence_context,
+            cycle_sim::log::CallStage::Fence);
+        fence_context.session->call_event(fence_context, cycle_sim::log::CallStage::Continuation);
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim fence completion failed");
+      }
+    }
+#endif
     if (x.final_status.ok() && x.mode == Mode::full && !x.output_committed) {
-      x.commit_output();
-      x.output_committed = true;
+#if CYCLE_SIM
+      if (x.cycle_sim_context) {
+        try {
+          x.cycle_sim_context.session->ensure_healthy();
+        } catch (...) {
+          x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                       "cycle-sim provenance failed before output commit");
+        }
+      }
+      if (x.final_status.ok()) {
+#endif
+      x.output_committed = x.commit_output();
+      if (!x.output_committed)
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "output publication provenance failed");
+#if CYCLE_SIM
+      }
+#endif
     }
     x.timing_view_frozen = true;
     x.join_in_progress = false;
@@ -2358,8 +2862,21 @@ Status authorize_output_commit(Run &run, bool rmd_succeeded) noexcept {
     return x.final_status;
   }
   if (!x.output_committed) {
-    x.commit_output();
-    x.output_committed = true;
+#if CYCLE_SIM
+    if (x.cycle_sim_context) {
+      try {
+        x.cycle_sim_context.session->ensure_healthy();
+      } catch (...) {
+        x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                     "cycle-sim provenance failed before output commit");
+        return x.final_status;
+      }
+    }
+#endif
+    x.output_committed = x.commit_output();
+    if (!x.output_committed)
+      x.final_status = make_status(StatusCode::execution_failure, x.route, x.native,
+                                   "output publication provenance failed");
   }
   return x.final_status;
 }

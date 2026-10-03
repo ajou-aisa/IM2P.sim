@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.gemmini_tools import build_environment
 from scripts.real_lib_manifest import (
     ArtifactRow,
     BuildConfig,
@@ -21,6 +22,12 @@ from scripts.real_lib_manifest import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def integrated_build_environment(args: argparse.Namespace) -> dict[str, str]:
+    if args.implementation != "GEMMINI_HP1":
+        return dict(os.environ)
+    return dict(build_environment(args.gemmini_work_root))
 
 
 def _input_rows(paths: tuple[Path, ...]) -> list[ArtifactRow]:
@@ -124,9 +131,7 @@ def verilator_runtime_inputs(command: str) -> tuple[Path, ...]:
 def collect_toolchain(
     args: argparse.Namespace,
 ) -> tuple[dict[str, ToolIdentity], BuildConfig]:
-    bsc_inputs = tuple(
-        Path(args.bsc_verilog) / name for name in ("RegFile.v", "FIFO2.v", "BRAM1.v")
-    )
+    environment = integrated_build_environment(args)
     cargo_home = Path(
         os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))
     )
@@ -138,7 +143,6 @@ def collect_toolchain(
     tools: dict[str, ToolIdentity] = {
         "cxx": tool_identity(args.cxx),
         "ar": tool_identity(args.ar),
-        "bsc": tool_identity(args.bsc, bsc_inputs),
         "verilator": tool_identity(
             args.verilator, verilator_runtime_inputs(args.verilator)
         ),
@@ -146,10 +150,25 @@ def collect_toolchain(
         "cargo": tool_identity(args.cargo, cargo_inputs),
         "make": tool_identity(os.environ.get("MAKE", "make").split()[0]),
     }
+    if args.implementation == "GEMMINI_HP1":
+        firtool_path = Path(environment.get("CHISEL_FIRTOOL_PATH", "")) / "firtool"
+        java_home = environment.get("JAVA_HOME")
+        tools.update({
+            "java": tool_identity(
+                str(Path(java_home) / "bin" / "java") if java_home else "java"
+            ),
+            "sbt": tool_identity("sbt"),
+            "firtool": tool_identity(str(firtool_path)),
+        })
+    else:
+        bsc_inputs = tuple(
+            Path(args.bsc_verilog) / name
+            for name in ("RegFile.v", "FIFO2.v", "BRAM1.v")
+        )
+        tools["bsc"] = tool_identity(args.bsc, bsc_inputs)
     builder = Path(args.builder).resolve(strict=True) if args.builder else None
     config: BuildConfig = {
-        "bsc_verilog": str(Path(args.bsc_verilog).resolve(strict=True)),
-        "bsc_extra_flags": args.bsc_extra_flags,
+        "implementation": args.implementation,
         "cargo_encoded_rustflags": os.environ.get("CARGO_ENCODED_RUSTFLAGS", ""),
         "rustflags": os.environ.get("RUSTFLAGS", ""),
         "sdkroot": os.environ.get("SDKROOT", ""),
@@ -157,6 +176,17 @@ def collect_toolchain(
         "builder": str(builder) if builder else "",
         "builder_sha256": sha256(builder) if builder else "",
     }
+    if args.implementation == "GEMMINI_HP1":
+        config.update({
+            "gemmini_work_root": str(args.gemmini_work_root.resolve()),
+            "java_home": environment.get("JAVA_HOME", ""),
+            "chisel_firtool_path": environment.get("CHISEL_FIRTOOL_PATH", ""),
+        })
+    else:
+        config.update({
+            "bsc_verilog": str(Path(args.bsc_verilog).resolve(strict=True)),
+            "bsc_extra_flags": args.bsc_extra_flags,
+        })
     for name in (
         "ARFLAGS", "CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS",
         "LDFLAGS", "RUSTC_WRAPPER", "RUSTDOCFLAGS",
@@ -180,6 +210,7 @@ def identity_fingerprint(
         sys.executable, str(ROOT / "scripts/real_matrix_fingerprint.py"),
         "--bits", str(args.bits), "--weight-bits", str(args.weight_bits),
         "--dim", str(args.dim), "--block-size", str(args.block_size),
+        "--implementation", args.implementation,
         "--gemmini-root", str(args.gemmini_root),
         "--params-root", str(args.params_root),
     ]

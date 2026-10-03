@@ -1,0 +1,11 @@
+{
+  "schema": "im2p-cycle-corpus-authority",
+  "version": 5,
+  "revision": "cycle-sim-cbe-source-equivalent-base-gemm-v5",
+  "scope": "isolated-base-gemm-source-equivalent-package",
+  "v4_manifest_sha256": "1d260ac7ff24ead5796fba52f9b47b7fe7f983dfed2650b706c67bb775b10dbf",
+  "producer_base_head": "cbe3530468c1e3d50aca3b4b3bd817fc6ea72158",
+  "dependency_lock_sha256": "42fde25a10dd6f861deb6fa7b9be60f9e47b59ee466c170b965fc1476119a034",
+  "source_manifest_sha256": "8a85d43fe694b12d46bd1d7588c00dc115c41950b17555493a8f7affd79a8da8",
+  "embedded_package_authority_sha256": "7add3fd188167e11e047f36647e0a28ea567ef8a7dcc3f6c28971c58bac5bb18"
+}

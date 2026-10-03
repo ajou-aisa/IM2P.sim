@@ -78,13 +78,14 @@ import os
 from pathlib import Path
 root = Path(os.environ['IM2P_CACHE_STAGE_BUILD_DIR'])
 identity = os.environ['IM2P_CACHE_ARTIFACT_ID']
+implementation = os.environ['IM2P_SIM_IMPLEMENTATION']
 count = Path(os.environ['IM2P_TEST_BUILD_COUNT'])
 count.write_text(count.read_text() + 'x' if count.exists() else 'x')
-(root / 'lib' / identity).mkdir(parents=True)
-(root / 'lib' / identity / 'libim2p_gemmini_frontend.a').write_bytes(b'frontend')
-(root / 'cargo' / identity / 'release').mkdir(parents=True)
-(root / 'cargo' / identity / 'release' / 'libim2p_sim.a').write_bytes(b'simulator')
-obj = root / 'verilator' / identity / 'obj_dir'
+(root / 'lib' / implementation / identity).mkdir(parents=True)
+(root / 'lib' / implementation / identity / 'libim2p_gemmini_frontend.a').write_bytes(b'frontend')
+(root / 'cargo' / implementation / identity / 'release').mkdir(parents=True)
+(root / 'cargo' / implementation / identity / 'release' / 'libim2p_sim.a').write_bytes(b'simulator')
+obj = root / 'verilator' / implementation / identity / 'obj_dir'
 obj.mkdir(parents=True)
 (obj / 'Vmodel.h').write_bytes(b'header')
 (obj / 'Vmodel.a').write_bytes(b'model')
@@ -106,11 +107,12 @@ obj.mkdir(parents=True)
         cold = run(*args, env=env)
         assert cold.returncode == 0, cold.stdout
         assert "state=rebuild" in cold.stdout and count.read_text() == "x"
-        current = temp / "build/selected/a4-w4-d16/current"
+        current = temp / "build/selected/LEGACY_BSV/a4-w4-d16/current"
         assert current.is_symlink(), "selected pair must use one atomic generation pointer"
         manifest_path = current / "real-lib.json"
         manifest = json.loads(manifest_path.read_text())
         assert manifest["identity"]["block_size"] == 32
+        assert manifest["identity"]["implementation"] == "LEGACY_BSV"
         assert manifest["identity"]["platform"] and manifest["identity"]["arch"]
         assert set(manifest["toolchains"]) == {
             "cxx", "ar", "bsc", "verilator", "rustc", "cargo", "make"
@@ -168,7 +170,7 @@ obj.mkdir(parents=True)
         assert count.read_text() == "x", repaired.stdout
 
         cache_manifest = Path(manifest["cache_manifest"])
-        cache_artifact = cache_manifest.parent / "artifacts/lib/a4-w4-d16/libim2p_gemmini_frontend.a"
+        cache_artifact = cache_manifest.parent / "artifacts/lib/LEGACY_BSV/a4-w4-d16/libim2p_gemmini_frontend.a"
         cache_artifact.write_bytes(b"tampered-cache")
         tamper = run(*args, env=env)
         assert tamper.returncode == 0 and "reason=tamper" in tamper.stdout
@@ -214,7 +216,7 @@ obj.mkdir(parents=True)
         interrupted_args = cache_args(temp, fixture, failing)
         interrupted = run(*interrupted_args, env=env)
         assert interrupted.returncode == 17
-        staging = temp / "build/cache/real-lib/staging"
+        staging = temp / "build/cache/real-lib/LEGACY_BSV/staging"
         assert not list(staging.iterdir()), "interrupted staging was published or leaked"
 
         fixture.write_text("source-v2\n", encoding="utf-8")

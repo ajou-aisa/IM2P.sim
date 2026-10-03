@@ -1,0 +1,101 @@
+{
+  "case_count": 30,
+  "initial_halves": [
+    0,
+    0
+  ],
+  "period": 5,
+  "phase_vectors": [
+    [
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      2,
+      2,
+      2,
+      2
+    ],
+    [
+      3,
+      3,
+      3,
+      3
+    ],
+    [
+      4,
+      4,
+      4,
+      4
+    ]
+  ],
+  "producer_commit": "cbe3530468c1e3d50aca3b4b3bd817fc6ea72158",
+  "producer_dirty_diff_sha256": "798d6b19cda093378b018892511ee60fedfb8ec9239baa4bedadc94b0dd9db61",
+  "profiles": {
+    "a4w4-d16-hp1": {
+      "hardware_contract_sha256": "7c58d1763cfcb950110e06f0ae5d7c03fbac89311f0e492845eb87255513e9f0",
+      "lifecycle_sha256": "1874dcf7e92495c86925db0cd5baf3186d62e3eae3b70110818af2a2f7d7293c",
+      "receipt_sha256": "17249a1d76bf68956b69400d71bdb14fb839baf70b373abc7f2c1de84a1f60c0",
+      "semantic_graph_sha256": "d17e775f4201b12d0ea241fef1bc783277e8aef9f8381374d109d2002c0fbc6a",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "e6974d3416f917094bda7b8e70189489c3b3bc9b615c75c810ecd31c3949936a"
+    },
+    "a4w4-d32-hp1": {
+      "hardware_contract_sha256": "8cd40da4a431975aad250314e4d32cae3c07329cb24a35eed08e42e32b168825",
+      "lifecycle_sha256": "159ce29972f7d9c7e91f77f76f8a834fc078ddd27b728638ac34b302c824a557",
+      "receipt_sha256": "ea33507465efc9a20d381bba5c8c6a5cb26ca634a32e8254743d8fd364b7c51c",
+      "semantic_graph_sha256": "8ff8653d53c8dca9abd0c8ed34a452f0c7cfd6aeef93962376a8413f8d6be2fc",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "e9b14d294619cd01ffb24a130cf016bd03473f33b1d44de1c2a76bebaf7af5ee"
+    },
+    "a4w4-d64-hp1": {
+      "hardware_contract_sha256": "b865e70097c6a42523209444b517a84d0deeea9df55478cae54e17ed5fd6fe39",
+      "lifecycle_sha256": "001069c58e8130ac411cfb4ce584924325093e5825b7334d47e54ef4a5e458d9",
+      "receipt_sha256": "d8b2ad2491257dcbdae837cab989d7f6187437020c44ff165958ce927b0a91fa",
+      "semantic_graph_sha256": "ba5e79eb17fd7c2d0db7408f84ac8c1fcdc41b7064cc0d09597d7537443e2d97",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "52265411c288cd31f55a33ced9eab791ad0770d9783617c3caf3ea243e7239f7"
+    },
+    "a8w8-d16-hp1": {
+      "hardware_contract_sha256": "8b3867a5d0d6be296337a3e8720d1678d4bd38e211f167cbf7e1a8453f4e07d7",
+      "lifecycle_sha256": "de7d44376f26e2e1c698669094f7a3f88fe266cbafaa24c181195e90790c2b5c",
+      "receipt_sha256": "5c060412a8785180d05e0863adc86b66a8da0c7a0797500ae2e07c09173a4d57",
+      "semantic_graph_sha256": "07b2c1ae28ec792b4f68017ff7f81b8e065b8dd9a06ec4d086693962b867b761",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "ae9f390f85fdbffb5b51575b964bd70b4864dc90a744534e5c38cdce3282db78"
+    },
+    "a8w8-d32-hp1": {
+      "hardware_contract_sha256": "be6ee1167e2fb2f5a4144e20e9673d189d7bdeea2b2143f171164a924d4e9417",
+      "lifecycle_sha256": "c3dfdb23c424f673c283f3d081b6d9ade344f3bcc54d918336ce9c58ecdb1778",
+      "receipt_sha256": "4bc1344e0c36b8145fb481cd39870309c6978b28537b789ef455b6937b0ed6d9",
+      "semantic_graph_sha256": "40211cea3b03e455b4a709f45e413360fe4d86f47916e741737cb164170bb263",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "e39b73229ffe2f858951cc86918f8eba869f456397ffc42efc02b30207176508"
+    },
+    "a8w8-d64-hp1": {
+      "hardware_contract_sha256": "07b1cf8ef18049c174de76b4a0e4dd519b7c7652e9f97ee0e45f963c5e3da2f0",
+      "lifecycle_sha256": "565b5c4ffa4b8089926b8edf8af8a9bbf1f948bc6360ffbafbdff4b3b13bec20",
+      "receipt_sha256": "5f1249093f343e9199e99c5bae331357c3457ff6a85b368ab71ac46df05c0fb1",
+      "semantic_graph_sha256": "56013324c35540f9e2e3aaea16a5b5c9520fbbab1b90f5e89f16dcef80430969",
+      "source_manifest_sha256": "1ee22f6016a26015d0a2374918c61100b866d5312a9794bcd0d6f8510b22ae2d",
+      "trace_sha256": "bd0e24e7d89d0ba584b16c9ba05d1db34bca419a8bf95852a3252f4aeb2eee9f"
+    }
+  },
+  "schema": "im2p-production-drained-sequence-corpus",
+  "scope": "native-production-dispatch-fixture",
+  "version": 1,
+  "work_ids": [
+    0,
+    1,
+    2,
+    3
+  ]
+}

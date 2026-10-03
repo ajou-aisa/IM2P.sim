@@ -40,11 +40,28 @@ impl Im2pSimulator {
     }
 
     pub(crate) fn begin_striped_matmul_provider_recover<'a>(
+        self,
+        descriptor: &StripeWorkDesc<'a>,
+        layout: StripeLayout,
+        provider: Option<MemoryProvider>,
+        provider_block_size: Option<usize>,
+    ) -> Result<StripedMatmul<'a>, (Error, Self)> {
+        self.begin_striped_matmul_provider_with_geometry_recover(
+            descriptor,
+            layout,
+            provider,
+            provider_block_size,
+            None,
+        )
+    }
+
+    pub(crate) fn begin_striped_matmul_provider_with_geometry_recover<'a>(
         mut self,
         descriptor: &StripeWorkDesc<'a>,
         layout: StripeLayout,
         provider: Option<MemoryProvider>,
         provider_block_size: Option<usize>,
+        geometry: Option<&crate::production_geometry::ProductionGeometry>,
     ) -> Result<StripedMatmul<'a>, (Error, Self)> {
         if let Err(error) = validate_descriptor(
             descriptor,
@@ -109,8 +126,7 @@ impl Im2pSimulator {
             Err(error) => return Err((error, self)),
         };
         let start_cycle = self.cycles();
-        let accepted = unsafe { ffi::im2p_start_matmul(self.handle.as_ptr(), &rtl) };
-        if let Err(error) = self.require_ready("start_striped_matmul", accepted) {
+        if let Err(error) = self.start_matmul_geometry(&rtl, geometry, "start_striped_matmul") {
             return Err((error, self));
         }
         Ok(StripedMatmul {

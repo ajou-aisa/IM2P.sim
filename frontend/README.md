@@ -1,17 +1,15 @@
-# 선택적 Gemmini C++ 프런트엔드
+# Optional Gemmini-compatible C++ frontend
 
-> 수치 계약은 명시적으로 선택한다. 현재 bounded FPGA의 `main_external`은
-> main의 block raw output·host reconstruction·checked residual merge를 보존한다.
-> 별도 `scu_final_integer` 계약은 ABI5/op4·5에서 RTL block scale을 적용하며
-> residual-enabled 실행을 거부한다. 두 raw domain은 서로 비교하지 않는다.
-> [현재 stripe/provider 계약](../docs/HOST_STRIPE_CONTRACT.md)과
-> [SCU final-integer 보고서](../docs/SCU_BLOCK_SCALE_FIX.md)를 구분한다.
-
-아래 simulator handle·clock 설명은 기존 main/R1 시뮬레이터 경로다.
-Bounded FPGA는 같은 frontend의 dense/residual 순서를 한 physical core에서
-직렬 실행하며, residual dot을 별도 simulator나 CPU dot으로 대체하지 않는다.
-`rtl:`은 synthesis core/provider simulation, `uart4:`는 같은 core의 bulk UART
-transport를 명시적으로 선택한다. 장치 열기는 실제 실행 때만 수행한다.
+The shared API/ABI and numerical contracts are described in
+[API_CONTRACT](../docs/API_CONTRACT.md) and
+[NUMERICAL_CONTRACT](../docs/NUMERICAL_CONTRACT.md). The detailed simulator worker,
+legacy operation and independent dense/residual handle behavior below belongs to
+the retained simulator frontend. A separate residual handle is a simulator
+ownership/clock-domain boundary, not a separate HP1 numerical datapath: production
+HP1 residual work uses normal scaled HP1 execution with `rmdRaw=false`. The
+integrated Gemmini external-executor path is validated separately; these
+descriptions do not claim every legacy operation is accepted by GEMMINI_HP1. No
+physical deployment transport is provided here.
 
 `frontend/include/im2p_gemmini_frontend.hpp`는 `ggml_gemmini_args_t`를 IM2P C ABI에 연결하는 선택적 어댑터이며, 시뮬레이터가 이를 소유한다. 모든 route는 activation/weight width와 storage identity를 포함하는 단일 canonical ABI를 사용한다. Typed provider transport는 W4/W8/W16을 구분하고 raw signed-32 output은 유지한다. 기본 IM2P 빌드는 llama 헤더를 포함하지도 요구하지도 않는다.
 
@@ -39,9 +37,13 @@ transport를 명시적으로 선택한다. 장치 열기는 실제 실행 때만
 
 Production matched ExSIA route에서 H1/HP1은 A4/Q4, A8/Q8, A16/Q16의
 width-matched artifact와 typed provider ABI를 사용해 별도 IM2P.sim residual
-handle에서 실행한다. H0는 FULL/PIPELINE 모두 CPU-direct이고 compact simulator
-call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시작 전에 fail
-closed하며 checked software, physical Gemmini, 다른 route로 fallback하지 않는다.
+handle에서 실행한다. HP1 residual의 NPU work는 normal scaled HP1 경로,
+`DENSE_HP1_FINAL`, `rmdRaw=false`를 사용하고 SCU/Sat32 이후 host integer block
+multiply를 수행하지 않는다. CPU는 balanced-radix recomposition과 최종 floating
+merge만 소유한다. H0는 FULL/PIPELINE 모두 명시적 CPU-direct이고 compact
+simulator call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시작 전에
+fail closed하며 checked software, physical Gemmini, 다른 route로 fallback하지
+않는다.
 
 Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_h1`, `q4_hp1`,
 `q16_h0`, `q16_h1`, `q16_hp1`을 수치 실행 경로에서 지원한다. Matched route는
@@ -57,17 +59,17 @@ Channel route는 RTL `VectorBypass`에서 정수 dot product를 실행하고 cha
 
 두 route 모두 worker를 시작하지 않으며 원시 `q8_h0`로 fallback하지도 않는다. 프런트엔드는 전체 operand의 전치, 언패킹, 역양자화, 복사를 수행하지 않는다.
 
-RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-extend하고 canonical ABI의 기존 signed64 provider callback을 유지한다. Raw output storage는 signed32이며 기존 최종 saturation을 유지한다. RTL의 중간 wrap과 provider의 block별 double reconstruction/RMD merge는 다른 수치 경계다. Overflow-free 입력에서만 이전 INT64 reference와 exact equality를 요구한다.
+RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-extend하고 canonical ABI의 기존 signed64 provider callback을 유지한다. Raw output storage는 signed32이며 기존 최종 saturation을 유지한다. Legacy op0..3의 중간 wrap과 provider의 block별 double reconstruction/RMD merge는 다른 수치 경계다. ABI5 op4/5의 fragment saturation은 현재 numerical contract를 따른다. Overflow-free 입력에서만 이전 INT64 reference와 exact equality를 요구한다.
 
 선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `q8_h1_block_count`, `q8_h1_rows`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
 
 `q8_h2`와 `q8_hp2`의 선택 정보는 route-contract 검사 목적으로만 보존하며 수치 실행에는 사용하지 않는다.
 
-`activation_row_offset`는 메타데이터로만 복사한다. 원시 ABI descriptor는 이 값을 사용하지 않으므로, 실행 시점에 A가 이미 첫 activation 행을 가리켜야 한다. `tile_I`와 `tile_J`는 Gemmini tile 수다.
+`activation_row_offset`는 메타데이터로만 복사한다. 원시 ABI descriptor는 이 값을 사용하지 않으므로, 실행 시점에 A가 이미 첫 activation 행을 가리켜야 한다. `tile_I`, `tile_J`, `tile_K`는 production Gemmini tiler가 선택한 DIM-count factor다.
 
-각각에 `DIM`을 곱한 뒤 문제 범위와 RTL `DIM` tile 하나로 제한한다. 0은 tile 하나를 뜻하며 곱셈 오버플로는 거부한다. `tile_K`도 메타데이터로만 복사하며 원시 ABI의 reduction tiling은 변경하지 않는다.
+Legacy descriptor의 bounded I/J extent는 기존 ABI 호환을 위해 유지하지만, 현재 production route는 additive `im2p_production_geometry_v1_t` companion으로 원래의 I/J/K tile-count factor와 stripe identity를 C ABI/Rust/runtime까지 그대로 전달한다. Runtime lowerer는 이 companion을 검증한 뒤 사용하며 재-tiling하지 않는다. Companion이 없거나 shape/factor/stripe identity가 불일치하면 fail closed한다.
 
-K 실행은 `K`와 `block_size_k`로 결정한다.
+실제 K work는 `K`, block32 boundary와 전달된 production tile geometry를 함께 사용해 lowerer가 fragment로 전개한다.
 
 Residual-enabled 파이프라인에서는 전용 worker 하나가 dense stream simulator와 residual simulator의 두 handle을 생성·호출·파기한다. Raw dense in-flight depth는 1이며 accepted/raw-complete/RMD-pending을 포함한 semantic producer capacity는 2다. 순서는 `raw dense completion -> per-stripe residual execute -> checked merge -> semantic completion -> next dense`이고, capacity는 raw completion이 아니라 semantic completion에서 해제된다. 원시 `IM2P_BACKPRESSURE`는 내부에서 처리하며 high-level backpressure는 수락되지 않은 event를 뜻한다. Residual callback이 없는 일반 frontend route의 기존 lookahead 동작은 그대로다.
 
@@ -81,7 +83,7 @@ watchdog은 RTL의 완료된 K fragment 카운터가 바뀌거나 matched stripe
 
 이 호스트 wall-clock 대기는 RTL의 논리 대기 사이클이 아니다. 성능 cycle의 기준값은 IM2PCore 내부 RTL telemetry다. External C++ Host는 `execute`/`submit_stripe`/`fence`를 사용하고, Simulation Bridge는 clock과 A/W/S/C I/O를 구동하며 RTL counter를 읽는다.
 
-Frontend worker 반복 횟수와 native provider wall-clock은 `total_cycles`에 반영하지 않는다. Model은 on-core scale cache와 resident weight-bank state를 기능적으로 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, clock frequency는 포함하지 않는다. Host pointer access는 zero-time이다.
+Frontend worker 반복 횟수와 native provider wall-clock은 `total_cycles`에 반영하지 않는다. LEGACY_BSV model은 on-core scale cache와 resident weight-bank state를 기능적으로 포함하지만 CPU execution, host/SoC DRAM, cache timing, scratchpad, DMA, interconnect, clock frequency는 포함하지 않는다. Host pointer access는 zero-time이다.
 
 Dense와 residual handle은 서로 다른 `VerilatedContext`, RTL state, clock을 소유한다. 두 domain의 cycle duration은 비가산이며 unified RTL timing, shared-core contention/context-switch cost, 또는 physical Gemmini 실행을 뜻하지 않는다. Frontend/Verilator runtime과 RTL counter만으로는 CPU/NPU 공통 시간, 물리적 ns/GHz/Fmax, silicon 성능을 확립할 수 없다.
 
