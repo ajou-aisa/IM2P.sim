@@ -45,7 +45,7 @@ simulator call은 0이다. H2/HP2와 unsupported mixed precision은 worker 시�
 fail closed하며 checked software, physical Gemmini, 다른 route로 fallback하지
 않는다.
 
-Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_h1`, `q4_hp1`,
+Generic frontend에서는 기존 Q8 route와 matched `q4_h0`, `q4_hp1`,
 `q16_h0`, `q16_h1`, `q16_hp1`을 수치 실행 경로에서 지원한다. Matched route는
 FULL/PIPELINE 모두 packed GGUF block에서 요청된 lane만 decode한다. 전체
 모드에서 A와 B는 Run 수명 동안 유효하고 변경되지 않아야 하는 차용 입력
@@ -61,7 +61,7 @@ Channel route는 RTL `VectorBypass`에서 정수 dot product를 실행하고 cha
 
 RTL Accumulator는 A4/A8 signed32, A16 signed64다. Bridge는 A4/A8을 sign-extend하고 canonical ABI의 기존 signed64 provider callback을 유지한다. Raw output storage는 signed32이며 기존 최종 saturation을 유지한다. Legacy op0..3의 중간 wrap과 provider의 block별 double reconstruction/RMD merge는 다른 수치 경계다. ABI5 op4/5의 fragment saturation은 현재 numerical contract를 따른다. Overflow-free 입력에서만 이전 INT64 reference와 exact equality를 요구한다.
 
-선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `q8_h1_block_count`, `q8_h1_rows`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h1_blocks`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
+선택해 복사하는 스칼라는 `I`, `J`, `K`, `sA`, `sB`, `sC`, `sD`, `activation_row_offset`, `activation_rows_per_stripe`, `block_size_k`, `tile_I`, `tile_J`, `tile_K`, `blocks_K`, `blocks_J`, `blocks_I`, `stripe_J`, `blocks_per_row`, `q8_h2_block_count`, `q8_h2_blocks_per_row`, `q8_hp1_block_count`, `q8_hp1_blocks_per_row`, `q8_hp2_block_count`, `q8_hp2_blocks_per_row`, `weight_channel_scale_count`, `q8_channel_row_stride`, `q8_channel_row_count`, `col_stride_f_out`, `stride_f_out`, `weight_format`, `scale_B`, `scale_D`, `scale`, `bert_scale`, `transpose_A`, `transpose_B`, `full_C`, `low_D`, `repeating_bias`, `weight_i8_scale_active`, `act`다. 선택해 복사하는 포인터는 `A`, `B`, `C`, `D`, `A_fp32`, `B_fp32`, `B_blocks`, `B_scales`, `weight_channel_scales`, `q8_channel_row_base`, `q8_h2_blocks`, `q8_hp1_blocks`, `q8_hp2_blocks`, `c_b`, `s_rf`, `R`, `s_rf_stripe`, `R_stripe`, `f_out`, `model_arch`, `exsia_stripe_ready_sink`, `unpacked.blocks`다. 지원 route에서 선택한 포인터는 해당 provider가 실행 중에 직접 사용한다.
 
 `q8_h2`와 `q8_hp2`의 선택 정보는 route-contract 검사 목적으로만 보존하며 수치 실행에는 사용하지 않는다.
 

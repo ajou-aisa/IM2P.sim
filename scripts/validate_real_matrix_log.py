@@ -21,7 +21,9 @@ ROW_SEQUENCE_RE = re.compile(r"\bpublished_row_sequence=(none|\d+(?:,\d+)*)\b")
 
 def expected_routes(bits: int) -> tuple[str, ...]:
     if bits == 8:
-        return ("q8_h1",)
+        return ("q8_h0",)
+    if bits == 4:
+        return ("q4_h0", "q4_hp1")
     prefix = f"q{bits}"
     return (f"{prefix}_h0", f"{prefix}_h1", f"{prefix}_hp1")
 

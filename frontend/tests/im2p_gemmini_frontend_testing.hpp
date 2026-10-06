@@ -20,8 +20,7 @@ struct RunTestAccess {
     const void *c_b = nullptr, *s_rf = nullptr, *r = nullptr;
     const void *s_rf_stripe = nullptr, *r_stripe = nullptr;
     size_t stripe_j = 0;
-    const void *q8_h1 = nullptr;
-    size_t q8_h1_count = 0, q8_h1_rows = 0, blocks_per_row = 0;
+    size_t blocks_per_row = 0;
     const void *q8_h2 = nullptr;
     size_t q8_h2_count = 0, q8_h2_blocks_per_row = 0;
     const void *q8_hp1 = nullptr;

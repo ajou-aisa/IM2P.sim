@@ -252,8 +252,6 @@ Route classify_format(const ggml_gemmini_args_t &args) noexcept {
     return Route::q8_h0;
   case F::q8_h2:
     return Route::q8_h2;
-  case F::q8_h1:
-    return Route::q8_h1;
   case F::q8_hp1:
     return Route::q8_hp1;
   case F::q8_hp2:
@@ -264,8 +262,6 @@ Route classify_format(const ggml_gemmini_args_t &args) noexcept {
     return Route::q8_channel_dense_sidecar;
   case F::q4_h0:
     return Route::q4_h0;
-  case F::q4_h1:
-    return Route::q4_h1;
   case F::q4_hp1:
     return Route::q4_hp1;
   case F::q16_h0:
@@ -280,8 +276,6 @@ Route classify_format(const ggml_gemmini_args_t &args) noexcept {
 
 bool native_contract(const ggml_gemmini_args_t &args, Route route) noexcept {
   switch (route) {
-  case Route::q8_h1:
-    return wroute::is_q8_h1_args(args) && args.has_q8_h1_im2p_contract();
   case Route::q8_h2:
     return wroute::is_q8_h2_args(args) && args.has_q8_h2_im2p_contract();
   case Route::q8_hp1:
@@ -294,7 +288,6 @@ bool native_contract(const ggml_gemmini_args_t &args, Route route) noexcept {
   case Route::q8_channel_dense_sidecar:
     return false;
   case Route::q4_h0:
-  case Route::q4_h1:
   case Route::q4_hp1:
   case Route::q16_h0:
   case Route::q16_h1:
@@ -316,7 +309,6 @@ enum class RoutePolicy : uint8_t {
 uint8_t route_weight_bits(Route route) noexcept {
   switch (route) {
   case Route::q4_h0:
-  case Route::q4_h1:
   case Route::q4_hp1:
     return 4;
   case Route::q16_h0:
@@ -326,7 +318,6 @@ uint8_t route_weight_bits(Route route) noexcept {
   case Route::q8_0_unpacked_to_h1:
   case Route::q8_h0:
   case Route::q8_h2:
-  case Route::q8_h1:
   case Route::q8_hp1:
   case Route::q8_hp2:
   case Route::q8_channel:
@@ -343,12 +334,10 @@ RoutePolicy route_policy(Route route) noexcept {
   case Route::q8_h0:
     return RoutePolicy::legacy;
   case Route::q8_0_unpacked_to_h1:
-  case Route::q8_h1:
   case Route::q8_hp1:
   case Route::q8_channel:
   case Route::q8_channel_dense_sidecar:
   case Route::q4_h0:
-  case Route::q4_h1:
   case Route::q4_hp1:
   case Route::q16_h0:
   case Route::q16_h1:
@@ -385,8 +374,6 @@ bool provider_route_contract(const ggml_gemmini_args_t &a,
            (striped ? (a.s_rf_stripe != nullptr && a.R_stripe != nullptr)
                     : (a.s_rf != nullptr && a.R != nullptr));
   }
-  case Route::q8_h1:
-    return wroute::is_q8_h1_args(a) && a.has_q8_h1_im2p_contract();
   case Route::q8_hp1:
     return wroute::has_q8_hp1_native_contract(a);
   case Route::q8_channel:
@@ -395,7 +382,6 @@ bool provider_route_contract(const ggml_gemmini_args_t &a,
   case Route::q8_channel_dense_sidecar:
     return a.has_q8_channel_dense_sidecar_contract();
   case Route::q4_h0:
-  case Route::q4_h1:
   case Route::q4_hp1:
     return a.A.bits == 4 && a.has_native_matched_width_contract();
   case Route::q16_h0:
@@ -471,7 +457,7 @@ struct ScalarSnapshot {
   size_t tile_i = 0, tile_j = 0, tile_k = 0;
   size_t blocks_k = 0, blocks_j = 0, blocks_i = 0;
   size_t stripe_j = 0;
-  size_t q8_h1_count = 0, q8_h1_rows = 0, blocks_per_row = 0;
+  size_t blocks_per_row = 0;
   size_t q8_h2_count = 0, q8_h2_blocks_per_row = 0;
   size_t q8_hp1_count = 0, q8_hp1_blocks_per_row = 0;
   size_t q8_hp2_count = 0, q8_hp2_blocks_per_row = 0;
@@ -495,9 +481,9 @@ struct PointerSnapshot {
   const void *a_fp32 = nullptr, *b_fp32 = nullptr, *b_blocks = nullptr,
              *b_scales = nullptr;
   const void *channel_scales = nullptr, *channel_rows = nullptr;
-  const void *q8_h1 = nullptr, *q8_h2 = nullptr, *q8_hp1 = nullptr,
+  const void *q8_h2 = nullptr, *q8_hp1 = nullptr,
              *q8_hp2 = nullptr;
-  const void *q4_h0 = nullptr, *q4_h1 = nullptr, *q4_hp1 = nullptr,
+  const void *q4_h0 = nullptr, *q4_hp1 = nullptr,
              *q16_h0 = nullptr, *q16_h1 = nullptr, *q16_hp1 = nullptr;
   const void *c_b = nullptr, *s_rf = nullptr, *r = nullptr,
              *s_rf_stripe = nullptr, *r_stripe = nullptr;
@@ -523,8 +509,6 @@ ScalarSnapshot snapshot_scalars(const ggml_gemmini_args_t &a) noexcept {
           a.blocks_J,
           a.blocks_I,
           a.stripe_J,
-          a.q8_h1_block_count,
-          a.q8_h1_rows,
           a.blocks_per_row,
           a.q8_h2_block_count,
           a.q8_h2_blocks_per_row,
@@ -591,12 +575,10 @@ PointerSnapshot snapshot_pointers(const ggml_gemmini_args_t &a) noexcept {
           a.B_scales,
           a.weight_channel_scales,
           a.q8_channel_row_base,
-          a.q8_h1_blocks,
           a.q8_h2_blocks,
           a.q8_hp1_blocks,
           a.q8_hp2_blocks,
           a.q4_h0_blocks,
-          a.q4_h1_blocks,
           a.q4_hp1_blocks,
           a.q16_h0_blocks,
           a.q16_h1_blocks,
@@ -695,7 +677,6 @@ struct Run::Impl {
   std::shared_ptr<std::vector<uint8_t>> byte_metadata_owner;
   std::shared_ptr<std::vector<float>> scale_owner;
   std::shared_ptr<std::vector<uint16_t>> residual_owner;
-  std::shared_ptr<std::vector<block_q8_h1>> h1_owner;
   std::shared_ptr<std::vector<block_q8_hp1>> hp1_owner;
   std::shared_ptr<std::vector<uint8_t>> native_weight_owner;
   std::shared_ptr<std::vector<int32_t>> integer_output_stage;
@@ -812,13 +793,6 @@ struct Run::Impl {
         }
         break;
       }
-      case Route::q8_h1:
-        h1_owner = std::make_shared<std::vector<block_q8_h1>>(
-            static_cast<const block_q8_h1 *>(pointers.q8_h1),
-            static_cast<const block_q8_h1 *>(pointers.q8_h1) +
-                scalars.q8_h1_count);
-        pointers.q8_h1 = h1_owner->data();
-        break;
       case Route::q8_hp1:
         hp1_owner = std::make_shared<std::vector<block_q8_hp1>>(
             static_cast<const block_q8_hp1 *>(pointers.q8_hp1),
@@ -853,7 +827,6 @@ struct Run::Impl {
         break;
       }
       case Route::q4_h0:
-      case Route::q4_h1:
       case Route::q4_hp1:
       case Route::q16_h0:
       case Route::q16_h1:
@@ -862,7 +835,6 @@ struct Run::Impl {
         size_t block_bytes = 0;
         switch (route) {
         case Route::q4_h0: source = pointers.q4_h0; block_bytes = sizeof(block_q4_h0); break;
-        case Route::q4_h1: source = pointers.q4_h1; block_bytes = sizeof(block_q4_h1); break;
         case Route::q4_hp1: source = pointers.q4_hp1; block_bytes = sizeof(block_q4_hp1); break;
         case Route::q16_h0: source = pointers.q16_h0; block_bytes = sizeof(block_q16_h0); break;
         case Route::q16_h1: source = pointers.q16_h1; block_bytes = sizeof(block_q16_h1); break;
@@ -879,7 +851,6 @@ struct Run::Impl {
         void *owned = native_weight_owner->data();
         switch (route) {
         case Route::q4_h0: pointers.q4_h0 = owned; break;
-        case Route::q4_h1: pointers.q4_h1 = owned; break;
         case Route::q4_hp1: pointers.q4_hp1 = owned; break;
         case Route::q16_h0: pointers.q16_h0 = owned; break;
         case Route::q16_h1: pointers.q16_h1 = owned; break;
@@ -983,10 +954,8 @@ struct Run::Impl {
   size_t provider_block_size() const noexcept {
     switch (route) {
     case Route::q8_0_unpacked_to_h1:
-    case Route::q8_h1:
     case Route::q8_hp1:
     case Route::q4_h0:
-    case Route::q4_h1:
     case Route::q4_hp1:
     case Route::q16_h0:
     case Route::q16_h1:
@@ -1005,8 +974,6 @@ struct Run::Impl {
   uint8_t provider_vector_op() const noexcept {
     switch (route) {
     case Route::q8_0_unpacked_to_h1:
-    case Route::q8_h1:
-    case Route::q4_h1:
     case Route::q16_h1:
       return options.numerical_contract == NumericalContract::main_external
           ? IM2P_VECTOR_EXTERNAL : IM2P_VECTOR_UNSIGNED_MULTIPLY;
@@ -1067,15 +1034,9 @@ struct Run::Impl {
       encoded = uint32_t(codes[column * scalars.blocks_per_row + block]) + uint32_t(offset);
       return std::isfinite(shared) && shared >= 0.0f && encoded <= 65790;
     }
-    case Route::q8_h1:
-      return h1(static_cast<const block_q8_h1 *>(pointers.q8_h1)
-                    [column * scalars.blocks_per_row + block]);
     case Route::q8_hp1:
       return hp1(static_cast<const block_q8_hp1 *>(pointers.q8_hp1)
                      [column * scalars.q8_hp1_blocks_per_row + block]);
-    case Route::q4_h1:
-      return h1(static_cast<const block_q4_h1 *>(pointers.q4_h1)
-                    [column * scalars.native_blocks_per_row + block]);
     case Route::q4_hp1:
       return hp1(static_cast<const block_q4_hp1 *>(pointers.q4_hp1)
                      [column * scalars.native_blocks_per_row + block]);
@@ -1130,13 +1091,6 @@ struct Run::Impl {
                   uint32_t(rr[scale_row]));
       break;
     }
-    case Route::q8_h1: {
-      const auto &b = static_cast<const block_q8_h1 *>(pointers.q8_h1)
-          [column * scalars.blocks_per_row + block];
-      value = static_cast<double>(b.s_rf) *
-              static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
-      break;
-    }
     case Route::q8_hp1: {
       const auto &b = static_cast<const block_q8_hp1 *>(pointers.q8_hp1)
           [column * scalars.q8_hp1_blocks_per_row + block];
@@ -1159,13 +1113,6 @@ struct Run::Impl {
       value = fp16_to_fp32(static_cast<const block_q4_h0 *>(pointers.q4_h0)
                               [column * scalars.native_blocks_per_row + block].d);
       break;
-    case Route::q4_h1: {
-      const auto &b = static_cast<const block_q4_h1 *>(pointers.q4_h1)
-          [column * scalars.native_blocks_per_row + block];
-      value = static_cast<double>(b.s_rf) *
-              static_cast<double>(uint32_t(b.c_b) + uint32_t(b.R));
-      break;
-    }
     case Route::q4_hp1: {
       const auto &b = static_cast<const block_q4_hp1 *>(pointers.q4_hp1)
           [column * scalars.native_blocks_per_row + block];
@@ -1208,11 +1155,6 @@ struct Run::Impl {
       case Route::q8_0_unpacked_to_h1:
         out[n] = static_cast<const int8_t *>(pointers.b)[j * scalars.k + row];
         break;
-      case Route::q8_h1:
-        out[n] = static_cast<const block_q8_h1 *>(
-                     pointers.q8_h1)[j * scalars.blocks_per_row + block]
-                     .qs[lane];
-        break;
       case Route::q8_hp1:
         out[n] = static_cast<const block_q8_hp1 *>(
                      pointers.q8_hp1)[j * scalars.q8_hp1_blocks_per_row + block]
@@ -1241,16 +1183,13 @@ struct Run::Impl {
       return IM2P_ERROR;
     const size_t block = row / 32;
     const size_t lane = row % 32;
-    if (route == Route::q4_h0 || route == Route::q4_h1 ||
-        route == Route::q4_hp1) {
+    if (route == Route::q4_h0 || route == Route::q4_hp1) {
       auto *values = static_cast<int8_t *>(out);
       for (size_t n = 0; n < count; ++n) {
         const size_t index = (column + n) * scalars.native_blocks_per_row + block;
         const uint8_t *qs = route == Route::q4_h0
             ? static_cast<const block_q4_h0 *>(pointers.q4_h0)[index].qs
-            : route == Route::q4_h1
-                ? static_cast<const block_q4_h1 *>(pointers.q4_h1)[index].qs
-                : static_cast<const block_q4_hp1 *>(pointers.q4_hp1)[index].qs;
+            : static_cast<const block_q4_hp1 *>(pointers.q4_hp1)[index].qs;
         const uint8_t byte = qs[lane % 16];
         const uint8_t nibble = lane < 16 ? byte & 0x0f : byte >> 4;
         values[n] = static_cast<int8_t>(nibble) - 8;
@@ -2933,9 +2872,6 @@ RunTestAccess::Snapshot RunTestAccess::inspect(const Run &run) noexcept {
   view.s_rf_stripe = x.pointers.s_rf_stripe;
   view.r_stripe = x.pointers.r_stripe;
   view.stripe_j = x.scalars.stripe_j;
-  view.q8_h1 = x.pointers.q8_h1;
-  view.q8_h1_count = x.scalars.q8_h1_count;
-  view.q8_h1_rows = x.scalars.q8_h1_rows;
   view.blocks_per_row = x.scalars.blocks_per_row;
   view.q8_h2 = x.pointers.q8_h2;
   view.q8_h2_count = x.scalars.q8_h2_count;

@@ -31,6 +31,28 @@
 using namespace im2p::gemmini;
 namespace exsia = ggml::gemmini::quants::act::exsia;
 
+struct AffineWeights {
+  std::vector<elem_t> codes;
+  std::vector<uint8_t> factors;
+  std::vector<float> scales;
+  std::vector<uint16_t> offsets;
+
+  explicit AffineWeights(size_t columns = 0, size_t blocks = 1)
+      : codes(columns * blocks * 32), factors(columns * blocks),
+        scales(columns), offsets(columns) {}
+
+  void bind(ggml_gemmini_args_t &args) {
+    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1;
+    args.B = codes.data();
+    args.sB = args.K;
+    args.c_b = factors.data();
+    args.s_rf = scales.data();
+    args.R = offsets.data();
+    args.blocks_per_row = (args.K + 31) / 32;
+    args.transpose_B = true;
+  }
+};
+
 namespace fake {
 std::mutex mutex;
 std::condition_variable changed;
@@ -534,13 +556,11 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
   const float scales[2] = {1, 2};
   uint8_t cb[2]{};
   uint16_t rr[2]{};
-  block_q8_h1 h1[2]{};
   block_q8_h2 h2[2]{};
   block_q8_hp1 hp1[2]{};
   block_q8_hp2 hp2[2]{};
   const std::array formats = {
       ggml_gemmini_args_t::im2p_weight_format_t::q8_0_unpacked_to_h1,
-      ggml_gemmini_args_t::im2p_weight_format_t::q8_h1,
       ggml_gemmini_args_t::im2p_weight_format_t::q8_h2,
       ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1,
       ggml_gemmini_args_t::im2p_weight_format_t::q8_hp2,
@@ -548,7 +568,6 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
       ggml_gemmini_args_t::im2p_weight_format_t::q8_channel_dense_sidecar,
   };
   const std::array expected = {Route::q8_0_unpacked_to_h1,
-                               Route::q8_h1,
                                Route::q8_h2,
                                Route::q8_hp1,
                                Route::q8_hp2,
@@ -564,9 +583,6 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
     x.R = rr;
     x.s_rf_stripe = scales;
     x.R_stripe = rr;
-    x.q8_h1_blocks = h1;
-    x.q8_h1_block_count = 31;
-    x.q8_h1_rows = 32;
     x.blocks_per_row = 33;
     x.q8_h2_blocks = h2;
     x.q8_h2_block_count = 34;
@@ -616,9 +632,6 @@ exsia::StripeReadyEvent event(size_t id, size_t begin, size_t end,
                 snap.c_b == x.c_b && snap.s_rf == x.s_rf && snap.r == x.R &&
                 snap.s_rf_stripe == x.s_rf_stripe &&
                 snap.r_stripe == x.R_stripe && snap.stripe_j == x.stripe_J &&
-                snap.q8_h1 == x.q8_h1_blocks &&
-                snap.q8_h1_count == x.q8_h1_block_count &&
-                snap.q8_h1_rows == x.q8_h1_rows &&
                 snap.blocks_per_row == x.blocks_per_row &&
                 snap.q8_h2 == x.q8_h2_blocks &&
                 snap.q8_h2_count == x.q8_h2_block_count &&
@@ -749,16 +762,12 @@ bool test_native_q4_q16_provider_golden() {
   };
 
   block_q4_h0 q4_h0{};
-  block_q4_h1 q4_h1{};
   block_q4_hp1 q4_hp1{};
   q4_h0.d = 0x3c00; // IEEE binary16 1.0
-  q4_h1.s_rf = 0.125f;
-  q4_h1.c_b = 2;
-  q4_h1.R = 6;
   q4_hp1.channel_scale = 0.25f;
   q4_hp1.m = 2;
-  q4_h0.qs[15] = q4_h1.qs[15] = q4_hp1.qs[15] = 0x00;
-  q4_h0.qs[0] = q4_h1.qs[0] = q4_hp1.qs[0] = 0xf0;
+  q4_h0.qs[15] = q4_hp1.qs[15] = 0x00;
+  q4_h0.qs[0] = q4_hp1.qs[0] = 0xf0;
 
   auto check_q4 = [&](auto format, auto member, const auto *block,
                       const char *message) {
@@ -781,14 +790,11 @@ bool test_native_q4_q16_provider_golden() {
                   "Q4 H0 retains block factor; SCU routes prohibit host block factor") &&
            expect(RunTestAccess::weight_factor(args, 0, 0, factor,
                       NumericalContract::main_external) && factor == 1.0,
-                  "explicit main Q4 H0/H1/HP1 factors are preserved");
+                  "explicit main Q4 H0/HP1 factors are preserved");
   };
   if (!check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_h0,
                 &ggml_gemmini_args_t::q4_h0_blocks, &q4_h0,
                 "Q4_H0 native contract") ||
-      !check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_h1,
-                &ggml_gemmini_args_t::q4_h1_blocks, &q4_h1,
-                "Q4_H1 native contract") ||
       !check_q4(ggml_gemmini_args_t::im2p_weight_format_t::q4_hp1,
                 &ggml_gemmini_args_t::q4_hp1_blocks, &q4_hp1,
                 "Q4_HP1 native contract"))
@@ -927,10 +933,10 @@ bool test_native_q4_q16_provider_golden() {
   return true;
 }
 
-bool test_native_h1_provider_start_contract() {
+bool test_affine_provider_start_contract() {
   fake::reset();
   float out[2]{};
-  block_q8_h1 blocks[2]{};
+  AffineWeights blocks(2);
   ggml_gemmini_args_t x{};
   x.I = 1;
   x.J = 2;
@@ -940,17 +946,12 @@ bool test_native_h1_provider_start_contract() {
   x.sA = 32;
   x.f_out = out;
   x.stride_f_out = 2;
-  x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  x.q8_h1_blocks = blocks;
-  x.q8_h1_block_count = 2;
-  x.q8_h1_rows = 2;
-  x.blocks_per_row = 1;
-  x.native_weight_bytes = sizeof(blocks);
+  blocks.bind(x);
   x.act_quant.storage()
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
   auto started = execute(&x);
-  if (!expect(started.status.ok(), "native H1 starts through provider"))
+  if (!expect(started.status.ok(), "dense affine starts through provider"))
     return false;
   const auto done = fence(*started.run);
   std::lock_guard lock(fake::mutex);
@@ -969,21 +970,19 @@ bool test_native_h1_provider_start_contract() {
           d.provider.read_weight_i16 == nullptr &&
           d.provider.read_scale != nullptr &&
           d.provider.write_output != nullptr,
-      "native H1 provider descriptor is exact");
+      "dense affine provider descriptor is exact");
 }
 
 bool test_provider_output_extent_overflow() {
   fake::reset();
   std::array<float, 2> output = {91, 91};
-  std::array<block_q8_h1, 2> weights{};
+  AffineWeights weights(2);
   ggml_gemmini_args_t args{};
   args.I = 1; args.J = 2; args.K = 32;
   if (!args.A.allocate(1, 32, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
   args.f_out = output.data(); args.stride_f_out = 2;
   args.col_stride_f_out = std::numeric_limits<size_t>::max();
-  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = weights.size();
-  args.q8_h1_rows = 2; args.blocks_per_row = 1; args.native_weight_bytes = sizeof(weights);
+  weights.bind(args);
   args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1;
   size_t calls = 0;
   Options options;
@@ -1012,13 +1011,12 @@ bool test_provider_final_integer_full_pipeline() {
   for (Mode mode : {Mode::full, Mode::stripe_pipeline}) {
     fake::reset();
     fake::provider_exact_values = final_values;
-    std::array<block_q8_h1, 4> weights{};
+    AffineWeights weights(2, 2);
     for (size_t column = 0; column < 2; ++column)
       for (size_t block = 0; block < 2; ++block) {
-        auto &weight = weights[column * 2 + block];
-        weight.s_rf = shared_scales[column];
-        weight.R = 1;
-        weight.c_b = block ? 255 : 0;
+        weights.scales[column] = shared_scales[column];
+        weights.offsets[column] = 1;
+        weights.factors[column * 2 + block] = block ? 255 : 0;
       }
     std::array<float, 6> destination = {91, 91, 91, 91, 91, 91};
     ggml_gemmini_args_t args{};
@@ -1026,9 +1024,7 @@ bool test_provider_final_integer_full_pipeline() {
     if (!args.A.allocate(3, 64, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
     args.activation_rows_per_stripe = 1;
     args.f_out = destination.data(); args.stride_f_out = 2;
-    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-    args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = weights.size();
-    args.q8_h1_rows = 2; args.blocks_per_row = 2; args.native_weight_bytes = sizeof(weights);
+    weights.bind(args);
     args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 0.5f;
     auto started = execute(&args, mode, {64});
     if (!expect(started.status.ok(), "SCU final mock route starts")) return false;
@@ -1059,23 +1055,22 @@ bool test_scu_output_failures_and_identity() {
     fake::stale_abi = scenario == 4;
     fake::stale_revision = scenario == 5;
     if (scenario == 6) fake::provider_exact_values = {INT64_C(2147483648)};
-    std::array<block_q8_h1, 2> weights{};
+    AffineWeights weights(1, 2);
     std::array<block_q8_hp1, 2> shifted_weights{};
-    for (auto &weight : weights) { weight.R = 1; weight.s_rf = 1.0f / 256; }
-    weights[1].c_b = 255;
+    weights.offsets[0] = 1; weights.scales[0] = 1.0f / 256;
+    weights.factors[1] = 255;
     std::array<float, 3> destination = {73, 73, 73};
     ggml_gemmini_args_t args{};
     args.I = args.J = 1; args.K = 64;
     if (!args.A.allocate(1, 64, IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS)) return false;
     args.f_out = destination.data(); args.stride_f_out = 3;
-    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-    args.q8_h1_blocks = weights.data(); args.q8_h1_block_count = 2;
-    args.q8_h1_rows = 1; args.blocks_per_row = 2; args.native_weight_bytes = sizeof(weights);
+    weights.bind(args);
     args.act_quant.storage().emplace<ggml::gemmini::quants::act::tensor::Meta>().scale = 1;
     if (scenario == 8) {
       for (auto &weight : shifted_weights) weight.channel_scale = 1.0f / 256;
       args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
-      args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+      args.B = nullptr; args.c_b = nullptr; args.s_rf = nullptr; args.R = nullptr;
+      args.sB = args.blocks_per_row = 0;
       args.q8_hp1_blocks = shifted_weights.data(); args.q8_hp1_block_count = 2;
       args.q8_hp1_blocks_per_row = 2; args.native_weight_bytes = sizeof(shifted_weights);
     }
@@ -1144,20 +1139,14 @@ bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
     fake::reset();
     fake::provider_exact_values = exact;
     fake::provider_force_callback_failure = force_callback_failure;
-    std::array<block_q8_h1, columns * blocks_per_row> weights{};
+    AffineWeights weights(columns, blocks_per_row);
     std::array<block_q8_hp1, columns * blocks_per_row> shifted{};
     shifted[0].channel_scale = 0.25f; shifted[0].m = 1;
     shifted[1].channel_scale = 0.25f; shifted[1].m = INT16_MIN;
     shifted[2].channel_scale = 0.25f; shifted[2].m = 2;
     shifted[3].channel_scale = 1.0f; shifted[3].m = 2;
-    for (size_t column = 0; column < columns; ++column) {
-      weights[column * blocks_per_row].s_rf = column == 0 ? 0.25f : 0.125f;
-      weights[column * blocks_per_row].c_b = column == 0 ? 1 : 2;
-      weights[column * blocks_per_row].R = column == 0 ? 1 : 4;
-      weights[column * blocks_per_row + 1].s_rf = column == 0 ? 0.25f : 0.25f;
-      weights[column * blocks_per_row + 1].c_b = column == 0 ? 2 : 3;
-      weights[column * blocks_per_row + 1].R = 3;
-    }
+    weights.scales = {0.125f, 0.125f};
+    weights.factors = {4, 10, 6, 12};
     ggml_gemmini_args_t args{};
     args.I = rows;
     args.J = columns;
@@ -1167,15 +1156,11 @@ bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
     args.activation_rows_per_stripe = 1;
     args.f_out = destination.data();
     args.stride_f_out = columns;
-    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-    args.q8_h1_blocks = weights.data();
-    args.q8_h1_block_count = weights.size();
-    args.q8_h1_rows = columns;
-    args.blocks_per_row = blocks_per_row;
-    args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+    weights.bind(args);
     if (hp1) {
       args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp1;
-      args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+      args.B = nullptr; args.c_b = nullptr; args.s_rf = nullptr; args.R = nullptr;
+      args.sB = args.blocks_per_row = 0;
       args.q8_hp1_blocks = shifted.data(); args.q8_hp1_block_count = shifted.size();
       args.q8_hp1_blocks_per_row = blocks_per_row;
       args.native_weight_bytes = sizeof(shifted);
@@ -1287,7 +1272,7 @@ bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
   // A single-row request must retain the pipeline lifecycle and commit once.
   fake::reset();
   fake::provider_exact_values.assign(exact.begin(), exact.begin() + columns);
-  std::array<block_q8_h1, columns> one_row_weights{};
+  AffineWeights one_row_weights(columns);
   std::array<float, columns> one_row = {81, 81};
   ggml_gemmini_args_t one_row_args{};
   one_row_args.I = 1;
@@ -1299,14 +1284,7 @@ bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
   one_row_args.activation_rows_per_stripe = 1;
   one_row_args.f_out = one_row.data();
   one_row_args.stride_f_out = columns;
-  one_row_args.weight_format =
-      ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  one_row_args.q8_h1_blocks = one_row_weights.data();
-  one_row_args.q8_h1_block_count = one_row_weights.size();
-  one_row_args.q8_h1_rows = columns;
-  one_row_args.blocks_per_row = 1;
-  one_row_args.native_weight_bytes =
-      one_row_weights.size() * sizeof(block_q8_h1);
+  one_row_weights.bind(one_row_args);
   one_row_args.act_quant.storage()
       .emplace<ggml::gemmini::quants::act::tensor::Meta>()
       .scale = 1.0f;
@@ -1328,6 +1306,32 @@ bool test_legacy_h1_block_scaling_full_pipeline(bool hp1 = false) {
 bool test_rejected_routes_do_not_execute() {
   fake::reset();
   ggml_gemmini_args_t x{};
+  static_assert(static_cast<uint8_t>(Route::q8_0_unpacked_to_h1) == 0 &&
+                static_cast<uint8_t>(Route::q8_h0) == 1 &&
+                static_cast<uint8_t>(Route::q8_h2) == 2 &&
+                static_cast<uint8_t>(Route::q8_hp1) == 4 &&
+                static_cast<uint8_t>(Route::q8_hp2) == 5 &&
+                static_cast<uint8_t>(Route::q8_channel) == 6 &&
+                static_cast<uint8_t>(Route::q8_channel_dense_sidecar) == 7 &&
+                static_cast<uint8_t>(Route::q4_h0) == 8 &&
+                static_cast<uint8_t>(Route::q4_hp1) == 10 &&
+                static_cast<uint8_t>(Route::q16_h0) == 11 &&
+                static_cast<uint8_t>(Route::q16_h1) == 12 &&
+                static_cast<uint8_t>(Route::q16_hp1) == 13 &&
+                static_cast<uint8_t>(Route::unknown) == 14);
+  std::array<float, 2> destination = {73.0f, 91.0f};
+  x.f_out = destination.data();
+  for (const uint8_t retired : {3, 9}) {
+    x.weight_format = static_cast<ggml_gemmini_args_t::im2p_weight_format_t>(retired);
+    const auto result = execute(&x);
+    if (!expect(result.status.code == StatusCode::unsupported_route &&
+                    result.status.route == Route::unknown &&
+                    fake::sim_created == 0 && fake::publish_count == 0 &&
+                    destination == std::array<float, 2>{73.0f, 91.0f},
+                "retired numeric routes reject without output publication"))
+      return false;
+    std::printf("RETIRED_ROUTE id=%u status=unsupported route=unknown output_unchanged=1 PASS\n", retired);
+  }
   x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h2;
   auto h2 = execute(&x);
   x.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_hp2;
@@ -1997,13 +2001,8 @@ bool test_exsia_metadata_is_published_explicitly_after_args_expire() {
     args.activation_rows_per_stripe = 1;
     args.f_out = destination;
     args.stride_f_out = 2;
-    args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-    std::vector<block_q8_h1> blocks(2);
-    args.q8_h1_blocks = blocks.data();
-    args.q8_h1_block_count = blocks.size();
-    args.q8_h1_rows = 2;
-    args.blocks_per_row = 1;
-    args.native_weight_bytes = blocks.size() * sizeof(block_q8_h1);
+    AffineWeights blocks(2);
+    blocks.bind(args);
     args.act_quant.storage().emplace<exsia::Meta>();
     started = execute(&args, Mode::stripe_pipeline, {64});
   }
@@ -2040,13 +2039,8 @@ bool test_rmd_finalizes_frontend_stage_before_authorization() {
   args.f_out = destination;
   args.stride_f_out = 2;
   args.col_stride_f_out = 1;
-  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  std::vector<block_q8_h1> blocks(2);
-  args.q8_h1_blocks = blocks.data();
-  args.q8_h1_block_count = blocks.size();
-  args.q8_h1_rows = 2;
-  args.blocks_per_row = 1;
-  args.native_weight_bytes = blocks.size() * sizeof(block_q8_h1);
+  AffineWeights blocks(2);
+  blocks.bind(args);
   args.act_quant.storage().emplace<exsia::Meta>();
 
   auto started = execute(&args, Mode::stripe_pipeline, {64});
@@ -2598,7 +2592,7 @@ bool test_publication_geometry_and_counter_separation() {
 }
 
 bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
-                                    std::vector<block_q8_h1> &weights,
+                                    AffineWeights &weights,
                                     std::vector<float> &destination,
                                     size_t rows,
                                     std::vector<uint8_t> *legacy_channel = nullptr) {
@@ -2613,18 +2607,10 @@ bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
   args.f_out = destination.data();
   args.stride_f_out = columns;
   args.col_stride_f_out = 1;
-  args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_h1;
-  weights.resize(columns);
-  for (auto &weight : weights) {
-    weight.s_rf = 1.0f;
-    weight.c_b = 1;
-    weight.R = 0;
-  }
-  args.q8_h1_blocks = weights.data();
-  args.q8_h1_block_count = weights.size();
-  args.q8_h1_rows = columns;
-  args.blocks_per_row = 1;
-  args.native_weight_bytes = weights.size() * sizeof(block_q8_h1);
+  weights = AffineWeights(columns);
+  weights.scales.assign(columns, 1.0f);
+  weights.factors.assign(columns, 1);
+  weights.bind(args);
   if (legacy_channel) {
     // Residual scheduler tests remain on the explicit legacy channel route.
     // SCU H1 residual execution is rejected until its numerical contract exists.
@@ -2634,7 +2620,8 @@ bool prepare_semantic_pipeline_args(ggml_gemmini_args_t &args,
     for (size_t column = 0; column < columns; ++column)
       std::memcpy(legacy_channel->data() + column * stride, &scale, sizeof(scale));
     args.weight_format = ggml_gemmini_args_t::im2p_weight_format_t::q8_channel;
-    args.q8_h1_blocks = nullptr; args.q8_h1_block_count = args.q8_h1_rows = 0;
+    args.B = nullptr; args.c_b = nullptr; args.s_rf = nullptr; args.R = nullptr;
+    args.sB = args.blocks_per_row = 0;
     args.blocks_per_row = 0; args.native_weight_bytes = 0;
     args.q8_channel_row_base = legacy_channel->data();
     args.q8_channel_row_stride = stride; args.q8_channel_row_count = columns;
@@ -2742,7 +2729,7 @@ bool wait_for_probe(SemanticSchedulerProbe &probe, Predicate predicate) {
     }
   }
   if (fail)
-    return {StatusCode::execution_failure, Route::q8_h1, true,
+    return {StatusCode::execution_failure, Route::q8_0_unpacked_to_h1, true,
             "injected residual callback failure"};
   stage[ready.row_begin * 2] += 100.0f;
   stats.rmd_dot_calls = ready.stripe_id + 1;
@@ -2774,7 +2761,7 @@ bool test_semantic_dense_rmd_order() {
   fake::allow_completion = false;
   fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
   std::vector<float> destination(6, 91.0f);
-  std::vector<block_q8_h1> weights;
+  AffineWeights weights;
   ggml_gemmini_args_t args{};
   if (!prepare_semantic_pipeline_args(args, weights, destination, 3))
     return false;
@@ -2916,7 +2903,7 @@ bool test_semantic_dense_rmd_order() {
   fake::reset();
   fake::provider_exact_values = {7, 8};
   std::vector<float> direct_destination(2, 73.0f);
-  std::vector<block_q8_h1> direct_weights;
+  AffineWeights direct_weights;
   std::vector<uint8_t> direct_channel;
   ggml_gemmini_args_t direct_args{};
   if (!prepare_semantic_pipeline_args(direct_args, direct_weights,
@@ -2994,7 +2981,7 @@ bool test_semantic_blocked_producer_failure() {
   fake::allow_completion = false;
   fake::provider_exact_values = {1, 2, 3, 4, 5, 6};
   std::vector<float> destination(6, 67.0f);
-  std::vector<block_q8_h1> weights;
+  AffineWeights weights;
   std::vector<uint8_t> legacy_channel;
   ggml_gemmini_args_t args{};
   if (!prepare_semantic_pipeline_args(args, weights, destination, 3, &legacy_channel))
@@ -3151,7 +3138,7 @@ bool test_semantic_blocked_producer_failure() {
   fake::reset();
   fake::fail_create_attempt = 2;
   std::vector<float> create_destination(2, 59.0f);
-  std::vector<block_q8_h1> create_weights;
+  AffineWeights create_weights;
   std::vector<uint8_t> create_channel;
   ggml_gemmini_args_t create_args{};
   if (!prepare_semantic_pipeline_args(create_args, create_weights,
@@ -3356,7 +3343,7 @@ struct StreamExecutorProbe {
 bool test_stream_executor_options() {
   fake::reset();
   ggml_gemmini_args_t args;
-  std::vector<block_q8_h1> weights;
+  AffineWeights weights;
   std::vector<float> destination(6, 73.0f);
   if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
   StreamExecutorProbe probe;
@@ -3400,14 +3387,14 @@ bool test_stream_executor_lifecycle() {
     ExecuteResult started;
     {
       ggml_gemmini_args_t args;
-      std::vector<block_q8_h1> weights;
+      AffineWeights weights;
       if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
       for (size_t row = 0; row < args.I; ++row)
         if (!args.A.set(row, 0, int32_t(row + 1))) return false;
       Options options; options.max_stalled_cycles = 1; options.stream_executor = &table;
       started = execute(&args, Mode::stripe_pipeline, options);
       // execute retains A ownership and copies native weight/metadata storage.
-      for (auto &weight : weights) weight.s_rf = 99.0f;
+      for (auto &scale : weights.scales) scale = 99.0f;
     }
     if (!expect(started.status.ok() && started.run && probe.begins == 1,
                 "physical stream begins without a simulator")) return false;
@@ -3465,7 +3452,7 @@ bool test_stream_executor_residual() {
       bool fail = false;
     } residual{&probe, 0, fail};
     ggml_gemmini_args_t args;
-    std::vector<block_q8_h1> weights;
+    AffineWeights weights;
     std::vector<float> destination(6, 73.0f);
     if (!prepare_semantic_pipeline_args(args, weights, destination, 3)) return false;
     for (size_t row = 0; row < args.I; ++row)
@@ -3481,11 +3468,11 @@ bool test_stream_executor_residual() {
       auto &state = *static_cast<ResidualProbe *>(opaque);
       if (sim || event.stripe_id != state.calls ||
           state.dense->completed != state.calls + 1 || stage.element_count != 6)
-        return {StatusCode::execution_failure, Route::q8_h1, true,
+        return {StatusCode::execution_failure, Route::q8_0_unpacked_to_h1, true,
                 "invalid physical residual ordering"};
       ++state.calls;
       if (state.fail && state.calls == 2)
-        return {StatusCode::execution_failure, Route::q8_h1, true,
+        return {StatusCode::execution_failure, Route::q8_0_unpacked_to_h1, true,
                 "injected physical residual failure"};
       for (size_t column = 0; column < 2; ++column)
         stage[event.row_begin * 2 + column] += 10.0f;
@@ -3524,7 +3511,25 @@ bool test_stream_executor_residual() {
 }
 
 bool test_compiled_identity() {
-  return expect(compiled_activation_bits() ==
+  ggml_gemmini_args_t args{};
+  const auto *base = reinterpret_cast<const uint8_t *>(&args);
+  const auto offset = [base](const auto *member) {
+    return static_cast<uint64_t>(reinterpret_cast<const uint8_t *>(member) - base);
+  };
+  const auto layout = compiled_args_layout_fingerprint();
+  std::printf("ARGS_LAYOUT size=%llu native_weight_bytes=%llu col_stride_f_out=%llu stride_f_out=%llu tile_i=%llu ABI=%u\n",
+              static_cast<unsigned long long>(layout.size),
+              static_cast<unsigned long long>(layout.native_weight_bytes),
+              static_cast<unsigned long long>(layout.col_stride_f_out),
+              static_cast<unsigned long long>(layout.stride_f_out),
+              static_cast<unsigned long long>(layout.tile_i), IM2P_ABI_VERSION);
+  return expect(layout.size == sizeof(args) &&
+                    layout.native_weight_bytes == offset(&args.native_weight_bytes) &&
+                    layout.col_stride_f_out == offset(&args.col_stride_f_out) &&
+                    layout.stride_f_out == offset(&args.stride_f_out) &&
+                    layout.tile_i == offset(&args.tile_I) && IM2P_ABI_VERSION == 5,
+                "frontend archive and caller descriptor layouts match") &&
+         expect(compiled_activation_bits() ==
                     IM2P_GEMMINI_FRONTEND_ACTIVATION_BITS,
                 "frontend reports its activation width") &&
          expect(compiled_weight_bits() == GGML_GEMMINI_WEIGHT_BITS,
@@ -3564,6 +3569,8 @@ int main(int argc, char **argv) {
             ? test_max_stall_limit_disables_watchdog()
         : selected == "q8_hp1_extent_contract"
             ? test_q8_hp1_native_extent_contract()
+        : selected == "retired_routes"
+            ? test_rejected_routes_do_not_execute()
         : selected == "native_q4_q16_provider"
             ? test_native_q4_q16_provider_golden()
         : selected == "provider_int64_scaling" ||
@@ -3607,7 +3614,7 @@ int main(int argc, char **argv) {
       ? (test_compiled_identity() && test_native_q4_q16_provider_golden())
       : (test_compiled_identity() &&
          test_native_q4_q16_provider_golden() &&
-         test_native_h1_provider_start_contract() &&
+         test_affine_provider_start_contract() &&
          test_provider_output_extent_overflow() &&
          test_provider_final_integer_full_pipeline() &&
          test_legacy_h1_block_scaling_full_pipeline() &&

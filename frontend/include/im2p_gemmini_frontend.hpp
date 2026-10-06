@@ -27,21 +27,19 @@ enum class NumericalContract : uint8_t {
 };
 
 enum class Route : uint8_t {
-  q8_0_unpacked_to_h1,
-  q8_h0,
-  q8_h2,
-  q8_h1,
-  q8_hp1,
-  q8_hp2,
-  q8_channel,
-  q8_channel_dense_sidecar,
-  q4_h0,
-  q4_h1,
-  q4_hp1,
-  q16_h0,
-  q16_h1,
-  q16_hp1,
-  unknown,
+  q8_0_unpacked_to_h1 = 0,
+  q8_h0 = 1,
+  q8_h2 = 2,
+  q8_hp1 = 4,
+  q8_hp2 = 5,
+  q8_channel = 6,
+  q8_channel_dense_sidecar = 7,
+  q4_h0 = 8,
+  q4_hp1 = 10,
+  q16_h0 = 11,
+  q16_h1 = 12,
+  q16_hp1 = 13,
+  unknown = 14,
 };
 
 enum class StatusCode : uint8_t {

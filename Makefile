@@ -164,6 +164,7 @@ VERILATOR_COMMON := --cc --assert --Wno-fatal
         cache-contract-test \
         _gemmini-frontend-real-lib-build \
         gemmini-frontend-real-test gemmini-frontend-real-test-q8-h0 \
+        gemmini-frontend-real-test-hp1-h0-rejection gemmini-frontend-real-test-legacy-hp1-residual-rejection \
         gemmini-frontend-real-test-q4-hp1 gemmini-frontend-real-test-q8-hp1 \
         gemmini-frontend-real-test-q16-hp1 gemmini-frontend-real-syntax-test gemmini-frontend-real-syntax-one \
         gemmini-frontend-real-test-matrix gemmini-frontend-real-test-mismatch \
@@ -263,7 +264,9 @@ help:
 	  'make gemmini-frontend-asan-test - isolated ASan+UBSan frontend suite' \
 	  'make gemmini-frontend-tsan-test - isolated TSan frontend suite' \
 	  'make gemmini-frontend-real-lib-all - cache all nine production matched libraries' \
-	  'make gemmini-frontend-real-test - selected adapter full/stripe RTL oracle (A8 uses q8_h1)' \
+	  'make gemmini-frontend-real-test - selected RTL oracle (A8: LEGACY q8_h0, HP1 q8_hp1)' \
+	  'make gemmini-frontend-real-test-hp1-h0-rejection - HP1 raw H0 fails without publishing output' \
+	  'make gemmini-frontend-real-test-legacy-hp1-residual-rejection - LEGACY rejects HP1 dual residual before dispatch' \
 	  'make gemmini-frontend-real-test-q8-h0 - maintained raw Q8 full/stripe RTL oracle' \
 	  'make gemmini-frontend-real-test-q4-hp1 - real Q4 HP1 dual-context active/empty oracle' \
 	  'make gemmini-frontend-real-test-q8-hp1 - real Q8 HP1 dual-context active/empty oracle' \
@@ -365,6 +368,29 @@ GEMMINI_FRONTEND_TEST_ARCHIVE = $(BUILD_DIR)/lib/$(IM2P_SIM_IMPLEMENTATION)/$(GE
 GEMMINI_FRONTEND_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_test
 GEMMINI_FRONTEND_ASAN_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_asan_test
 GEMMINI_FRONTEND_TSAN_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_tsan_test
+
+ifeq ($(IM2P_PRODUCTION_TRACE_ENABLED),1)
+GEMMINI_FRONTEND_TRACE_LIB = $(abspath $(BUILD_DIR))/gemmini-frontend-trace/ggml/src/ggml-gemmini-utils/libggml-gemmini-utils.a
+GEMMINI_FRONTEND_TRACE_ASAN_LIB = $(abspath $(BUILD_DIR))/gemmini-frontend-trace-asan/ggml/src/ggml-gemmini-utils/libggml-gemmini-utils.a
+GEMMINI_FRONTEND_TRACE_TSAN_LIB = $(abspath $(BUILD_DIR))/gemmini-frontend-trace-tsan/ggml/src/ggml-gemmini-utils/libggml-gemmini-utils.a
+.PHONY: gemmini-frontend-trace gemmini-frontend-trace-asan gemmini-frontend-trace-tsan
+gemmini-frontend-trace-asan: GEMMINI_TRACE_BUILD_FLAGS = $(GEMMINI_FRONTEND_ASAN_FLAGS)
+gemmini-frontend-trace-tsan: GEMMINI_TRACE_BUILD_FLAGS = $(GEMMINI_FRONTEND_TSAN_FLAGS)
+gemmini-frontend-trace gemmini-frontend-trace-asan gemmini-frontend-trace-tsan:
+	cmake -S $(GEMMINI_ROOT) -B $(abspath $(BUILD_DIR))/$@ \
+		-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+		-DCMAKE_C_COMPILER=$(CC) -DCMAKE_CXX_COMPILER=$(CXX) \
+		-DCMAKE_C_FLAGS="$(GEMMINI_TRACE_BUILD_FLAGS)" \
+		-DCMAKE_CXX_FLAGS="$(GEMMINI_TRACE_BUILD_FLAGS)" \
+		-DGGML_GEMMINI=ON -DGGML_GEMMINI_EXECUTION_BACKEND=HARDWARE \
+		-DGGML_GEMMINI_OPTION=CPU -DGGML_METAL=OFF -DGGML_BLAS=OFF \
+		-DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF \
+		-DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+	cmake --build $(abspath $(BUILD_DIR))/$@ --target ggml-gemmini-utils
+gemmini-frontend-test gemmini-frontend-real-build: gemmini-frontend-trace
+gemmini-frontend-asan-test: gemmini-frontend-trace-asan
+gemmini-frontend-tsan-test: gemmini-frontend-trace-tsan
+endif
 GEMMINI_FRONTEND_REAL_TEST = $(BUILD_DIR)/bin/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/im2p_gemmini_frontend_real_test
 GEMMINI_REAL_LIB_FINGERPRINT = $(BUILD_DIR)/fingerprints/$(GEMMINI_ARTIFACT_ID)/real-lib.sha256
 GEMMINI_REAL_LIB_SELECTED_DIR = $(BUILD_DIR)/selected/$(IM2P_SIM_IMPLEMENTATION)/$(GEMMINI_ARTIFACT_ID)/current
@@ -477,7 +503,7 @@ gemmini-frontend-test: gemmini-frontend | $(BUILD_DIR)/bin
 		-o $(dir $(GEMMINI_FRONTEND_TEST))/im2p_gemmini_forward_decl.o
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend.cpp \
-		$(GEMMINI_FRONTEND_TEST_ARCHIVE) -o $(GEMMINI_FRONTEND_TEST)
+		$(GEMMINI_FRONTEND_TEST_ARCHIVE) $(GEMMINI_FRONTEND_TRACE_LIB) -o $(GEMMINI_FRONTEND_TEST)
 	@set -euo pipefail; \
 	if test -n '$(FRONTEND_TEST_CASE)'; then \
 	  $(GEMMINI_FRONTEND_TEST) '$(FRONTEND_TEST_CASE)'; \
@@ -494,6 +520,7 @@ gemmini-frontend-asan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) $(GEMMINI_FRONTEND_ASAN_FLAGS) \
 		-DIM2P_GEMMINI_FRONTEND_TESTING=1 $(GEMMINI_FRONTEND_INCLUDES) \
 		frontend/src/im2p_gemmini_frontend.cpp frontend/tests/test_frontend.cpp \
+		$(GEMMINI_FRONTEND_TRACE_ASAN_LIB) \
 		-o $(GEMMINI_FRONTEND_ASAN_TEST)
 	@set -euo pipefail; \
 	if test -n '$(FRONTEND_TEST_CASE)'; then \
@@ -521,6 +548,7 @@ gemmini-frontend-tsan-test: $(GEMMINI_DIM_CONFIG) | $(BUILD_DIR)/bin
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) $(GEMMINI_FRONTEND_TSAN_FLAGS) \
 		-DIM2P_GEMMINI_FRONTEND_TESTING=1 $(GEMMINI_FRONTEND_INCLUDES) \
 		frontend/src/im2p_gemmini_frontend.cpp frontend/tests/test_frontend.cpp \
+		$(GEMMINI_FRONTEND_TRACE_TSAN_LIB) \
 		-o $(GEMMINI_FRONTEND_TSAN_TEST)
 	TSAN_OPTIONS=halt_on_error=1 $(GEMMINI_FRONTEND_TSAN_TEST) \
 		$(if $(FRONTEND_TEST_CASE),$(FRONTEND_TEST_CASE),)
@@ -529,6 +557,7 @@ gemmini-frontend-real-build: gemmini-frontend-real-lib $(GEMMINI_FRONTEND_TEST_A
 	$(CXX) $(GEMMINI_FRONTEND_FLAGS) -DIM2P_GEMMINI_FRONTEND_TESTING=1 \
 		$(GEMMINI_FRONTEND_INCLUDES) frontend/tests/test_frontend_real.cpp \
 		$(GEMMINI_FRONTEND_TEST_ARCHIVE) $(GEMMINI_REAL_LIB_SIM_ARCHIVE) \
+		$(GEMMINI_FRONTEND_TRACE_LIB) \
 		-o $(GEMMINI_FRONTEND_REAL_TEST)
 
 gemmini-frontend-real-test: gemmini-frontend-real-build
@@ -536,9 +565,20 @@ gemmini-frontend-real-test: gemmini-frontend-real-build
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test.log
 
-gemmini-frontend-real-test-q8-h0: gemmini-frontend-real-test
+gemmini-frontend-real-test-q8-h0: gemmini-frontend-real-build
+	@mkdir -p $(GEMMINI_RESULTS_DIR)
 	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --route q8_h0 2>&1 | \
 		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-q8-h0.log
+
+gemmini-frontend-real-test-hp1-h0-rejection: gemmini-frontend-real-build
+	@mkdir -p $(GEMMINI_RESULTS_DIR)
+	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --expect-hp1-h0-rejection 2>&1 | \
+		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-hp1-h0-rejection.log
+
+gemmini-frontend-real-test-legacy-hp1-residual-rejection: gemmini-frontend-real-build
+	@mkdir -p $(GEMMINI_RESULTS_DIR)
+	@set -o pipefail; $(GEMMINI_FRONTEND_REAL_TEST) --expect-legacy-hp1-residual-rejection 2>&1 | \
+		tee $(GEMMINI_RESULTS_DIR)/frontend-real-test-legacy-hp1-residual-rejection.log
 
 gemmini-frontend-real-test-q4-hp1:
 	$(MAKE) --no-print-directory \
