@@ -48,7 +48,9 @@ def fingerprint(bits: int, dim: int, extra: Path) -> str:
 
 def routes(bits: int) -> tuple[str, ...]:
     if bits == 8:
-        return ("q8_h1",)
+        return ("q8_h0",)
+    if bits == 4:
+        return ("q4_h0", "q4_hp1")
     return (f"q{bits}_h0", f"q{bits}_h1", f"q{bits}_hp1")
 
 

@@ -127,13 +127,11 @@ PUBLIC_FRONTEND_ROUTES = (
     "q8_0_unpacked_to_h1",
     "q8_h0",
     "q8_h2",
-    "q8_h1",
     "q8_hp1",
     "q8_hp2",
     "q8_channel",
     "q8_channel_dense_sidecar",
     "q4_h0",
-    "q4_h1",
     "q4_hp1",
     "q16_h0",
     "q16_h1",
@@ -142,17 +140,13 @@ PUBLIC_FRONTEND_ROUTES = (
 )
 
 PUBLIC_FRONTEND_ARTIFACTS = {
-    "block_q8_h1",
     "block_q4_h0",
-    "block_q4_h1",
     "block_q4_hp1",
     "block_q16_h0",
     "block_q16_h1",
     "block_q16_hp1",
     "q4_h0",
     "q4_h0_blocks",
-    "q4_h1",
-    "q4_h1_blocks",
     "q4_hp1",
     "q4_hp1_blocks",
     "q16_h0",
@@ -169,11 +163,6 @@ PUBLIC_FRONTEND_ARTIFACTS = {
     "q8_channel_row_count",
     "q8_channel_row_stride",
     "q8_h0",
-    "q8_h1",
-    "q8_h1_block_count",
-    "q8_h1_blocks",
-    "q8_h1_count",
-    "q8_h1_rows",
     "q8_h2",
     "q8_h2_block_count",
     "q8_h2_blocks",
@@ -705,15 +694,16 @@ def check_exsia_integration_contracts() -> None:
         )
 
     gemmini = ROOT.parent / "llama.cpp-gemmini/ggml/src/ggml-gemmini"
-    orchestration = gemmini / "ggml-gemmini.cpp"
+    orchestration = gemmini / "ops.cpp"
     adapter = gemmini / "ggml-gemmini-im2p.cpp"
+    route = gemmini / "im2p/route.cpp"
     exsia = gemmini / "quants/act/exsia/exsia.cpp"
-    if not all(path.is_file() for path in (orchestration, adapter, exsia)):
+    if not all(path.is_file() for path in (orchestration, adapter, route, exsia)):
         return
 
     require_regex(
-        adapter,
-        r"Result gate_route\(const ExsiaRouteRequest &request\).*?"
+        route,
+        r"Result gate_route\(const ExsiaRouteRequest &\s*request\).*?"
         r"request\.artifact_activation_bits != request\.activation_bits.*?"
         r"request\.artifact_weight_bits != request\.weight_bits.*?"
         r"IM2P artifact identity does not match the requested route.*?"
