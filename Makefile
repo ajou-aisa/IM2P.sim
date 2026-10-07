@@ -202,6 +202,10 @@ cycle-model-test: cycle-model
 gemmini-schedule-test:
 	$(PYTHON) tests/test_gemmini_schedule.py
 
+.PHONY: gemmini-paired-schedule-test
+gemmini-paired-schedule-test:
+	$(PYTHON) tests/test_gemmini_paired_schedule.py
+
 gemmini-hp1-test: gemmini-schedule-test
 
 check: profile-config-check static-check cpp-test numerical-reference-test activation-guard-infrastructure-test
