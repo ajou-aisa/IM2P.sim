@@ -205,7 +205,8 @@ final class UpstreamWsHp1Harness(
       case TileKey => RocketTileParams()
       case TileVisibilityNodeKey => visibility
     }
-    private val top = Module(new UpstreamWsHp1Top(profile)(controlParameters))
+    private val top = Module(new UpstreamWsHp1Top(
+      profile, workEntries = PhysicalAccumulator(profile).workEntries)(controlParameters))
     val io = IO(chiselTypeOf(top.io))
     io <> top.io
   }

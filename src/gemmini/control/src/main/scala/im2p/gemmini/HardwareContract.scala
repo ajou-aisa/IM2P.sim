@@ -32,7 +32,7 @@ object HardwareContract {
       "accumulator_bits" -> config.accType.getWidth,
       "bank_count" -> config.sp_banks,
       "bank_rows" -> config.sp_bank_entries,
-      "accumulator_rows" -> (config.acc_bank_entries * config.acc_banks),
+      "accumulator_rows" -> PhysicalAccumulator.compatRows(profile),
       "scratchpad_row_bytes" -> profile.scratchpadRowBytes,
       "accumulator_row_bytes" -> profile.accumulatorRowBytes,
       "scratchpad_read_delay" -> config.spad_read_delay,
@@ -44,6 +44,10 @@ object HardwareContract {
       require(configured == value,
         s"resolved hardware $key=$configured differs from elaborated value $value")
     }
+    // The contract carries Main-compat rows; the elaborated accumulator is the physical table.
+    require(config.acc_banks == PhysicalAccumulator(profile).banks &&
+      config.acc_bank_entries * config.acc_banks == PhysicalAccumulator.rows(profile),
+      s"elaborated accumulator differs from the ${profile.name} physical table")
     require(config.inputType.getWidth == profile.operandBits)
     require(config.DIM == profile.dim)
     require(config.spatialArrayOutputType.getWidth == profile.rawPartialBits)

@@ -15,8 +15,11 @@ final class UpstreamWsConfigSpec extends AnyFlatSpec with Matchers {
       config.DIM shouldBe profile.dim
       config.sp_banks shouldBe 4
       config.sp_bank_entries shouldBe 262144 / (4 * profile.scratchpadRowBytes)
-      config.acc_banks shouldBe 2
-      config.acc_bank_entries shouldBe 65536 / (2 * profile.accumulatorRowBytes)
+      val physical = PhysicalAccumulator(profile)
+      config.acc_banks shouldBe physical.banks
+      config.acc_bank_entries * config.acc_banks shouldBe physical.factor * 65536 / profile.accumulatorRowBytes
+      Integer.bitCount(config.acc_bank_entries) shouldBe 1
+      PhysicalAccumulator.compatRows(profile) shouldBe 65536 / profile.accumulatorRowBytes
       config.dma_maxbytes shouldBe profile.scratchpadRowBytes
       config.ex_read_from_acc shouldBe false
       config.ex_write_to_spad shouldBe false
