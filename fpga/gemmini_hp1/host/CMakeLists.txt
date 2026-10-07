@@ -100,6 +100,7 @@ target_compile_definitions(gemmini_hp1_host_profile INTERFACE
   IM2P_GEMMINI_FRONTEND_EXPECTED_DIM=${IM2P_dim}
   IM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1
   GGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1
+  GGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM=1
   IM2P_FPGA_ARCH_GEMMINI_HP1=1
   IM2P_FPGA_PROFILE_ID="${IM2P_profile}"
   IM2P_FPGA_BUILD_ID="${IM2P_MANIFEST_SHA256}")
@@ -126,6 +127,7 @@ add_library(gemmini_hp1_host_common STATIC
   uart.cpp
   rmd.cpp
   ggml-gemmini-fpga.cpp
+  direct_sim_unavailable.cpp
   "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-builder.cpp"
   "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-compose.cpp"
   "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-executor.cpp"
@@ -176,6 +178,9 @@ if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-im2p-executor.cpp"
     PROPERTIES COMPILE_OPTIONS -Wno-error=misleading-indentation)
 endif()
+# llama keeps a trace-only local that is unused when LOG_CYCLE is off.
+set_property(SOURCE "${IM2P_LLAMA_GEMMINI}/residual/rmd/rmd-im2p-executor.cpp"
+  APPEND PROPERTY COMPILE_OPTIONS -Wno-error=unused-variable)
 if(APPLE)
   target_link_options(gemmini_hp1_host_common INTERFACE -Wl,-dead_strip)
   target_link_options(gemmini_hp1_host_orchestration PRIVATE
@@ -218,7 +223,7 @@ if(EXISTS "${IM2P_GEMMINI_RTL_FILELIST}")
   set(IM2P_RUN_BRIDGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/run-aware-bridge")
   set(IM2P_RUN_BRIDGE_EXE "${IM2P_RUN_BRIDGE_DIR}/VIM2PGemminiWSHP1Sim")
   set(IM2P_RUN_RTL_FLAGS
-      "-std=c++20 -Wall -Wextra -Wpedantic -fno-fast-math -DIM2P_RTL_TEST_BUILD=1 -DIM2P_RTL_SELECTED_TOP=${IM2P_selected_top} -DIM2P_DIM=${IM2P_dim} -DIM2P_OPERAND_BITS=${IM2P_activation_bits} -DIM2P_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_BANK_ROWS=${IM2P_bank_rows} -DIM2P_ACC_ROWS=${IM2P_accumulator_rows} -DIM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1 -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=${IM2P_dim} -DGGML_GEMMINI_CONFIGURED_DIM=${IM2P_dim} -DGGML_GEMMINI_ACTIVATION_BITS=${IM2P_activation_bits} -DGGML_GEMMINI_WEIGHT_BITS=${IM2P_weight_bits} -DGGML_GEMMINI_ENABLE_RMD=1 -DGGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1 -DIM2P_FPGA_ARCH_GEMMINI_HP1=1 -I${IM2P_GEMMINI_HOST_PARAMS_DIR} -I${CMAKE_CURRENT_SOURCE_DIR} -I${IM2P_ROOT}/frontend/include -I${IM2P_ROOT}/sim/include -I${IM2P_ROOT}/sim/ffi -I${IM2P_ROOT}/sim/common -I${IM2P_LLAMA_GEMMINI} -I${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils/include -I${IM2P_LLAMA_ROOT}/ggml/include -I${IM2P_LLAMA_ROOT}/ggml/src -I${IM2P_LLAMA_ROOT}/common -I${IM2P_GEMMINI_INCLUDE_ROOT}")
+      "-std=c++20 -Wall -Wextra -Wpedantic -fno-fast-math -DIM2P_RTL_TEST_BUILD=1 -DIM2P_RTL_SELECTED_TOP=${IM2P_selected_top} -DIM2P_DIM=${IM2P_dim} -DIM2P_OPERAND_BITS=${IM2P_activation_bits} -DIM2P_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_BANK_ROWS=${IM2P_bank_rows} -DIM2P_ACC_ROWS=${IM2P_accumulator_rows} -DIM2P_GEMMINI_EXTERNAL_EXECUTOR_ONLY=1 -DIM2P_GEMMINI_FRONTEND_ACTIVATION_BITS=${IM2P_activation_bits} -DIM2P_GEMMINI_FRONTEND_EXPECTED_DIM=${IM2P_dim} -DGGML_GEMMINI_CONFIGURED_DIM=${IM2P_dim} -DGGML_GEMMINI_ACTIVATION_BITS=${IM2P_activation_bits} -DGGML_GEMMINI_WEIGHT_BITS=${IM2P_weight_bits} -DGGML_GEMMINI_ENABLE_RMD=1 -DGGML_GEMMINI_EXECUTION_BACKEND_FPGA_UART=1 -DGGML_GEMMINI_EXECUTION_BACKEND_IM2P_SIM=1 -DIM2P_FPGA_ARCH_GEMMINI_HP1=1 -I${IM2P_GEMMINI_HOST_PARAMS_DIR} -I${CMAKE_CURRENT_SOURCE_DIR} -I${IM2P_ROOT}/frontend/include -I${IM2P_ROOT}/sim/include -I${IM2P_ROOT}/sim/ffi -I${IM2P_ROOT}/sim/common -I${IM2P_LLAMA_GEMMINI} -I${IM2P_LLAMA_ROOT}/ggml/src/ggml-gemmini-utils/include -I${IM2P_LLAMA_ROOT}/ggml/include -I${IM2P_LLAMA_ROOT}/ggml/src -I${IM2P_LLAMA_ROOT}/common -I${IM2P_GEMMINI_INCLUDE_ROOT}")
   string(APPEND IM2P_RUN_RTL_FLAGS " -ffunction-sections -fdata-sections")
   if(APPLE)
     set(IM2P_RUN_LINK_FLAGS "-Wl,-dead_strip")
