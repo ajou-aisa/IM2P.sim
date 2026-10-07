@@ -1,7 +1,9 @@
 #include "im2p_cpu_functional_internal.hpp"
 #include "im2p_cpu_functional.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <new>
 #if defined(IM2P_CPU_FUNCTIONAL_TEST_HOOKS)
@@ -27,6 +29,41 @@ void observe(const im2p_matmul_desc_t &d,
 #endif
 
 namespace cf = im2p::cpu_functional;
+
+namespace {
+// Paired residual operands are the stream's own, indexed through the runs:
+// compact W row k is original row block * 32 + bit, its scale row is block.
+// This is the mapping the RTL indexed preload must reproduce.
+struct PairedGather {
+  const cf::Operands *stream;
+  const std::vector<im2p_compact_run_t> *runs;
+};
+int gather_weight(void *context, size_t k, size_t column, size_t count,
+                  int8_t *out) {
+  const auto &g = *static_cast<const PairedGather *>(context);
+  const auto run = std::prev(std::upper_bound(
+      g.runs->begin(), g.runs->end(), k,
+      [](size_t value, const im2p_compact_run_t &r) {
+        return value < r.compact_k_begin;
+      }));
+  uint32_t mask = run->original_k_mask;
+  for (size_t skip = k - run->compact_k_begin; skip; --skip)
+    mask &= mask - 1;
+  const size_t row = size_t(run->original_block_id) * 32 + __builtin_ctz(mask);
+  const size_t n = g.stream->descriptor.n;
+  std::copy_n(g.stream->weights.data() + row * n + column, count, out);
+  return IM2P_OK;
+}
+int gather_scale(void *context, size_t index, size_t column, size_t count,
+                 uint32_t *out) {
+  const auto &g = *static_cast<const PairedGather *>(context);
+  const size_t n = g.stream->descriptor.n;
+  std::copy_n(g.stream->scales.data() +
+                  size_t((*g.runs)[index].original_block_id) * n + column,
+              count, out);
+  return IM2P_OK;
+}
+} // namespace
 static_assert(IM2P_ACTIVATION_BITS == IM2P_WEIGHT_BITS &&
               (IM2P_ACTIVATION_BITS == 4 || IM2P_ACTIVATION_BITS == 8));
 static_assert(IM2P_DIM == 16 || IM2P_DIM == 32 || IM2P_DIM == 64);
@@ -215,6 +252,67 @@ int im2p_publish_stripe_planned(im2p_stream_t *stream,
     return IM2P_OK;
   } catch (...) {
     stream->failed = true;
+    return IM2P_ERROR;
+  }
+}
+
+int im2p_publish_stripe_paired(im2p_stream_t *stream,
+                               const im2p_activation_stripe_t *stripe,
+                               const im2p_production_geometry_v1_t *g,
+                               const im2p_paired_residual_v1_t *residual) {
+  if (residual && (residual->version != IM2P_PAIRED_RESIDUAL_VERSION ||
+                   residual->struct_size != sizeof(*residual)))
+    return IM2P_INVALID_LAYOUT;
+  if (!residual || !residual->rows)
+    return im2p_publish_stripe_planned(stream, stripe, g);
+  if (!stream)
+    return IM2P_INVALID_LAYOUT;
+  if (stream->finished || stream->failed)
+    return IM2P_LATE_STRIPE;
+  const auto &main = stream->operands.descriptor;
+  const auto *view = residual->runs;
+  if (!view ||
+      reinterpret_cast<std::uintptr_t>(view) % alignof(im2p_compact_runs_t) ||
+      view->version != IM2P_COMPACT_RUNS_VERSION ||
+      view->struct_size != sizeof(*view) || !view->runs ||
+      reinterpret_cast<std::uintptr_t>(view->runs) %
+          alignof(im2p_compact_run_t) ||
+      !view->run_count || view->run_count > residual->compact_k ||
+      view->original_k != main.k || main.scale_total_k != main.k ||
+      !residual->output || residual->output_row_stride < main.n ||
+      residual->rows - 1 > (size_t(PTRDIFF_MAX) / sizeof(int32_t) - main.n) /
+                               residual->output_row_stride)
+    return IM2P_INVALID_LAYOUT;
+  try {
+    const std::vector<im2p_compact_run_t> runs(view->runs,
+                                               view->runs + view->run_count);
+    PairedGather gather{&stream->operands, &runs};
+    // The residual lands in a staging buffer so a rejected Main publish writes nothing.
+    std::vector<int32_t> staged(residual->rows * main.n);
+    im2p_matmul_desc_t d = main;
+    d.activations = residual->activations;
+    d.weights = nullptr;
+    d.scales = nullptr;
+    d.output = staged.data();
+    d.m = residual->rows;
+    d.k = residual->compact_k;
+    d.activation_row_stride_bytes = residual->activation_row_stride_bytes;
+    d.weight_row_stride_bytes = main.n;
+    d.output_row_stride = main.n;
+    d.provider = {&gather, gather_weight, nullptr, gather_scale, nullptr};
+    cf::Operands operands;
+    int status = cf::prepare_runs(operands, d, runs, view->original_k);
+    if (status == IM2P_OK)
+      status = cf::execute_runs(operands, runs);
+    if (status == IM2P_OK)
+      status = im2p_publish_stripe_planned(stream, stripe, g);
+    if (status != IM2P_OK)
+      return status;
+    for (size_t row = 0; row < residual->rows; ++row)
+      std::copy_n(staged.data() + row * main.n, main.n,
+                  residual->output + row * residual->output_row_stride);
+    return IM2P_OK;
+  } catch (...) {
     return IM2P_ERROR;
   }
 }

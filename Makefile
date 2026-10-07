@@ -206,6 +206,30 @@ gemmini-schedule-test:
 gemmini-paired-schedule-test:
 	$(PYTHON) tests/test_gemmini_paired_schedule.py
 
+# CPU-functional paired stream parity. Builds the CPU-functional library per
+# profile with the resolved hardware contract's memory facts; llama (GEMMINI_ROOT,
+# a clean snapshot for gates) only provides quants/common/hp1_scu.hpp.
+CPU_FUNCTIONAL_PAIRED_PROFILES ?= a8w8-d16 a8w8-d64
+.PHONY: cpu-functional-paired-test
+cpu-functional-paired-test:
+	@mkdir -p $(BUILD_DIR)/cpu-functional-paired
+	@set -e; for profile in $(CPU_FUNCTIONAL_PAIRED_PROFILES); do \
+	  bits=$${profile#a}; bits=$${bits%%w*}; dim=$${profile##*-d}; \
+	  set -- $$($(PYTHON) -c "import pathlib, sys; sys.path.insert(0, '.'); \
+	    from scripts.gemmini_replay_contract import hardware_contract; \
+	    c = hardware_contract('$$profile-hp1', pathlib.Path('.').resolve()); m = c['facts']['memory']; \
+	    print(m['accumulator_rows'], m['bank_count'], m['bank_rows'], c['facts']['accumulator_bits'])"); \
+	  binary=$(BUILD_DIR)/cpu-functional-paired/$$profile; \
+	  $(CXX) -std=c++20 -O2 -fno-fast-math -UNDEBUG -Wall -Wextra -Werror \
+	    -DIM2P_ACTIVATION_BITS=$$bits -DIM2P_WEIGHT_BITS=$$bits -DIM2P_DIM=$$dim \
+	    -DIM2P_ACCUMULATOR_ROWS=$$1 -DIM2P_GEMMINI_BANK_COUNT=$$2 \
+	    -DIM2P_GEMMINI_BANK_ROWS=$$3 -DIM2P_PARTIAL_BITS=$$4 \
+	    -Ifrontend/include -Isim/include -I$(GEMMINI_ROOT)/ggml/src/ggml-gemmini \
+	    frontend/src/im2p_cpu_functional.cpp frontend/src/im2p_cpu_functional_compute.cpp \
+	    frontend/tests/cpu_functional_paired.cpp -o $$binary; \
+	  $$binary; \
+	done
+
 gemmini-hp1-test: gemmini-schedule-test
 
 check: profile-config-check static-check cpp-test numerical-reference-test activation-guard-infrastructure-test
