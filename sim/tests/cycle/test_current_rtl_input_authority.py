@@ -138,6 +138,11 @@ class PassiveCaptureLogTest(unittest.TestCase):
                     'tile=1/' + diagnostic + '1/1\nNUMERIC PASS\n')
         # When capture strips only the complete diagnostic record.
         self.assertEqual(self.check_capture(original, observed), ['captured-001'])
+        # And the sampled shape (llama fe617d29e) is stripped the same way.
+        sampled = json.dumps({**record, 'cpu_work_cycles_sample_reason': None, 'cpu_work_cycles_scope': None,
+                              'host_cpu_core_start': None, 'host_cpu_core_end': None, 'cpu_migrated': None},
+                             separators=(',', ':')) + '\n'
+        self.assertEqual(self.check_capture(original, observed.replace(diagnostic, sampled)), ['captured-001'])
         # Then changed diagnostic closure still fails the byte guard.
         for changed in (diagnostic.replace(',"thread_id":1', ''),
                         diagnostic.replace('"host_elapsed_ns":1', '"host_elapsed_ns":1,"extra":1')):

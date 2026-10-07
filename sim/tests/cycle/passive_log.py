@@ -18,6 +18,11 @@ _CURRENT_FIELDS: Final = _FIELDS | frozenset((
     'host_thread_id', 'thread_id', 'interval_class', 'duration_role',
     'exclusion_reason',
 ))
+# llama fe617d29e adds CPU sample provenance to every record.
+_SAMPLED_FIELDS: Final = _CURRENT_FIELDS | frozenset((
+    'cpu_work_cycles_sample_reason', 'cpu_work_cycles_scope',
+    'host_cpu_core_start', 'host_cpu_core_end', 'cpu_migrated',
+))
 _T = TypeVar('_T')
 
 
@@ -40,6 +45,6 @@ def strip_device_host_call_records(output: str) -> str:
         except ValueError:
             return match.group()
         return '' if isinstance(record, dict) and record.get('op') == 'rmd.device_host_call' \
-            and set(record) in (_FIELDS, _CURRENT_FIELDS) else match.group()
+            and set(record) in (_FIELDS, _CURRENT_FIELDS, _SAMPLED_FIELDS) else match.group()
 
     return _DEVICE_RECORD.sub(remove, output)
