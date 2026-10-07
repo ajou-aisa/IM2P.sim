@@ -40,13 +40,18 @@ constexpr std::uint64_t kABase = 0x00100000;
 constexpr std::uint64_t kBBase = 0x10000000;
 constexpr std::uint64_t kSBase = 0x18000000;
 constexpr std::uint64_t kCBase = 0x20000000;
+// Paired residual windows (compact A via LdR, SCU-final output via StR). They
+// fail closed until LdR (P4) and StR (P5) exist.
+constexpr std::uint64_t kRABase = 0x08000000;
+constexpr std::uint64_t kRCBase = 0x28000000;
 constexpr const char *kNumericalRevision = "signed-scu-sat-v2";
 
 constexpr std::uint64_t slot_address(std::uint64_t base, std::size_t slot) {
   return base + slot * kSlotStride;
 }
 
-enum class ReadKind : std::uint8_t { none, activation, weight, scale };
+enum class ReadKind : std::uint8_t { none, activation, weight, scale, residual_activation };
+enum class WriteKind : std::uint8_t { output, residual_output };
 
 struct Stripe {
   std::uint32_t id = 0;
@@ -82,6 +87,7 @@ struct PendingRead {
 struct PendingWrite {
   bool active = false;
   bool response = false;
+  WriteKind kind = WriteKind::output;
   std::uint8_t rtl_id = 0;
   std::uint64_t tag = 0;
   std::uint64_t address = 0;

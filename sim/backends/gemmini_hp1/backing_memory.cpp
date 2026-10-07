@@ -38,6 +38,12 @@ void map_read(Runtime &runtime) {
     pending.kind = ReadKind::weight;
     extent = gemmini::weight_read(runtime.schedule, loop, address - b_base);
     host_base = runtime.descriptor.weight_base;
+  } else if (address >= kRABase && address < slot_address(kRABase, 2)) {
+    pending.kind = ReadKind::residual_activation;
+    std::fprintf(stderr, "integrated: residual activation read 0x%llx has no LdR yet\n",
+                 static_cast<unsigned long long>(address));
+    runtime.fault = true;
+    return;
   } else if (address >= s_base) {
     pending.kind = ReadKind::scale;
     extent = gemmini::scale_read(runtime.schedule, loop, address - s_base);
@@ -81,6 +87,13 @@ void map_write(Runtime &runtime) {
   pending.rtl_id = runtime.top.io_writeRequest_bits_id;
   pending.tag = ++runtime.tag_sequence << 8 | pending.rtl_id;
   const auto address = static_cast<std::uint64_t>(runtime.top.io_writeRequest_bits_address);
+  if (address >= kRCBase && address < slot_address(kRCBase, 2)) {
+    pending.kind = WriteKind::residual_output;
+    std::fprintf(stderr, "integrated: residual output write 0x%llx has no StR yet\n",
+                 static_cast<unsigned long long>(address));
+    runtime.fault = true;
+    return;
+  }
   const auto base = slot_address(kCBase, runtime.current_stripe.slot);
   if (address < base) {
     runtime.fault = true;

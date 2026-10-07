@@ -14,10 +14,11 @@ use super::{
         scale_view, service_stream, status_for_error, vector_op, write_extended_stats, write_stats,
     },
     types::{
-        ActivationStripeC, PublishedStripe, StreamBox, StripeCompletionC,
+        ActivationStripeC, PairedResidualC, PublishedStripe, StreamBox, StripeCompletionC,
         StripeCompletionExtendedC, StripeWorkDesc, StripeWorkDescC, WorkStatsC, WorkStatsExtendedC,
+        PAIRED_RESIDUAL_VERSION,
     },
-    SimBox,
+    SimBox, CONFIGURATION_MISMATCH,
 };
 
 #[no_mangle]
@@ -440,6 +441,27 @@ pub unsafe extern "C" fn im2p_publish_stripe_planned(
         return -4;
     };
     publish_stripe_impl(stream, stripe, Some(geometry))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn im2p_publish_stripe_paired(
+    stream: *mut StreamBox,
+    stripe: *const ActivationStripeC,
+    geometry: *const crate::production_geometry::ProductionGeometry,
+    residual: *const PairedResidualC,
+) -> i32 {
+    if let Some(residual) = residual.as_ref() {
+        if residual.version != PAIRED_RESIDUAL_VERSION
+            || residual.struct_size as usize != std::mem::size_of::<PairedResidualC>()
+        {
+            return -4;
+        }
+        // No LdR/StR in the RTL yet (P4/P5): publish nothing, write nothing.
+        if residual.rows != 0 {
+            return CONFIGURATION_MISMATCH;
+        }
+    }
+    im2p_publish_stripe_planned(stream, stripe, geometry)
 }
 
 unsafe fn publish_stripe_impl(

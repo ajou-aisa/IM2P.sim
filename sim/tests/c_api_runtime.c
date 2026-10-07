@@ -630,6 +630,213 @@ static int test_planned_runs(im2p_sim_t *sim) {
   return 0;
 }
 
+/* Paired companion on a planned HP1 stream: M x N x K = 2 x 3 x 40 (blocks 32 + 8). */
+enum { PAIRED_M = 2, PAIRED_N = 3, PAIRED_K = 40, PAIRED_BLOCKS = 2 };
+
+typedef struct {
+  int32_t output[PAIRED_M * PAIRED_N];
+  int seen[PAIRED_M * PAIRED_N];
+  int writes;
+  int bad;
+} paired_fixture_t;
+
+typedef struct {
+  int32_t output[PAIRED_M * PAIRED_N];
+  im2p_work_stats_extended_t stats;
+  im2p_stripe_completion_extended_t completion;
+} paired_result_t;
+
+static int paired_a(size_t row, size_t k) { return (int)((row * 5 + k * 3) % 8) - 4; }
+static int paired_w(size_t k, size_t column) { return (int)((k * 7 + column * 3) % 8) - 4; }
+static uint32_t paired_carrier(size_t block, size_t column) {
+  return (uint32_t)((block + column) % 3);
+}
+
+static int paired_weight(void *context, size_t row, size_t column, size_t count,
+                         int8_t *out) {
+  (void)context;
+  if (row >= PAIRED_K || column >= PAIRED_N || count > PAIRED_N - column) return -1;
+  for (size_t j = 0; j < count; ++j) out[j] = (int8_t)paired_w(row, column + j);
+  return 0;
+}
+
+static int paired_scale(void *context, size_t block, size_t column, size_t count,
+                        uint32_t *out) {
+  (void)context;
+  if (block >= PAIRED_BLOCKS || column >= PAIRED_N || count > PAIRED_N - column)
+    return -1;
+  for (size_t j = 0; j < count; ++j) out[j] = paired_carrier(block, column + j);
+  return 0;
+}
+
+static int paired_write(void *context, size_t block, size_t row, size_t column,
+                        size_t count, const int64_t *values, uint32_t domain) {
+  paired_fixture_t *fixture = context;
+  if (block || row >= PAIRED_M || column >= PAIRED_N || count > PAIRED_N - column ||
+      domain != IM2P_OUTPUT_SCU_FINAL) {
+    fixture->bad = 1;
+    return -1;
+  }
+  for (size_t j = 0; j < count; ++j) {
+    const size_t offset = row * PAIRED_N + column + j;
+    if (fixture->seen[offset]++) fixture->bad = 1;
+    fixture->output[offset] = (int32_t)values[j];
+  }
+  ++fixture->writes;
+  return 0;
+}
+
+/* CPU op5 SCU-final oracle: per K32 block and DIM chunk, raw * 2^carrier, saturated. */
+static int32_t paired_oracle(size_t row, size_t column) {
+  const size_t chunk = IM2P_TEST_DIM < 32 ? IM2P_TEST_DIM : 32;
+  int32_t acc = 0;
+  for (size_t begin = 0; begin < PAIRED_K; begin += chunk) {
+    const size_t end = begin + chunk < PAIRED_K ? begin + chunk : PAIRED_K;
+    int64_t raw = 0;
+    for (size_t k = begin; k < end; ++k)
+      raw += (int64_t)paired_a(row, k) * paired_w(k, column);
+    acc = oracle_sat32((int64_t)acc +
+                       oracle_sat32(raw * (INT64_C(1) << paired_carrier(begin / 32, column))));
+  }
+  return acc;
+}
+
+/* mode 0: planned; 1: paired NULL; 2: paired rows == 0; 3: non-empty companion
+ * first (must be rejected with nothing published), then planned. */
+static int paired_run(int mode, paired_result_t *result) {
+  activation_t a[PAIRED_M * PAIRED_K];
+  for (size_t row = 0; row < PAIRED_M; ++row)
+    for (size_t k = 0; k < PAIRED_K; ++k)
+      a[row * PAIRED_K + k] = (activation_t)paired_a(row, k);
+  paired_fixture_t fixture;
+  memset(&fixture, 0, sizeof(fixture));
+  for (size_t i = 0; i < PAIRED_M * PAIRED_N; ++i) fixture.output[i] = -99;
+  im2p_stripe_work_desc_t work = striped_descriptor();
+  work.weights = NULL;
+  work.m = PAIRED_M;
+  work.n = PAIRED_N;
+  work.k = PAIRED_K;
+  work.weight_row_stride_bytes = PAIRED_N * W_STORAGE;
+  work.output_row_stride = PAIRED_N;
+  work.tile_i_rows = PAIRED_M;
+  work.tile_j_columns = PAIRED_N;
+  work.block_size = 32;
+  work.scale_total_k = PAIRED_K;
+  work.scale_row_stride = PAIRED_N;
+  work.scale_valid_columns = PAIRED_N;
+  work.stripe_count = 1;
+  work.vector_op = IM2P_VECTOR_LEFT_SHIFT;
+  work.output_domain = IM2P_OUTPUT_SCU_FINAL;
+  work.provider.context = &fixture;
+  work.provider.read_weight_i8 = paired_weight;
+  work.provider.read_scale = paired_scale;
+  work.provider.write_output = paired_write;
+  im2p_production_geometry_v1_t whole = {
+      1, sizeof(whole), IM2P_TEST_ACTIVATION_BITS, IM2P_TEST_WEIGHT_BITS,
+      IM2P_TEST_DIM, IM2P_GEOMETRY_STREAM, PAIRED_M, PAIRED_N, PAIRED_K, 1, 1, 2,
+      PAIRED_M, 0, PAIRED_M, 0};
+  im2p_production_geometry_v1_t part = whole;
+  part.scope = IM2P_GEOMETRY_STRIPE;
+  im2p_activation_stripe_t stripe = activation_stripe();
+  stripe.rows = PAIRED_M;
+  stripe.activations = a;
+  stripe.activation_row_stride_bytes = PAIRED_K * A_STORAGE;
+  stripe.context = 23;
+
+  im2p_sim_t *sim = im2p_sim_create();
+  if (!sim) return 45;
+  im2p_stream_t *stream = NULL;
+  int status = im2p_begin_striped_matmul_planned(sim, &work, &whole, &stream);
+  if (status != IM2P_OK || stream == NULL) {
+    im2p_sim_destroy(sim);
+    return 46;
+  }
+  im2p_paired_residual_v1_t residual;
+  memset(&residual, 0, sizeof(residual));
+  residual.version = IM2P_PAIRED_RESIDUAL_VERSION;
+  residual.struct_size = sizeof(residual);
+  if (mode == 0) {
+    status = im2p_publish_stripe_planned(stream, &stripe, &part);
+  } else if (mode == 1) {
+    status = im2p_publish_stripe_paired(stream, &stripe, &part, NULL);
+  } else if (mode == 2) {
+    status = im2p_publish_stripe_paired(stream, &stripe, &part, &residual);
+  } else {
+    const int8_t compact[4] = {1, -2, 3, -4};
+    const im2p_compact_run_t entries[1] = {{0, 0x0000000fU, 0, 4}};
+    const im2p_compact_runs_t runs = {
+        IM2P_COMPACT_RUNS_VERSION, sizeof(runs), PAIRED_K, 1, entries};
+    int32_t residual_output[PAIRED_N] = {-99, -99, -99};
+    residual.rows = 1;
+    residual.compact_k = 4;
+    residual.activations = compact;
+    residual.activation_row_stride_bytes = 4;
+    residual.runs = &runs;
+    residual.output = residual_output;
+    residual.output_row_stride = PAIRED_N;
+    status = im2p_publish_stripe_paired(stream, &stripe, &part, &residual);
+    const int rejected = status == IM2P_CONFIGURATION_MISMATCH &&
+                         residual_output[0] == -99 && residual_output[1] == -99 &&
+                         residual_output[2] == -99 && fixture.writes == 0;
+    residual.version = 2;
+    residual.rows = 0;
+    const int malformed = im2p_publish_stripe_paired(stream, &stripe, &part, &residual) ==
+                          IM2P_INVALID_LAYOUT;
+    status = rejected && malformed && im2p_stream_progress_count(stream) == 0
+                 ? im2p_publish_stripe_planned(stream, &stripe, &part)
+                 : 47;
+  }
+  int completed = 0;
+  for (size_t cycle = 0; status == IM2P_OK && cycle < 200000 && !completed; ++cycle) {
+    if (im2p_progress_stream(stream, 1) != IM2P_OK) status = 48;
+    const int polled = im2p_poll_completed_extended(stream, &result->completion);
+    if (polled < 0) status = 48;
+    completed = polled == 1;
+  }
+  memset(&result->stats, 0, sizeof(result->stats));
+  if (status == IM2P_OK &&
+      (!completed || im2p_finish_stream_extended(stream, &result->stats) != IM2P_OK))
+    status = 48;
+  im2p_destroy_stream(stream);
+  im2p_sim_destroy(sim);
+  if (status != IM2P_OK) return status == 47 || status == 48 ? status : 49;
+  if (fixture.bad || result->completion.base.stripe_id != 0 ||
+      result->completion.base.i_start != 0 || result->completion.base.rows != PAIRED_M ||
+      result->completion.base.context != 23) return 50;
+  for (size_t i = 0; i < PAIRED_M * PAIRED_N; ++i)
+    if (fixture.seen[i] != 1) return 50;
+  memcpy(result->output, fixture.output, sizeof(result->output));
+  return 0;
+}
+
+static int test_paired_companion(void) {
+  if (strcmp(im2p_sim_implementation(), "gemmini-hp1-integrated-v1") != 0)
+    return 0;
+  paired_result_t results[4];
+  memset(results, 0, sizeof(results));
+  for (int mode = 0; mode < 4; ++mode) {
+    const int status = paired_run(mode, &results[mode]);
+    if (status != 0) {
+      printf("C_API_PAIRED_FAIL mode=%d status=%d\n", mode, status);
+      return status;
+    }
+  }
+  for (size_t row = 0; row < PAIRED_M; ++row)
+    for (size_t column = 0; column < PAIRED_N; ++column)
+      if (results[0].output[row * PAIRED_N + column] != paired_oracle(row, column))
+        return 51;
+  for (int mode = 1; mode < 4; ++mode)
+    if (memcmp(results[mode].output, results[0].output, sizeof(results[0].output)) != 0 ||
+        memcmp(&results[mode].stats, &results[0].stats, sizeof(results[0].stats)) != 0 ||
+        memcmp(&results[mode].completion, &results[0].completion,
+               sizeof(results[0].completion)) != 0)
+      return 52;
+  printf("C_API_PAIRED_PASS null=1 rows0=1 mismatch=1 malformed=1 oracle=1"
+         " work_total_cycles=%" PRIu64 " completion_cycle=%" PRIu64 "\n",
+         results[0].stats.base.work_total_cycles, results[0].completion.completion_cycle);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (im2p_sim_abi_version() != IM2P_ABI_VERSION ||
       im2p_sim_activation_bits() != IM2P_TEST_ACTIVATION_BITS ||
@@ -643,6 +850,10 @@ int main(int argc, char **argv) {
     const int status = test_planned_runs(sim);
     im2p_sim_destroy(sim);
     return status;
+  }
+  if (argc == 2 && strcmp(argv[1], "--paired-only") == 0) {
+    im2p_sim_destroy(sim);
+    return test_paired_companion();
   }
 
   int32_t output = 0;

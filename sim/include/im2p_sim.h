@@ -306,6 +306,42 @@ int im2p_publish_stripe_planned(
     const im2p_production_geometry_v1_t *geometry
 );
 
+/*
+ * Additive paired-microtile companion for one planned stripe. `rows` compact
+ * residual rows over the surviving K of `runs`: activations are signed bytes
+ * with a byte row stride; output is SCU-final int32 (`rows` x n) with an
+ * element row stride. W and scales are the stream's own operands, indexed
+ * through `runs`, so runs->original_k must equal the stream K and its
+ * scale_total_k. `activations` and `output` are caller-owned and must stay
+ * valid until that stripe's completion is returned; the residual output is
+ * final at that completion. The merge with Main stays with the caller.
+ */
+#define IM2P_PAIRED_RESIDUAL_VERSION 1u
+typedef struct {
+  uint32_t version;
+  uint32_t struct_size;
+  size_t rows;
+  size_t compact_k;
+  const int8_t *activations;
+  size_t activation_row_stride_bytes;
+  const im2p_compact_runs_t *runs;
+  int32_t *output;
+  size_t output_row_stride;
+  uint64_t context;
+} im2p_paired_residual_v1_t;
+
+/* A NULL companion or rows == 0 behaves exactly like
+ * im2p_publish_stripe_planned. RTL-backed libraries reject a non-empty
+ * companion with IM2P_CONFIGURATION_MISMATCH, publishing nothing and writing
+ * no output, until the paired RTL exists.
+ */
+int im2p_publish_stripe_paired(
+    im2p_stream_t *stream,
+    const im2p_activation_stripe_t *stripe,
+    const im2p_production_geometry_v1_t *geometry,
+    const im2p_paired_residual_v1_t *residual
+);
+
 /* The returned stream remains valid if `sim` is destroyed. */
 int im2p_begin_striped_matmul(
     im2p_sim_t *sim,

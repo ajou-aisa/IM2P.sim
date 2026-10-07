@@ -156,6 +156,28 @@ pub struct ActivationStripeC {
     pub context: u64,
 }
 
+pub const PAIRED_RESIDUAL_VERSION: u32 = 1;
+
+/// `im2p_paired_residual_v1_t`: additive ABI-5 paired-microtile companion.
+#[repr(C)]
+pub struct PairedResidualC {
+    pub version: u32,
+    pub struct_size: u32,
+    pub rows: usize,
+    pub compact_k: usize,
+    pub activations: *const i8,
+    pub activation_row_stride_bytes: usize,
+    pub runs: *const crate::ffi::CompactRuns,
+    pub output: *mut i32,
+    pub output_row_stride: usize,
+    pub context: u64,
+}
+
+const _: () = assert!(std::mem::size_of::<PairedResidualC>() == 72);
+const _: () = assert!(std::mem::offset_of!(PairedResidualC, rows) == 8);
+const _: () = assert!(std::mem::offset_of!(PairedResidualC, runs) == 40);
+const _: () = assert!(std::mem::offset_of!(PairedResidualC, context) == 64);
+
 #[repr(C)]
 pub struct StripeCompletionC {
     pub stripe_id: u32,

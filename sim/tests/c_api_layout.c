@@ -47,6 +47,13 @@ _Static_assert(sizeof(im2p_stripe_work_desc_t) == 216,
                "stripe descriptor size changed");
 _Static_assert(sizeof(im2p_activation_stripe_t) == 72,
                "activation stripe layout changed");
+_Static_assert(IM2P_PAIRED_RESIDUAL_VERSION == 1, "paired companion version");
+_Static_assert(sizeof(im2p_paired_residual_v1_t) == 72, "paired companion layout");
+_Static_assert(offsetof(im2p_paired_residual_v1_t, rows) == 8, "paired rows offset");
+_Static_assert(offsetof(im2p_paired_residual_v1_t, activations) == 24, "paired activations offset");
+_Static_assert(offsetof(im2p_paired_residual_v1_t, runs) == 40, "paired runs offset");
+_Static_assert(offsetof(im2p_paired_residual_v1_t, output) == 48, "paired output offset");
+_Static_assert(offsetof(im2p_paired_residual_v1_t, context) == 64, "paired context offset");
 _Static_assert(sizeof(im2p_stripe_completion_t) == 32,
                "legacy completion size changed");
 _Static_assert(offsetof(im2p_stripe_completion_t, stripe_id) == 0,

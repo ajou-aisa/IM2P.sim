@@ -35,6 +35,16 @@ using PublishPlanned = int (*)(im2p_stream_t *, const im2p_activation_stripe_t *
 static_assert(std::is_same_v<decltype(&im2p_execute_matmul_planned), ExecutePlanned>);
 static_assert(std::is_same_v<decltype(&im2p_begin_striped_matmul_planned), BeginPlanned>);
 static_assert(std::is_same_v<decltype(&im2p_publish_stripe_planned), PublishPlanned>);
+using PublishPaired = int (*)(im2p_stream_t *, const im2p_activation_stripe_t *,
+    const im2p_production_geometry_v1_t *, const im2p_paired_residual_v1_t *);
+static_assert(std::is_same_v<decltype(&im2p_publish_stripe_paired), PublishPaired>);
+static_assert(IM2P_PAIRED_RESIDUAL_VERSION == 1);
+static_assert(sizeof(im2p_paired_residual_v1_t) == 72);
+static_assert(std::is_standard_layout_v<im2p_paired_residual_v1_t>);
+static_assert(std::is_trivially_copyable_v<im2p_paired_residual_v1_t>);
+static_assert(offsetof(im2p_paired_residual_v1_t, runs) == 40);
+static_assert(std::is_same_v<decltype(im2p_paired_residual_v1_t::activations), const std::int8_t *>);
+static_assert(std::is_same_v<decltype(im2p_paired_residual_v1_t::output), std::int32_t *>);
 static_assert(std::is_same_v<im2p_write_output_fn, WriteOutput>);
 using ReadScale = int (*)(void *, std::size_t, std::size_t, std::size_t, std::uint32_t *);
 static_assert(std::is_same_v<im2p_read_scale_fn, ReadScale>);
