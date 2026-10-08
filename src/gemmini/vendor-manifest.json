@@ -92,6 +92,24 @@
       "compile_reason": "compile patched copy through upstreamGemmini source overlay",
       "direct_dependencies": [],
       "extraction": "full_file",
+      "git_blob_sha": "13f45eea3340cf0c4478e7dc6a06db43b4b15ba0",
+      "patch_reason": "paired indexed preload rows; immutable snapshot",
+      "patches": [
+        "patches/0004-paired-execute-gather.patch"
+      ],
+      "selected_symbols": [],
+      "snapshot_path": "upstream/src/main/scala/gemmini/ExecuteController.scala",
+      "snapshot_sha256": "b56c6556581a6afaaa54987590ca6a06bf2d48d3b64dbafc678350495b7eaf93",
+      "upstream_commit": "25809f78323a729ef76fb68f3cedd8a24da2942b",
+      "upstream_path": "src/main/scala/gemmini/ExecuteController.scala",
+      "upstream_repository": "https://github.com/ucb-bar/gemmini.git"
+    },
+    {
+      "compile_include": false,
+      "compile_overlay": true,
+      "compile_reason": "compile patched copy through upstreamGemmini source overlay",
+      "direct_dependencies": [],
+      "extraction": "full_file",
       "git_blob_sha": "982542993e53854f9f1a54c0ef76289a8d90da65",
       "patch_reason": "packed input bit-to-byte accounting; snapshot remains immutable",
       "patches": [
@@ -386,6 +404,11 @@
       "path": "patches/0003-paired-ex-hook.patch",
       "reason": "paired-microtile LoopMatmul execute hook",
       "sha256": "ce4a2170db538f8d19989fe799d4619366975f242684d5ec0117e624c75eb941"
+    },
+    {
+      "path": "patches/0004-paired-execute-gather.patch",
+      "reason": "paired-microtile indexed preload rows",
+      "sha256": "e4859f6ae0896fe90f171c9c0d2b99d9902d1f2d74b00db9ef309f485b05f14c"
     }
   ],
   "schema_version": 1

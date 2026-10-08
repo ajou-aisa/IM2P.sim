@@ -22,7 +22,7 @@ lazy val upstreamTargetUtils = ProjectRef(chipyardRoot.toURI, "midas_target_util
 // External builds load their own project settings after this build. Apply the
 // pinned compatibility setting and overlay once after the whole graph loads;
 // no Python-generated `set` commands or dependency checkout edits are needed.
-lazy val overlayNames = Set("GemminiConfigs.scala", "LoadController.scala",
+lazy val overlayNames = Set("ExecuteController.scala", "GemminiConfigs.scala", "LoadController.scala",
   "LoopMatmul.scala", "StoreController.scala")
 Global / onLoad := {
   val previous = (Global / onLoad).value
@@ -34,7 +34,7 @@ Global / onLoad := {
       sys.error("use gemmini_vendor.py --overlay NEW_DIR and -Dim2p.gemmini.overlay=NEW_DIR")))
     val replacements = (directory ** "*.scala").get
     require(replacements.map(_.getName).toSet == overlayNames && replacements.size == overlayNames.size,
-      "overlay must contain exactly the four verified upstream replacements")
+      "overlay must contain exactly the five verified upstream replacements")
     extracted.appendWithSession(Seq(
       // Reapplication invokes onLoad again; restore its predecessor first.
       Global / onLoad := previous,

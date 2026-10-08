@@ -1,0 +1,155 @@
+Subject: Let a paired-microtile PRELOAD read indexed W rows
+
+With gatherRows > 0 the ExecuteController samples a sideband entry at every io.cmd.fire and keeps it
+in a queue beside the command queue, popped with it. A gathering PRELOAD reads D row idx from the
+entry for idx < gatherRows and keeps rs1 + idx otherwise. Observation outputs report the gathered
+reads and the residual rows fed to the mesh. With gatherRows = 0, the default, none of this exists.
+
+diff --git a/src/main/scala/gemmini/ExecuteController.scala b/src/main/scala/gemmini/ExecuteController.scala
+--- a/src/main/scala/gemmini/ExecuteController.scala
++++ b/src/main/scala/gemmini/ExecuteController.scala
+@@ -8,8 +8,28 @@
+ import org.chipsalliance.cde.config.Parameters
+ import midas.targetutils.PerfCounter
+ 
++// IM2P paired microtile: one sideband entry per command entering the ExecuteController.
++class ExecuteGatherEntry(rowsCount: Int, rowBits: Int) extends Bundle {
++  val gather = Bool() // a PRELOAD whose D rows are read from `rows`
++  val residual = Bool() // the command belongs to a residual microtile (observation only)
++  val rows = Vec(rowsCount, UInt(rowBits.W))
++  val w_base = UInt(rowBits.W)
++}
++
++class ExecuteGatherRead(indexBits: Int, rowBits: Int) extends Bundle {
++  val row = UInt(indexBits.W) // preload row index, block_size - 1 - d_fire_counter
++  val address = UInt(rowBits.W) // full scratchpad address read
++  val relative = UInt(rowBits.W) // address - w_base
++}
++
++class ExecuteMeshRow(indexBits: Int, dataBits: Int) extends Bundle {
++  val row = UInt(indexBits.W)
++  val data = UInt(dataBits.W)
++}
++
+ // TODO do we still need to flush when the dataflow is weight stationary? Won't the result just keep travelling through on its own?
+-class ExecuteController[T <: Data, U <: Data, V <: Data](xLen: Int, tagWidth: Int, config: GemminiArrayConfig[T, U, V])
++class ExecuteController[T <: Data, U <: Data, V <: Data](xLen: Int, tagWidth: Int, config: GemminiArrayConfig[T, U, V],
++                                                         gatherRows: Int = 0)
+                                   (implicit p: Parameters, ev: Arithmetic[T]) extends Module {
+   import config._
+   import ev._
+@@ -49,6 +69,17 @@
+ 
+   val block_size = meshRows*tileRows
+ 
++  // IM2P paired microtile: with gatherRows > 0 a PRELOAD can read indexed W rows. The sideband is
++  // sampled at every io.cmd.fire and kept beside the command queue; the outputs only observe.
++  // With gatherRows = 0 (every upstream user) none of this exists.
++  val gather_row_bits = log2Up(sp_banks * sp_bank_entries)
++  val gather_io = if (gatherRows > 0) Some(IO(new Bundle {
++    val in = Input(new ExecuteGatherEntry(gatherRows, gather_row_bits))
++    val read = Output(Valid(new ExecuteGatherRead(log2Up(block_size), gather_row_bits)))
++    val mesh_a = Output(Valid(new ExecuteMeshRow(log2Up(block_size), block_size * inputType.getWidth)))
++    val mesh_d = Output(Valid(new ExecuteMeshRow(log2Up(block_size), block_size * inputType.getWidth)))
++  }).suggestName("gather")) else None
++
+   val mesh_tag = new Bundle with TagQueueTag {
+     val rob_id = UDValid(UInt(log2Up(reservation_station_entries).W))
+     val addr = local_addr_t.cloneType
+@@ -66,9 +97,25 @@
+   val cmd_q_heads = 3
+   assert(ex_queue_length >= cmd_q_heads)
+   // val (cmd, _) = MultiHeadedQueue(io.cmd, ex_queue_length, cmd_q_heads)
+-  val (cmd, _) = MultiHeadedQueue(unrolled_cmd, ex_queue_length, cmd_q_heads)
++  val (cmd, cmd_len) = MultiHeadedQueue(unrolled_cmd, ex_queue_length, cmd_q_heads)
+   cmd.pop := 0.U
+ 
++  // One sideband entry per io.cmd.fire. The unroller is 1:1 and keeps order, and it holds at most
++  // two commands, so this queue carries the EC queue's commands plus the unroller's, heads aligned.
++  val gather_q = gather_io.map { g =>
++    val enq = Wire(Decoupled(new ExecuteGatherEntry(gatherRows, gather_row_bits)))
++    enq.valid := io.cmd.fire
++    enq.bits := g.in
++    val (q, len) = MultiHeadedQueue(enq, ex_queue_length + 2, cmd_q_heads)
++    q.pop := cmd.pop
++    assert(!(io.cmd.fire && !enq.ready), "gather sideband full at io.cmd.fire")
++    assert(len >= cmd_len && len - cmd_len <= 2.U, "gather sideband out of step with the command queue")
++    assert(!(io.cmd.fire && g.in.gather && (io.cmd.bits.cmd.inst.funct =/= PRELOAD_CMD ||
++      io.cmd.bits.cmd.rs1(48 + log2Up(block_size + 1) - 1, 48) > gatherRows.U)),
++      "gathering command is not a PRELOAD of at most gatherRows rows")
++    q
++  }
++
+   // STATE defines
+   val waiting_for_cmd :: compute :: flush :: flushing :: Nil = Enum(4)
+   val control_state = RegInit(waiting_for_cmd)
+@@ -250,7 +297,16 @@
+ 
+   val a_address = a_address_rs1 + a_addr_offset
+   val b_address = b_address_rs2 + b_fire_counter
+-  val d_address = d_address_rs1 + (block_size.U - 1.U - d_fire_counter)
++  val d_row_index = block_size.U - 1.U - d_fire_counter
++  val d_address = d_address_rs1 + d_row_index
++  gather_q.foreach { q =>
++    // Gathered rows replace only the indices they cover; d_address also feeds the bank-conflict
++    // check for rows that are never read.
++    val entry = q.bits(preload_cmd_place)
++    when (q.valid(preload_cmd_place) && entry.gather && d_row_index < gatherRows.U) {
++      d_address.data := entry.rows(d_row_index(log2Up(gatherRows) - 1, 0))
++    }
++  }
+ 
+   val dataAbank = a_address.sp_bank()
+   val dataBbank = b_address.sp_bank()
+@@ -745,6 +801,12 @@
+     val im2colling = Bool()
+ 
+     val first = Bool()
++
++    // IM2P paired microtile observation: A and D can belong to different commands in one pass.
++    val a_residual = Bool()
++    val d_residual = Bool()
++    val a_row = UInt(log2Up(block_size).W)
++    val d_row = UInt(log2Up(block_size).W)
+   }
+ 
+   mesh_cntl_signals_q.io.enq.valid := computing
+@@ -800,6 +862,13 @@
+ 
+   mesh_cntl_signals_q.io.enq.bits.first := !a_fire_started && !b_fire_started && !d_fire_started
+ 
++  mesh_cntl_signals_q.io.enq.bits.a_residual := gather_q.map { q =>
++    q.valid(a_address_place) && q.bits(a_address_place).residual && !a_garbage }.getOrElse(false.B)
++  mesh_cntl_signals_q.io.enq.bits.d_residual := gather_q.map { q =>
++    q.valid(preload_cmd_place) && q.bits(preload_cmd_place).residual && !d_garbage }.getOrElse(false.B)
++  mesh_cntl_signals_q.io.enq.bits.a_row := a_fire_counter
++  mesh_cntl_signals_q.io.enq.bits.d_row := d_row_index
++
+   val readData = VecInit(io.srams.read.map(_.resp.bits.data))
+   val accReadData = if (ex_read_from_acc) VecInit(io.acc.read_resp.map(_.bits.data.asUInt)) else readData
+   val im2ColData = io.im2col.resp.bits.a_im2col.asUInt
+@@ -999,6 +1068,24 @@
+   }
+ 
+   // Performance counter
++  gather_io.foreach { g =>
++    val q = gather_q.get
++    val entry = q.bits(preload_cmd_place)
++    assert(!(config_initialized && bd_transpose && q.valid.zip(q.bits).map { case (v, e) => v && e.gather }.reduce(_ || _)),
++      "gathered preload with a transposed B")
++    g.read.valid := q.valid(preload_cmd_place) && entry.gather && start_inputting_d && d_fire && cntl_ready &&
++      !preload_zeros && d_row_is_not_all_zeros && !d_read_from_acc
++    g.read.bits.row := d_row_index
++    g.read.bits.address := d_address.full_sp_addr()
++    g.read.bits.relative := d_address.full_sp_addr() - entry.w_base
++    g.mesh_a.valid := cntl_valid && cntl.a_residual && mesh.io.a.fire
++    g.mesh_a.bits.row := cntl.a_row
++    g.mesh_a.bits.data := mesh.io.a.bits.asUInt
++    g.mesh_d.valid := cntl_valid && cntl.d_residual && mesh.io.d.fire
++    g.mesh_d.bits.row := cntl.d_row
++    g.mesh_d.bits.data := mesh.io.d.bits.asUInt
++  }
++
+   CounterEventIO.init(io.counter)
+   io.counter.connectEventSignal(CounterEvent.EXE_ACTIVE_CYCLE, control_state === compute)
+   io.counter.connectEventSignal(CounterEvent.EXE_FLUSH_CYCLE,

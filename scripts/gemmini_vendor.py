@@ -51,12 +51,15 @@ USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR]
 PATCH_PATH: Final = "patches/0001-packed-input-controller-bytes.patch"
 RESET_PATCH_PATH: Final = "patches/0002-loop-head-reset.patch"
 HOOK_PATCH_PATH: Final = "patches/0003-paired-ex-hook.patch"
+GATHER_PATCH_PATH: Final = "patches/0004-paired-execute-gather.patch"
 PATCHES: Final = (
     (PATCH_PATH, "packed input bit-to-byte accounting"),
     (RESET_PATCH_PATH, "deterministic LoopMatmul head reset"),
     (HOOK_PATCH_PATH, "paired-microtile LoopMatmul execute hook"),
+    (GATHER_PATCH_PATH, "paired-microtile indexed preload rows"),
 )
-OVERLAY_NAMES: Final = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
+OVERLAY_NAMES: Final = ("ExecuteController.scala", "GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala",
+                        "StoreController.scala")
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +144,8 @@ FILE_SPECS: Final = (
     FileSpec(f"{SOURCE_PREFIX}AccumulatorMem.scala", f"upstream/{SOURCE_PREFIX}AccumulatorMem.scala", True, "standalone accumulator SRAM/RMW", ("Activation.scala", "Arithmetic.scala", "SharedExtMem.scala", "SyncMem.scala", "Util.scala")),
     FileSpec(f"{SOURCE_PREFIX}Arithmetic.scala", f"upstream/{SOURCE_PREFIX}Arithmetic.scala", True, "PE and accumulator arithmetic typeclass"),
     FileSpec(f"{SOURCE_PREFIX}Dataflow.scala", f"upstream/{SOURCE_PREFIX}Dataflow.scala", True, "PE control dependency"),
-    *(FileSpec(f"{SOURCE_PREFIX}{name}", f"upstream/{SOURCE_PREFIX}{name}", False, "compile patched copy through upstreamGemmini source overlay") for name in OVERLAY_NAMES[:3]),
+    *(FileSpec(f"{SOURCE_PREFIX}{name}", f"upstream/{SOURCE_PREFIX}{name}", False, "compile patched copy through upstreamGemmini source overlay")
+      for name in ("ExecuteController.scala", "GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala")),
     FileSpec(f"{SOURCE_PREFIX}Mesh.scala", f"upstream/{SOURCE_PREFIX}Mesh.scala", True, "standalone systolic mesh", ("Arithmetic.scala", "PE.scala", "Tile.scala")),
     FileSpec(f"{SOURCE_PREFIX}MeshWithDelays.scala", f"upstream/{SOURCE_PREFIX}MeshWithDelays.scala", True, "WS array timing and tags", ("Arithmetic.scala", "Dataflow.scala", "Mesh.scala", "PE.scala", "Shifter.scala", "TagQueue.scala", "Transposer.scala", "Util.scala")),
     FileSpec(f"{SOURCE_PREFIX}PE.scala", f"upstream/{SOURCE_PREFIX}PE.scala", True, "standalone processing element", ("Arithmetic.scala", "Dataflow.scala")),
@@ -251,10 +255,13 @@ def render_artifacts(gemmini: Path) -> Artifacts:
                 extraction="full_file",
                 selected_symbols=["ScratchpadBank"] if spec.upstream_path.endswith("/Scratchpad.scala") else [],
                 patches=([PATCH_PATH, RESET_PATCH_PATH, HOOK_PATCH_PATH] if spec.upstream_path.endswith("/LoopMatmul.scala")
+                         else [GATHER_PATCH_PATH] if spec.upstream_path.endswith("/ExecuteController.scala")
                          else [PATCH_PATH] if Path(spec.upstream_path).name in OVERLAY_NAMES else []),
                 patch_reason=("packed input accounting, deterministic head reset and paired execute hook; "
                               "immutable snapshot"
                               if spec.upstream_path.endswith("/LoopMatmul.scala") else
+                              "paired indexed preload rows; immutable snapshot"
+                              if spec.upstream_path.endswith("/ExecuteController.scala") else
                               "packed input bit-to-byte accounting; snapshot remains immutable"
                               if Path(spec.upstream_path).name in OVERLAY_NAMES else "none; immutable upstream snapshot"),
                 compile_include=spec.compile_include,
@@ -287,7 +294,7 @@ def render_artifacts(gemmini: Path) -> Artifacts:
 Immutable provenance snapshots from Gemmini `{GEMMINI_PIN}`, selected by Chipyard `{CHIPYARD_PIN}`.
 Generate with `uv run scripts/gemmini_vendor.py`; verify with `uv run scripts/gemmini_vendor.py --verify`.
 
-`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the ordered packed-input, loop-reset and paired execute-hook patches to separate copies. `scripts/gemmini_build.py` supplies `-Dim2p.gemmini.overlay=NEW_DIR` to the single `build.sbt`; it replaces exactly four imported Gemmini sources. The build declares `scuCore` (no upstream or host dependency), `gemminiIntegration`, integrated standalone `root`, and test-only lower-level `diagnostics` source sets (no alternative standalone top). `control/build.sbt` is no longer a separate build. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
+`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the ordered packed-input, loop-reset, paired execute-hook and indexed-preload patches to separate copies. `scripts/gemmini_build.py` supplies `-Dim2p.gemmini.overlay=NEW_DIR` to the single `build.sbt`; it replaces exactly five imported Gemmini sources. The build declares `scuCore` (no upstream or host dependency), `gemminiIntegration`, integrated standalone `root`, and test-only lower-level `diagnostics` source sets (no alternative standalone top). `control/build.sbt` is no longer a separate build. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
 """.encode()
     return artifacts
 

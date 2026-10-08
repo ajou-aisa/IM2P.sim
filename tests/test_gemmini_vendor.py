@@ -34,6 +34,7 @@ EXPECTED_SOURCES: Final = (
     "src/main/scala/gemmini/AccumulatorMem.scala",
     "src/main/scala/gemmini/Arithmetic.scala",
     "src/main/scala/gemmini/Dataflow.scala",
+    "src/main/scala/gemmini/ExecuteController.scala",
     "src/main/scala/gemmini/GemminiConfigs.scala",
     "src/main/scala/gemmini/LoadController.scala",
     "src/main/scala/gemmini/LoopMatmul.scala",
@@ -121,8 +122,8 @@ def test_vendor_generation_when_source_is_pinned() -> None:
         snapshot_shas: list[str] = re.findall(r'^\s+"snapshot_sha256": "([0-9a-f]+)"', manifest, flags=re.MULTILINE)
         assert tuple(upstream_paths) == EXPECTED_SOURCES
         assert len(snapshot_paths) == len(blob_shas) == len(snapshot_shas) == len(EXPECTED_SOURCES)
-        assert manifest.count('"patches": []') == len(EXPECTED_SOURCES) - 4
-        assert manifest.count('"compile_overlay": true') == 4
+        assert manifest.count('"patches": []') == len(EXPECTED_SOURCES) - 5
+        assert manifest.count('"compile_overlay": true') == 5
         patch = destination / "patches/0001-packed-input-controller-bytes.patch"
         assert f'"patch_sha256": "{hashlib.sha256(patch.read_bytes()).hexdigest()}"' in manifest
         assert manifest.count('"extraction": "full_file"') == len(EXPECTED_SOURCES)
@@ -224,7 +225,8 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
     # Given
     source = source_checkout()
     gemmini = source / "generators/gemmini"
-    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
+    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala",
+             "ExecuteController.scala")
     prefix = "src/main/scala/gemmini/"
     originals = {name: (gemmini / prefix / name).read_bytes() for name in names}
     with tempfile.TemporaryDirectory(prefix="im2p-gemmini-overlay-") as directory:
@@ -239,6 +241,7 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
         load = (overlay / prefix / names[1]).read_text()
         loop = (overlay / prefix / names[2]).read_text()
         store = (overlay / prefix / names[3]).read_text()
+        execute = (overlay / prefix / names[4]).read_text()
         assert config.count("dma_maxbytes * 8 / inputType.getWidth") == 2
         assert "val row_bits = Mux" in load
         assert "((row_bits +& 7.U) >> 3) * actual_rows_read" in load
@@ -247,6 +250,7 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
         assert "dma_maxbytes * 8 / (block_cols * inputType.getWidth)" in store
         assert "val ex_hook = IO(new Bundle {" in loop and "arb.io.in(1) <> ex_hook.in" in loop
         assert "mod.ex_hook.in <> mod.ex_hook.out" in loop and "mod.ex_hook.hold := false.B" in loop
+        assert "gatherRows: Int = 0" in execute and "val gather_io = if (gatherRows > 0)" in execute
         assert originals == {name: (gemmini / prefix / name).read_bytes() for name in names}
         assert git(gemmini, ["status", "--porcelain=v1"]) == ""
         before = tree_digest(overlay)
@@ -268,13 +272,14 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
 def test_focused_patches_have_independent_effects() -> None:
     """Prove each patch has one purpose against immutable pinned source bytes."""
     source = source_checkout() / "generators/gemmini"
-    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
+    names = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala",
+             "ExecuteController.scala")
     prefix = Path("src/main/scala/gemmini")
     old = "val head_loop_id = Reg(UInt(log2Up(concurrent_loops).W))"
     new = "val head_loop_id = RegInit(0.U(log2Up(concurrent_loops).W))"
     with tempfile.TemporaryDirectory(prefix="im2p-focused-patches-") as directory:
         root = Path(directory)
-        for index in (1, 2, 3):
+        for index in (1, 2, 3, 4):
             case = root / str(index)
             (case / prefix).mkdir(parents=True)
             originals = {name: (source / prefix / name).read_bytes() for name in names}
@@ -282,7 +287,8 @@ def test_focused_patches_have_independent_effects() -> None:
                 (case / prefix / name).write_bytes(content)
             patch_name = {1: "0001-packed-input-controller-bytes.patch",
                           2: "0002-loop-head-reset.patch",
-                          3: "0003-paired-ex-hook.patch"}[index]
+                          3: "0003-paired-ex-hook.patch",
+                          4: "0004-paired-execute-gather.patch"}[index]
             patch = ROOT / "src/gemmini/patches" / patch_name
             for args in (["apply", "--check"], ["apply"]):
                 subprocess.run(["git", "-C", str(case), *args, str(patch)], check=True)
@@ -290,12 +296,13 @@ def test_focused_patches_have_independent_effects() -> None:
             if index == 1:
                 assert old in loop and new not in loop
                 assert "input_w/8" not in loop
-                assert all((case / prefix / name).read_bytes() != originals[name] for name in names)
+                assert all((case / prefix / name).read_bytes() != originals[name] for name in names[:4])
+                assert (case / prefix / "ExecuteController.scala").read_bytes() == originals["ExecuteController.scala"]
             elif index == 2:
                 assert loop == originals["LoopMatmul.scala"].decode().replace(old, new)
                 assert all((case / prefix / name).read_bytes() == originals[name]
                            for name in names if name != "LoopMatmul.scala")
-            else:
+            elif index == 3:
                 # The hook only reroutes the execute stream; head reset and packing are untouched.
                 assert old in loop and new not in loop and "input_w/8" in loop
                 assert "arb.io.in(1) <> ex.io.cmd" not in loop and "arb.io.in(1) <> ex_hook.in" in loop
@@ -303,6 +310,13 @@ def test_focused_patches_have_independent_effects() -> None:
                 assert "ex.io.idle && !ex_hook.hold" in loop
                 assert all((case / prefix / name).read_bytes() == originals[name]
                            for name in names if name != "LoopMatmul.scala")
+            else:
+                # Indexed preload rows touch only the ExecuteController, behind a default-off parameter.
+                execute = (case / prefix / "ExecuteController.scala").read_text()
+                assert "gatherRows: Int = 0" in execute and "d_address.data := entry.rows(" in execute
+                assert "val (cmd, cmd_len) = MultiHeadedQueue(unrolled_cmd, ex_queue_length, cmd_q_heads)" in execute
+                assert all((case / prefix / name).read_bytes() == originals[name]
+                           for name in names if name != "ExecuteController.scala")
 
 
 def main() -> None:

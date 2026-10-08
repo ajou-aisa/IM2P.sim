@@ -592,7 +592,7 @@ def test_rtl_stage_uses_detected_java_and_emitted_relative_filelist() -> None:
             "args = shlex.split(sys.argv[-1])\n"
             "out = pathlib.Path(args[args.index('--out') + 1])\n"
             "overlay = out.parent / 'upstream-overlay'\n"
-            "assert len(tuple(overlay.rglob('*.scala'))) == 4\n"
+            "assert len(tuple(overlay.rglob('*.scala'))) == 5\n"
             "out.mkdir(parents=True)\n"
             "(out / 'IM2PGemminiWSHP1A8W8D16.sv').write_text("
             "'module IM2PGemminiWSHP1A8W8D16; endmodule\\n')\n",
