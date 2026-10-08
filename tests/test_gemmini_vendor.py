@@ -251,6 +251,8 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
         assert "val ex_hook = IO(new Bundle {" in loop and "arb.io.in(1) <> ex_hook.in" in loop
         assert "mod.ex_hook.in <> mod.ex_hook.out" in loop and "mod.ex_hook.hold := false.B" in loop
         assert "gatherRows: Int = 0" in execute and "val gather_io = if (gatherRows > 0)" in execute
+        assert "val ldr_hook = IO(new Bundle {" in loop and "arb.io.in(4) <> ldr_hook.in" in loop
+        assert "ldr_hook.in.fire) -& io.ld_completed" in loop and "mod.ldr_hook.in.valid := false.B" in loop
         assert originals == {name: (gemmini / prefix / name).read_bytes() for name in names}
         assert git(gemmini, ["status", "--porcelain=v1"]) == ""
         before = tree_digest(overlay)
@@ -279,7 +281,7 @@ def test_focused_patches_have_independent_effects() -> None:
     new = "val head_loop_id = RegInit(0.U(log2Up(concurrent_loops).W))"
     with tempfile.TemporaryDirectory(prefix="im2p-focused-patches-") as directory:
         root = Path(directory)
-        for index in (1, 2, 3, 4):
+        for index in (1, 2, 3, 4, 5):
             case = root / str(index)
             (case / prefix).mkdir(parents=True)
             originals = {name: (source / prefix / name).read_bytes() for name in names}
@@ -288,8 +290,14 @@ def test_focused_patches_have_independent_effects() -> None:
             patch_name = {1: "0001-packed-input-controller-bytes.patch",
                           2: "0002-loop-head-reset.patch",
                           3: "0003-paired-ex-hook.patch",
-                          4: "0004-paired-execute-gather.patch"}[index]
+                          4: "0004-paired-execute-gather.patch",
+                          5: "0005-paired-ldr-hook.patch"}[index]
             patch = ROOT / "src/gemmini/patches" / patch_name
+            if index == 5:
+                # 0005 is cut on top of 0003, whose lines are its context.
+                subprocess.run(["git", "-C", str(case), "apply", str(ROOT / "src/gemmini/patches/0003-paired-ex-hook.patch")],
+                               check=True)
+                hooked = (case / prefix / "LoopMatmul.scala").read_text()
             for args in (["apply", "--check"], ["apply"]):
                 subprocess.run(["git", "-C", str(case), *args, str(patch)], check=True)
             loop = (case / prefix / "LoopMatmul.scala").read_text()
@@ -310,13 +318,26 @@ def test_focused_patches_have_independent_effects() -> None:
                 assert "ex.io.idle && !ex_hook.hold" in loop
                 assert all((case / prefix / name).read_bytes() == originals[name]
                            for name in names if name != "LoopMatmul.scala")
-            else:
+            elif index == 4:
                 # Indexed preload rows touch only the ExecuteController, behind a default-off parameter.
                 execute = (case / prefix / "ExecuteController.scala").read_text()
                 assert "gatherRows: Int = 0" in execute and "d_address.data := entry.rows(" in execute
                 assert "val (cmd, cmd_len) = MultiHeadedQueue(unrolled_cmd, ex_queue_length, cmd_q_heads)" in execute
                 assert all((case / prefix / name).read_bytes() == originals[name]
                            for name in names if name != "ExecuteController.scala")
+            else:
+                # Over 0003, the LdR hook adds one arbiter input, its ld credit and the apply tie-off only.
+                added = [line for line in loop.splitlines() if line not in hooked.splitlines()]
+                removed = [line for line in hooked.splitlines() if line not in loop.splitlines()]
+                assert removed == [
+                    "  val arb = Module(new Arbiter(new RoCCCommand(), 4))",
+                    "  ld_utilization := ld_utilization +& (ldA.io.cmd.fire || ldB.io.cmd.fire || ldD.io.cmd.fire) -& io.ld_completed",
+                ]
+                assert all("ldr_hook" in line or "Arbiter(new RoCCCommand(), 5)" in line or line.strip() in ("", "})")
+                           or line.lstrip().startswith("//") for line in added)
+                assert "arb.io.in(1) <> ex_hook.in" in loop and "ex.io.idle && !ex_hook.hold" in loop
+                assert all((case / prefix / name).read_bytes() == originals[name]
+                           for name in names if name != "LoopMatmul.scala")
 
 
 def main() -> None:

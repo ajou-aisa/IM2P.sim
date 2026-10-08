@@ -1,0 +1,57 @@
+Subject: Add a paired-microtile LdR input to the LoopMatmul arbiter
+
+Residual activation loads enter the global arbiter through ldr_hook.in, count in ld_utilization like
+LoopMatmul's own loads (their completions come back as matmul_ld_completed), and wait on the same
+ld credit limit. LoopMatmul.apply ties the input off, so every unhooked user is unchanged.
+
+diff --git a/src/main/scala/gemmini/LoopMatmul.scala b/src/main/scala/gemmini/LoopMatmul.scala
+--- a/src/main/scala/gemmini/LoopMatmul.scala
++++ b/src/main/scala/gemmini/LoopMatmul.scala
+@@ -850,12 +850,20 @@
+   ldab_arb.io.inB_k := ldB.io.k
+   ldab_arb.io.inB_j := ldB.io.j
+ 
++  // IM2P paired microtile LdR: residual activation loads enter the global arbiter through ldr_hook.in
++  // and count in ld_utilization like LoopMatmul's own loads. LoopMatmul.apply ties the input off.
++  val ldr_hook = IO(new Bundle {
++    val in = Flipped(Decoupled(new RoCCCommand))
++    val rob_overloaded = Output(Bool())
++  })
++
+   // Create global arbiter
+-  val arb = Module(new Arbiter(new RoCCCommand(), 4))
++  val arb = Module(new Arbiter(new RoCCCommand(), 5))
+   arb.io.in(0) <> stC.io.cmd
+   arb.io.in(1) <> ex_hook.in
+   arb.io.in(2) <> ldD.io.cmd
+   arb.io.in(3) <> ldab_arb.io.out
++  arb.io.in(4) <> ldr_hook.in
+   val unrolled_cmd = arb.io.out
+ 
+   // Create reservation station utilization counters
+@@ -863,7 +871,7 @@
+   val st_utilization = RegInit(0.U(log2Up(max_sts+1).W))
+   val ex_utilization = RegInit(0.U(log2Up(max_exs+1).W))
+ 
+-  ld_utilization := ld_utilization +& (ldA.io.cmd.fire || ldB.io.cmd.fire || ldD.io.cmd.fire) -& io.ld_completed
++  ld_utilization := ld_utilization +& (ldA.io.cmd.fire || ldB.io.cmd.fire || ldD.io.cmd.fire || ldr_hook.in.fire) -& io.ld_completed
+   st_utilization := st_utilization +& stC.io.cmd.fire -& io.st_completed
+   ex_utilization := ex_utilization +& ex_hook.in.fire -& io.ex_completed
+ 
+@@ -891,6 +899,7 @@
+   ldB.io.rob_overloaded := ld_utilization >= max_lds.U
+   ex.io.rob_overloaded := ex_utilization >= max_exs.U
+   ldD.io.rob_overloaded := ld_utilization >= max_lds.U
++  ldr_hook.rob_overloaded := ld_utilization >= max_lds.U
+   stC.io.rob_overloaded := st_utilization >= max_sts.U
+ 
+   // Wire up iterator inputs
+@@ -1157,6 +1166,8 @@
+     mod.io.ex_completed := ex_completed
+     mod.ex_hook.in <> mod.ex_hook.out
+     mod.ex_hook.hold := false.B
++    mod.ldr_hook.in.valid := false.B
++    mod.ldr_hook.in.bits := DontCare
+     (mod.io.out, mod.io.busy)
+   }
+ 

@@ -147,11 +147,12 @@
       "direct_dependencies": [],
       "extraction": "full_file",
       "git_blob_sha": "07d8d49e95bf421514293ad10bc01026a4b36056",
-      "patch_reason": "packed input accounting, deterministic head reset and paired execute hook; immutable snapshot",
+      "patch_reason": "packed input accounting, deterministic head reset, paired execute hook and LdR hook; immutable snapshot",
       "patches": [
         "patches/0001-packed-input-controller-bytes.patch",
         "patches/0002-loop-head-reset.patch",
-        "patches/0003-paired-ex-hook.patch"
+        "patches/0003-paired-ex-hook.patch",
+        "patches/0005-paired-ldr-hook.patch"
       ],
       "selected_symbols": [],
       "snapshot_path": "upstream/src/main/scala/gemmini/LoopMatmul.scala",
@@ -409,6 +410,11 @@
       "path": "patches/0004-paired-execute-gather.patch",
       "reason": "paired-microtile indexed preload rows",
       "sha256": "e4859f6ae0896fe90f171c9c0d2b99d9902d1f2d74b00db9ef309f485b05f14c"
+    },
+    {
+      "path": "patches/0005-paired-ldr-hook.patch",
+      "reason": "paired-microtile LoopMatmul LdR hook",
+      "sha256": "e5dc861c672dd5585b9b390f67d9f5bd077334932c3f77e1e1fd367bde6d12d2"
     }
   ],
   "schema_version": 1

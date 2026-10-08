@@ -131,6 +131,8 @@ final class UpstreamWsControl(
   pairs.io.k := loopMatmul.ex_hook.k
   pairs.io.robOverloaded := loopMatmul.ex_hook.rob_overloaded
   loopMatmul.ex_hook.hold := pairs.io.hold
+  loopMatmul.ldr_hook.in.valid := false.B
+  loopMatmul.ldr_hook.in.bits := DontCare
   io.pairTrace := pairs.io.trace
   // Depth max_exs: injected commands count in ex_utilization, so no more can be outstanding.
   private val residualContexts = Module(new Queue(
