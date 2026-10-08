@@ -128,7 +128,7 @@ diff --git a/src/main/scala/gemmini/ExecuteController.scala b/src/main/scala/gem
    val readData = VecInit(io.srams.read.map(_.resp.bits.data))
    val accReadData = if (ex_read_from_acc) VecInit(io.acc.read_resp.map(_.bits.data.asUInt)) else readData
    val im2ColData = io.im2col.resp.bits.a_im2col.asUInt
-@@ -999,6 +1068,24 @@
+@@ -999,6 +1068,26 @@
    }
  
    // Performance counter
@@ -142,10 +142,12 @@ diff --git a/src/main/scala/gemmini/ExecuteController.scala b/src/main/scala/gem
 +    g.read.bits.row := d_row_index
 +    g.read.bits.address := d_address.full_sp_addr()
 +    g.read.bits.relative := d_address.full_sp_addr() - entry.w_base
-+    g.mesh_a.valid := cntl_valid && cntl.a_residual && mesh.io.a.fire
++    // A row enters the mesh when its control entry retires. While the entry waits for
++    // mesh.io.req.ready, its row is presented again and only rewrites the mesh's input buffer.
++    g.mesh_a.valid := mesh_cntl_signals_q.io.deq.fire && cntl.a_residual && mesh.io.a.fire
 +    g.mesh_a.bits.row := cntl.a_row
 +    g.mesh_a.bits.data := mesh.io.a.bits.asUInt
-+    g.mesh_d.valid := cntl_valid && cntl.d_residual && mesh.io.d.fire
++    g.mesh_d.valid := mesh_cntl_signals_q.io.deq.fire && cntl.d_residual && mesh.io.d.fire
 +    g.mesh_d.bits.row := cntl.d_row
 +    g.mesh_d.bits.data := mesh.io.d.bits.asUInt
 +  }

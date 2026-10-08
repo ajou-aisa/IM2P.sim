@@ -409,7 +409,7 @@
     {
       "path": "patches/0004-paired-execute-gather.patch",
       "reason": "paired-microtile indexed preload rows",
-      "sha256": "e4859f6ae0896fe90f171c9c0d2b99d9902d1f2d74b00db9ef309f485b05f14c"
+      "sha256": "04800c77b23b066bdf3d1f06ce3200353e4c2277d9546eb1ad9d0e4675331349"
     },
     {
       "path": "patches/0005-paired-ldr-hook.patch",
