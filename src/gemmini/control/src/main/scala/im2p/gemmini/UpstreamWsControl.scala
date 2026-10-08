@@ -54,6 +54,7 @@ final class UpstreamWsControl(
     val acc = chiselTypeOf(execute.io.acc)
     val completed = Valid(UInt(ROB_ID_WIDTH.W))
     val workDone = Decoupled(UInt(workIdWidth.W))
+    val pairTrace = Valid(new PairTrace)
     val busy = Output(Bool())
     val loopBusy = Output(Bool())
     val writebackDrained = Output(Bool())
@@ -94,11 +95,7 @@ final class UpstreamWsControl(
   raw.bits.cmd.rs1 := io.instruction.bits.rs1
   raw.bits.cmd.rs2 := io.instruction.bits.rs2
 
-  private val (unrolled, loopBusy) = LoopMatmul(
-    Queue(raw, 2),
-    reservation.io.matmul_ld_completed,
-    reservation.io.matmul_st_completed,
-    reservation.io.matmul_ex_completed,
+  private val loopMatmul = Module(new LoopMatmul(
     DIM, 40, reservation_station_entries,
     reservation_station_entries_ld, reservation_station_entries_ex, reservation_station_entries_st,
     sp_banks * sp_bank_entries, acc_banks * acc_bank_entries,
@@ -109,8 +106,36 @@ final class UpstreamWsControl(
     new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
     new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
     new MvoutRs2(mvout_rows_bits, mvout_cols_bits, local_addr_t),
-  )
+  ))
+  loopMatmul.io.in <> Queue(raw, 2)
+  loopMatmul.io.ld_completed := reservation.io.matmul_ld_completed
+  loopMatmul.io.st_completed := reservation.io.matmul_st_completed
+  loopMatmul.io.ex_completed := reservation.io.matmul_ex_completed
+  private val unrolled = loopMatmul.io.out
+  private val loopBusy = loopMatmul.io.busy
   reservation.io.alloc <> Queue(unrolled)
+
+  // Paired microtile: the PairScheduler sits on LoopMatmul's execute hook (patch 0003).
+  private val pairs = Module(new PairScheduler(
+    DIM, sp_banks * sp_bank_entries, acc_banks * acc_bank_entries,
+    new PreloadRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
+    new PreloadRs(mvout_rows_bits, mvout_cols_bits, local_addr_t),
+    new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
+    new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
+  ))
+  pairs.io.main <> loopMatmul.ex_hook.out
+  loopMatmul.ex_hook.in <> pairs.io.out
+  pairs.io.req := loopMatmul.ex_hook.req
+  pairs.io.i := loopMatmul.ex_hook.i
+  pairs.io.j := loopMatmul.ex_hook.j
+  pairs.io.k := loopMatmul.ex_hook.k
+  pairs.io.robOverloaded := loopMatmul.ex_hook.rob_overloaded
+  loopMatmul.ex_hook.hold := pairs.io.hold
+  io.pairTrace := pairs.io.trace
+  // Depth max_exs: injected commands count in ex_utilization, so no more can be outstanding.
+  private val residualContexts = Module(new Queue(
+    new PairResidualContext(DIM, log2Up(acc_banks * acc_bank_entries)), reservation_station_entries_ex))
+  residualContexts.io.enq <> pairs.io.residual
 
   for ((issue, command) <- Seq(
     reservation.io.issue.ld -> load.io.cmd,
@@ -133,7 +158,15 @@ final class UpstreamWsControl(
   private val contextJ = RegInit(0.U(16.W))
   private val contextK = RegInit(0.U(16.W))
   private val metadataQueue = Module(new Queue(new Hp1LoopMetadata, 2))
-  metadataQueue.io.enq <> io.loopMetadata
+  // The PairScheduler's copy is popped at each loop's execute request, before that loop's last
+  // context pops metadataQueue, so it never holds more entries and never stalls the bridge.
+  private val pairMetadata = Module(new Queue(new Hp1LoopMetadata, 2))
+  metadataQueue.io.enq.valid := io.loopMetadata.valid && pairMetadata.io.enq.ready
+  pairMetadata.io.enq.valid := io.loopMetadata.valid && metadataQueue.io.enq.ready
+  metadataQueue.io.enq.bits := io.loopMetadata.bits
+  pairMetadata.io.enq.bits := io.loopMetadata.bits
+  io.loopMetadata.ready := metadataQueue.io.enq.ready && pairMetadata.io.enq.ready
+  pairs.io.metadata <> pairMetadata.io.deq
 
   private val metadata = metadataQueue.io.deq.bits
   private val validRows = DIM.U - Mux(contextI === metadata.maxI - 1.U, metadata.padI, 0.U)
@@ -153,41 +186,64 @@ final class UpstreamWsControl(
     scaleAddress < scaleEntries.U && workId < workEntries.U &&
     metadata.rawShapeValid(DIM)
 
+  // After a paired loop's last Main context, its residual preloads take their contexts from the
+  // side FIFO up to the entry marked lastOfLoop. Pair-off loops never enter this mode.
+  private val residualMode = RegInit(false.B)
+  private val residual = residualContexts.io.deq.bits
+  private val residualShapeValid = residualContexts.io.deq.valid &&
+    residual.workId < workEntries.U && residual.scaleAddress < scaleEntries.U &&
+    residual.validRows =/= 0.U && residual.validRows <= DIM.U &&
+    residual.validColumns =/= 0.U && residual.validColumns <= DIM.U
+  private val contextShapeValid = Mux(residualMode, residualShapeValid, metadataShapeValid)
+  private val contextRows = Mux(residualMode, residual.validRows, validRows)
+  private val contextColumns = Mux(residualMode, residual.validColumns, validColumns)
+
   writeback.io.contextIssue.valid := executeIssue.valid && execute.io.cmd.ready &&
-    outputPreload && metadataShapeValid
+    outputPreload && contextShapeValid
   writeback.io.contextIssue.bits.robId := executeIssue.rob_id
-  writeback.io.contextIssue.bits.validRows := validRows
-  writeback.io.contextIssue.bits.validColumns := validColumns
-  writeback.io.contextIssue.bits.scaleAddress := scaleAddress(scaleAddressWidth - 1, 0)
-  writeback.io.contextIssue.bits.scaleGeneration := metadata.scaleGeneration
-  writeback.io.contextIssue.bits.workId := workId(workIdWidth - 1, 0)
-  writeback.io.contextIssue.bits.fragmentId := metadata.fragmentBase + contextK
-  writeback.io.contextIssue.bits.firstContribution := !metadata.accumulate && contextK === 0.U
-  writeback.io.contextIssue.bits.finalFragment := metadata.finalFragment && contextK === metadata.maxK - 1.U
-  writeback.io.contextIssue.bits.rmdRaw := metadata.rmdRaw
-  private val outputReady = metadataShapeValid && writeback.io.contextIssue.ready
+  writeback.io.contextIssue.bits.validRows := contextRows
+  writeback.io.contextIssue.bits.validColumns := contextColumns
+  writeback.io.contextIssue.bits.scaleAddress :=
+    Mux(residualMode, residual.scaleAddress, scaleAddress)(scaleAddressWidth - 1, 0)
+  writeback.io.contextIssue.bits.scaleGeneration := Mux(residualMode, residual.scaleGeneration, metadata.scaleGeneration)
+  writeback.io.contextIssue.bits.workId := Mux(residualMode, residual.workId, workId)(workIdWidth - 1, 0)
+  writeback.io.contextIssue.bits.fragmentId := Mux(residualMode, residual.fragmentId, metadata.fragmentBase + contextK)
+  writeback.io.contextIssue.bits.firstContribution :=
+    Mux(residualMode, residual.firstContribution, !metadata.accumulate && contextK === 0.U)
+  writeback.io.contextIssue.bits.finalFragment :=
+    Mux(residualMode, residual.finalFragment, metadata.finalFragment && contextK === metadata.maxK - 1.U)
+  writeback.io.contextIssue.bits.rmdRaw := !residualMode && metadata.rmdRaw
+  private val outputReady = contextShapeValid && writeback.io.contextIssue.ready
   execute.io.cmd.valid := executeIssue.valid && (!outputPreload || outputReady)
   executeIssue.ready := execute.io.cmd.ready && (!outputPreload || outputReady)
   execute.io.cmd.bits := executeIssue.cmd
   execute.io.cmd.bits.rob_id.push(executeIssue.rob_id)
 
   when(writeback.io.contextIssue.fire) {
-    val lastI = contextI === metadata.maxI - 1.U
-    val lastJ = contextJ === metadata.maxJ - 1.U
-    val lastK = contextK === metadata.maxK - 1.U
-    contextI := Mux(lastI, 0.U, contextI + 1.U)
-    when(lastI) {
-      contextJ := Mux(lastJ, 0.U, contextJ + 1.U)
-      when(lastJ) {
-        contextK := Mux(lastK, 0.U, contextK + 1.U)
+    when(residualMode) {
+      residualMode := !residual.lastOfLoop
+      assert(preload.local_addr.full_acc_addr() === residual.accAddress,
+        "residual preload differs from its paired context")
+    }.otherwise {
+      val lastI = contextI === metadata.maxI - 1.U
+      val lastJ = contextJ === metadata.maxJ - 1.U
+      val lastK = contextK === metadata.maxK - 1.U
+      contextI := Mux(lastI, 0.U, contextI + 1.U)
+      when(lastI) {
+        contextJ := Mux(lastJ, 0.U, contextJ + 1.U)
+        when(lastJ) {
+          contextK := Mux(lastK, 0.U, contextK + 1.U)
+        }
       }
+      when(lastI && lastJ && lastK) { residualMode := metadata.paired }
     }
-    assert(preload.num_rows === validRows, "LoopMatmul output row shape differs from HP1 metadata")
-    assert(preload.num_cols === validColumns, "LoopMatmul output column shape differs from HP1 metadata")
+    assert(preload.num_rows === contextRows, "LoopMatmul output row shape differs from HP1 metadata")
+    assert(preload.num_cols === contextColumns, "LoopMatmul output column shape differs from HP1 metadata")
     assert(preload.local_addr.accumulate === !writeback.io.contextIssue.bits.firstContribution,
       "LoopMatmul accumulation bit differs from HP1 contribution order")
   }
-  metadataQueue.io.deq.ready := writeback.io.contextIssue.fire &&
+  residualContexts.io.deq.ready := writeback.io.contextIssue.fire && residualMode
+  metadataQueue.io.deq.ready := writeback.io.contextIssue.fire && !residualMode &&
     contextI === metadata.maxI - 1.U && contextJ === metadata.maxJ - 1.U &&
     contextK === metadata.maxK - 1.U
 
@@ -218,11 +274,12 @@ final class UpstreamWsControl(
   Seq(load.io.counter, store.io.counter, execute.io.counter, reservation.io.counter)
     .foreach(_.external_reset := false.B)
   io.busy := raw.valid || unrolled.valid || loopBusy || reservation.io.busy ||
-    load.io.busy || store.io.busy || execute.io.busy || !writeback.io.pipelineDrained
+    load.io.busy || store.io.busy || execute.io.busy || !writeback.io.pipelineDrained ||
+    pairs.io.busy || residualMode || residualContexts.io.deq.valid
   io.loopBusy := loopBusy
   io.writebackDrained := writeback.io.drained
-  io.protocolError := !metadataShapeValid && executeIssue.valid && outputPreload ||
-    writeback.io.errors.asUInt.orR
+  io.protocolError := !contextShapeValid && executeIssue.valid && outputPreload ||
+    writeback.io.errors.asUInt.orR || pairs.io.protocolError
   io.loadBusy := load.io.busy
   io.storeBusy := store.io.busy
   io.executeBusy := execute.io.busy

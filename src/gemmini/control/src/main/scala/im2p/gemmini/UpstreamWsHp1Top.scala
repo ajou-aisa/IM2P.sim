@@ -37,6 +37,7 @@ final class UpstreamWsHp1Top(
     val writeRequest = Decoupled(new BackingWriteBeat(profile.dim * 32, 64, 4))
     val writeCompletion = Flipped(Decoupled(new BackingWriteCompletion(4)))
     val outputCompleted = Valid(UInt(workIdWidth.W))
+    val pairTrace = Valid(new PairTrace)
     val busy = Output(Bool())
     val error = Output(Bool())
     val controllerBusy = Output(Bool())
@@ -193,6 +194,7 @@ final class UpstreamWsHp1Top(
   io.scaleReadResponses := scaleLoader.io.responses
   io.scaleReadBytes := scaleLoader.io.readBytes
   io.events := control.io.events
+  io.pairTrace := control.io.pairTrace
 }
 
 final class UpstreamWsHp1Harness(

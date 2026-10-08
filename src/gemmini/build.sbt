@@ -62,7 +62,7 @@ lazy val coreNames = Set("SCU.scala", "ScaleMemory.scala", "ScaleProtocol.scala"
   "ScuFragmentPlanner.scala", "Int4Packer.scala", "Int4Unpacker.scala",
   "ResolvedProfile.scala", "MatmulCycleCounter.scala")
 lazy val integrationNames = Set("Hp1LoopMetadata.scala", "UpstreamWsConfig.scala",
-  "UpstreamWsControl.scala", "UpstreamHp1Writeback.scala")
+  "UpstreamWsControl.scala", "UpstreamHp1Writeback.scala", "PairedLoopUnits.scala")
 
 // Layer A has no upstream Gemmini or standalone/host project dependency.
 lazy val scuCore = (project in file("scu-core")).settings(common).settings(
