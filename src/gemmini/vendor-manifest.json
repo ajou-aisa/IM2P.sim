@@ -129,10 +129,11 @@
       "direct_dependencies": [],
       "extraction": "full_file",
       "git_blob_sha": "07d8d49e95bf421514293ad10bc01026a4b36056",
-      "patch_reason": "packed input accounting and deterministic head reset; immutable snapshot",
+      "patch_reason": "packed input accounting, deterministic head reset and paired execute hook; immutable snapshot",
       "patches": [
         "patches/0001-packed-input-controller-bytes.patch",
-        "patches/0002-loop-head-reset.patch"
+        "patches/0002-loop-head-reset.patch",
+        "patches/0003-paired-ex-hook.patch"
       ],
       "selected_symbols": [],
       "snapshot_path": "upstream/src/main/scala/gemmini/LoopMatmul.scala",
@@ -380,6 +381,11 @@
       "path": "patches/0002-loop-head-reset.patch",
       "reason": "deterministic LoopMatmul head reset",
       "sha256": "a55b9ca7f93628f517e63087c647f7778db4c127fa3161b4b6b97c569e8ce8d3"
+    },
+    {
+      "path": "patches/0003-paired-ex-hook.patch",
+      "reason": "paired-microtile LoopMatmul execute hook",
+      "sha256": "ce4a2170db538f8d19989fe799d4619366975f242684d5ec0117e624c75eb941"
     }
   ],
   "schema_version": 1

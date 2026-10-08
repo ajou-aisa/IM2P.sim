@@ -50,9 +50,11 @@ CHIPYARD_BUILD_SUBMODULES: Final = (
 USAGE: Final = "usage: gemmini_vendor.py [--source CHIPYARD] [--destination DIR] [--verify] [--overlay NEW_DIR]"
 PATCH_PATH: Final = "patches/0001-packed-input-controller-bytes.patch"
 RESET_PATCH_PATH: Final = "patches/0002-loop-head-reset.patch"
+HOOK_PATCH_PATH: Final = "patches/0003-paired-ex-hook.patch"
 PATCHES: Final = (
     (PATCH_PATH, "packed input bit-to-byte accounting"),
     (RESET_PATCH_PATH, "deterministic LoopMatmul head reset"),
+    (HOOK_PATCH_PATH, "paired-microtile LoopMatmul execute hook"),
 )
 OVERLAY_NAMES: Final = ("GemminiConfigs.scala", "LoadController.scala", "LoopMatmul.scala", "StoreController.scala")
 
@@ -248,9 +250,10 @@ def render_artifacts(gemmini: Path) -> Artifacts:
                 snapshot_sha256=hashlib.sha256(content).hexdigest(),
                 extraction="full_file",
                 selected_symbols=["ScratchpadBank"] if spec.upstream_path.endswith("/Scratchpad.scala") else [],
-                patches=([PATCH_PATH, RESET_PATCH_PATH] if spec.upstream_path.endswith("/LoopMatmul.scala")
+                patches=([PATCH_PATH, RESET_PATCH_PATH, HOOK_PATCH_PATH] if spec.upstream_path.endswith("/LoopMatmul.scala")
                          else [PATCH_PATH] if Path(spec.upstream_path).name in OVERLAY_NAMES else []),
-                patch_reason=("packed input accounting and deterministic head reset; immutable snapshot"
+                patch_reason=("packed input accounting, deterministic head reset and paired execute hook; "
+                              "immutable snapshot"
                               if spec.upstream_path.endswith("/LoopMatmul.scala") else
                               "packed input bit-to-byte accounting; snapshot remains immutable"
                               if Path(spec.upstream_path).name in OVERLAY_NAMES else "none; immutable upstream snapshot"),
@@ -284,7 +287,7 @@ def render_artifacts(gemmini: Path) -> Artifacts:
 Immutable provenance snapshots from Gemmini `{GEMMINI_PIN}`, selected by Chipyard `{CHIPYARD_PIN}`.
 Generate with `uv run scripts/gemmini_vendor.py`; verify with `uv run scripts/gemmini_vendor.py --verify`.
 
-`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the ordered packed-input and loop-reset patches to separate copies. `scripts/gemmini_build.py` supplies `-Dim2p.gemmini.overlay=NEW_DIR` to the single `build.sbt`; it replaces exactly four imported Gemmini sources. The build declares `scuCore` (no upstream or host dependency), `gemminiIntegration`, integrated standalone `root`, and test-only lower-level `diagnostics` source sets (no alternative standalone top). `control/build.sbt` is no longer a separate build. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
+`vendor-manifest.json` records each upstream path, Git blob, snapshot SHA256, dependencies, patches, and compile inclusion. Snapshots are immutable. Run `uv run scripts/gemmini_vendor.py --overlay NEW_DIR` to apply the ordered packed-input, loop-reset and paired execute-hook patches to separate copies. `scripts/gemmini_build.py` supplies `-Dim2p.gemmini.overlay=NEW_DIR` to the single `build.sbt`; it replaces exactly four imported Gemmini sources. The build declares `scuCore` (no upstream or host dependency), `gemminiIntegration`, integrated standalone `root`, and test-only lower-level `diagnostics` source sets (no alternative standalone top). `control/build.sbt` is no longer a separate build. Full `Scratchpad.scala` is provenance-only because its SoC wrapper pulls Rocket/TL DMA; standalone integration must extract the listed `ScratchpadBank` boundary without compiling both copies.
 """.encode()
     return artifacts
 

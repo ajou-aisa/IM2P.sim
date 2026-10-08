@@ -245,6 +245,8 @@ def test_overlay_is_reproducible_without_dependency_writes() -> None:
         assert "input_w/8" not in loop
         assert "dma_max_bytes * 8 / (block_size * input_w)" in loop
         assert "dma_maxbytes * 8 / (block_cols * inputType.getWidth)" in store
+        assert "val ex_hook = IO(new Bundle {" in loop and "arb.io.in(1) <> ex_hook.in" in loop
+        assert "mod.ex_hook.in <> mod.ex_hook.out" in loop and "mod.ex_hook.hold := false.B" in loop
         assert originals == {name: (gemmini / prefix / name).read_bytes() for name in names}
         assert git(gemmini, ["status", "--porcelain=v1"]) == ""
         before = tree_digest(overlay)
@@ -272,14 +274,15 @@ def test_focused_patches_have_independent_effects() -> None:
     new = "val head_loop_id = RegInit(0.U(log2Up(concurrent_loops).W))"
     with tempfile.TemporaryDirectory(prefix="im2p-focused-patches-") as directory:
         root = Path(directory)
-        for index in (1, 2):
+        for index in (1, 2, 3):
             case = root / str(index)
             (case / prefix).mkdir(parents=True)
             originals = {name: (source / prefix / name).read_bytes() for name in names}
             for name, content in originals.items():
                 (case / prefix / name).write_bytes(content)
-            patch_name = ("0001-packed-input-controller-bytes.patch" if index == 1
-                          else "0002-loop-head-reset.patch")
+            patch_name = {1: "0001-packed-input-controller-bytes.patch",
+                          2: "0002-loop-head-reset.patch",
+                          3: "0003-paired-ex-hook.patch"}[index]
             patch = ROOT / "src/gemmini/patches" / patch_name
             for args in (["apply", "--check"], ["apply"]):
                 subprocess.run(["git", "-C", str(case), *args, str(patch)], check=True)
@@ -288,8 +291,16 @@ def test_focused_patches_have_independent_effects() -> None:
                 assert old in loop and new not in loop
                 assert "input_w/8" not in loop
                 assert all((case / prefix / name).read_bytes() != originals[name] for name in names)
-            else:
+            elif index == 2:
                 assert loop == originals["LoopMatmul.scala"].decode().replace(old, new)
+                assert all((case / prefix / name).read_bytes() == originals[name]
+                           for name in names if name != "LoopMatmul.scala")
+            else:
+                # The hook only reroutes the execute stream; head reset and packing are untouched.
+                assert old in loop and new not in loop and "input_w/8" in loop
+                assert "arb.io.in(1) <> ex.io.cmd" not in loop and "arb.io.in(1) <> ex_hook.in" in loop
+                assert "ex_utilization +& ex_hook.in.fire" in loop
+                assert "ex.io.idle && !ex_hook.hold" in loop
                 assert all((case / prefix / name).read_bytes() == originals[name]
                            for name in names if name != "LoopMatmul.scala")
 
