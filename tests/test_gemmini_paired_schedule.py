@@ -20,7 +20,7 @@ def test_paired_schedule() -> None:
                    str(ROOT / "tests/gemmini_paired_schedule_test.cpp"), "-o", str(binary)]
         subprocess.run(command, check=True)
         result = subprocess.run([str(binary)], check=True, text=True, capture_output=True)
-        assert result.stdout.count("PASS") == 11, result.stdout
+        assert result.stdout.count("PASS") == 12, result.stdout
         print(result.stdout, end="")
 
 

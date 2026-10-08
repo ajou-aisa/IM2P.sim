@@ -291,6 +291,43 @@ void k32_snap() {
   std::cout << "paired K32 snap A8D16 tile_k 51->50 1->2 loops 65/98/261 -> 64/96/256 PASS\n";
 }
 
+// Descriptor fields per loop for the RTL: the N=96 case's first and last j-tile loops.
+void descriptor_fields() {
+  assert(capacity_from_hardware(3072, 256, 16384).acc_rows_per_slot == 1536);
+  assert(capacity_from_hardware(3072, 256, 16384).work_ids_per_slot == 128);
+  assert(capacity_from_hardware(512, 128, 4096).sp_half_rows == 2048);
+  const auto runs = make_runs(96, {0, 0x00f0f000u, 0xffff0fffu});
+  PairPlan plan;
+  assert(plan_stripe(main_config(16, 80, 96, 96, {5, 5, 6}), 0, 80,
+                     {17, runs.compact_k, &runs.view, runs.compact_k, 96 * 4}, physical(16), plan) &&
+         plan.paired);
+  std::vector<PairFields> seen;
+  auto cursor = first_cursor(plan);
+  bool last = false;
+  do {
+    const auto loop = plan_paired_loop(plan, cursor);
+    const auto fields = pair_fields(plan, loop);
+    assert(fields.paired == loop.has_residual);
+    if (fields.paired) seen.push_back(fields);
+    last = loop.main.last;
+    advance_paired_loop(plan, loop, cursor);
+  } while (!last);
+  // Two j-tiles x two runs; M_R 17 = two groups, the last missing 15 rows.
+  assert(seen.size() == 4);
+  for (std::size_t index = 0; index < seen.size(); ++index) {
+    const auto &f = seen[index];
+    const bool first = index % 2 == 0;
+    assert(f.mask == (first ? 0x00f0f000u : 0xffff0fffu));
+    assert(f.compact_begin == (first ? 0u : 8u));
+    assert(f.groups == 2 && f.pad_i == 15 && f.acc_top == 1536 && f.work_offset == 25);
+    assert(f.first_run == first && f.final_run == !first);
+  }
+  PairPlan off;
+  assert(plan_stripe(main_config(16, 80, 96, 96, {5, 5, 6}), 0, 80, {}, physical(16), off));
+  assert(!pair_fields(off, plan_paired_loop(off, first_cursor(off))).paired);
+  std::cout << "paired descriptor fields and hardware capacity PASS\n";
+}
+
 void invalid_inputs() {
   const auto runs = make_runs(96, {0, 0x00f0f000u, 0xffff0fffu});
   const auto config = main_config(16, 80, 16, 96, {5, 1, 6});
@@ -348,5 +385,6 @@ int main() {
   partial_j_tile();
   block_chunks();
   k32_snap();
+  descriptor_fields();
   invalid_inputs();
 }

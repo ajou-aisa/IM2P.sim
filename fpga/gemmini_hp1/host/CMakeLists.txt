@@ -267,8 +267,35 @@ if(EXISTS "${IM2P_GEMMINI_RTL_FILELIST}")
             "${IM2P_GEMMINI_RTL_FILELIST}"
     WORKING_DIRECTORY "${IM2P_ROOT}"
     VERBATIM)
+  # Paired-microtile fixture: the only pairing-on path until P5.
+  set(IM2P_PAIRED_RTL_DIR "${CMAKE_CURRENT_BINARY_DIR}/paired-rtl")
+  set(IM2P_PAIRED_RTL_EXE "${IM2P_PAIRED_RTL_DIR}/VIM2PGemminiWSHP1RtlTest")
+  add_custom_command(OUTPUT "${IM2P_PAIRED_RTL_EXE}"
+    COMMAND "${IM2P_VERILATOR}" --cc --exe --build --assert --timing
+            -Wall -Wno-fatal -j 2 --top-module "${IM2P_selected_top}"
+            --prefix VIM2PGemminiWSHP1RtlTest --Mdir "${IM2P_PAIRED_RTL_DIR}"
+            -CFLAGS "${IM2P_RUN_RTL_FLAGS}"
+            -F "${IM2P_GEMMINI_RTL_FILELIST}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_paired_rtl.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_schedule.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_paired_schedule.cpp"
+            -LDFLAGS "${IM2P_RUN_LINK_FLAGS}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_paired_rtl.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_ws_rtl.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/run_aware_rtl_driver.inc"
+            "${IM2P_ROOT}/sim/common/gemmini_schedule.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_paired_schedule.cpp"
+            "${IM2P_ROOT}/sim/common/gemmini_paired_schedule.hpp"
+            "${IM2P_GEMMINI_RTL_FILELIST}"
+    WORKING_DIRECTORY "${IM2P_ROOT}"
+    VERBATIM)
+  add_custom_target(gemmini_hp1_paired_rtl DEPENDS "${IM2P_PAIRED_RTL_EXE}")
   add_custom_target(gemmini_hp1_run_aware_rtl
                     DEPENDS "${IM2P_RUN_RTL_EXE}" "${IM2P_RUN_BRIDGE_EXE}")
+  add_dependencies(gemmini_hp1_run_aware_rtl gemmini_hp1_paired_rtl)
+  add_test(NAME gemmini_hp1_paired_rtl_vectors COMMAND "${IM2P_PAIRED_RTL_EXE}" --vectors)
+  add_test(NAME gemmini_hp1_paired_rtl_main_parity COMMAND "${IM2P_PAIRED_RTL_EXE}" --main-parity)
+  add_test(NAME gemmini_hp1_paired_rtl_overlap COMMAND "${IM2P_PAIRED_RTL_EXE}" --paired-overlap)
   add_test(NAME gemmini_hp1_run_aware_rtl COMMAND "${IM2P_RUN_RTL_EXE}")
   add_test(NAME gemmini_hp1_run_aware_bridge COMMAND "${IM2P_RUN_BRIDGE_EXE}")
   add_test(NAME gemmini_hp1_run_aware_invalid_owner

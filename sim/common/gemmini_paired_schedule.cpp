@@ -161,4 +161,26 @@ OutputExtent residual_output_extent(const PairPlan &plan, const PairedLoop &loop
               loop.residual.j * sizeof(std::int32_t)};
 }
 
+PairCapacity capacity_from_hardware(std::size_t accumulator_rows, std::size_t work_entries,
+                                    std::size_t sp_rows) {
+  return {accumulator_rows / 2, work_entries / 2, sp_rows / 2, 128};
+}
+
+PairFields pair_fields(const PairPlan &plan, const PairedLoop &loop) {
+  if (!loop.has_residual) return {};
+  const auto dim = plan.main.hardware.dim;
+  const auto &run = plan.residual.runs[loop.run_index];
+  PairFields fields;
+  fields.paired = true;
+  fields.mask = run.original_k_mask;
+  fields.compact_begin = run.compact_k_begin;
+  fields.groups = static_cast<std::uint32_t>(loop.residual.ip / dim);
+  fields.pad_i = static_cast<std::uint32_t>(loop.residual.ip - loop.residual.is);
+  fields.acc_top = static_cast<std::uint32_t>(plan.capacity.acc_rows_per_slot);
+  fields.work_offset = static_cast<std::uint32_t>(plan.fit.main_groups * plan.fit.j_tiles);
+  fields.first_run = !loop.residual.accumulate;
+  fields.final_run = loop.residual.final_contribution;
+  return fields;
+}
+
 } // namespace im2p::gemmini::paired

@@ -76,6 +76,14 @@ struct OutputExtent {
   std::uint64_t byte_offset = 0;
 };
 
+// Pair descriptor fields of one loop as the HP1 top consumes them (Hp1LoopMetadata).
+struct PairFields {
+  bool paired = false;
+  std::uint32_t mask = 0, compact_begin = 0, groups = 0, pad_i = 0;
+  std::uint32_t acc_top = 0, work_offset = 0;
+  bool first_run = false, final_run = false;
+};
+
 // max(fpb, floor(tile_k / fpb) * fpb) with fpb = max(1, 32 / dim).
 std::size_t snapped_tile_k(std::size_t tile_k, std::size_t dim);
 // false: invalid Main stripe or residual. Otherwise plan.paired says pair or fallback.
@@ -96,5 +104,9 @@ ReadExtent residual_activation_read(const PairPlan &plan, const PairedLoop &loop
                                     std::uint64_t packed_offset);
 // M_R x js int32 on the run that completes the j-tile; invalid otherwise.
 OutputExtent residual_output_extent(const PairPlan &plan, const PairedLoop &loop);
+// Per-slot capacity from the top's physical ACC rows and work entries and the SP rows.
+PairCapacity capacity_from_hardware(std::size_t accumulator_rows, std::size_t work_entries,
+                                    std::size_t sp_rows);
+PairFields pair_fields(const PairPlan &plan, const PairedLoop &loop);
 
 } // namespace im2p::gemmini::paired
