@@ -49,6 +49,15 @@ void reset_state(Runtime &runtime) {
   runtime.plan = plan;
 }
 
+void latch_capacity(Runtime &runtime) {
+  runtime.physical_accumulator_rows = runtime.top.io_physicalAccumulatorRows;
+  runtime.work_entries = runtime.top.io_workEntries;
+  const auto entries = runtime.work_entries;
+  if (runtime.physical_accumulator_rows < IM2P_GEMMINI_ACCUMULATOR_ROWS ||
+      entries < 128 || (entries & (entries - 1)) != 0)
+    runtime.fault = true;
+}
+
 void raw_clock(Runtime &runtime) {
   runtime.top.clock = 0;
   runtime.top.eval();
@@ -176,7 +185,9 @@ void drive_work(Runtime &runtime) {
   top.io_work_bits_scaleBase = loop.scale_base;
   top.io_work_bits_scaleGeneration = loop.generation;
   top.io_work_bits_fragmentBase = loop.fragment_base;
-  top.io_work_bits_workBase = runtime.current_stripe.slot * 64;
+  // Each host slot owns half of the work-ID namespace.
+  top.io_work_bits_workBase =
+      runtime.current_stripe.slot * (runtime.work_entries / 2);
   top.io_work_bits_accumulate = loop.accumulate;
   top.io_work_bits_finalFragment = loop.final_contribution;
   top.io_work_bits_firstLoop = loop.first;

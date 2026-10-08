@@ -106,6 +106,9 @@ struct Runtime {
   std::uint64_t edges = 0;
   std::uint64_t tag_sequence = 0;
   im2p_ffi_work_plan_t plan{1, 1, 1, 1};
+  // Elaborated physical capacity, latched from the top's constant ports after reset.
+  std::uint32_t physical_accumulator_rows = 0;
+  std::uint32_t work_entries = 0;
   // Per-operation explicit companion; never overwrites the legacy plan above.
   bool explicit_geometry = false;
   im2p_production_geometry_v1_t geometry{};
@@ -144,6 +147,7 @@ struct Runtime {
 
 void clear_inputs(Runtime &runtime);
 void reset_state(Runtime &runtime);
+void latch_capacity(Runtime &runtime);
 void raw_clock(Runtime &runtime);
 void tick(Runtime &runtime);
 bool valid_descriptor(const im2p_matmul_descriptor_t &descriptor);

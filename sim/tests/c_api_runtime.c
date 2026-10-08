@@ -837,6 +837,127 @@ static int test_paired_companion(void) {
   return 0;
 }
 
+/* Two planned stripes in host slots 0 and 1: slot 1's work IDs start at half of the RTL's
+ * work entries (128 on the 256-entry D16 profiles). */
+enum { STRIPES_M = 4, STRIPES_ROWS = 2 };
+
+typedef struct {
+  int32_t output[STRIPES_M * PAIRED_N];
+  int seen[STRIPES_M * PAIRED_N];
+  int bad;
+} stripes_fixture_t;
+
+static int stripes_write(void *context, size_t block, size_t row, size_t column,
+                         size_t count, const int64_t *values, uint32_t domain) {
+  stripes_fixture_t *fixture = context;
+  if (block || row >= STRIPES_M || column >= PAIRED_N || count > PAIRED_N - column ||
+      domain != IM2P_OUTPUT_SCU_FINAL) {
+    fixture->bad = 1;
+    return -1;
+  }
+  for (size_t j = 0; j < count; ++j) {
+    const size_t offset = row * PAIRED_N + column + j;
+    if (fixture->seen[offset]++) fixture->bad = 1;
+    fixture->output[offset] = (int32_t)values[j];
+  }
+  return 0;
+}
+
+static int test_planned_stripes(void) {
+  if (strcmp(im2p_sim_implementation(), "gemmini-hp1-integrated-v1") != 0)
+    return 0;
+  activation_t a[STRIPES_M * PAIRED_K];
+  for (size_t row = 0; row < STRIPES_M; ++row)
+    for (size_t k = 0; k < PAIRED_K; ++k)
+      a[row * PAIRED_K + k] = (activation_t)paired_a(row, k);
+  stripes_fixture_t fixture;
+  memset(&fixture, 0, sizeof(fixture));
+  for (size_t i = 0; i < STRIPES_M * PAIRED_N; ++i) fixture.output[i] = -99;
+  im2p_stripe_work_desc_t work = striped_descriptor();
+  work.weights = NULL;
+  work.m = STRIPES_M;
+  work.n = PAIRED_N;
+  work.k = PAIRED_K;
+  work.weight_row_stride_bytes = PAIRED_N * W_STORAGE;
+  work.output_row_stride = PAIRED_N;
+  work.tile_i_rows = STRIPES_ROWS;
+  work.tile_j_columns = PAIRED_N;
+  work.block_size = 32;
+  work.scale_total_k = PAIRED_K;
+  work.scale_row_stride = PAIRED_N;
+  work.scale_valid_columns = PAIRED_N;
+  work.stripe_count = STRIPES_M / STRIPES_ROWS;
+  work.vector_op = IM2P_VECTOR_LEFT_SHIFT;
+  work.output_domain = IM2P_OUTPUT_SCU_FINAL;
+  work.provider.context = &fixture;
+  work.provider.read_weight_i8 = paired_weight;
+  work.provider.read_scale = paired_scale;
+  work.provider.write_output = stripes_write;
+  const im2p_production_geometry_v1_t whole = {
+      1, sizeof(whole), IM2P_TEST_ACTIVATION_BITS, IM2P_TEST_WEIGHT_BITS,
+      IM2P_TEST_DIM, IM2P_GEOMETRY_STREAM, STRIPES_M, PAIRED_N, PAIRED_K, 1, 1, 2,
+      STRIPES_ROWS, 0, STRIPES_M, 0};
+
+  im2p_sim_t *sim = im2p_sim_create();
+  if (!sim) return 53;
+  im2p_stream_t *stream = NULL;
+  int status = im2p_begin_striped_matmul_planned(sim, &work, &whole, &stream);
+  if (status != IM2P_OK || stream == NULL) {
+    im2p_sim_destroy(sim);
+    return 54;
+  }
+  for (uint32_t id = 0; status == IM2P_OK && id < STRIPES_M / STRIPES_ROWS; ++id) {
+    im2p_activation_stripe_t stripe = activation_stripe();
+    stripe.stripe_id = id;
+    stripe.i_start = id * STRIPES_ROWS;
+    stripe.rows = STRIPES_ROWS;
+    stripe.activations = a + id * STRIPES_ROWS * PAIRED_K;
+    stripe.activation_row_stride_bytes = PAIRED_K * A_STORAGE;
+    stripe.context = 30 + id;
+    im2p_production_geometry_v1_t part = whole;
+    part.scope = IM2P_GEOMETRY_STRIPE;
+    part.row_begin = id * STRIPES_ROWS;
+    part.row_count = STRIPES_ROWS;
+    part.stripe_id = id;
+    for (size_t tries = 0; tries < 200000; ++tries) {
+      status = im2p_publish_stripe_planned(stream, &stripe, &part);
+      if (status != IM2P_BACKPRESSURE) break;
+      if (im2p_progress_stream(stream, 1) != IM2P_OK) break;
+    }
+  }
+  im2p_stripe_completion_extended_t completion;
+  size_t completed = 0;
+  for (size_t cycle = 0; status == IM2P_OK && cycle < 400000 && completed < 2; ++cycle) {
+    if (im2p_progress_stream(stream, 1) != IM2P_OK) status = 55;
+    const int polled = im2p_poll_completed_extended(stream, &completion);
+    if (polled < 0) status = 55;
+    if (polled == 1 && (completion.base.stripe_id != completed ||
+                        completion.base.i_start != completed * STRIPES_ROWS ||
+                        completion.base.rows != STRIPES_ROWS ||
+                        completion.base.context != 30 + completed))
+      status = 56;
+    completed += polled == 1;
+  }
+  im2p_work_stats_extended_t stats;
+  memset(&stats, 0, sizeof(stats));
+  if (status == IM2P_OK &&
+      (completed != 2 || im2p_finish_stream_extended(stream, &stats) != IM2P_OK ||
+       stats.base.completed_stripes != 2 || stats.base.stripes_published != 2))
+    status = 55;
+  im2p_destroy_stream(stream);
+  im2p_sim_destroy(sim);
+  if (status != IM2P_OK) return status == 55 || status == 56 ? status : 57;
+  if (fixture.bad) return 58;
+  for (size_t row = 0; row < STRIPES_M; ++row)
+    for (size_t column = 0; column < PAIRED_N; ++column)
+      if (fixture.seen[row * PAIRED_N + column] != 1 ||
+          fixture.output[row * PAIRED_N + column] != paired_oracle(row, column))
+        return 59;
+  printf("C_API_PLANNED_STRIPES_PASS stripes=2 slots=0,1 oracle=1 work_total_cycles=%" PRIu64 "\n",
+         stats.base.work_total_cycles);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (im2p_sim_abi_version() != IM2P_ABI_VERSION ||
       im2p_sim_activation_bits() != IM2P_TEST_ACTIVATION_BITS ||
@@ -854,6 +975,10 @@ int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--paired-only") == 0) {
     im2p_sim_destroy(sim);
     return test_paired_companion();
+  }
+  if (argc == 2 && strcmp(argv[1], "--planned-stripes-only") == 0) {
+    im2p_sim_destroy(sim);
+    return test_planned_stripes();
   }
 
   int32_t output = 0;

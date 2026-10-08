@@ -32,6 +32,7 @@ extern "C" void im2p_reset(im2p_handle_t handle) {
   for (unsigned i = 0; i < 5; ++i) raw_clock(*runtime);
   runtime->top.reset = 0;
   raw_clock(*runtime);
+  latch_capacity(*runtime);
 }
 
 extern "C" void im2p_tick(im2p_handle_t handle) {
