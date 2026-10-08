@@ -35,12 +35,14 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.work.bits.hostSlot.poke(false.B)
     dut.io.work.bits.rmdRaw.poke(false.B)
     dut.io.work.bits.paired.poke(false.B)
+    dut.io.work.bits.residualAAddress.poke("h0123456789abcdef".U)
+    dut.io.work.bits.residualAStrideBytes.poke("h4c0".U)
   }
 
   private val expected = Seq(
     (GemminiISA.CONFIG_CMD.litValue, BigInt("00100101", 16), BigInt("109", 16)),
     (GemminiISA.CONFIG_CMD.litValue, BigInt("00100109", 16), BigInt("211", 16)),
-    (GemminiISA.CONFIG_CMD.litValue, BigInt("00100111", 16), BigInt(0)),
+    (GemminiISA.CONFIG_CMD.litValue, BigInt("00100111", 16), BigInt("4c0", 16)),
     (GemminiISA.CONFIG_CMD.litValue, BigInt(2), BigInt("344", 16)),
     (GemminiISA.CONFIG_CMD.litValue, BigInt("00010004", 16), BigInt("0001000000000000", 16)),
     (GemminiISA.LOOP_WS_CONFIG_BOUNDS.litValue, BigInt("006600550044", 16), BigInt("003300220011", 16)),
@@ -103,6 +105,12 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.instruction.bits.rs2.expect(rs2.U)
         if (index < 3) {
           assert((dut.io.instruction.bits.rs1.peek().litValue & 3) === GemminiISA.CONFIG_LOAD.litValue)
+        }
+        if (index == expected.size - 1) {
+          // The LdR source leaves with the loop's metadata; the projection itself carries no address.
+          dut.io.loopMetadata.valid.expect(true.B)
+          dut.io.pairSource.address.expect("h0123456789abcdef".U)
+          dut.io.pairSource.strideBytes.expect("h4c0".U)
         }
         dut.clock.step()
       }

@@ -38,6 +38,9 @@ final class UpstreamWsHp1Top(
     val writeCompletion = Flipped(Decoupled(new BackingWriteCompletion(4)))
     val outputCompleted = Valid(UInt(workIdWidth.W))
     val pairTrace = Valid(new PairTrace)
+    val gatherRead = Output(chiselTypeOf(control.io.gatherRead))
+    val meshA = Output(chiselTypeOf(control.io.meshA))
+    val meshD = Output(chiselTypeOf(control.io.meshD))
     val busy = Output(Bool())
     val error = Output(Bool())
     val controllerBusy = Output(Bool())
@@ -108,6 +111,7 @@ final class UpstreamWsHp1Top(
   bridge.io.work <> scaleLoader.io.loadedWork
   control.io.instruction <> bridge.io.instruction
   control.io.loopMetadata <> bridge.io.loopMetadata
+  control.io.pairSource := bridge.io.pairSource
   bridge.io.controllerBusy := control.io.busy || !memory.io.drained || scaleLoader.io.busy
   io.loopDone <> bridge.io.done
   io.completedHostSlot := bridge.io.completedHostSlot
@@ -198,6 +202,9 @@ final class UpstreamWsHp1Top(
   io.scaleReadBytes := scaleLoader.io.readBytes
   io.events := control.io.events
   io.pairTrace := control.io.pairTrace
+  io.gatherRead := control.io.gatherRead
+  io.meshA := control.io.meshA
+  io.meshD := control.io.meshD
 }
 
 final class UpstreamWsHp1Harness(

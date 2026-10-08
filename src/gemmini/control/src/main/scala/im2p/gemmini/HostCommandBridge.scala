@@ -12,6 +12,9 @@ final class Hp1LoopDescriptor extends Hp1LoopMetadata {
   val aStrideBytes = UInt(64.W)
   val bStrideBytes = UInt(64.W)
   val cStrideBytes = UInt(64.W)
+  // Paired microtile LdR source: like the other backing addresses, never projected into metadata.
+  val residualAAddress = UInt(64.W)
+  val residualAStrideBytes = UInt(64.W)
   val firstLoop = Bool()
   val finalLoop = Bool()
   val logicalWorkId = UInt(8.W)
@@ -23,6 +26,7 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
     val work = Flipped(Decoupled(new Hp1LoopDescriptor))
     val instruction = Decoupled(new UpstreamInstruction)
     val loopMetadata = Decoupled(new Hp1LoopMetadata)
+    val pairSource = Output(new PairLoadSource)
     val controllerBusy = Input(Bool())
     val start = Output(Bool())
     val active = Output(Valid(new Hp1LoopDescriptor))
@@ -98,7 +102,7 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
   private val commands = VecInit(Seq(
     command(GemminiISA.CONFIG_CMD, loadConfig(0), pending.io.deq.bits.aStrideBytes),
     command(GemminiISA.CONFIG_CMD, loadConfig(1), pending.io.deq.bits.bStrideBytes),
-    command(GemminiISA.CONFIG_CMD, loadConfig(2)),
+    command(GemminiISA.CONFIG_CMD, loadConfig(2), pending.io.deq.bits.residualAStrideBytes),
     command(GemminiISA.CONFIG_CMD, storeConfigRs1.asUInt, storeConfigRs2.asUInt),
     command(GemminiISA.CONFIG_CMD, executeConfigRs1.asUInt, executeConfigRs2.asUInt),
     command(GemminiISA.LOOP_WS_CONFIG_BOUNDS,
@@ -124,6 +128,10 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
   io.loopMetadata.bits.elements.foreach { case (name, field) =>
     field := pending.io.deq.bits.elements(name)
   }
+  // The LdR source is the one backing address control needs; it is defined when loopMetadata
+  // fires and adds no handshake. Its stride is also load state 2's stride (command 2).
+  io.pairSource.address := pending.io.deq.bits.residualAAddress
+  io.pairSource.strideBytes := pending.io.deq.bits.residualAStrideBytes
   issued.io.enq.valid := loopCommand && io.instruction.ready && io.loopMetadata.ready
   issued.io.enq.bits := pending.io.deq.bits
   pending.io.deq.ready := issued.io.enq.fire

@@ -80,6 +80,8 @@ final class UpstreamWsHp1OverlapSpec extends AnyFlatSpec with ChiselScalatestTes
         work.hostSlot.poke(slot.B)
         work.rmdRaw.poke(false.B)
         work.paired.poke(false.B)
+        work.residualAAddress.poke(0.U)
+        work.residualAStrideBytes.poke(0.U)
       }
 
       dut.io.work.valid.poke(false.B)

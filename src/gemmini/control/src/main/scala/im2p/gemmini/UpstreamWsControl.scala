@@ -29,7 +29,8 @@ final class UpstreamWsControl(
   require(inputType.getWidth == profile.operandBits)
   require(spatialArrayOutputType.getWidth == profile.rawPartialBits)
   require(accType.getWidth == 32)
-  private val execute = Module(new ExecuteController(64, 32, config))
+  // Paired microtile: residual PRELOADs read indexed W rows (patch 0004).
+  private val execute = Module(new ExecuteController(64, 32, config, math.min(DIM, 32)))
   private val load = Module(new LoadController(config, 40, local_addr_t))
   private val store = Module(new StoreController(config, 40, local_addr_t))
   private val reservation = Module(new ReservationStation(config, new GemminiCmd(reservation_station_entries)))
@@ -55,6 +56,11 @@ final class UpstreamWsControl(
     val completed = Valid(UInt(ROB_ID_WIDTH.W))
     val workDone = Decoupled(UInt(workIdWidth.W))
     val pairTrace = Valid(new PairTrace)
+    // Paired microtile: the LdR source of the loop whose metadata fires, and observation only.
+    val pairSource = Input(new PairLoadSource)
+    val gatherRead = Output(chiselTypeOf(execute.gather_io.get.read))
+    val meshA = Output(chiselTypeOf(execute.gather_io.get.mesh_a))
+    val meshD = Output(chiselTypeOf(execute.gather_io.get.mesh_d))
     val busy = Output(Bool())
     val loopBusy = Output(Bool())
     val writebackDrained = Output(Bool())
@@ -117,11 +123,12 @@ final class UpstreamWsControl(
 
   // Paired microtile: the PairScheduler sits on LoopMatmul's execute hook (patch 0003).
   private val pairs = Module(new PairScheduler(
-    DIM, sp_banks * sp_bank_entries, acc_banks * acc_bank_entries,
+    DIM, sp_banks * sp_bank_entries, acc_banks * acc_bank_entries, inputType.getWidth,
     new PreloadRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
     new PreloadRs(mvout_rows_bits, mvout_cols_bits, local_addr_t),
     new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
     new ComputeRs(mvin_rows_bits, mvin_cols_bits, local_addr_t),
+    new MvinRs2(mvin_rows_bits, mvin_cols_bits, local_addr_t),
   ))
   pairs.io.main <> loopMatmul.ex_hook.out
   loopMatmul.ex_hook.in <> pairs.io.out
@@ -131,12 +138,14 @@ final class UpstreamWsControl(
   pairs.io.k := loopMatmul.ex_hook.k
   pairs.io.robOverloaded := loopMatmul.ex_hook.rob_overloaded
   loopMatmul.ex_hook.hold := pairs.io.hold
-  loopMatmul.ldr_hook.in.valid := false.B
-  loopMatmul.ldr_hook.in.bits := DontCare
+  // LdR enters LoopMatmul's arbiter and ld credits (patch 0005).
+  loopMatmul.ldr_hook.in <> pairs.io.ldr
+  pairs.io.ldrRobOverloaded := loopMatmul.ldr_hook.rob_overloaded
   io.pairTrace := pairs.io.trace
   // Depth max_exs: injected commands count in ex_utilization, so no more can be outstanding.
   private val residualContexts = Module(new Queue(
-    new PairResidualContext(DIM, log2Up(acc_banks * acc_bank_entries)), reservation_station_entries_ex))
+    new PairResidualContext(DIM, log2Up(acc_banks * acc_bank_entries), log2Up(sp_banks * sp_bank_entries)),
+    reservation_station_entries_ex))
   residualContexts.io.enq <> pairs.io.residual
 
   for ((issue, command) <- Seq(
@@ -162,11 +171,12 @@ final class UpstreamWsControl(
   private val metadataQueue = Module(new Queue(new Hp1LoopMetadata, 2))
   // The PairScheduler's copy is popped at each loop's execute request, before that loop's last
   // context pops metadataQueue, so it never holds more entries and never stalls the bridge.
-  private val pairMetadata = Module(new Queue(new Hp1LoopMetadata, 2))
+  private val pairMetadata = Module(new Queue(new PairLoopRequest, 2))
   metadataQueue.io.enq.valid := io.loopMetadata.valid && pairMetadata.io.enq.ready
   pairMetadata.io.enq.valid := io.loopMetadata.valid && metadataQueue.io.enq.ready
   metadataQueue.io.enq.bits := io.loopMetadata.bits
-  pairMetadata.io.enq.bits := io.loopMetadata.bits
+  pairMetadata.io.enq.bits.meta := io.loopMetadata.bits
+  pairMetadata.io.enq.bits.source := io.pairSource
   io.loopMetadata.ready := metadataQueue.io.enq.ready && pairMetadata.io.enq.ready
   pairs.io.metadata <> pairMetadata.io.deq
 
@@ -220,6 +230,22 @@ final class UpstreamWsControl(
   executeIssue.ready := execute.io.cmd.ready && (!outputPreload || outputReady)
   execute.io.cmd.bits := executeIssue.cmd
   execute.io.cmd.bits.rob_id.push(executeIssue.rob_id)
+
+  // One sideband entry per command entering the ExecuteController (patch 0004). A residual
+  // PRELOAD's indexed W rows come from its side-FIFO entry; the residual flags only tag
+  // observation beats (a COMPUTE belongs to the PRELOAD issued before it).
+  private val gather = execute.gather_io.get
+  private val executeIsCompute = executeFunct === COMPUTE_AND_FLIP_CMD || executeFunct === COMPUTE_AND_STAY_CMD
+  private val residualPreload = residualMode && outputPreload
+  private val lastPreloadResidual = RegInit(false.B)
+  gather.in.gather := residualPreload && residual.wValid
+  gather.in.residual := Mux(executeFunct === PRELOAD_CMD, residualPreload, executeIsCompute && lastPreloadResidual)
+  gather.in.rows := residual.wRows
+  gather.in.w_base := residual.wBase
+  when(execute.io.cmd.fire && executeFunct === PRELOAD_CMD) { lastPreloadResidual := residualPreload }
+  io.gatherRead := gather.read
+  io.meshA := gather.mesh_a
+  io.meshD := gather.mesh_d
 
   when(writeback.io.contextIssue.fire) {
     when(residualMode) {
