@@ -130,6 +130,7 @@ final class UpstreamWsHp1FullKSpec extends AnyFlatSpec with ChiselScalatestTeste
         // cache row is reused only after generation-1 ownership is released.
         work.hostSlot.poke(false.B)
         work.rmdRaw.poke(false.B)
+        work.paired.poke(false.B)
         dut.io.work.valid.poke(true.B)
         while (!dut.io.work.ready.peek().litToBoolean) dut.clock.step()
         dut.clock.step()

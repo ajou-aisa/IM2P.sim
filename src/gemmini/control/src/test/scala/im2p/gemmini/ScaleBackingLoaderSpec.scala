@@ -35,6 +35,7 @@ final class ScaleBackingLoaderSpec extends AnyFlatSpec with ChiselScalatestTeste
     work.logicalWorkId.poke(9.U)
     work.hostSlot.poke(false.B)
     work.rmdRaw.poke(false.B)
+    work.paired.poke(false.B)
   }
 
   private def initialize(dut: ScaleBackingLoader): Unit = {

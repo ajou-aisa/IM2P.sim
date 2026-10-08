@@ -110,6 +110,7 @@ final class UpstreamWsHp1TopSpec extends AnyFlatSpec with ChiselScalatestTester 
       work.logicalWorkId.poke(7.U)
       work.hostSlot.poke(false.B)
       work.rmdRaw.poke(false.B)
+      work.paired.poke(false.B)
       dut.io.work.valid.poke(true.B)
       waitUntil("work-admission")(dut.io.work.ready.peek().litToBoolean)
       dut.clock.step()

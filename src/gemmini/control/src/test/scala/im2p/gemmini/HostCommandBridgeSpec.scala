@@ -34,6 +34,7 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.work.bits.logicalWorkId.poke("hde".U)
     dut.io.work.bits.hostSlot.poke(false.B)
     dut.io.work.bits.rmdRaw.poke(false.B)
+    dut.io.work.bits.paired.poke(false.B)
   }
 
   private val expected = Seq(
@@ -314,6 +315,58 @@ class HostCommandBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.done.valid.expect(true.B)
       dut.io.done.bits.expect("hdf".U)
       dut.io.completedHostSlot.expect(true.B)
+    }
+  }
+
+  it should "never overlap a paired loop while pair-off loops still overlap (C1)" in {
+    for ((firstPaired, secondPaired) <- Seq((false, false), (false, true), (true, false), (true, true))) {
+      test(new HostCommandBridge(profile)) { dut =>
+        val paired = firstPaired || secondPaired
+        dut.io.instruction.ready.poke(false.B)
+        dut.io.loopMetadata.ready.poke(true.B)
+        dut.io.controllerBusy.poke(false.B)
+        dut.io.done.ready.poke(false.B)
+
+        pokeWork(dut)
+        dut.io.work.bits.finalLoop.poke(false.B)
+        dut.io.work.bits.paired.poke(firstPaired.B)
+        dut.io.work.valid.poke(true.B)
+        dut.clock.step()
+        pokeWork(dut)
+        dut.io.work.bits.firstLoop.poke(false.B)
+        dut.io.work.bits.hostSlot.poke(true.B)
+        dut.io.work.bits.paired.poke(secondPaired.B)
+        dut.io.controllerBusy.poke(true.B)
+        dut.io.work.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.work.valid.poke(false.B)
+        dut.io.instruction.ready.poke(true.B)
+
+        // The controller stays busy: only a pair-off successor may be emitted over it.
+        var commands = 0
+        var sawOverlap = false
+        for (_ <- 0 until 40) {
+          if (dut.io.instruction.valid.peek().litToBoolean) commands += 1
+          sawOverlap ||= dut.io.overlapIssued.peek().litToBoolean
+          dut.clock.step()
+        }
+        assert(commands == (if (paired) 11 else 17))
+        assert(sawOverlap == !paired)
+
+        if (paired) {
+          dut.io.controllerBusy.poke(false.B)
+          dut.clock.step()
+          dut.io.instruction.valid.expect(true.B)
+          dut.io.instruction.bits.funct.expect(GemminiISA.CONFIG_CMD)
+          var second = 0
+          while (second < 11) {
+            if (dut.io.instruction.valid.peek().litToBoolean) second += 1
+            sawOverlap ||= dut.io.overlapIssued.peek().litToBoolean
+            dut.clock.step()
+          }
+          assert(!sawOverlap)
+        }
+      }
     }
   }
 

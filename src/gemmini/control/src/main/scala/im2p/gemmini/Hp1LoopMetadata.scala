@@ -17,6 +17,16 @@ class Hp1LoopMetadata extends Bundle {
   val accumulate = Bool()
   val finalFragment = Bool()
   val rmdRaw = Bool()
+  // Paired microtile: the residual compact GEMM riding this K32 loop. All zero is pair off.
+  val paired = Bool()
+  val residualMask = UInt(32.W)
+  val residualCompactBegin = UInt(32.W)
+  val residualGroups = UInt(16.W)
+  val residualPadI = UInt(16.W)
+  val residualAccTop = UInt(16.W)
+  val residualWorkOffset = UInt(8.W)
+  val residualFirstRun = Bool()
+  val residualFinalRun = Bool()
 
   // Historical/diagnostic raw descriptors bypass HP1 scaling. Production residual
   // work keeps rmdRaw=false and uses the normal HP1 SCU; the CPU owns radix only.

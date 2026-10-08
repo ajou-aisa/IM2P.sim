@@ -46,6 +46,9 @@ final class UpstreamWsHp1Top(
     val loadBusy = Output(Bool())
     val executeBusy = Output(Bool())
     val storeBusy = Output(Bool())
+    // Elaborated physical capacity, read by the host after reset (paired-microtile D2).
+    val physicalAccumulatorRows = Output(UInt(32.W))
+    val workEntries = Output(UInt(32.W))
     val coreCycle = Output(UInt(64.W))
     val startCycle = Output(UInt(64.W))
     val doneCycle = Output(UInt(64.W))
@@ -163,6 +166,8 @@ final class UpstreamWsHp1Top(
   io.outputCompleted.bits := control.io.workDone.bits
   cycles.io.start := io.work.fire && io.work.bits.firstLoop
   cycles.io.done := bridge.io.logicalDone.valid
+  io.physicalAccumulatorRows := (config.acc_banks * config.acc_bank_entries).U
+  io.workEntries := workEntries.U
   io.coreCycle := cycles.io.coreCycle
   io.startCycle := cycles.io.startCycle
   io.doneCycle := cycles.io.doneCycle

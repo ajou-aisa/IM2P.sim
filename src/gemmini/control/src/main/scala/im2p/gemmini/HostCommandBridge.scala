@@ -58,7 +58,10 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
   io.completedHostSlot := issued.io.deq.bits.hostSlot
   io.logicalDone.valid := io.done.valid && issued.io.deq.bits.finalLoop
   io.logicalDone.bits := issued.io.deq.bits.logicalWorkId
-  io.overlapIssued := issued.io.enq.fire && issued.io.count =/= 0.U && io.controllerBusy
+  // Set only while emitting from the busy-overlap branch below, so a drained reconfiguration
+  // whose predecessor's done is still pending is not reported as an overlap.
+  private val overlapping = RegInit(false.B)
+  io.overlapIssued := issued.io.enq.fire && issued.io.count =/= 0.U && io.controllerBusy && overlapping
   issued.io.deq.ready := io.done.fire
 
   private def loadConfig(stateId: Int): UInt = {
@@ -134,18 +137,28 @@ final class HostCommandBridge(profile: ResolvedProfile) extends Module {
     sawBusy := true.B
   }
 
+  // Spec C1: a paired loop never overlaps another loop. Its residual preloads read indexed rows
+  // of the resident W, which the reservation station cannot order against an overlapped load.
+  private val pairedInvolved = pending.io.deq.bits.paired ||
+    (issued.io.deq.valid && issued.io.deq.bits.paired)
+  assert(!(issued.io.enq.fire && overlapping && pairedInvolved),
+    "paired loop issued over a busy controller")
+
   when(state === select) {
     when(pending.io.deq.valid && issued.io.count === 0.U) {
       configured := pending.io.deq.bits
       commandIndex := 0.U
+      overlapping := false.B
       state := emit
-    }.elsewhen(pending.io.deq.valid && compatible && io.controllerBusy) {
+    }.elsewhen(pending.io.deq.valid && compatible && io.controllerBusy && !pairedInvolved) {
       commandIndex := 5.U
+      overlapping := true.B
       state := emit
     }.elsewhen(pending.io.deq.valid && sawBusy && !io.controllerBusy) {
       configured := pending.io.deq.bits
       commandIndex := 0.U
       sawBusy := false.B
+      overlapping := false.B
       state := emit
     }.elsewhen(!pending.io.deq.valid && issued.io.deq.valid && sawBusy && !io.controllerBusy) {
       state := complete
