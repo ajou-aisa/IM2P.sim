@@ -169,6 +169,9 @@ final class UpstreamWsHp1Top(
   cycles.io.done := bridge.io.logicalDone.valid
   io.physicalAccumulatorRows := (config.acc_banks * config.acc_bank_entries).U
   io.workEntries := workEntries.U
+  // Constant outputs: firtool drops them from this module when it is not the public top.
+  dontTouch(io.physicalAccumulatorRows)
+  dontTouch(io.workEntries)
   io.coreCycle := cycles.io.coreCycle
   io.startCycle := cycles.io.startCycle
   io.doneCycle := cycles.io.doneCycle
